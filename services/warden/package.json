@@ -1,0 +1,29 @@
+{
+  "name": "noona-warden",
+  "version": "1.0.1",
+  "description": "",
+  "main": "initmain.mjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Noona-Project/Noona-Warden"
+  },
+  "private": true,
+  "dependencies": {
+    "axios": "^1.8.4",
+    "boxen": "^8.0.1",
+    "chalk": "^5.4.1",
+    "cli-progress": "^3.12.0",
+    "cli-table3": "^0.6.5",
+    "dockerode": "^4.0.4",
+    "dotenv": "^16.4.7",
+    "figlet": "^1.8.0",
+    "js-yaml": "^4.1.0",
+    "jsdocs": "^0.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "redis": "^4.7.0",
+    "table": "^6.9.0"
+  }
+}

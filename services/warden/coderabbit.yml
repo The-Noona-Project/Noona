@@ -1,0 +1,71 @@
+# coderabbit.yml for Noona-Warden
+name: Noona-Warden
+description: AI-enhanced reviews, commit intelligence, and automated insights for Noona-Warden — part of The Noona Project.
+language: javascript
+ai_reviewer: true
+lint: true
+test_detection: true
+commit_message_analysis: true
+pull_request_summary: true
+pr_reviewer: true
+pr_commentary: true
+issue_commentary: true
+
+paths:
+  include:
+    - .
+  exclude:
+    - node_modules/
+    - .git/
+    - dist/
+    - build/
+
+lint_config:
+  eslint: true
+  prettier: true
+  config_file: .eslintrc.json
+
+test_config:
+  detect: true
+  frameworks:
+    - jest
+    - mocha
+    - vitest
+
+comment_style:
+  concise: false
+  emoji: true
+  tone: friendly
+
+rules:
+  max_comments: 15
+  min_code_diff: 3
+  pr_size_limit: 1500
+  require_tests: true
+  block_merge_on_errors: false
+
+notifications:
+  on_success: comment
+  on_failure: comment
+
+environments:
+  github:
+    visibility: public
+    features:
+      - code_reviews
+      - pr_summaries
+      - commit_checks
+      - issue_replies
+      - suggestions
+
+ci_integration:
+  enabled: true
+  auto_comment_on_pr: true
+  auto_approve_if_clean: false
+
+# Optional: Enforce a custom PR checklist
+pr_checklist:
+  - ✅ Code follows style guide
+  - ✅ Tests are included or updated
+  - ✅ No secrets or credentials committed
+  - ✅ All containers/services start and stop cleanly

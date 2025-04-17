@@ -1,0 +1,46 @@
+{
+  "name": "noona-vault",
+  "version": "1.0.1",
+  "description": "Middleware for database handling in The Noona Project. Powers SQL, NoSQL, and vector DBs behind a REST API.",
+  "main": "initmain.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "LANG=en_US.UTF-8 node initmain.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Noona-Project/Noona-Vault"
+  },
+  "keywords": [
+    "noona",
+    "noona-vault",
+    "database",
+    "kavita",
+    "mariadb",
+    "mongodb",
+    "redis",
+    "rest-api"
+  ],
+  "author": "The Noona Project Team",
+  "license": "GPL-2.0",
+  "private": true,
+  "dependencies": {
+    "boxen": "^8.0.1",
+    "chalk": "^5.4.1",
+    "cli-table3": "^0.6.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "lint": "^1.1.2",
+    "mongoose": "^8.12.2",
+    "morgan": "^1.10.0",
+    "mysql2": "^3.14.0",
+    "redis": "^4.7.0",
+    "table": "^6.9.0"
+  },
+  "devDependencies": {
+    "docdash": "^2.0.2",
+    "jsdoc": "^4.0.4"
+  }
+}

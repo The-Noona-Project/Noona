@@ -1,0 +1,14 @@
+services:
+  noona-warden:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: noona-warden
+    
+    env_file:
+      - ./family/noona-warden/settings/config.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./family:/noona/family
+
+    restart: no

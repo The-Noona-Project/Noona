@@ -1,0 +1,39 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# IntelliJ & JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS-generated
+.DS_Store
+Thumbs.db
+
+# Env & Secrets
+*.env
+*.env.local
+*.env.production
+*.env.development
+/family/noona-warden/settings/config.env
+
+# Logs
+logs/
+*.log
+*.tsbuildinfo
+
+# Compiled files
+dist/
+
+# Patch files / temp dev artifacts
+*.patch
+*.bak
+*.swp
+*.tmp
+*.orig
+*.pem
