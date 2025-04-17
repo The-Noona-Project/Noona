@@ -6,7 +6,7 @@
  * This script is designed to be containerized (Docker) and runs the Vault microservice
  * which handles secure storage, JWT distribution, and database operations.
  *
- * @version 2.0.0
+ * @version 1.0.1
  * @module initmain
  */
 
@@ -25,9 +25,23 @@ import {
     printError,
     printDebug
 } from '../../utilities/logger/logUtils.mjs';
-import { validateEnv } from '../../utilities/filesystem/validateEnv.mjs';
+import { validateEnv } from '../../utilities/logger/validateEnv.mjs';
 
-validateEnv(['PORT', 'MONGO_URL', 'REDIS_URL'], ['NODE_ENV']);
+// ─────────────────────────────────────────────────────────────
+// 🌐 Validate Required Environment Variables
+// ─────────────────────────────────────────────────────────────
+validateEnv(
+    [
+        'PORT',
+        'MONGO_URL',
+        'REDIS_URL',
+        'MARIADB_HOST',
+        'MARIADB_USER',
+        'MARIADB_PASSWORD',
+        'MARIADB_DATABASE'
+    ],
+    ['NODE_ENV']
+);
 
 const app = express();
 const PORT = process.env.PORT || 3120;
@@ -37,11 +51,22 @@ let server = null;
 printBanner('Noona Vault');
 printDivider();
 
+/**
+ * Log unhandled promise rejections to help catch async bugs.
+ * @param {any} reason - Reason for the rejection
+ */
 process.on('unhandledRejection', (reason) => {
     printError('⚠️ Unhandled Promise Rejection:');
     console.error(reason);
 });
 
+/**
+ * Bootstraps the Noona-Vault application.
+ * - Initializes databases
+ * - Sets up middleware
+ * - Mounts REST routes
+ * - Starts the Express server
+ */
 (async () => {
     try {
         const isDev = process.env.NODE_ENV?.toLowerCase() === 'development';
@@ -51,6 +76,8 @@ process.on('unhandledRejection', (reason) => {
             printDebug(`NODE_ENV = ${process.env.NODE_ENV}`);
             printDebug(`MONGO_URL = ${process.env.MONGO_URL}`);
             printDebug(`REDIS_URL = ${process.env.REDIS_URL}`);
+            printDebug(`MARIADB_HOST = ${process.env.MARIADB_HOST}`);
+            printDebug(`MARIADB_DATABASE = ${process.env.MARIADB_DATABASE}`);
             printDivider();
         }
 
@@ -66,7 +93,7 @@ process.on('unhandledRejection', (reason) => {
         printResult('✅ Express middleware ready');
 
         printSection('🔁 Mounting REST API Routes');
-        await mountRoutesV2(app);
+        await mountRoutesV2(app); // ✅ V2 routes only
         printResult('✅ Routes mounted');
 
         printSection('🚀 Starting API Server');
@@ -83,13 +110,18 @@ process.on('unhandledRejection', (reason) => {
     }
 })();
 
+/**
+ * Gracefully shuts down all services and connections on termination signals.
+ * @param {string} signal - Signal type (e.g., 'SIGINT', 'SIGTERM')
+ */
 function handleShutdown(signal) {
     printDivider();
     printSection(`💤 ${signal} received — Shutting down Noona-Vault`);
 
     const closeTasks = [
         global.noonaMongoClient?.close?.(),
-        global.noonaRedisClient?.quit?.()
+        global.noonaRedisClient?.quit?.(),
+        global.noonaMariaConnection?.end?.()
     ];
 
     if (server?.close) {
@@ -108,5 +140,6 @@ function handleShutdown(signal) {
         });
 }
 
+// Bind shutdown handler
 process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));

@@ -8,9 +8,9 @@ import {
     printError
 } from './noona/logger/logUtils.mjs';
 
-import { manageFiles } from './noona/filesystem/fileSystemManager.mjs';
-import { generateKeys } from './noona/jwt/generateKeys.mjs';
-import { sendPublicKeyToRedis } from './noona/jwt/sendToRedis.mjs';
+import { manageFiles } from '../../utilities/filesystem/fileSystemManager.mjs';
+import { generateKeys } from '../../utilities/jwt/generateKeys.mjs';
+import { sendPublicKeyToRedis } from '../../utilities/jwt/sendToRedis.mjs';
 import { manageContainers } from './docker/containerManager.mjs';
 
 printBanner('Noona');

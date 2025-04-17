@@ -15,8 +15,8 @@
 import { setupDiscord } from './discord/initDiscord.mjs';
 import { setupLibraryNotifications } from './discord/tasks/libraryNotifications.mjs';
 import { authenticateWithKavita } from './kavita/initKavita.mjs';
-import { waitForVaultReady } from './noona/vault/initVault.mjs';
-import { initAuth } from './noona/vault/auth/initAuth.mjs';
+import { waitForVaultReady } from '../../utilities/vault/initVault.mjs';
+import { initAuth } from '../../utilities/vault/auth/initAuth.mjs';
 import { printBootSummary } from './noona/logger/printBootSummary.mjs';
 import {
     printHeader,

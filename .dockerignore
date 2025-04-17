@@ -1,0 +1,42 @@
+# ----------------------------------------
+# Node / NPM
+node_modules
+npm-debug.log
+services/vault/package-lock.json
+
+# ----------------------------------------
+# Git / VCS
+.git
+.gitignore
+
+# ----------------------------------------
+# Build Output
+dist
+build
+coverage
+.nyc_output
+
+# ----------------------------------------
+# Config / Secrets
+.env
+.env.*
+/family/noona-warden/settings/config.env
+
+# ----------------------------------------
+# Editor & System Junk
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*.tmp
+
+# ----------------------------------------
+# Logs
+logs
+*.log
+
+# ----------------------------------------
+# Docker Compose (unused, handled by Warden)
+docker-compose.yml

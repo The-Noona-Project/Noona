@@ -1,7 +1,7 @@
 // /discord/tasks/libraryNotifications.mjs — Warden-Aware Notifier (Vault + Kavita + Discord Integration)
 
 import { sendNewItemNotifications } from '../../kavita/postKavita.mjs';
-import * as vault from '../../noona/vault/initVault.mjs';
+import * as vault from '../../../../utilities/vault/initVault.mjs';
 import {
     printStep,
     printDebug,
