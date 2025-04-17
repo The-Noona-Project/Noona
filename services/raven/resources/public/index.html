@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Downloader</title>
+    <style>
+        body {
+            background-color: black;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            text-align: center;
+        }
+        h1 {
+            text-shadow: 0 0 10px #00ff00;
+        }
+        #log-container {
+            background-color: rgba(0, 0, 0, 0.8);
+            border: 2px solid #00ff00;
+            width: 80%;
+            height: 300px;
+            overflow-y: auto;
+            padding: 10px;
+            margin: auto;
+            box-shadow: 0 0 10px #00ff00;
+        }
+        input, button {
+            background-color: black;
+            color: #00ff00;
+            border: 1px solid #00ff00;
+            padding: 8px;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #00ff00;
+            color: black;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Web Downloader</h1>
+
+    <label for="urlInput"></label><input type="text" id="urlInput" placeholder="Enter URL">
+    <label for="fileType"></label><input type="text" id="fileType" placeholder="File Type (e.g., .pdf)">
+
+    <button onclick="startDownload()">Start Download</button>
+    <button onclick="cancelDownload()">Cancel</button>
+
+    <div id="log-container"></div>
+<button id="downloadBtn" style="display: none;" onclick="downloadZip()">Download ZIP</button>
+
+<script>
+    let logContainer = document.getElementById("log-container");
+    let downloadBtn = document.getElementById("downloadBtn");
+
+    function logMessage(message) {
+        let logEntry = document.createElement("div");
+        logEntry.textContent = message;
+
+        logContainer.appendChild(logEntry);
+        logContainer.scrollTop = logContainer.scrollHeight; // Auto-scroll
+    }
+
+    function startDownload() {
+        let url = document.getElementById("urlInput").value;
+        let fileType = document.getElementById("fileType").value;
+        fetch('/api/startDownload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `url=${encodeURIComponent(url)}&fileType=${encodeURIComponent(fileType)}`
+        }).then(response => response.text()).then(logMessage);
+    }
+
+    function cancelDownload() {
+        fetch('/api/cancelDownload', { method: 'POST' }).then(response => response.text()).then(logMessage);
+    }
+
+    function downloadZip() {
+        window.location.href = "/api/download";
+    }
+
+    // WebSocket to receive log updates
+    let ws = new WebSocket("ws://" + window.location.host + "/api/progress");
+    ws.onmessage = (event) => {
+        let data = JSON.parse(event.data);
+        if (data.logMessage) logMessage(data.logMessage);
+        if (data.zipComplete) downloadBtn.style.display = "block";
+    };
+</script>
+</body>
+</html>
