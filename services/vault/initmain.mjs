@@ -25,7 +25,7 @@ import {
     printError,
     printDebug
 } from '../../utilities/logger/logUtils.mjs';
-import { validateEnv } from '../../utilities/filesystem/load/validateEnv.mjs';
+import { validateEnv } from '../../utilities/logger/validateEnv.mjs';
 
 validateEnv(['PORT', 'MONGO_URL', 'REDIS_URL'], ['NODE_ENV']);
 

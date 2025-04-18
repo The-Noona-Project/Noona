@@ -1,45 +1,64 @@
-// ✅ services/warden/initmain.mjs — Warden Bootstrap (Noona Stack 2.0.0)
+// ✅ services/warden/initmain.mjs — Warden 2.0.0 Bootstrap
 
 import {
     printBanner,
     printDivider,
     printSection,
+    printStep,
     printResult,
     printError
 } from '../../utilities/logger/logUtils.mjs';
 
-import { manageFiles } from '../../utilities/filesystem/fileSystemManager.mjs';
-import { generateKeys } from '../../utilities/jwt/generateKeys.mjs';
-import { sendPublicKeyToRedis } from '../../utilities/jwt/sendToRedis.mjs';
+import { buildConfig } from './filesystem/build/buildConfig.mjs';
+import { loadConfig } from './filesystem/load/loadConfig.mjs';
+import { generateKeyPair } from '../../utilities/auth/keys/generateKeyPair.mjs';
+import { sendPublicKeyToRedis } from '../../utilities/auth/sendToRedis.mjs';
 import { manageContainers } from './docker/containerManager.mjs';
 
+const SERVICE_LIST = [
+    'noona-warden',
+    'noona-vault',
+    'noona-portal',
+    'noona-moon',
+    'noona-sage',
+    'noona-raven',
+    'noona-oracle'
+];
+
+// 🧠 Main Warden Execution
 printBanner('Noona');
 
 (async () => {
     try {
-        // 🧾 Filesystem + Configuration Setup
-        printSection('📂 File & Config Setup');
-        await manageFiles();
+        // 📁 Build Configuration
+        printSection('📂 Filesystem & Config');
+        const configBuilt = await buildConfig();
+        if (configBuilt) {
+            printStep('Warden entered SETUP MODE — please edit the config file');
+            printDivider();
+            return;
+        }
 
-        // 🔐 JWT Key Generation
-        printSection('🔑 JWT Key Generation');
-        await generateKeys();
-        printResult('✔ JWT Keys generated and stored');
+        const config = await loadConfig();
 
-        // 📦 Container Bootstrapping
-        await manageContainers();
+        // 🔑 Generate RSA Key Pairs
+        printSection('🔐 Generating Key Pairs');
+        for (const service of SERVICE_LIST) {
+            const { privateKey, publicKey } = await generateKeyPair(service);
+            global[`__privateKey__${service}`] = privateKey;
+            await sendPublicKeyToRedis(service, publicKey);
+            printResult(`✔ Keypair ready for ${service}`);
+        }
 
-        // 📡 JWT Public Key → Redis for Vault
-        printSection('📡 Sharing Public Key with Vault');
-        await sendPublicKeyToRedis(null, 'noona-vault');
-        printResult('✔ Public key shared with Vault via Redis');
+        // 🐳 Container Management
+        printSection('🐳 Managing Containers');
+        await manageContainers(config);
 
-        // ✅ Done!
         printDivider();
-        printResult('🏁 Noona-Warden Boot Complete');
+        printResult('✅ Warden 2.0.0 Boot Complete');
         printDivider();
     } catch (err) {
-        printError('❌ Boot error:');
+        printError('❌ Warden Boot Failure');
         console.error(err);
         process.exit(1);
     }
