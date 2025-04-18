@@ -7,7 +7,7 @@ import {
     printDivider,
     printSection,
     printDebug
-} from '../../logger/logUtils.mjs';';
+} from '../../logger/logUtils.mjs';
 
 // Updated folder tree without "depends", and updated for new structure.
 const TREE_STRUCTURE = {
