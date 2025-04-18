@@ -1,6 +1,6 @@
 // docker/stop/stopContainer.mjs
 import Docker from 'dockerode';
-import { printAction, printResult, printError, printNote, printDivider } from '../../noona/logger/logUtils.mjs';
+import { printAction, printResult, printError, printNote, printDivider } from '../../../../utilities/logger/logUtils.mjs';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 

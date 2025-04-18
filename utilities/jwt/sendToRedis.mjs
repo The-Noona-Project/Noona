@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createClient } from 'redis';
-import { printResult, printDebug } from '../../services/warden/noona/logger/logUtils.mjs';
+import { printResult, printDebug } from '../logger/logUtils.mjs';
 
 /**
  * Sends a given public key to Redis under a service-specific key.

@@ -11,7 +11,7 @@ import {
     printNote,
     printDownloadSummary,
     printResult
-} from '../../noona/logger/logUtils.mjs';
+} from '../../../../utilities/logger/logUtils.mjs';
 import { getContainerPresets } from '../start/containerPresets.mjs';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });

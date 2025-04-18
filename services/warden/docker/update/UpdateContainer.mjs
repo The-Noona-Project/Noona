@@ -1,7 +1,7 @@
 // docker/update/UpdateContainer.mjs
 import { deleteContainer } from '../stop/deleteContainer.mjs';
 import { createContainer } from '../start/createContainer.mjs';
-import { printAction, printResult, printError, printDivider } from '../../noona/logger/logUtils.mjs';
+import { printAction, printResult, printError, printDivider } from '../../../../utilities/logger/logUtils.mjs';
 
 /**
  * Updates a container by deleting the existing instance (if any)

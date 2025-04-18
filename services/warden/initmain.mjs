@@ -1,4 +1,4 @@
-// initmain.mjs
+// ✅ services/warden/initmain.mjs — Warden Bootstrap (Noona Stack 2.0.0)
 
 import {
     printBanner,
@@ -6,7 +6,7 @@ import {
     printSection,
     printResult,
     printError
-} from './noona/logger/logUtils.mjs';
+} from '../../utilities/logger/logUtils.mjs';
 
 import { manageFiles } from '../../utilities/filesystem/fileSystemManager.mjs';
 import { generateKeys } from '../../utilities/jwt/generateKeys.mjs';

@@ -8,7 +8,7 @@ import {
     printDivider,
     printSection,
     printDebug
-} from '../noona/logger/logUtils.mjs';
+} from '../../../utilities/logger/logUtils.mjs';
 
 // Import container lifecycle functions from our modular files:
 import { createContainer } from './start/createContainer.mjs';

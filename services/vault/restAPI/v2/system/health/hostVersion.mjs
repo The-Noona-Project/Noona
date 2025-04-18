@@ -19,7 +19,7 @@ const router = express.Router();
  * GET /v2/system/health/hostVersion
  *
  * Public route that returns version metadata:
- * - Service version (from package.json)
+ * - Service version (from requirements.txt)
  * - Node.js runtime version
  * - Docker server version (via CLI)
  * - MongoDB, Redis, and MariaDB versions

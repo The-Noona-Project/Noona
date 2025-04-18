@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { generateKeyPairSync } from 'crypto';
-import { printResult, printDebug } from '../../services/warden/noona/logger/logUtils.mjs';
+import { printResult, printDebug } from '../logger/logUtils.mjs';
 
 // Use the absolute destination for keys in the Warden folder.
 const KEY_DESTINATION = '/noona/family/noona-warden/files/keys';

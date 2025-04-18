@@ -7,7 +7,7 @@ import {
     printResult,
     printDivider,
     printError
-} from '../../noona/logger/logUtils.mjs';
+} from '../../../../utilities/logger/logUtils.mjs';
 import { formatBytes, ordinalSuffix } from '../update/getMetadata.mjs';
 
 /**

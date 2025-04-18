@@ -8,7 +8,7 @@ import {
     printNote,
     printDivider,
     printDebug
-} from '../../noona/logger/logUtils.mjs';
+} from '../../../../utilities/logger/logUtils.mjs';
 import { getContainerPresets } from '../start/containerPresets.mjs';
 import path from 'path';
 import fs from 'fs';

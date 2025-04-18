@@ -6,7 +6,7 @@ import {
     printSection,
     printError,
     printNote
-} from '../../noona/logger/logUtils.mjs';
+} from '../../../../utilities/logger/logUtils.mjs';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 

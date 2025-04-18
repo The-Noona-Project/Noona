@@ -15,7 +15,7 @@ import {
     printError,
     printWarning,
     printNote
-} from '../../services/warden/noona/logger/logUtils.mjs';
+} from '../logger/logUtils.mjs';
 
 import fs from 'fs';
 

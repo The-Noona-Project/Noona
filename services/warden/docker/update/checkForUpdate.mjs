@@ -1,6 +1,6 @@
 // docker/update/checkForUpdate.mjs
 import Docker from 'dockerode';
-import { printDebug, printNote, printError } from '../../noona/logger/logUtils.mjs';
+import { printDebug, printNote, printError } from '../../../../utilities/logger/logUtils.mjs';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
