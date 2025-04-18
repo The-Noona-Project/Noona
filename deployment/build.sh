@@ -1,109 +1,88 @@
 #!/bin/bash
 
-# ─────────────────────────────────────────────
-# CONFIGURATION
-# ─────────────────────────────────────────────
-USERNAME="captainpax"
-PROJECT_NAME="Noona Stack Builder"
-BUILD_DIR="$(dirname "$0")"
-ROOT_DIR="$(cd "$BUILD_DIR/.." && pwd)"
-DOCKERFILES=("$BUILD_DIR"/*.Dockerfile)
-
-# ─────────────────────────────────────────────
-# DISPLAY HEADER
-# ─────────────────────────────────────────────
+cd "$(dirname "$0")/.." || exit 1
 clear
-echo
+
+# ===============================================
+# v1.3  Noona Stack Builder
+#       Powered by captainpax
+# ===============================================
+
+declare -A GROUP_TARGETS
+GROUP_TARGETS=(
+    ["all"]="warden portal vault moon sage raven oracle"
+    ["core"]="warden portal vault"
+    ["node"]="warden portal vault moon sage"
+    ["java"]="raven"
+    ["python"]="oracle"
+)
+
+declare -A DOCKERFILE_MAP
+DOCKERFILE_MAP=(
+    ["warden"]="core"
+    ["portal"]="core"
+    ["vault"]="core"
+    ["moon"]="node"
+    ["sage"]="node"
+    ["raven"]="java"
+    ["oracle"]="python"
+)
+
 echo "==============================================="
-echo "       $PROJECT_NAME v1.0"
-echo "       Powered by $USERNAME"
+echo " v1.3  Noona Stack Builder"
+echo "       Powered by captainpax"
 echo "==============================================="
-echo
+echo ""
 echo "Available Docker targets:"
 echo "----------------------------------------------"
-
-index=1
-OPTIONS=()
-for df in "${DOCKERFILES[@]}"; do
-    name=$(basename "$df")
-    base="${name%%.Dockerfile}"
-    echo "  $index) [$base] - $name"
-    OPTIONS+=("$base")
-    ((index++))
+for target in "${!GROUP_TARGETS[@]}"; do
+    echo " - $target"
 done
-echo "  0) [Exit] - Quit"
-echo "----------------------------------------------"
-echo
+echo ""
 
-# ─────────────────────────────────────────────
-# PROMPT USER
-# ─────────────────────────────────────────────
-read -p "Select a target to build (name or number): " CHOICE
-if [[ "$CHOICE" == "0" || "$CHOICE" == "exit" ]]; then
-    echo "[EXIT] Goodbye."
-    exit 0
-fi
+read -rp "Enter the name of the Dockerfile group to build: " TARGET_GROUP
+read -rp "Enter the image tag [default: latest]: " TAG
+read -rp "Use --no-cache? (y/N): " NO_CACHE
+read -rp "Enter Docker namespace [default: captainpax]: " NAMESPACE
 
-if [[ "$CHOICE" =~ ^[0-9]+$ ]]; then
-    CHOICE="${OPTIONS[$((CHOICE-1))]}"
-fi
-
-read -p "Enter image tag (leave blank for 'latest'): " TAG
 TAG=${TAG:-latest}
+NAMESPACE=${NAMESPACE:-captainpax}
+CACHE_OPT=""
+[[ "$NO_CACHE" =~ ^[Yy]$ ]] && CACHE_OPT="--no-cache"
 
-read -p "Use --no-cache? (y/n): " NOCACHE
-[[ "$NOCACHE" == [yY] ]] && CACHE_FLAG="--no-cache" || CACHE_FLAG=""
-
-DOCKERFILE="$BUILD_DIR/$CHOICE.Dockerfile"
-
-if [[ ! -f "$DOCKERFILE" ]]; then
-    echo "[ERROR] Dockerfile '$DOCKERFILE' not found."
+TARGETS=${GROUP_TARGETS[$TARGET_GROUP]}
+if [[ -z "$TARGETS" ]]; then
+    echo "❌ Invalid build target group: $TARGET_GROUP"
     exit 1
 fi
 
-echo
-echo "[BUILD] Building: $CHOICE → using $DOCKERFILE"
-echo
+for SERVICE in $TARGETS; do
+    FILE_KEY="${DOCKERFILE_MAP[$SERVICE]}"
+    DOCKERFILE="deployment/${FILE_KEY}.Dockerfile"
+    IMAGE_NAME="${NAMESPACE}/noona-${SERVICE}:${TAG}"
 
-# ─────────────────────────────────────────────
-# TARGET SELECTION
-# ─────────────────────────────────────────────
-if [[ "$CHOICE" == "core" ]]; then
-    targets=(noona-warden noona-portal noona-vault)
-elif [[ "$CHOICE" == "all" ]]; then
-    targets=(noona-warden noona-portal noona-vault noona-sage noona-moon noona-oracle noona-raven)
-else
-    targets=("noona-$CHOICE")
-fi
-
-# ─────────────────────────────────────────────
-# BUILD LOOP
-# ─────────────────────────────────────────────
-for target in "${targets[@]}"; do
-    echo "[BUILD] Building target: $target"
-    docker build $CACHE_FLAG -t "$USERNAME/$target" -f "$DOCKERFILE" --target "$target" "$ROOT_DIR"
-    if [[ $? -eq 0 ]]; then
-        echo "[OK] Built $USERNAME/$target"
-        docker tag "$USERNAME/$target:latest" "$USERNAME/$target:$TAG"
-        echo "[DONE] Tagged as: $TAG"
-    else
-        echo "[FAIL] Docker build failed for $target"
+    if [[ ! -f "$DOCKERFILE" ]]; then
+        echo "⚠️  Skipping: $SERVICE (missing Dockerfile)"
+        continue
     fi
-    echo
+
+    echo ""
+    echo "🔨 Building image: $IMAGE_NAME"
+    echo "----------------------------------------------"
+    docker build -f "$DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
 done
 
-# ─────────────────────────────────────────────
-# OPTIONAL: START WARDEN
-# ─────────────────────────────────────────────
-if [[ " ${targets[@]} " =~ " noona-warden " ]]; then
-    read -p "Would you like to start Noona-Warden now? (y/n): " START_WARDEN
-    if [[ "$START_WARDEN" == [yY] ]]; then
-        echo
-        echo "[INFO] Starting Noona-Warden..."
-        docker run -it --rm --name noona-warden -v /var/run/docker.sock:/var/run/docker.sock "$USERNAME/noona-warden:$TAG"
-    else
-        echo "[SKIPPED] Not starting Noona-Warden."
+if [[ "$TARGET_GROUP" == "core" || "$TARGET_GROUP" == "all" ]]; then
+    echo ""
+    read -rp "Do you want to start Noona-Warden now? (y/N): " START_WARDEN
+    if [[ "$START_WARDEN" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "🚀 Launching Noona-Warden..."
+        docker run --rm -it \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            --name noona-warden "${NAMESPACE}/noona-warden:${TAG}"
     fi
-else
-    echo "[INFO] Noona-Warden was not part of this build."
 fi
+
+echo ""
+echo "✅ Build complete!"
