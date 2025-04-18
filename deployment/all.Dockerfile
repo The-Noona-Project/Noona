@@ -16,7 +16,7 @@ RUN npm install
 
 # Shared code/utilities
 COPY utilities ./utilities
-COPY jsdoc.json ./
+COPY ../docs/jsdoc.json ./
 
 USER noona
 

@@ -1,1 +1,67 @@
-.idea
+# Node.js
+node_modules/
+services/**/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Java
+services/raven/build/
+services/raven/out/
+services/raven/.gradle/
+
+# Docker
+*.tar
+*.pid
+*.sock
+
+# Env and secrets
+.env
+.env.*
+*.pem
+
+# Build tools / Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# JSDoc output
+out/
+docs/html/
+docs/json/
+
+# System / OS
+.DS_Store
+Thumbs.db
+
+# Deployment cache / artifacts
+deployment/*.tar
+deployment/.dockerignore
+
+# Backup or zip files
+*.zip
+*.bak
+*.swp
+*.tmp
+
+# Custom exclusions
+services/**/package-lock.json
+services/**/logs/
+utilities/**/__generated__/
+
+
+# Ignore compiled service tree
+services/**/dist/
+services/**/build/
+
+# Temporary CLI output
+temp/
+tmp/
+.cache/
