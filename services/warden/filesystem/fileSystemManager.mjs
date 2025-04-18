@@ -15,7 +15,7 @@ import {
     printError,
     printWarning,
     printNote
-} from '../logger/logUtils.mjs';
+} from '../../../utilities/logger/logUtils.mjs';
 
 import fs from 'fs';
 

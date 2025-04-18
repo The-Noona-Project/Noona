@@ -8,7 +8,7 @@ import {
     printWarning,
     printError,
     printDebug
-} from '../../../services/warden/noona/logger/logUtils.mjs';
+} from '../../../../utilities/logger/logUtils.mjs';
 
 /**
  * 🌱 Validates required and optional environment variables.

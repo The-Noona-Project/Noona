@@ -7,12 +7,12 @@
  */
 
 import jwt from 'jsonwebtoken';
-import { getFromRedis } from '../../services/vault/redis/getFromRedis.mjs';
+import { getFromRedis } from '../../../services/vault/redis/getFromRedis.mjs';
 import {
     printDebug,
     printError,
     printResult
-} from '../logger/logUtils.mjs';
+} from '../../logger/logUtils.mjs';
 
 /**
  * Verifies Vault’s private key against its stored Redis public key.

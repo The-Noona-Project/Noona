@@ -13,7 +13,7 @@ import Table from 'cli-table3';
  *
  * @param {Array<{ name: string, status: boolean, info: string }>} dbs - DB metadata for summary
  */
-export function printDbSummary(dbs = []) {
+export function printSummary(dbs = []) {
     const table = new Table({
         head: [
             chalk.bold.cyan('Database'),

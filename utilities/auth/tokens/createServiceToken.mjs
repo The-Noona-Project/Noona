@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import jwt from 'jsonwebtoken';
-import { printResult, printDebug, printError } from '../logger/logUtils.mjs';
+import { printResult, printDebug, printError } from '../../logger/logUtils.mjs';
 
 /**
  * Creates a JWT service token but DOES NOT store it in Redis.
