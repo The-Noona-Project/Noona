@@ -1,5 +1,5 @@
-name: Noona-Vault
-description: AI-driven code reviews, commit intelligence, and PR insights for Noona-Vault — secure database middleware for The Noona Project.
+name: Noona Stack
+description: AI-driven reviews and code intelligence across all Noona services.
 language: javascript
 ai_reviewer: true
 lint: true
@@ -12,14 +12,17 @@ issue_commentary: true
 
 paths:
   include:
-    - .
+    - services/
+    - utilities/
+    - deployment/
   exclude:
     - node_modules/
     - .git/
     - dist/
     - build/
-    - database/sandbox/
+    - docs/
     - logs/
+    - database/sandbox/
 
 lint_config:
   eslint: true

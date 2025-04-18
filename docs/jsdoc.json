@@ -1,9 +1,9 @@
 {
   "source": {
     "include": [
-      "initmain.mjs",
-      "database",
-      "noona"
+      "services",
+      "utilities",
+      "deployment"
     ],
     "includePattern": ".+\\.(mjs|js)$",
     "excludePattern": "(^|\\/|\\\\)_"
