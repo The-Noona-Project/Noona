@@ -1,17 +1,17 @@
 {
+  "tags": {
+    "allowUnknownTags": true
+  },
   "source": {
-    "include": [
-      "services",
-      "utilities",
-      "deployment"
-    ],
-    "includePattern": ".+\\.(mjs|js)$",
-    "excludePattern": "(^|\\/|\\\\)_"
+    "include": ["services"],
+    "includePattern": ".+\\.mjs$",
+    "excludePattern": "(^|\\/|\\\\)node_modules"
   },
   "plugins": [],
   "opts": {
-    "destination": "./docs",
     "template": "node_modules/docdash",
+    "encoding": "utf8",
+    "destination": "./docs/web",
     "recurse": true,
     "verbose": true
   }

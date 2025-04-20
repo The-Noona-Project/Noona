@@ -1,9 +1,12 @@
 {
   "name": "noona-stack",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "Shared utilities and dependencies for all Noona services",
   "type": "module",
+  "scripts": {
+    "docs": "jsdoc -c docs/jsdoc.json"
+  },
   "devDependencies": {
     "docdash": "^2.0.2",
     "jsdoc": "^4.0.4"
@@ -14,7 +17,6 @@
     "chalk": "^5.4.1",
     "cli-table3": "^0.6.5",
     "dotenv": "^16.5.0",
-    "jsdocs": "^0.0.1",
     "jsonwebtoken": "^9.0.2",
     "redis": "^4.7.0",
     "table": "^6.9.0"
