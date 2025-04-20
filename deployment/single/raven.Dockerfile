@@ -13,12 +13,12 @@ RUN apt-get update && \
 
 # Copy Gradle wrapper
 COPY ../services/raven/gradlew ./gradlew
-COPY ../services/raven/gradle ./gradle
+COPY ../../services/raven/gradle ./gradle
 RUN chmod +x ./gradlew
 
 # Copy Java source and resources
-COPY ../services/raven/java ./java
-COPY ../services/raven/resources ./resources
+COPY ../../services/raven/java ./java
+COPY ../../services/raven/resources ./resources
 
 # Build the jar (optional if later used in CMD)
 # RUN ./gradlew shadowJar

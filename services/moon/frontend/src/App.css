@@ -1,0 +1,21 @@
+/* services/moon/frontend/src/App.css */
+
+/**
+ * Optional custom styles for the App component.
+ * Tailwind handles most styling, but you can use this for overrides.
+ */
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #0f172a; /* tailwind slate-900 */
+  margin: 0;
+}
+
+button {
+  transition: all 0.2s ease;
+}
+
+button:focus {
+  outline: 2px solid #93c5fd; /* blue-300 */
+  outline-offset: 2px;
+}

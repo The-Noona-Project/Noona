@@ -1,58 +1,12 @@
+# React + Vite
 
-# Noona-Vault
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-**Noona-Vault** is the central data handler of The Noona Project. It exposes a REST API for CRUD operations and connects to internal MongoDB and Redis instances to persist and cache data.
+Currently, two official plugins are available:
 
----
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-## Features
+## Expanding the ESLint configuration
 
-- Accepts standardized JSON requests from other Noona services
-- Handles create/read/update/delete operations
-- Dynamic MongoDB collections via the `target` field
-- Redis support for fast caching and pub-sub (planned)
-- Verifies JWT tokens from `noona-warden` for secure access
-
----
-
-## 📦 Installation & Setup  
-
-This bot is fully containerized with **Docker** for easy deployment.  
-
-### 🔧 Prerequisites  
-Before installing, make sure you have:  
-- [Docker](https://docs.docker.com/get-docker/) installed.
-
-### 🏗️ Docker Compose Installation  
-
-1️⃣ **Clone this repo:**
-```bash
-git clone https://github.com/The-Noona-Project/Noona-Vault.git
-```
-2️⃣ **Setup your configuration:**
-```bash
-cd Noona-Vault
-cp .env.example .env
-```
-Edit The .env file
-
-3️⃣ **Build and Start**:
-```bash
-docker network create noona-network
-
-docker compose up -d --build
-```
----
-
-## API Payload Structure
-
-```json
-{
-  "database": "mongo",
-  "action": "create",
-  "target": "pastNotify",
-  "data": {
-    "title": "System Alert",
-    "timestamp": "2025-03-21T15:00:00Z"
-  }
-}
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
