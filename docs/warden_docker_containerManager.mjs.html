@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    
+    <meta charset="utf-8">
+    <title>warden/docker/containerManager.mjs - Documentation</title>
+    
+    
+    <script src="scripts/prettify/prettify.js"></script>
+    <script src="scripts/prettify/lang-css.js"></script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <link type="text/css" rel="stylesheet" href="styles/prettify.css">
+    <link type="text/css" rel="stylesheet" href="styles/jsdoc.css">
+    <script src="scripts/nav.js" defer></script>
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+
+<input type="checkbox" id="nav-trigger" class="nav-trigger" />
+<label for="nav-trigger" class="navicon-button x">
+  <div class="navicon"></div>
+</label>
+
+<label for="nav-trigger" class="overlay"></label>
+
+<nav >
+    
+    
+    <h2><a href="index.html">Home</a></h2><h3>Classes</h3><ul><li><a href="module-notificationModel.html">notificationModel</a><ul class='methods'><li data-type='method'><a href="module-notificationModel.html#getStoredNotificationCount">getStoredNotificationCount</a></li><li data-type='method'><a href="module-notificationModel.html#getStoredNotificationCount">getStoredNotificationCount</a></li><li data-type='method'><a href="module-notificationModel.html#saveNotifiedItems">saveNotifiedItems</a></li><li data-type='method'><a href="module-notificationModel.html#saveNotifiedItems">saveNotifiedItems</a></li></ul></li><li></li></ul><h3>Modules</h3><ul><li><a href="module-commandManager.html">commandManager</a><ul class='methods'><li data-type='method'><a href="module-commandManager.html#~getCommandCount">getCommandCount</a></li><li data-type='method'><a href="module-commandManager.html#~getCommandCount">getCommandCount</a></li><li data-type='method'><a href="module-commandManager.html#~loadCommands">loadCommands</a></li><li data-type='method'><a href="module-commandManager.html#~loadCommands">loadCommands</a></li><li data-type='method'><a href="module-commandManager.html#~registerCommands">registerCommands</a></li><li data-type='method'><a href="module-commandManager.html#~registerCommands">registerCommands</a></li></ul></li><li></li><li><a href="module-commands_admin.html">commands/admin</a><ul class='methods'><li data-type='method'><a href="module-commands_admin.html#~formatFileSize">formatFileSize</a></li><li data-type='method'><a href="module-commands_admin.html#~formatFileSize">formatFileSize</a></li><li data-type='method'><a href="module-commands_admin.html#~formatReadingTime">formatReadingTime</a></li><li data-type='method'><a href="module-commands_admin.html#~formatReadingTime">formatReadingTime</a></li></ul></li><li></li><li><a href="module-commands_ding.html">commands/ding</a></li><li></li><li><a href="module-commands_join.html">commands/join</a><ul class='methods'><li data-type='method'><a href="module-commands_join.html#~validateEmail">validateEmail</a></li><li data-type='method'><a href="module-commands_join.html#~validateEmail">validateEmail</a></li></ul></li><li></li><li><a href="module-commands_scan.html">commands/scan</a><ul class='methods'><li data-type='method'><a href="module-commands_scan.html#.handleLibrarySelection">handleLibrarySelection</a></li><li data-type='method'><a href="module-commands_scan.html#.handleLibrarySelection">handleLibrarySelection</a></li><li data-type='method'><a href="module-commands_scan.html#.handleSeriesPage">handleSeriesPage</a></li><li data-type='method'><a href="module-commands_scan.html#.handleSeriesPage">handleSeriesPage</a></li><li data-type='method'><a href="module-commands_scan.html#.handleSeriesSelection">handleSeriesSelection</a></li><li data-type='method'><a href="module-commands_scan.html#.handleSeriesSelection">handleSeriesSelection</a></li><li data-type='method'><a href="module-commands_scan.html#~buildLibraryButtons">buildLibraryButtons</a></li><li data-type='method'><a href="module-commands_scan.html#~buildLibraryButtons">buildLibraryButtons</a></li><li data-type='method'><a href="module-commands_scan.html#~formatSeriesDetails">formatSeriesDetails</a></li><li data-type='method'><a href="module-commands_scan.html#~formatSeriesDetails">formatSeriesDetails</a></li><li data-type='method'><a href="module-commands_scan.html#~formatType">formatType</a></li><li data-type='method'><a href="module-commands_scan.html#~formatType">formatType</a></li></ul></li><li></li><li><a href="module-commands_search.html">commands/search</a></li><li></li><li><a href="module-connectMongo.html">connectMongo</a><ul class='methods'><li data-type='method'><a href="module-connectMongo.html#.connectToMongo">connectToMongo</a></li><li data-type='method'><a href="module-connectMongo.html#.connectToMongo">connectToMongo</a></li></ul></li><li></li><li><a href="module-connectRedis.html">connectRedis</a></li><li></li><li><a href="module-databaseManager.html">databaseManager</a></li><li></li><li><a href="module-getFromMongo.html">getFromMongo</a><ul class='methods'><li data-type='method'><a href="module-getFromMongo.html#.getFromMongo">getFromMongo</a></li><li data-type='method'><a href="module-getFromMongo.html#.getFromMongo">getFromMongo</a></li></ul></li><li></li><li><a href="module-getFromRedis.html">getFromRedis</a><ul class='methods'><li data-type='method'><a href="module-getFromRedis.html#.getFromRedis">getFromRedis</a></li><li data-type='method'><a href="module-getFromRedis.html#.getFromRedis">getFromRedis</a></li></ul></li><li></li><li><a href="module-initDiscord.html">initDiscord</a><ul class='methods'><li data-type='method'><a href="module-initDiscord.html#~setupDiscord">setupDiscord</a></li><li data-type='method'><a href="module-initDiscord.html#~setupDiscord">setupDiscord</a></li></ul></li><li></li><li><a href="module-initKavita.html">initKavita</a></li><li></li><li><a href="module-initMongo.html">initMongo</a><ul class='methods'><li data-type='method'><a href="module-initMongo.html#.getMongoDb">getMongoDb</a></li><li data-type='method'><a href="module-initMongo.html#.getMongoDb">getMongoDb</a></li></ul></li><li></li><li><a href="module-initRedis.html">initRedis</a></li><li></li><li><a href="module-initmain.html">initmain</a><ul class='methods'><li data-type='method'><a href="module-initmain.html#~gracefulShutdown">gracefulShutdown</a></li><li data-type='method'><a href="module-initmain.html#~gracefulShutdown">gracefulShutdown</a></li><li data-type='method'><a href="module-initmain.html#~handleShutdown">handleShutdown</a></li></ul></li><li></li><li></li><li></li><li></li><li><a href="module-notificationModel.html">notificationModel</a><ul class='methods'><li data-type='method'><a href="module-notificationModel.html#getStoredNotificationCount">getStoredNotificationCount</a></li><li data-type='method'><a href="module-notificationModel.html#getStoredNotificationCount">getStoredNotificationCount</a></li><li data-type='method'><a href="module-notificationModel.html#saveNotifiedItems">saveNotifiedItems</a></li><li data-type='method'><a href="module-notificationModel.html#saveNotifiedItems">saveNotifiedItems</a></li></ul></li><li></li><li><a href="module-postKavita.html">postKavita</a><ul class='methods'><li data-type='method'><a href="module-postKavita.html#.checkForNewItems">checkForNewItems</a></li><li data-type='method'><a href="module-postKavita.html#.checkForNewItems">checkForNewItems</a></li><li data-type='method'><a href="module-postKavita.html#.createUser">createUser</a></li><li data-type='method'><a href="module-postKavita.html#.createUser">createUser</a></li><li data-type='method'><a href="module-postKavita.html#.getSeriesByLibrary">getSeriesByLibrary</a></li><li data-type='method'><a href="module-postKavita.html#.getSeriesByLibrary">getSeriesByLibrary</a></li><li data-type='method'><a href="module-postKavita.html#.scanAllLibraries">scanAllLibraries</a></li><li data-type='method'><a href="module-postKavita.html#.scanAllLibraries">scanAllLibraries</a></li><li data-type='method'><a href="module-postKavita.html#.scanLibrary">scanLibrary</a></li><li data-type='method'><a href="module-postKavita.html#.scanLibrary">scanLibrary</a></li><li data-type='method'><a href="module-postKavita.html#.scanSingleLibrary">scanSingleLibrary</a></li><li data-type='method'><a href="module-postKavita.html#.scanSingleLibrary">scanSingleLibrary</a></li><li data-type='method'><a href="module-postKavita.html#.sendNewItemNotifications">sendNewItemNotifications</a></li><li data-type='method'><a href="module-postKavita.html#.sendNewItemNotifications">sendNewItemNotifications</a></li><li data-type='method'><a href="module-postKavita.html#.updateUserRoles">updateUserRoles</a></li><li data-type='method'><a href="module-postKavita.html#.updateUserRoles">updateUserRoles</a></li></ul></li><li></li><li><a href="module-roleManager.html">roleManager</a><ul class='methods'><li data-type='method'><a href="module-roleManager.html#.hasRequiredRole">hasRequiredRole</a></li><li data-type='method'><a href="module-roleManager.html#.hasRequiredRole">hasRequiredRole</a></li></ul></li><li></li><li><a href="module-sendToMongo.html">sendToMongo</a><ul class='methods'><li data-type='method'><a href="module-sendToMongo.html#.sendToMongo">sendToMongo</a></li><li data-type='method'><a href="module-sendToMongo.html#.sendToMongo">sendToMongo</a></li></ul></li><li></li><li><a href="module-sendToRedis.html">sendToRedis</a><ul class='methods'><li data-type='method'><a href="module-sendToRedis.html#.sendToRedis">sendToRedis</a></li><li data-type='method'><a href="module-sendToRedis.html#.sendToRedis">sendToRedis</a></li></ul></li><li></li></ul><h3>Global</h3><ul><li><a href="global.html#addToConfig">addToConfig</a></li><li><a href="global.html#buildConfig">buildConfig</a></li><li><a href="global.html#checkDockerAccess">checkDockerAccess</a></li><li><a href="global.html#checkImageUpdate">checkImageUpdate</a></li><li><a href="global.html#configHasPlaceholders">configHasPlaceholders</a></li><li><a href="global.html#connectWardenToNetworks">connectWardenToNetworks</a></li><li><a href="global.html#deleteContainer">deleteContainer</a></li><li><a href="global.html#deleteImage">deleteImage</a></li><li><a href="global.html#ensureNetworkExists">ensureNetworkExists</a></li><li><a href="global.html#flattenConfig">flattenConfig</a></li><li><a href="global.html#formatBytes">formatBytes</a></li><li><a href="global.html#getImageSize">getImageSize</a></li><li><a href="global.html#handlePullProgress">handlePullProgress</a></li><li><a href="global.html#imageExistsLocally">imageExistsLocally</a></li><li><a href="global.html#initializeDatabases">initializeDatabases</a></li><li><a href="global.html#injectFlatConfig">injectFlatConfig</a></li><li><a href="global.html#isPlaceholder">isPlaceholder</a></li><li><a href="global.html#loadConfig">loadConfig</a></li><li><a href="global.html#loadNotifiedIds">loadNotifiedIds</a></li><li><a href="global.html#manageContainers">manageContainers</a></li><li><a href="global.html#manageFiles">manageFiles</a></li><li><a href="global.html#mirrorExpectedKeys">mirrorExpectedKeys</a></li><li><a href="global.html#ordinalSuffix">ordinalSuffix</a></li><li><a href="global.html#parseImageName">parseImageName</a></li><li><a href="global.html#patchJwtMirrors">patchJwtMirrors</a></li><li><a href="global.html#pullDependencyImages">pullDependencyImages</a></li><li><a href="global.html#pullNoonaImages">pullNoonaImages</a></li><li><a href="global.html#runCheck">runCheck</a></li><li><a href="global.html#runUpdateCheck">runUpdateCheck</a></li><li><a href="global.html#scheduleDailyUpdate">scheduleDailyUpdate</a></li><li><a href="global.html#setupLibraryNotifications">setupLibraryNotifications</a></li><li><a href="global.html#startContainer">startContainer</a></li><li><a href="global.html#stopContainer">stopContainer</a></li><li><a href="global.html#stopRunningNoonaContainers">stopRunningNoonaContainers</a></li><li><a href="global.html#validateEnv">validateEnv</a></li><li><a href="global.html#waitForContainerHealth">waitForContainerHealth</a></li></ul>
+    
+</nav>
+
+<div id="main">
+    
+    <h1 class="page-title">warden/docker/containerManager.mjs</h1>
+    
+
+    
+
+
+
+    
+    <section>
+        <article>
+            <pre class="prettyprint source linenums"><code>// docker/containerManager.mjs
+import Docker from 'dockerode';
+import {
+    printResult,
+    printError,
+    printNote,
+    printAction,
+    printDivider,
+    printSection,
+    printDebug
+} from '../../../utilities/logger/logUtils.mjs';
+
+// Import container lifecycle functions from our modular files:
+import { createContainer } from './start/createContainer.mjs';
+import { startContainer } from './start/startContainer.mjs';
+import { pullDependencyImages } from './build/downloadImages.mjs';
+import { ensureNetworkExists } from './build/buildNetwork.mjs';
+import updateContainer from './update/UpdateContainer.mjs';
+import checkForUpdate from './update/checkForUpdate.mjs';
+
+const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+
+// Define the dependency containers for the stack.
+const DEPEND_CONTAINERS = [
+    'noona-redis',
+    'noona-mongodb',
+    'noona-mariadb'
+];
+
+/**
+ * Stops all running containers that start with "noona-" (except "noona-warden").
+ */
+async function stopRunningNoonaContainers() {
+    try {
+        const containers = await docker.listContainers({ all: true });
+        const targets = containers.filter(c => {
+            const name = c.Names[0]?.replace(/^\//, '');
+            return name.startsWith('noona-') &amp;&amp; name !== 'noona-warden' &amp;&amp; c.State === 'running';
+        });
+        if (targets.length === 0) {
+            printResult('✔ No running Noona containers found');
+            return;
+        }
+        for (const containerInfo of targets) {
+            const containerName = containerInfo.Names[0]?.replace(/^\//, '');
+            try {
+                printAction(`Stopping container: ${containerName}`);
+                const container = docker.getContainer(containerInfo.Id);
+                await container.stop();
+                printResult(`✔ Stopped container: ${containerName}`);
+            } catch (err) {
+                printError(`❌ Failed to stop ${containerName}: ${err.message}`);
+            }
+        }
+    } catch (err) {
+        printError('❌ Error during container stop phase: ' + err.message);
+        throw err;
+    }
+}
+
+/**
+ * Connects the current container ("warden") to required networks.
+ */
+async function connectWardenToNetworks() {
+    const wardenContainerId = process.env.HOSTNAME;
+    const networksToConnect = ['bridge', 'noona-network'];
+    for (const net of networksToConnect) {
+        try {
+            const network = docker.getNetwork(net);
+            await network.connect({ Container: wardenContainerId });
+            printResult(`✔ Connected to network: ${net}`);
+        } catch (err) {
+            if (!err.message.includes('already exists')) {
+                printError(`❌ Failed to connect to network ${net}: ${err.message}`);
+            }
+        }
+    }
+}
+
+/**
+ * Manages the initial start of the entire container stack.
+ */
+async function manageContainers() {
+    printDivider();
+    printSection('🐳 Starting Noona Container Management');
+
+    await checkDockerAccess();
+
+    // Stop currently running containers (except warden).
+    await stopRunningNoonaContainers();
+
+    // Ensure required Docker networks exist.
+    await ensureNetworkExists('bridge');
+    await ensureNetworkExists('noona-network');
+    printResult('✔ Docker networks ready');
+
+    // Connect Warden container to networks.
+    await connectWardenToNetworks();
+
+    // Pull dependency images.
+    await pullDependencyImages();
+
+    // Start dependency containers.
+    printAction('🚀 Creating dependency containers...');
+    for (const name of DEPEND_CONTAINERS) {
+        await createContainer(name);
+    }
+
+    // Start core containers: noona-vault and noona-portal.
+    printAction('🚀 Creating core containers...');
+    await createContainer('noona-vault');
+    await createContainer('noona-portal');
+
+    printResult('✔ All Noona containers started successfully');
+
+    // Schedule daily update checks at local midnight.
+    scheduleDailyUpdate();
+
+    printResult('🐳 Noona Container Management is running');
+    printDivider();
+}
+
+/**
+ * Checks Docker access and logs the version.
+ */
+async function checkDockerAccess() {
+    try {
+        const version = await docker.version();
+        printResult(`✔ Docker Version: ${version.Version}`);
+    } catch (err) {
+        printError(`Docker access error: ${err.message}`);
+        process.exit(1);
+    }
+}
+
+/**
+ * Schedules a daily update check to run at local midnight.
+ */
+function scheduleDailyUpdate() {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const delay = nextMidnight - now;
+    printDebug(`Scheduling update check in ${delay} ms (next midnight).`);
+    setTimeout(async () => {
+        await runUpdateCheck();
+        setInterval(runUpdateCheck, 24 * 60 * 60 * 1000);
+    }, delay);
+}
+
+/**
+ * Runs the update check: if any images require updating, it updates the corresponding containers.
+ */
+async function runUpdateCheck() {
+    try {
+        printDivider();
+        printAction('Performing scheduled update check...');
+        const updates = await checkForUpdate();
+        if (updates.length > 0) {
+            printAction('Updates available. Updating containers...');
+            for (const update of updates) {
+                await updateContainer(update.container);
+            }
+            printResult('✔ Update process completed.');
+        } else {
+            printNote('No updates available at this time.');
+        }
+        printDivider();
+    } catch (err) {
+        printError(`Error during scheduled update check: ${err.message}`);
+    }
+}
+
+// Export manageContainers for external usage.
+export { manageContainers };
+
+// If this module is run directly, start the management process.
+if (process.argv[1] === new URL(import.meta.url).pathname) {
+    manageContainers();
+}
+</code></pre>
+        </article>
+    </section>
+
+
+
+
+    
+    
+</div>
+
+<br class="clear">
+
+<footer>
+    Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 4.0.4</a> on Sun Apr 20 2025 14:42:59 GMT-0700 (Pacific Daylight Time) using the <a href="https://github.com/clenemt/docdash">docdash</a> theme.
+</footer>
+
+<script>prettyPrint();</script>
+<script src="scripts/polyfill.js"></script>
+<script src="scripts/linenumber.js"></script>
+
+
+
+</body>
+</html>

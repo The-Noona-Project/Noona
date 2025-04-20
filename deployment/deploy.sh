@@ -4,15 +4,12 @@ cd "$(dirname "$0")/.." || exit 1
 clear
 
 # ─────────────────────────────────────────────────────────────
-# 🌙 Noona Stack Deploy Manager (v3.0)
-# Combines install, build, and docs logic into one tool
+# 🌙 Noona Stack Deploy Manager (v4.0)
 # ─────────────────────────────────────────────────────────────
 
-# Paths and Constants
 BASE_PATH="$(pwd)"
-DOCS_DIR="$BASE_PATH/docs"
-CONFIG_FILE="$DOCS_DIR/jsdoc.json"
-OUTPUT_DIR="$DOCS_DIR/web"
+DOCS_CONFIG="$BASE_PATH/docs/jsdoc.json"
+DOCS_OUTPUT="$BASE_PATH/docs"
 INSTALL_SERVICES=(
   "$BASE_PATH"
   "$BASE_PATH/services/portal"
@@ -30,22 +27,9 @@ declare -A GROUP_TARGETS=(
 )
 
 # ─────────────────────────────────────────────────────────────
-# 📋 Menu
+# Functions
 # ─────────────────────────────────────────────────────────────
-echo "────────────────────────────────────────────"
-echo "🌙 Noona Stack Deploy Manager"
-echo "────────────────────────────────────────────"
-echo "Choose an action:"
-echo "1) Install all npm dependencies"
-echo "2) Uninstall (remove node_modules & lockfiles)"
-echo "3) Generate JSDoc documentation"
-echo "4) Clean docs/web output folder"
-echo "5) Build Docker images"
-read -p "Enter 1, 2, 3, 4 or 5: " OPTION
 
-# ─────────────────────────────────────────────────────────────
-# ⚙️ Functions
-# ─────────────────────────────────────────────────────────────
 install_node_23() {
   echo "📦 Installing/Upgrading to Node.js 23..."
   curl -fsSL https://deb.nodesource.com/setup_23.x | sudo -E bash -
@@ -73,101 +57,98 @@ check_node_modules() {
 }
 
 # ─────────────────────────────────────────────────────────────
-# 🎯 Actions
+# Menu
 # ─────────────────────────────────────────────────────────────
-case $OPTION in
+echo "────────────────────────────────────────────"
+echo "🌙 Noona Stack Deploy Manager"
+echo "────────────────────────────────────────────"
+echo "Choose an action group:"
+echo "1) 🔄 Update (install deps, generate docs)"
+echo "2) 🏗️  Build Docker images"
+echo "3) 🧼 Clean node_modules or docs"
+read -rp "Enter 1, 2 or 3: " MAIN_OPTION
+echo ""
+
+case $MAIN_OPTION in
   1)
-    echo "📦 Installing npm dependencies..."
-    for dir in "${INSTALL_SERVICES[@]}"; do
-      echo "▶️ $dir"
-      (cd "$dir" && [ -f package.json ] && npm install || echo "⚠️  Skipped: No package.json")
-    done
-    echo "✅ Installation complete!"
+    echo "🔄 UPDATE MENU:"
+    echo "1) Install all npm dependencies"
+    echo "2) Generate JSDoc documentation"
+    read -rp "Choose: " UPDATE_CHOICE
+
+    case $UPDATE_CHOICE in
+      1)
+        echo "📦 Installing npm dependencies..."
+        for dir in "${INSTALL_SERVICES[@]}"; do
+          echo "▶️ $dir"
+          (cd "$dir" && [ -f package.json ] && npm install || echo "⚠️  Skipped: No package.json")
+        done
+        echo "✅ Install complete!"
+        ;;
+      2)
+        echo "📚 Generating documentation with JSDoc..."
+
+        if ! command -v node &> /dev/null; then
+          echo "❌ Node.js is missing — attempting to install Node.js 23..."
+          [[ "$OSTYPE" == "linux-gnu" ]] && install_node_23 || {
+            echo "❌ Auto-install only works on Linux/WSL."
+            echo "💡 Please install Node.js v23+ manually."
+            exit 1
+          }
+        fi
+
+        NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [ "$NODE_VERSION" -lt 23 ]; then
+          echo "⚠️ Detected Node.js v$NODE_VERSION — upgrading to v23..."
+          [[ "$OSTYPE" == "linux-gnu" ]] && install_node_23 || {
+            echo "❌ Auto-upgrade only works on Linux/WSL."
+            exit 1
+          }
+        fi
+
+        if ! command -v jsdoc &> /dev/null; then
+          echo "📦 Installing JSDoc globally..."
+          npm install -g jsdoc
+        fi
+
+        echo "📦 Running npm install before docs..."
+        for dir in "${INSTALL_SERVICES[@]}"; do
+          echo "▶️ $dir"
+          (cd "$dir" && [ -f package.json ] && npm install || echo "⚠️  Skipped: No package.json")
+        done
+
+        [ ! -f "$DOCS_CONFIG" ] && {
+          echo "❌ JSDoc config not found at $DOCS_CONFIG"
+          exit 1
+        }
+
+        echo "📄 Running: jsdoc -c $DOCS_CONFIG -d $DOCS_OUTPUT"
+        jsdoc -c "$DOCS_CONFIG" -d "$DOCS_OUTPUT" \
+          services/portal \
+          services/vault \
+          services/moon \
+          services/warden
+
+        if [ "$(ls -A "$DOCS_OUTPUT" 2>/dev/null)" ]; then
+          echo "✅ Docs generated at $DOCS_OUTPUT"
+        else
+          echo "❌ Docs folder is empty. Check jsdoc.json and sources."
+          exit 1
+        fi
+        ;;
+      *)
+        echo "❌ Invalid selection."
+        ;;
+    esac
     ;;
 
   2)
-    echo "🧹 Removing node_modules and lockfiles..."
-    for dir in "${INSTALL_SERVICES[@]}"; do
-      echo "🗑️ $dir"
-      (cd "$dir" && rm -rf node_modules package-lock.json)
-    done
-    echo "✅ Uninstall complete!"
-    ;;
+    echo "🏗️  BUILD MENU:"
+    echo "1) Build Docker group"
+    echo "2) Build single Docker service"
+    read -rp "Choose: " BUILD_CHOICE
 
-  3)
-    echo "📚 Generating documentation with JSDoc..."
-
-    if ! command -v node &> /dev/null; then
-      echo "❌ Node.js is missing — attempting to install Node.js 23..."
-      [[ "$OSTYPE" == "linux-gnu" ]] && install_node_23 || {
-        echo "❌ Auto-install only works on Linux/WSL."
-        echo "💡 Please install Node.js v23+ manually."
-        exit 1
-      }
-    fi
-
-    NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_VERSION" -lt 23 ]; then
-      echo "⚠️ Detected Node.js v$NODE_VERSION — upgrading to v23..."
-      [[ "$OSTYPE" == "linux-gnu" ]] && install_node_23 || {
-        echo "❌ Auto-upgrade only works on Linux/WSL."
-        exit 1
-      }
-    fi
-
-    if ! command -v jsdoc &> /dev/null; then
-      echo "📦 Installing JSDoc globally..."
-      npm install -g jsdoc
-    fi
-
-    echo "📦 Running npm install for all services before generating docs..."
-    for dir in "${INSTALL_SERVICES[@]}"; do
-      echo "▶️ $dir"
-      (cd "$dir" && [ -f package.json ] && npm install || echo "⚠️  Skipped: No package.json")
-    done
-
-    [ ! -f "$CONFIG_FILE" ] && {
-      echo "❌ JSDoc config not found at $CONFIG_FILE"
-      exit 1
-    }
-
-    mkdir -p "$OUTPUT_DIR"
-
-    echo "📄 Running: jsdoc -c $CONFIG_FILE -d $OUTPUT_DIR services/portal services/vault services/moon services/warden"
-    jsdoc -c "$CONFIG_FILE" -d "$OUTPUT_DIR" \
-      services/portal \
-      services/vault \
-      services/moon \
-      services/warden
-
-    if [ "$(ls -A "$OUTPUT_DIR" 2>/dev/null)" ]; then
-      echo "✅ Documentation generated at $OUTPUT_DIR"
-    else
-      echo "❌ JSDoc ran but output folder is empty. Check your config or source paths."
-      exit 1
-    fi
-
-    [ -f "$OUTPUT_DIR/index.html" ] && {
-      echo "🌐 Docs ready. Try opening: file://$OUTPUT_DIR/index.html"
-    } || echo "⚠️ index.html not found. Something may have failed silently."
-    ;;
-
-  4)
-    echo "🧼 Cleaning docs/web output..."
-    [ -d "$OUTPUT_DIR" ] && rm -rf "$OUTPUT_DIR" && echo "✅ Removed: $OUTPUT_DIR" || echo "⚠️ Nothing to clean."
-    ;;
-
-  5)
-    echo "==============================================="
-    echo " 🚧 Noona Stack Builder"
-    echo "==============================================="
-    echo "Do you want to build a group or a single service?"
-    echo "1) Group"
-    echo "2) Single"
-    read -rp "Enter 1 or 2: " BUILD_MODE
-    echo ""
-
-    read -rp "Enter the image tag [default: latest]: " TAG
+    read -rp "Enter image tag [default: latest]: " TAG
     read -rp "Use --no-cache? (y/N): " NO_CACHE
     read -rp "Enter Docker namespace [default: captainpax]: " NAMESPACE
 
@@ -176,68 +157,75 @@ case $OPTION in
     CACHE_OPT=""
     [[ "$NO_CACHE" =~ ^[Yy]$ ]] && CACHE_OPT="--no-cache"
 
-    if [[ "$BUILD_MODE" == "1" ]]; then
-      echo ""
-      echo "Available Docker groups:"
-      for key in "${!GROUP_TARGETS[@]}"; do echo " - $key"; done
-      echo ""
-      read -rp "Enter the Docker group to build: " TARGET_GROUP
+    case $BUILD_CHOICE in
+      1)
+        echo "Available groups:"
+        for key in "${!GROUP_TARGETS[@]}"; do echo " - $key"; done
+        read -rp "Enter group name: " TARGET_GROUP
+        TARGETS=${GROUP_TARGETS[$TARGET_GROUP]}
 
-      TARGETS=${GROUP_TARGETS[$TARGET_GROUP]}
-      [[ -z "$TARGETS" ]] && echo "❌ Invalid group: $TARGET_GROUP" && exit 1
+        [[ -z "$TARGETS" ]] && echo "❌ Invalid group: $TARGET_GROUP" && exit 1
 
-      check_node_modules ${TARGETS[@]}
+        check_node_modules ${TARGETS[@]}
+        for SERVICE in $TARGETS; do
+          DOCKERFILE="deployment/single/${SERVICE}.Dockerfile"
+          IMAGE_NAME="${NAMESPACE}/noona-${SERVICE}:${TAG}"
+          [[ ! -f "$DOCKERFILE" ]] && echo "⚠️  Skipping $SERVICE (no Dockerfile)" && continue
+          echo "🔨 Building: $IMAGE_NAME"
+          docker build -f "$DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
+        done
+        ;;
+      2)
+        echo "Available services:"
+        for f in deployment/single/*.Dockerfile; do echo " - $(basename "$f" .Dockerfile)"; done
+        read -rp "Enter service name: " SERVICE
 
-      for SERVICE in $TARGETS; do
         DOCKERFILE="deployment/single/${SERVICE}.Dockerfile"
         IMAGE_NAME="${NAMESPACE}/noona-${SERVICE}:${TAG}"
 
-        if [[ ! -f "$DOCKERFILE" ]]; then
-          echo "⚠️  Skipping: $SERVICE (missing Dockerfile)"
-          continue
-        fi
+        [[ ! -f "$DOCKERFILE" ]] && echo "❌ No Dockerfile for: $SERVICE" && exit 1
 
-        echo ""
-        echo "🔨 Building image: $IMAGE_NAME"
+        check_node_modules "$SERVICE"
+        echo "🔨 Building: $IMAGE_NAME"
         docker build -f "$DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
-      done
+        ;;
+      *)
+        echo "❌ Invalid selection."
+        ;;
+    esac
+    ;;
 
-      if [[ "$TARGET_GROUP" == "core" || "$TARGET_GROUP" == "all" ]]; then
-        echo ""
-        read -rp "Do you want to start Noona-Warden now? (y/N): " START_WARDEN
-        [[ "$START_WARDEN" =~ ^[Yy]$ ]] && {
-          echo "🚀 Launching Noona-Warden..."
-          docker run --rm -it \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            --name noona-warden "${NAMESPACE}/noona-warden:${TAG}"
-        }
-      fi
+  3)
+    echo "🧼 CLEAN MENU:"
+    echo "1) Remove node_modules & lockfiles"
+    echo "2) Delete generated docs"
+    read -rp "Choose: " CLEAN_CHOICE
 
-    elif [[ "$BUILD_MODE" == "2" ]]; then
-      echo ""
-      echo "Available single service Dockerfiles:"
-      for f in deployment/single/*.Dockerfile; do echo " - $(basename "$f" .Dockerfile)"; done
-      echo ""
-      read -rp "Enter the single service to build: " SERVICE
-
-      DOCKERFILE="deployment/single/${SERVICE}.Dockerfile"
-      IMAGE_NAME="${NAMESPACE}/noona-${SERVICE}:${TAG}"
-
-      [[ ! -f "$DOCKERFILE" ]] && echo "❌ Dockerfile not found for service: $SERVICE" && exit 1
-
-      check_node_modules "$SERVICE"
-
-      echo ""
-      echo "🔨 Building image: $IMAGE_NAME"
-      docker build -f "$DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
-
-    else
-      echo "❌ Invalid option. Please enter 1 or 2."
-      exit 1
-    fi
+    case $CLEAN_CHOICE in
+      1)
+        echo "🧹 Removing node_modules..."
+        for dir in "${INSTALL_SERVICES[@]}"; do
+          echo "🗑️ $dir"
+          (cd "$dir" && rm -rf node_modules package-lock.json)
+        done
+        echo "✅ Clean complete!"
+        ;;
+      2)
+        echo "🧼 Removing docs output..."
+        if [ -d "$DOCS_OUTPUT" ]; then
+          rm -rf "$DOCS_OUTPUT"
+          echo "✅ Docs folder removed."
+        else
+          echo "⚠️ No docs folder to clean."
+        fi
+        ;;
+      *)
+        echo "❌ Invalid selection."
+        ;;
+    esac
     ;;
 
   *)
-    echo "❌ Invalid selection. Please choose 1–5."
+    echo "❌ Invalid action group."
     ;;
 esac
