@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────
-# 🛰️ Noona-Moon Dockerfile (Frontend + Backend with shared builder)
+# 🌙 Noona-Moon Dockerfile (frontend + backend)
 # Location: deployment/single/moon.Dockerfile
 # ─────────────────────────────────────────────────────────────
 
-# ───── Stage 1: Build React frontend ─────
+# --- Frontend Build Stage ---
 FROM node:20-slim AS noona-moon-frontend
 
 WORKDIR /app
@@ -11,61 +11,33 @@ WORKDIR /app
 COPY services/moon/frontend/package*.json ./frontend/
 RUN cd frontend && npm install
 
-COPY services/moon/frontend ./frontend
+COPY services/moon/frontend ./frontend/
 RUN cd frontend && npm run build
 
 
-# ───── Stage 2: Shared builder (utilities layer) ─────
-FROM node:23-slim AS noona-builder
-
-WORKDIR /noona
-
-# Create noona user
-RUN groupadd -r noona && useradd -r -g noona -m -d /home/noona -s /bin/bash noona
-
-# Install root-level shared dependencies
-COPY package*.json ./
-RUN npm install
-
-# Copy shared utilities
-COPY utilities ./utilities
-
-USER noona
-
-
-# ───── Stage 3: Build backend w/ shared deps ─────
+# --- Backend Build Stage ---
 FROM node:23-slim AS noona-moon-backend
 
 WORKDIR /noona/moon
 
-# Copy backend package and install
 COPY services/moon/backend/package*.json ./backend/
 RUN cd backend && npm install
 
-# Copy backend source
-COPY services/moon/backend ./backend
-
-# Copy shared utilities from noona-builder
-COPY --from=noona-builder /noona/utilities ./backend/utilities
+COPY services/moon/backend ./backend/
 
 
-# ───── Stage 4: Final runtime layer ─────
+# --- Final Image Stage ---
 FROM node:23-slim
 
-WORKDIR /noona/moon
-
-# Create app user
 RUN groupadd -r noona && useradd -r -g noona -m -d /home/noona -s /bin/bash noona
+WORKDIR /noona
 
-# Copy backend app + utilities
-COPY --from=noona-moon-backend /noona/moon/backend ./backend
+# Copy backend files
+COPY --from=noona-moon-backend /noona/moon /noona/moon
 
-# Copy built frontend
-COPY --from=noona-moon-frontend /app/frontend/dist ./backend/public
+# Copy frontend build to public folder
+COPY --from=noona-moon-frontend /app/frontend/dist /noona/moon/frontend-build
 
-# Move into backend dir for launch
-WORKDIR /noona/moon/backend
-
+# Set user and start
 USER noona
-EXPOSE 3030
-CMD ["node", "initmain.mjs"]
+CMD ["node", "moon/backend/initmain.mjs"]

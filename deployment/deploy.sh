@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.." || exit 1
 clear
 
 # ─────────────────────────────────────────────────────────────
-# 🌙 Noona Stack Deploy Manager (v4.0)
+# 🌙 Noona Stack Deploy Manager (v4.2)
 # ─────────────────────────────────────────────────────────────
 
 BASE_PATH="$(pwd)"
@@ -54,6 +54,24 @@ check_node_modules() {
       (cd "$dir" && [ -f package.json ] && npm install || echo "⚠️  Skipped: No package.json")
     done
   fi
+}
+
+clean_before_build() {
+  echo "🧼 Pre-build cleanup: node_modules, lockfiles, and docs"
+
+  for dir in "${INSTALL_SERVICES[@]}"; do
+    echo "🗑️ $dir"
+    (cd "$dir" && rm -rf node_modules package-lock.json)
+  done
+
+  if [ -d "$DOCS_OUTPUT" ]; then
+    rm -rf "$DOCS_OUTPUT"
+    echo "✅ Docs folder removed."
+  else
+    echo "ℹ️ No docs folder to remove."
+  fi
+
+  echo "✅ Clean slate ready!"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -157,6 +175,8 @@ case $MAIN_OPTION in
     CACHE_OPT=""
     [[ "$NO_CACHE" =~ ^[Yy]$ ]] && CACHE_OPT="--no-cache"
 
+    clean_before_build
+
     case $BUILD_CHOICE in
       1)
         echo "Available groups:"
@@ -166,14 +186,22 @@ case $MAIN_OPTION in
 
         [[ -z "$TARGETS" ]] && echo "❌ Invalid group: $TARGET_GROUP" && exit 1
 
-        check_node_modules ${TARGETS[@]}
-        for SERVICE in $TARGETS; do
-          DOCKERFILE="deployment/single/${SERVICE}.Dockerfile"
-          IMAGE_NAME="${NAMESPACE}/noona-${SERVICE}:${TAG}"
-          [[ ! -f "$DOCKERFILE" ]] && echo "⚠️  Skipping $SERVICE (no Dockerfile)" && continue
-          echo "🔨 Building: $IMAGE_NAME"
-          docker build -f "$DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
-        done
+        GROUP_DOCKERFILE="deployment/group/${TARGET_GROUP}.Dockerfile"
+        if [[ -f "$GROUP_DOCKERFILE" ]]; then
+          IMAGE_NAME="${NAMESPACE}/noona-${TARGET_GROUP}:${TAG}"
+          echo "🔨 Building group image: $IMAGE_NAME"
+          docker build -f "$GROUP_DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
+        else
+          echo "⚠️ No group Dockerfile for $TARGET_GROUP — building individual services..."
+          check_node_modules ${TARGETS[@]}
+          for SERVICE in $TARGETS; do
+            DOCKERFILE="deployment/single/${SERVICE}.Dockerfile"
+            IMAGE_NAME="${NAMESPACE}/noona-${SERVICE}:${TAG}"
+            [[ ! -f "$DOCKERFILE" ]] && echo "⚠️  Skipping $SERVICE (no Dockerfile)" && continue
+            echo "🔨 Building: $IMAGE_NAME"
+            docker build -f "$DOCKERFILE" $CACHE_OPT -t "$IMAGE_NAME" .
+          done
+        fi
         ;;
       2)
         echo "Available services:"
