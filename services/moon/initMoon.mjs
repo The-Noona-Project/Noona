@@ -3,11 +3,13 @@ import fs from 'fs-extra';
 import path from 'path';
 import {fileURLToPath} from 'url';
 
+import redis from '../../utilities/redisClient.mjs';
+import {debugMSG, errMSG, log, warn} from '../../utilities/logger.mjs';
+import {getReply, replyPage} from '../../utilities/dynamic/pages/replyPage.mjs';
+import {handleClick, registerTestPage, renderTestPage} from './webpages/testpage.mjs';
+
 const app = express();
 const PORT = process.env.PORT || 3000;
-const TEST_BUTTON = process.env.TEST_BUTTON || 'Click me';
-
-let clickCount = 0;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DYNAMIC_PAGE_DIR = path.join(__dirname, 'dynamic-pages');
 
@@ -17,109 +19,119 @@ app.use(express.urlencoded({extended: true}));
 app.use(express.json());
 
 /**
- * Root demo page with click counter.
+ * Home: lists dynamic pages from disk.
  */
-app.get('/', (req, res) => {
-    res.send(`
-    <html lang="en">
-      <head><title>Moon</title></head>
-      <body>
-        <h1>Hello, world from Moon!</h1>
-        <form method="POST" action="/click">
-          <button type="submit">${TEST_BUTTON}</button>
-        </form>
-        <p>Button clicked: ${clickCount} times</p>
-      </body>
-    </html>
-  `);
-});
-
-app.post('/click', (req, res) => {
-    clickCount++;
-    res.redirect('/');
-});
-
-/**
- * Registers a new HTML page at /dynamic/:slug
- * @route POST /api/register-page
- * @bodyParam {string} route
- * @bodyParam {string} html
- */
-app.post('/api/register-page', async (req, res) => {
-    const {route, html} = req.body;
-
-    if (!route || !html || typeof route !== 'string' || typeof html !== 'string') {
-        return res.status(400).json({status: 'error', error: 'Invalid pagePacket format'});
-    }
-
-    const safeSlug = route.replace(/[^a-zA-Z0-9_-]/g, '');
-    if (!safeSlug) {
-        return res.status(400).json({status: 'error', error: 'Invalid route value'});
-    }
-
-    const filePath = path.join(DYNAMIC_PAGE_DIR, `${safeSlug}.html`);
-    try {
-        await fs.writeFile(filePath, html, 'utf8');
-        res.status(200).json({status: 'ok', slug: safeSlug});
-    } catch (err) {
-        console.error('[moon] Error writing page:', err);
-        res.status(500).json({status: 'error', error: 'Failed to write page'});
-    }
-});
-
-/**
- * Lists all registered page slugs.
- * @route GET /api/pages
- */
-app.get('/api/pages', async (req, res) => {
+app.get('/', async (req, res) => {
     try {
         const files = await fs.readdir(DYNAMIC_PAGE_DIR);
-        const pages = files
-            .filter(f => f.endsWith('.html'))
-            .map(f => f.replace(/\.html$/, ''));
+        let slugs = files
+            .filter(name => name.endsWith('.html'))
+            .map(name => name.replace(/\.html$/, ''));
 
-        res.json({status: 'ok', pages});
+        if (!slugs.includes('test')) slugs.unshift('test');
+
+        const buttons = slugs.map(slug => `
+            <form action="/dynamic/${slug}" method="get">
+              <button type="submit">${slug}</button>
+            </form>
+        `).join('<br>');
+
+        res.send(`
+            <html>
+              <head><title>Moon Page Index</title></head>
+              <body>
+                <h1>Available Pages</h1>
+                ${buttons || '<p>No pages registered.</p>'}
+              </body>
+            </html>
+        `);
     } catch (err) {
-        console.error('[moon] Error listing pages:', err);
-        res.status(500).json({status: 'error', error: 'Failed to list pages'});
+        errMSG(`Failed to load index: ${err.message}`);
+        res.status(500).send('<h1>500 - Internal Error</h1>');
     }
 });
 
-/**
- * Deletes a registered page by slug.
- * @route DELETE /api/page/:slug
- */
-app.delete('/api/page/:slug', async (req, res) => {
-    const slug = req.params.slug.replace(/[^a-zA-Z0-9_-]/g, '');
-    const filePath = path.join(DYNAMIC_PAGE_DIR, `${slug}.html`);
-
-    try {
-        if (await fs.pathExists(filePath)) {
-            await fs.remove(filePath);
-            res.json({status: 'ok', removed: slug});
-        } else {
-            res.status(404).json({status: 'error', error: 'Page not found'});
-        }
-    } catch (err) {
-        console.error('[moon] Error deleting page:', err);
-        res.status(500).json({status: 'error', error: 'Failed to delete page'});
-    }
-});
+app.post('/click', handleClick);
 
 /**
- * Serves dynamic pages from disk.
+ * Serve dynamic page content from disk.
  */
 app.get('/dynamic/:slug', async (req, res) => {
-    const slug = req.params.slug.replace(/[^a-zA-Z0-9_-]/g, '');
-    const filePath = path.join(DYNAMIC_PAGE_DIR, `${slug}.html`);
+    const safeSlug = req.params.slug.replace(/[^a-zA-Z0-9_-]/g, '');
 
+    if (safeSlug === 'test') return renderTestPage(req, res);
+
+    const filePath = path.join(DYNAMIC_PAGE_DIR, `${safeSlug}.html`);
     if (await fs.pathExists(filePath)) {
         res.sendFile(filePath);
     } else {
-        res.status(404).send(`<h1>404 - Page '${slug}' not found.</h1>`);
+        res.status(404).send(`<h1>404 - Page '${safeSlug}' not found.</h1>`);
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`[moon] Server running at http://localhost:${PORT}`);
+/**
+ * Lists all registered slugs from Redis (optional usage).
+ */
+app.get('/api/pages', async (req, res) => {
+    try {
+        const slugs = await redis.smembers('noona:pages');
+        res.json({status: 'ok', pages: slugs});
+    } catch (err) {
+        errMSG(`Failed to get pages: ${err.message}`);
+        res.status(500).json({status: 'error', error: err.message});
+    }
+});
+
+app.delete('/api/page/:slug', async (req, res) => {
+    const result = await replyPage(req.params.slug);
+    res.status(result.status === 'ok' ? 200 : 404).json(result);
+});
+
+app.post('/api/page-reply/:slug', async (req, res) => {
+    const result = await replyPage(req.params.slug, req.body);
+    res.status(result.status === 'ok' ? 200 : 500).json(result);
+});
+
+app.get('/api/page-reply/:slug', async (req, res) => {
+    const result = await getReply(req.params.slug);
+    res.status(result.status === 'ok' || result.status === 'waiting' ? 200 : 404).json(result);
+});
+
+/**
+ * Redis listener: watches for pagePackets and saves to disk + Redis set
+ */
+async function listenForPagePackets() {
+    while (true) {
+        try {
+            const result = await redis.blpop('noona:pagePackets', 0);
+            const json = JSON.parse(result[1]);
+
+            if (json?.type === 'pagePacket' && json.slug && json.html) {
+                const safeSlug = json.slug.replace(/[^a-zA-Z0-9_-]/g, '');
+                const filePath = path.join(DYNAMIC_PAGE_DIR, `${safeSlug}.html`);
+                await fs.writeFile(filePath, json.html, 'utf-8');
+                await redis.sadd('noona:pages', safeSlug);
+                debugMSG(`[moon] Registered '${safeSlug}' from Redis packet`);
+            } else {
+                warn(`[moon] Ignored invalid packet: ${JSON.stringify(json)}`);
+            }
+        } catch (err) {
+            errMSG(`[moon] Redis packet error: ${err.message}`);
+        }
+    }
+}
+
+/**
+ * Start the server and begin Redis listener.
+ */
+app.listen(PORT, async () => {
+    log(`Server running at http://localhost:${PORT}`);
+
+    try {
+        await registerTestPage(process.env.TEST_BUTTON || 'Click me');
+    } catch (err) {
+        errMSG(`Failed to register test page: ${err.message}`);
+    }
+
+    listenForPagePackets(); // run Redis listener in background
 });
