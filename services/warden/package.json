@@ -11,7 +11,8 @@
   "dependencies": {
     "dockerode": "^4.0.7",
     "fs-extra": "^11.3.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.3"

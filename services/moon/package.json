@@ -9,7 +9,8 @@
     "dev": "nodemon initMoon.mjs"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "fs-extra": "^11.3.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.3"
