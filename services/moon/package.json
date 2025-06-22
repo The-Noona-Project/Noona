@@ -1,0 +1,22 @@
+﻿{
+  "name": "moon",
+  "version": "1.0.0",
+  "description": "Noona's Frontend",
+  "main": "initMoon.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node initMoon.mjs",
+    "dev": "nodemon initMoon.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Noona-Project/Noona"
+  },
+  "private": true
+}
