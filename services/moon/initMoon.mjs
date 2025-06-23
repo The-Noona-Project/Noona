@@ -1,4 +1,5 @@
-﻿import express from 'express';
+﻿// services/moon/initMoon.mjs
+import express from 'express';
 import fs from 'fs-extra';
 import path from 'path';
 import {fileURLToPath} from 'url';
@@ -28,6 +29,8 @@ app.get('/', async (req, res) => {
             .filter(name => name.endsWith('.html'))
             .map(name => name.replace(/\.html$/, ''));
 
+        debugMSG(`[initMoon] Found slugs on disk: ${slugs.join(', ')}`);
+
         if (!slugs.includes('test')) slugs.unshift('test');
 
         const buttons = slugs.map(slug => `
@@ -46,7 +49,7 @@ app.get('/', async (req, res) => {
             </html>
         `);
     } catch (err) {
-        errMSG(`Failed to load index: ${err.message}`);
+        errMSG(`[initMoon] Failed to load index: ${err.message}`);
         res.status(500).send('<h1>500 - Internal Error</h1>');
     }
 });
@@ -63,6 +66,7 @@ app.get('/dynamic/:slug', async (req, res) => {
 
     const filePath = path.join(DYNAMIC_PAGE_DIR, `${safeSlug}.html`);
     if (await fs.pathExists(filePath)) {
+        debugMSG(`[initMoon] Serving /dynamic/${safeSlug} from disk`);
         res.sendFile(filePath);
     } else {
         res.status(404).send(`<h1>404 - Page '${safeSlug}' not found.</h1>`);
@@ -75,9 +79,10 @@ app.get('/dynamic/:slug', async (req, res) => {
 app.get('/api/pages', async (req, res) => {
     try {
         const slugs = await redis.smembers('noona:pages');
+        debugMSG(`[initMoon] /api/pages responding with: ${slugs.join(', ')}`);
         res.json({status: 'ok', pages: slugs});
     } catch (err) {
-        errMSG(`Failed to get pages: ${err.message}`);
+        errMSG(`[initMoon] Failed to get pages: ${err.message}`);
         res.status(500).json({status: 'error', error: err.message});
     }
 });
@@ -111,12 +116,12 @@ async function listenForPagePackets() {
                 const filePath = path.join(DYNAMIC_PAGE_DIR, `${safeSlug}.html`);
                 await fs.writeFile(filePath, json.html, 'utf-8');
                 await redis.sadd('noona:pages', safeSlug);
-                debugMSG(`[moon] Registered '${safeSlug}' from Redis packet`);
+                debugMSG(`[initMoon] Registered '${safeSlug}' from Redis to disk`);
             } else {
-                warn(`[moon] Ignored invalid packet: ${JSON.stringify(json)}`);
+                warn(`[initMoon] Ignored invalid packet: ${JSON.stringify(json)}`);
             }
         } catch (err) {
-            errMSG(`[moon] Redis packet error: ${err.message}`);
+            errMSG(`[initMoon] Redis packet error: ${err.message}`);
         }
     }
 }
@@ -130,7 +135,7 @@ app.listen(PORT, async () => {
     try {
         await registerTestPage(process.env.TEST_BUTTON || 'Click me');
     } catch (err) {
-        errMSG(`Failed to register test page: ${err.message}`);
+        errMSG(`[initMoon] Failed to register test page: ${err.message}`);
     }
 
     listenForPagePackets(); // run Redis listener in background

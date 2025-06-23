@@ -37,7 +37,7 @@ async function pullImageIfNeeded(image) {
     const images = await docker.listImages();
     const found = images.some(i => i.RepoTags?.includes(image));
     if (found) {
-        debugMSG(`Image already present: ${image}`);
+        debugMSG(`[initWarden] Image already present: ${image}`);
         return;
     }
 
@@ -98,7 +98,7 @@ async function waitForHealth(name, url, tries = 20, delay = 1000) {
         try {
             const res = await fetch(url);
             if (res.ok) {
-                debugMSG(`${name} is healthy after ${i + 1} tries`);
+                debugMSG(`[initWarden] ${name} is healthy after ${i + 1} tries`);
                 return;
             }
         } catch {
@@ -109,11 +109,36 @@ async function waitForHealth(name, url, tries = 20, delay = 1000) {
     throw new Error(`${name} did not become healthy in time`);
 }
 
+async function waitForTestPage() {
+    const url = 'http://noona-moon:3000/dynamic/test';
+    for (let i = 0; i < 20; i++) {
+        try {
+            const res = await fetch(url);
+            if (res.ok) {
+                debugMSG(`[initWarden] test page is now reachable`);
+                return;
+            }
+        } catch {
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        process.stdout.write('.');
+    }
+    throw new Error(`Test page did not load in time`);
+}
+
 async function registerSetupWizard() {
-    const html = generateSetupWizardHTML(Object.keys(noonaDockers));
+    const slugs = Object.keys(noonaDockers);
+    log(`[initWarden] Generating setup wizard for: ${slugs.join(', ')}`);
+
+    const html = generateSetupWizardHTML(slugs);
+    debugMSG(`[initWarden] HTML length for setupwizard: ${html.length}`);
+
     const res = await sendPage('setupwizard', html);
-    if (res.status !== 'ok') throw new Error(`Failed to register setupwizard: ${res.error}`);
-    log(`Setup wizard registered successfully.`);
+    if (res.status !== 'ok') {
+        throw new Error(`[initWarden] Failed to register setupwizard: ${res.error}`);
+    }
+
+    log(`[initWarden] Setup wizard registered and sent to Redis as 'setupwizard'`);
 }
 
 async function shutdownAll() {
@@ -138,7 +163,6 @@ async function init() {
     await ensureNetwork();
     await attachSelfToNetwork();
 
-    // 1. Start and wait for Redis
     const redis = addonDockers['noona-redis'];
     const redisExists = await docker.listContainers({all: true})
         .then(list => list.some(c => c.Names.includes(`/${redis.name}`)));
@@ -152,7 +176,6 @@ async function init() {
 
     await waitForHealth(redis.name, 'http://noona-redis:8001/');
 
-    // 2. Start Moon
     const moon = noonaDockers['noona-moon'];
     const moonExists = await docker.listContainers({all: true})
         .then(list => list.some(c => c.Names.includes(`/${moon.name}`)));
@@ -165,9 +188,8 @@ async function init() {
     }
 
     await waitForHealth('Moon', 'http://noona-moon:3000/api/pages');
-
-    // 3. Send setup wizard page packet
-    await registerSetupWizard();
+    await waitForTestPage(); // <- ensures Moon is consuming Redis
+    await registerSetupWizard(); // <- now safely send pagePacket to Redis
 
     log(`Online. Press Ctrl+C to exit.`);
     setInterval(() => process.stdout.write('.'), 60_000);

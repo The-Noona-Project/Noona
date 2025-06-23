@@ -1,24 +1,30 @@
 ﻿// services/moon/webpages/testpage.mjs
-import {getPages} from '../../../utilities/dynamic/pages/getPages.mjs';
-import {debugMSG, log} from '../../../utilities/logger.mjs';
+import {debugMSG} from '../../../utilities/logger.mjs';
+import {sendPage} from '../../../utilities/dynamic/pages/sendPage.mjs';
 
 let clickCount = 0;
 
-/**
- * Registers the test page into the page list — but doesn't write a static file.
- */
-export async function registerTestPage(buttonLabel) {
-    const existing = await getPages();
-    if (!existing.includes('test')) {
-        log(`Test page 'test' is now accessible at /dynamic/test`);
+export async function registerTestPage(label) {
+    const html = `
+        <html>
+          <head><title>Test Page</title></head>
+          <body>
+            <h1>This is a test page</h1>
+            <form method="post" action="/click">
+              <button type="submit">${label}</button>
+            </form>
+          </body>
+        </html>
+    `;
+    const res = await sendPage('test', html);
+    if (res.status === 'ok') {
+        debugMSG(`Test page registered as 'test'`);
     } else {
-        debugMSG(`Test page already registered`);
+        throw new Error(res.error);
     }
+    return res;
 }
 
-/**
- * Renders test page dynamically with current click count.
- */
 export function renderTestPage(req, res) {
     res.send(`
     <html lang="en">
@@ -33,9 +39,6 @@ export function renderTestPage(req, res) {
   `);
 }
 
-/**
- * Increments the click count.
- */
 export function handleClick(req, res) {
     clickCount++;
     res.redirect('/dynamic/test');

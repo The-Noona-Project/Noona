@@ -1,10 +1,14 @@
-﻿import Redis from 'ioredis';
+﻿// utilities/redisClient.mjs
+import Redis from 'ioredis';
 
-const redis = new Redis(process.env.REDIS_URL || 'redis://noona-redis:6379', {
-    retryStrategy: times => Math.min(times * 100, 2000),
+const redis = new Redis({host: 'noona-redis', port: 6379});
+
+redis.on('error', err => {
+    console.error('[redisClient.mjs] Redis error:', err.message);
 });
 
-redis.on('connect', () => console.log('[redis] Connected'));
-redis.on('error', err => console.error('[redis] Error:', err.message));
+redis.on('connect', () => {
+    console.log('[redisClient.mjs] Connected to Redis');
+});
 
 export default redis;

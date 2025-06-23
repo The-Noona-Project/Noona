@@ -17,11 +17,15 @@ export async function sendPage(route, html) {
     };
 
     try {
-        await redis.rpush('noona:pagePackets', JSON.stringify(packet));
-        debugMSG(`[sendPage] Queued page '${route}' to Redis.`);
+        const [rpushRes, saddRes] = await Promise.all([
+            redis.rpush('noona:pagePackets', JSON.stringify(packet)),
+            redis.sadd('noona:pages', route)
+        ]);
+
+        debugMSG(`[sendPage] '${route}' sent to Redis (rpush=${rpushRes}, sadd=${saddRes})`);
         return {status: 'ok', slug: route};
     } catch (err) {
-        errMSG(`[sendPage] Failed to queue page '${route}': ${err.message}`);
+        errMSG(`[sendPage] Failed to queue '${route}': ${err.message}`);
         return {status: 'error', error: err.message};
     }
 }

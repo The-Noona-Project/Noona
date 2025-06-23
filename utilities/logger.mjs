@@ -1,34 +1,44 @@
-﻿import chalk from 'chalk';
+﻿// utilities/logger.mjs
+import chalk from 'chalk';
+import {stdout} from 'process';
 
-/**
- * Automatically determines the prefix (e.g., [moon], [warden]) based on caller path.
- * @returns {string}
- */
-function getPrefix() {
-    const error = new Error();
-    const stack = error.stack?.split('\n')[2] || '';
-    const match = stack.match(/\/([^\/]+)\/[^\/]+\.mjs/);
-    return match ? `[${match[1]}]` : '[noona]';
+function isTTY() {
+    return stdout.isTTY;
+}
+
+function formatPrefix(level = '') {
+    const err = new Error();
+    const stack = err.stack?.split('\n')[2] || '';
+    const match = stack.match(/\/([^\/]+)\/([^\/]+\.mjs)/);
+    const service = match?.[1] || 'noona';
+    const file = match?.[2] || 'unknown.mjs';
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}] [${service}/${file}]${level ? ` [${level}]` : ''}`;
+    return isTTY() ? chalk.gray(prefix) : prefix;
 }
 
 export function log(...args) {
-    console.log(chalk.blue(getPrefix()), ...args);
+    console.log(formatPrefix(), ...args);
 }
 
 export function warn(...args) {
-    console.warn(chalk.yellow(getPrefix()), ...args);
+    const prefix = formatPrefix('WARN');
+    console.warn(isTTY() ? chalk.yellow(prefix) : prefix, ...args);
 }
 
 export function alert(...args) {
-    console.log(chalk.magentaBright(getPrefix()), chalk.bgMagenta('ALERT'), ...args);
+    const prefix = formatPrefix('ALERT');
+    console.log(isTTY() ? chalk.magenta(prefix) : prefix, ...args);
 }
 
 export function errMSG(...args) {
-    console.error(chalk.red(getPrefix()), chalk.bold('ERROR:'), ...args);
+    const prefix = formatPrefix('ERROR');
+    console.error(isTTY() ? chalk.red(prefix) : prefix, ...args);
 }
 
 export function debugMSG(...args) {
     if (process.env.DEBUG === 'true') {
-        console.log(chalk.gray(getPrefix()), chalk.dim('[DEBUG]'), ...args);
+        const prefix = formatPrefix('DEBUG');
+        console.log(isTTY() ? chalk.dim(prefix) : prefix, ...args);
     }
 }
