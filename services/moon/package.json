@@ -1,23 +1,29 @@
-﻿{
-  "name": "moon",
+{
+  "name": "noona-moon",
   "version": "1.0.0",
   "description": "Noona's Frontend",
   "main": "initMoon.mjs",
   "type": "module",
   "scripts": {
-    "start": "node initMoon.mjs",
-    "dev": "nodemon initMoon.mjs"
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview"
   },
   "dependencies": {
+    "@mdi/font": "^7.4.47",
+    "@vitejs/plugin-vue": "^6.0.0",
     "express": "^4.19.2",
-    "fs-extra": "^11.3.0"
+    "fs-extra": "^11.3.0",
+    "vue": "^3.5.17",
+    "vue-router": "^4.5.1",
+    "vuetify": "^3.8.10"
   },
   "devDependencies": {
-    "nodemon": "^3.0.3"
+    "nodemon": "^3.0.3",
+    "vite": "^6.3.5"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/The-Noona-Project/Noona"
-  },
-  "private": true
+  }
 }

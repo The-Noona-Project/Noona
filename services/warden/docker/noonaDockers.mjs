@@ -1,52 +1,63 @@
 ﻿// services/warden/docker/noonaDockers.mjs
 
 /**
- * Describes available Noona Docker services.
- * Each service contains name, image, port, and environment variables.
- * Warden uses this to start and manage them.
+ * Describes available Noona-managed Docker services.
+ * These are core components started and managed by Warden.
+ * Each entry defines its image, port, environment, and networking config.
  */
-const DEBUG = process.env.DEBUG
+
+const DEBUG = process.env.DEBUG || 'false';
+
+/**
+ * Raw list of service definitions in preferred launch order.
+ * Sage must come before Moon since Moon depends on its backend.
+ */
 const rawList = [
+    {
+        name: 'noona-sage',
+        image: 'captainpax/noona-sage:latest',
+        port: 3004,
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-sage'],
+    },
     {
         name: 'noona-moon',
         image: 'captainpax/noona-moon:latest',
         port: 3000,
-        env: ['TEST_BUTTON=Giga Chad Lvl +1', `DEBUG=${DEBUG}`]
+        env: [
+            'TEST_BUTTON=Giga Chad Lvl +1',
+            `DEBUG=${DEBUG}`,
+            'SERVICE_NAME=noona-moon',
+        ],
     },
     {
         name: 'noona-oracle',
         image: 'captainpax/noona-oracle:latest',
         port: 3001,
-        env: []
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-oracle'],
     },
     {
         name: 'noona-raven',
         image: 'captainpax/noona-raven:latest',
         port: 3002,
-        env: []
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-raven'],
     },
     {
         name: 'noona-portal',
         image: 'captainpax/noona-portal:latest',
         port: 3003,
-        env: []
-    },
-    {
-        name: 'noona-sage',
-        image: 'captainpax/noona-sage:latest',
-        port: 3004,
-        env: []
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-portal'],
     },
     {
         name: 'noona-vault',
         image: 'captainpax/noona-vault:latest',
         port: 3005,
-        env: []
-    }
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-vault'],
+    },
 ];
 
 /**
- * Transforms the list into a map keyed by service name.
+ * Converts the raw list into a map keyed by container name,
+ * and adds Docker-compatible port and network settings.
  */
 const noonaDockers = Object.fromEntries(
     rawList.map(service => {
@@ -58,11 +69,14 @@ const noonaDockers = Object.fromEntries(
             ? {[`${service.port}/tcp`]: [{HostPort: String(service.port)}]}
             : undefined;
 
-        return [service.name, {
-            ...service,
-            exposed,
-            ports
-        }];
+        return [
+            service.name,
+            {
+                ...service,
+                exposed,
+                ports,
+            },
+        ];
     })
 );
 

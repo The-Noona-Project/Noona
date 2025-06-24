@@ -1,22 +1,23 @@
-# 📈 Noona-Sage Dockerfile
-# Location: deployment/single/sage.Dockerfile
+# Use minimal Node.js base image
+FROM node:24-slim
 
-FROM node:23-slim AS noona-builder
+# Create working directory
+WORKDIR /app/Noona
 
-WORKDIR /noona
-
-# Base shared setup
-RUN groupadd -r noona && useradd -r -g noona -m -d /home/noona -s /bin/bash noona
-COPY package*.json ./
-RUN npm install
+# Copy only what Sage needs
+COPY services/sage ./services/sage
 COPY utilities ./utilities
-USER noona
 
+# Install dependencies in utilities
+WORKDIR /app/Noona/utilities
+RUN npm install --production
 
-FROM noona-builder AS noona-sage
-WORKDIR /noona/services/sage
-USER root
-COPY services/sage ./
-RUN npm install
-USER noona
-CMD ["node", "initmain.mjs"]
+# Install dependencies in Sage
+WORKDIR /app/Noona/services/sage
+RUN npm install --production
+
+# Expose the API port
+EXPOSE 3004
+
+# Set default startup command
+CMD ["npm", "start"]
