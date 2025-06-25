@@ -1,32 +1,23 @@
+<!-- 🌕 Noona Moon — Root App Shell -->
+
 <script setup>
-import HelloWorld from './components/HelloWorld.vue'
 </script>
 
 <template>
-  <div>
-    <a href="https://vitejs.dev" target="_blank">
-      <img alt="Vite Logo" src="/vite.svg"/>
-    </a>
-    <a href="https://vuejs.org/" target="_blank">
-      <img alt="Vue Logo" src="/vue.svg"/>
-    </a>
-  </div>
-  <HelloWorld msg="Vite + Vue"/>
+  <v-app>
+    <!-- Top Navigation Bar -->
+    <v-app-bar color="primary" dark>
+      <v-app-bar-title>Noona Moon</v-app-bar-title>
+    </v-app-bar>
+
+    <!-- Page Content -->
+    <v-main>
+      <v-container class="fill-height" fluid>
+        <router-view/>
+      </v-container>
+    </v-main>
+  </v-app>
 </template>
 
 <style scoped>
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #42b883aa);
-}
 </style>

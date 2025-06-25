@@ -11,14 +11,15 @@ const SERVICE_NAME = process.env.SERVICE_NAME || 'noona-sage'
 
 const app = express()
 
-// Enable CORS so Moon can call this API inside Docker network
+// Enable CORS so Moon can safely call this backend within the Docker network
 app.use(cors())
 
-// Optional: allow JSON parsing if needed later
+// Enable JSON body parsing (useful for future POST/PUT routes)
 app.use(express.json())
 
 /**
- * Healthcheck route for Warden to verify container health.
+ * GET /health
+ * Used by Warden to confirm Sage is running.
  */
 app.get('/health', (req, res) => {
     debugMSG(`[${SERVICE_NAME}] ✅ Healthcheck OK`)
@@ -27,16 +28,16 @@ app.get('/health', (req, res) => {
 
 /**
  * GET /api/pages
- * Returns all dynamic pages currently registered in Redis.
- * Transforms each page to { name, path } for Moon to display.
+ * Returns all dynamic page slugs stored in Redis.
+ * Each entry is transformed into { name, path } for Moon to render as Vuetify cards.
  */
 app.get('/api/pages', async (req, res) => {
     try {
-        const raw = await getPages()
+        const rawPages = await getPages()
 
-        const pages = raw.map(p => ({
+        const pages = rawPages.map(p => ({
             name: p.slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-            path: `/dynamic/${p.slug}`
+            path: `/dynamic/${p.slug}`,
         }))
 
         debugMSG(`[${SERVICE_NAME}] 📦 Found ${pages.length} pages`)
@@ -47,7 +48,7 @@ app.get('/api/pages', async (req, res) => {
     }
 })
 
-// Start listening
+// Start the Express server
 app.listen(PORT, () => {
     log(`[${SERVICE_NAME}] 🧠 Sage is live on port ${PORT}`)
 })
