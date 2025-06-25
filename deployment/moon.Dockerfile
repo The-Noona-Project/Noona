@@ -1,31 +1,41 @@
-# Use official Node base image
-FROM node:24-slim
+# ─────────────────────────────────────────────────────────────
+# 🌕 Noona Moon - Multi-stage Dockerfile (Build + Serve)
+# ─────────────────────────────────────────────────────────────
 
-# Set working directory
-WORKDIR /app/Noona
+# Stage 1: Build the frontend with Vite
+FROM node:24-slim AS builder
 
-# Copy only Moon and Utilities
+WORKDIR /app
+
+# Copy only what we need
 COPY services/moon ./services/moon
 COPY utilities ./utilities
 
-# Ensure fresh install (important for native deps)
-WORKDIR /app/Noona/services/moon
+# Move into the Moon service directory
+WORKDIR /app/services/moon
+
+# Clean stale deps
 RUN rm -rf node_modules package-lock.json
 
-# Install Moon dependencies (including dev for build)
+# Install dependencies
 RUN npm install
 
-# Build the production-ready frontend using Vite
-RUN npm run build
+# Build using local Vite (no global required)
+RUN npx vite build
 
-# Install a simple static file server
-RUN npm install -g serve
+# ─────────────────────────────────────────────────────────────
 
-# Final working dir for serving
-WORKDIR /app/Noona/services/moon/dist
+# Stage 2: Serve the built site with nginx
+FROM nginx:alpine
 
-# Expose Moon UI port
-EXPOSE 3000
+# Use the default nginx.conf (listens on port 80)
+# Remove the custom nginx.conf step entirely
 
-# Serve built static site
-CMD ["serve", "-s", ".", "-l", "3000"]
+# Copy the production build into nginx's html directory
+COPY --from=builder /app/services/moon/dist /usr/share/nginx/html
+
+# Expose port 80 (internally) — Warden will map to 3000 externally
+EXPOSE 80
+
+# Start nginx in the foreground
+CMD ["nginx", "-g", "daemon off;"]

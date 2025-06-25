@@ -15,9 +15,6 @@ const networkName = 'noona-network'
 const trackedContainers = new Set()
 const DEBUG = process.env.DEBUG === 'true'
 
-/**
- * Ensure noona-network exists for container communication.
- */
 async function ensureNetwork() {
     const networks = await docker.listNetworks()
     const exists = networks.some(n => n.Name === networkName)
@@ -27,9 +24,6 @@ async function ensureNetwork() {
     }
 }
 
-/**
- * Attach the Warden container itself to the noona-network if needed.
- */
 async function attachSelfToNetwork() {
     const id = process.env.HOSTNAME
     const info = await docker.getContainer(id).inspect()
@@ -40,9 +34,6 @@ async function attachSelfToNetwork() {
     }
 }
 
-/**
- * Pull a container image if not already available.
- */
 async function pullImageIfNeeded(image) {
     const images = await docker.listImages()
     const found = images.some(i => i.RepoTags?.includes(image))
@@ -63,27 +54,30 @@ async function pullImageIfNeeded(image) {
     log(`\nPull complete for ${image}`)
 }
 
-/**
- * Create, start, and log a Docker container.
- */
 async function runContainer(service) {
     log(`Starting container: ${service.name}`)
 
     const binds = service.volumes || []
     const envVars = [...(service.env || []), `SERVICE_NAME=${service.name}`]
 
+    // Special override for Moon: internal port 80 → host 3000
+    const exposeOverride = service.name === 'noona-moon' ? {'80/tcp': {}} : service.exposed || {}
+    const portsOverride = service.name === 'noona-moon'
+        ? {'80/tcp': [{HostPort: '3000'}]}
+        : service.ports || {}
+
     const container = await docker.createContainer({
         name: service.name,
         Image: service.image,
         Env: envVars,
-        ExposedPorts: service.exposed || {},
+        ExposedPorts: exposeOverride,
         HostConfig: {
-            PortBindings: service.ports || {},
-            Binds: binds.length ? binds : undefined
+            PortBindings: portsOverride,
+            Binds: binds.length ? binds : undefined,
         },
         NetworkingConfig: {
             EndpointsConfig: {
-                [networkName]: {}
+                [networkName]: {},
             }
         }
     })
@@ -107,9 +101,6 @@ async function runContainer(service) {
     log(`${service.name} is now running.`)
 }
 
-/**
- * Wait until a container's HTTP service responds.
- */
 async function waitForHealth(name, url, tries = 20, delay = 1000) {
     for (let i = 0; i < tries; i++) {
         try {
@@ -126,9 +117,6 @@ async function waitForHealth(name, url, tries = 20, delay = 1000) {
     throw new Error(`${name} did not become healthy in time`)
 }
 
-/**
- * Check if Moon is rendering the test page from Redis.
- */
 async function waitForTestPage() {
     const url = 'http://noona-moon:3000/dynamic/test'
     for (let i = 0; i < 20; i++) {
@@ -146,9 +134,6 @@ async function waitForTestPage() {
     throw new Error(`Test page did not load in time`)
 }
 
-/**
- * Push the setup wizard page into Redis for Moon to render.
- */
 async function registerSetupWizard() {
     const slugs = Object.keys(noonaDockers)
     log(`[initWarden] Registering setup wizard for: ${slugs.join(', ')}`)
@@ -163,9 +148,6 @@ async function registerSetupWizard() {
     log(`[initWarden] Setup wizard registered successfully`)
 }
 
-/**
- * Stop and clean up all tracked containers.
- */
 async function shutdownAll() {
     warn(`Shutting down all containers...`)
     for (const name of trackedContainers) {
@@ -184,14 +166,10 @@ async function shutdownAll() {
 process.on('SIGINT', shutdownAll)
 process.on('SIGTERM', shutdownAll)
 
-/**
- * Warden's full container boot pipeline.
- */
 async function init() {
     await ensureNetwork()
     await attachSelfToNetwork()
 
-    // Step 1: Redis
     const redis = addonDockers['noona-redis']
     const redisExists = await docker.listContainers({all: true})
         .then(list => list.some(c => c.Names.includes(`/${redis.name}`)))
@@ -203,7 +181,6 @@ async function init() {
     }
     await waitForHealth(redis.name, 'http://noona-redis:8001/')
 
-    // Step 2: Sage (backend)
     const sage = noonaDockers['noona-sage']
     const sageExists = await docker.listContainers({all: true})
         .then(list => list.some(c => c.Names.includes(`/${sage.name}`)))
@@ -215,7 +192,6 @@ async function init() {
     }
     await waitForHealth('Sage', 'http://noona-sage:3004/health')
 
-    // Step 3: Moon (frontend)
     const moon = noonaDockers['noona-moon']
     const moonExists = await docker.listContainers({all: true})
         .then(list => list.some(c => c.Names.includes(`/${moon.name}`)))
@@ -228,7 +204,6 @@ async function init() {
     await waitForHealth('Moon', 'http://noona-moon:3000/')
     await waitForTestPage()
 
-    // Step 4: Setup Wizard
     await registerSetupWizard()
 
     log(`🌕 Noona Warden is fully online. Press Ctrl+C to exit.`)

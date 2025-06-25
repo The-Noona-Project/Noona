@@ -1,47 +1,32 @@
-﻿<template>
-  <v-app>
-    <v-app-bar color="primary" dark>
-      <v-toolbar-title>Noona Moon</v-toolbar-title>
-    </v-app-bar>
+<script setup>
+import HelloWorld from './components/HelloWorld.vue'
+</script>
 
-    <!-- Loading bar while routes load -->
-    <v-progress-linear
-        v-if="loading"
-        absolute
-        color="secondary"
-        indeterminate
-        top
-    />
-
-    <v-main class="pa-4">
-      <router-view/>
-    </v-main>
-  </v-app>
+<template>
+  <div>
+    <a href="https://vitejs.dev" target="_blank">
+      <img alt="Vite Logo" src="/vite.svg"/>
+    </a>
+    <a href="https://vuejs.org/" target="_blank">
+      <img alt="Vue Logo" src="/vue.svg"/>
+    </a>
+  </div>
+  <HelloWorld msg="Vite + Vue"/>
 </template>
 
-<script setup>
-import {onMounted, ref} from 'vue'
-import {useRouter} from 'vue-router'
+<style scoped>
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
 
-const loading = ref(true)
-const router = useRouter()
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
 
-onMounted(async () => {
-  try {
-    const res = await fetch('http://noona-sage:3004/api/pages')
-    const pages = await res.json()
-
-    const dynamicRoutes = pages.map((page) => ({
-      path: page.path,
-      name: page.name,
-      component: () => import(`./pages/dynamic/${page.name.replace(/\s+/g, '')}.vue`)
-    }))
-
-    dynamicRoutes.forEach(route => router.addRoute(route))
-  } catch (err) {
-    console.warn('[App.vue] Failed to load dynamic pages:', err)
-  } finally {
-    loading.value = false
-  }
-})
-</script>
+.logo.vue:hover {
+  filter: drop-shadow(0 0 2em #42b883aa);
+}
+</style>
