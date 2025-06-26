@@ -1,41 +1,30 @@
 # ─────────────────────────────────────────────────────────────
-# 🌕 Noona Moon - Full Dockerfile for Vue + Vuetify SPA (Vite)
+# 🌕 Noona Moon - Updated Dockerfile with Healthcheck
 # ─────────────────────────────────────────────────────────────
 
-### Stage 1: Build the frontend with Vite
+### Stage 1: Build the frontend
 FROM node:24-slim AS builder
 
-# Set working directory
 WORKDIR /app
-
-# Copy only required files for Moon
 COPY services/moon ./services/moon
-
-# Go into the Moon service
 WORKDIR /app/services/moon
 
-# Clean up any stale modules
 RUN rm -rf node_modules package-lock.json
-
-# Install fresh dependencies
 RUN npm install
-
-# Build the site with Vite
 RUN npx vite build
 
 # ─────────────────────────────────────────────────────────────
 
-### Stage 2: Serve the built site using Nginx
+### Stage 2: Serve with nginx
 FROM nginx:alpine
 
-# Copy the custom nginx config that enables SPA routing
-COPY services/moon/nginx.conf /etc/nginx/conf.d/default.conf
+# Add healthcheck
+HEALTHCHECK --interval=5s --timeout=2s --start-period=3s --retries=5 \
+  CMD wget --spider -q http://localhost:3000 || exit 1
 
-# Copy the production-ready frontend files from the builder
+COPY services/moon/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/services/moon/dist /usr/share/nginx/html
 
-# Expose internal container port (Warden maps to 3000 externally)
-EXPOSE 80
+EXPOSE 3000
 
-# Run nginx in the foreground
 CMD ["nginx", "-g", "daemon off;"]

@@ -1,17 +1,5 @@
-﻿// services/warden/docker/noonaDockers.mjs
+﻿const DEBUG = process.env.DEBUG || 'false';
 
-/**
- * Describes available Noona-managed Docker services.
- * These are core components started and managed by Warden.
- * Each entry defines its image, port, environment, and networking config.
- */
-
-const DEBUG = process.env.DEBUG || 'false';
-
-/**
- * Raw list of service definitions in preferred launch order.
- * Sage must come before Moon since Moon depends on its backend.
- */
 const rawList = [
     {
         name: 'noona-sage',
@@ -23,13 +11,9 @@ const rawList = [
     {
         name: 'noona-moon',
         image: 'captainpax/noona-moon:latest',
-        port: 3000,           // exposed on host
-        internalPort: 80,     // nginx listens on 80 in the container
-        env: [
-            'TEST_BUTTON=Giga Chad Lvl +1',
-            `DEBUG=${DEBUG}`,
-            'SERVICE_NAME=noona-moon',
-        ],
+        port: 3000,
+        internalPort: 3000,
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-moon'],
     },
     {
         name: 'noona-oracle',
@@ -58,20 +42,13 @@ const rawList = [
         port: 3005,
         internalPort: 3005,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-vault'],
-    },
+    }
 ];
 
-/**
- * Converts the raw list into a map keyed by container name,
- * and adds Docker-compatible port and network settings.
- */
 const noonaDockers = Object.fromEntries(
     rawList.map(service => {
         const internal = service.internalPort || service.port;
-        const exposed = internal
-            ? {[`${internal}/tcp`]: {}}
-            : undefined;
-
+        const exposed = internal ? {[`${internal}/tcp`]: {}} : undefined;
         const ports = internal && service.port
             ? {[`${internal}/tcp`]: [{HostPort: String(service.port)}]}
             : undefined;
@@ -82,7 +59,7 @@ const noonaDockers = Object.fromEntries(
                 ...service,
                 exposed,
                 ports,
-            },
+            }
         ];
     })
 );
