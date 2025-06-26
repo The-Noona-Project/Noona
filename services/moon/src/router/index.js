@@ -1,44 +1,21 @@
-﻿// 🌕 Noona Moon — Vue Router
-//
-// This file sets up all frontend routes for the Noona Moon interface.
-// Dynamic pages are registered under /dynamic/:slug, served from Redis.
-// The setup wizard can be accessed at /setup.
-
-import {createRouter, createWebHistory} from 'vue-router'
-
-// Lazy-loaded page views
-const Home = () => import('@/pages/Home.vue')
-const SetupWizard = () => import('@/pages/SetupWizard.vue')
-const DynamicPage = () => import('@/pages/DynamicPage.vue')
-const NotFound = () => import('@/pages/NotFound.vue')
+﻿import {createRouter, createWebHistory} from 'vue-router';
 
 const routes = [
     {
         path: '/',
         name: 'Home',
-        component: Home
+        component: () => import('../pages/Home.vue'),
     },
     {
         path: '/setup',
-        name: 'SetupWizard',
-        component: SetupWizard
+        name: 'Setup',
+        component: () => import('../pages/Setup.vue'), // lazy-loaded
     },
-    {
-        path: '/dynamic/:slug',
-        name: 'DynamicPage',
-        component: DynamicPage,
-        props: true
-    },
-    {
-        path: '/:pathMatch(.*)*',
-        name: 'NotFound',
-        component: NotFound
-    }
-]
+];
 
 const router = createRouter({
     history: createWebHistory(),
-    routes
-})
+    routes,
+});
 
-export default router
+export default router;

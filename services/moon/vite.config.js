@@ -1,23 +1,11 @@
-// services/moon/vite.config.js
-import {defineConfig} from 'vite'
-import vue from '@vitejs/plugin-vue'
-import path from 'path'
+import vue from '@vitejs/plugin-vue';
+import {defineConfig} from 'vite';
 
 export default defineConfig({
-  base: './',
   plugins: [vue()],
-  root: '.',
-  publicDir: 'public',
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, 'src'),
-    },
-  },
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-    rollupOptions: {
-      input: path.resolve(__dirname, 'index.html'),
-    },
-  },
-})
+  server: {
+    port: 3000,
+    // 👇 THIS is the correct setting for SPA routing
+    historyApiFallback: true
+  }
+});

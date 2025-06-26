@@ -1,18 +1,25 @@
-// 🌕 Noona Moon — Main Entry
-// Mounts Vuetify, Router, and Root App
+import {createApp} from 'vue';
+import App from './App.vue';
 
-import {createApp} from 'vue'
-import App from './App.vue'
-import './style.css'
+// Vuetify
+import 'vuetify/styles';
+import {createVuetify} from 'vuetify';
+import * as components from 'vuetify/components';
+import * as directives from 'vuetify/directives';
 
-// Vuetify plugin
-import vuetify from './plugins/vuetify'
+// Router
+import router from './router';
 
-// Router setup
-import router from './router/index.js'
+// Custom Vuetify setup
+import vuetifyTheme from './plugins/vuetify';
 
-// Create and mount app
+const vuetify = createVuetify({
+    components,
+    directives,
+    theme: vuetifyTheme,
+});
+
 createApp(App)
-    .use(vuetify)
     .use(router)
-    .mount('#app')
+    .use(vuetify)
+    .mount('#app');

@@ -1,41 +1,41 @@
 # ─────────────────────────────────────────────────────────────
-# 🌕 Noona Moon - Multi-stage Dockerfile (Build + Serve)
+# 🌕 Noona Moon - Full Dockerfile for Vue + Vuetify SPA (Vite)
 # ─────────────────────────────────────────────────────────────
 
-# Stage 1: Build the frontend with Vite
+### Stage 1: Build the frontend with Vite
 FROM node:24-slim AS builder
 
+# Set working directory
 WORKDIR /app
 
-# Copy only what we need
+# Copy only required files for Moon
 COPY services/moon ./services/moon
-COPY utilities ./utilities
 
-# Move into the Moon service directory
+# Go into the Moon service
 WORKDIR /app/services/moon
 
-# Clean stale deps
+# Clean up any stale modules
 RUN rm -rf node_modules package-lock.json
 
-# Install dependencies
+# Install fresh dependencies
 RUN npm install
 
-# Build using local Vite (no global required)
+# Build the site with Vite
 RUN npx vite build
 
 # ─────────────────────────────────────────────────────────────
 
-# Stage 2: Serve the built site with nginx
+### Stage 2: Serve the built site using Nginx
 FROM nginx:alpine
 
-# Use the default nginx.conf (listens on port 80)
-# Remove the custom nginx.conf step entirely
+# Copy the custom nginx config that enables SPA routing
+COPY services/moon/nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy the production build into nginx's html directory
+# Copy the production-ready frontend files from the builder
 COPY --from=builder /app/services/moon/dist /usr/share/nginx/html
 
-# Expose port 80 (internally) — Warden will map to 3000 externally
+# Expose internal container port (Warden maps to 3000 externally)
 EXPOSE 80
 
-# Start nginx in the foreground
+# Run nginx in the foreground
 CMD ["nginx", "-g", "daemon off;"]
