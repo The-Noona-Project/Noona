@@ -3,6 +3,9 @@ package com.paxkun.download;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * A wrapper for ExecutorService implementing AutoCloseable for try-with-resources usage.
+ */
 public record AutoCloseableExecutor(ExecutorService executor) implements AutoCloseable {
 
     @Override

@@ -1,27 +1,37 @@
-# ───────────────────────────────────────────────
-# 🦅 Noona-Raven (Java 24 + ShadowJar)
-# ───────────────────────────────────────────────
-FROM eclipse-temurin:24-jdk AS noona-raven
+# ────────────────────────────────────────────────
+# Build Stage: Build Raven jar with shadowJar
+# ────────────────────────────────────────────────
+FROM gradle:8-jdk17 AS builder
 
-WORKDIR /noona/raven
+WORKDIR /app
 
-# System tools for building Java projects
+# Copy your raven service source code into the build context
+COPY services/raven /app
+
+# Build the fat jar using shadowJar
+RUN gradle shadowJar
+
+# ────────────────────────────────────────────────
+# Runtime Stage: Minimal JRE with Chrome and Chromedriver
+# ────────────────────────────────────────────────
+FROM eclipse-temurin:17-jre
+
+# Install dependencies and Google Chrome
 RUN apt-get update && \
-    apt-get install -y unzip curl git && \
-    apt-get clean && \
+    apt-get install -y wget curl gnupg unzip && \
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/google-linux-signing-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy Gradle wrapper
-COPY ../services/raven/gradlew ./gradlew
-COPY ../../services/raven/gradle ./gradle
-RUN chmod +x ./gradlew
+# WebDriverManager will handle Chromedriver installation dynamically in code
 
-# Copy Java source and resources
-COPY ../../services/raven/java ./java
-COPY ../../services/raven/resources ./resources
+# Set working directory
+WORKDIR /app
 
-# Build the jar (optional if later used in CMD)
-# RUN ./gradlew shadowJar
+# Copy built jar from builder stage
+COPY --from=builder /app/build/libs/raven.jar ./raven.jar
 
-# Adjust entrypoint later if you're running it differently
-CMD ["java", "-cp", "./java", "com.paxkun.Main"]
+# Entry point to run your Raven scraper
+ENTRYPOINT ["java", "-jar", "raven.jar"]

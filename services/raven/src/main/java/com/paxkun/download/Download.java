@@ -21,20 +21,20 @@ public class Download {
             connection.setConnectTimeout(3000);
             connection.setReadTimeout(3000);
             int responseCode = connection.getResponseCode();
-            //System.out.println(responseCode);
             return (200 <= responseCode && responseCode < 400);
         } catch (IOException e) {
+            System.err.println("Failed to check URL: " + urlStr + " - " + e.getMessage());
             return false;
         }
     }
 
     public void downloadChapter(@NotNull List<String> imageUrls, String cbzFilename, String outputFolder) {
-        Path outputDir = Path.of(outputFolder); // e.g., "outputFolder/MANGA"
-        Path cbzPath = outputDir.resolve(cbzFilename); // Final output: outputFolder/MANGA/file.cbz
-        Path inputPath = Path.of("/temp");  // Still using this as the source for local images
+        Path outputDir = Path.of(outputFolder);
+        Path cbzPath = outputDir.resolve(cbzFilename);
+        Path inputPath = Path.of("/temp");  // Adjust as needed for local images
 
         try {
-            Files.createDirectories(cbzPath.getParent()); // Ensure output directory exists
+            Files.createDirectories(cbzPath.getParent());
 
             try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(cbzPath))) {
                 int index = 1;
@@ -43,52 +43,69 @@ public class Download {
                     int attempts = 0;
 
                     while (attempts < 3 && !downloaded) {
+                        attempts++;
                         if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
-                            try (InputStream in = new URL(imageUrl).openStream()) {
-                                String imageName = String.format("%03d.png", index++);
-                                ZipEntry entry = new ZipEntry(imageName);
-                                zipOut.putNextEntry(entry);
-                                in.transferTo(zipOut);
-                                zipOut.closeEntry();
-                                //System.out.println("Added: " + imageName);
-                                downloaded = true;
-                            } catch (IOException e) {
-                                attempts++;
-                                System.err.println("Failed to download: " + imageUrl + " (Attempt " + attempts + "/3)");
-                                if (attempts == 3) {
-                                    System.err.println("Failed to download after 3 attempts: " + imageUrl);
-                                }
-                            }
+                            downloaded = downloadFromUrl(imageUrl, zipOut, index);
                         } else {
-                            Path imagePath = inputPath.resolve(imageUrl);
-                            if (Files.exists(imagePath)) {
-                                try (InputStream in = Files.newInputStream(imagePath)) {
-                                    String imageName = String.format("%03d.png", index++);
-                                    ZipEntry entry = new ZipEntry(imageName);
-                                    zipOut.putNextEntry(entry);
-                                    in.transferTo(zipOut);
-                                    zipOut.closeEntry();
-                                    //System.out.println("Added: " + imageName);
-                                    downloaded = true;
-                                } catch (IOException e) {
-                                    attempts++;
-                                    System.err.println("Failed to read: " + imagePath + " (Attempt " + attempts + "/3)");
-                                    if (attempts == 3) {
-                                        System.err.println("Failed to read after 3 attempts: " + imagePath);
-                                    }
-                                }
-                            } else {
-                                System.err.println("Image not found: " + imagePath);
-                                downloaded = true;
+                            downloaded = downloadFromLocal(inputPath.resolve(imageUrl), zipOut, index);
+                        }
+
+                        if (!downloaded && attempts < 3) {
+                            try {
+                                Thread.sleep(1000L * attempts); // Exponential backoff
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                System.err.println("Thread interrupted during backoff");
+                                return;
                             }
                         }
+
+                        if (downloaded) index++;
+                    }
+
+                    if (!downloaded) {
+                        System.err.println("Failed to add image after 3 attempts: " + imageUrl);
                     }
                 }
             }
 
             System.out.println("Saved CBZ: " + cbzPath);
         } catch (IOException e) {
+            System.err.println("Failed to create CBZ: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+
+    private boolean downloadFromUrl(String imageUrl, ZipOutputStream zipOut, int index) {
+        try (InputStream in = new URL(imageUrl).openStream()) {
+            String imageName = String.format("%03d.png", index);
+            ZipEntry entry = new ZipEntry(imageName);
+            zipOut.putNextEntry(entry);
+            in.transferTo(zipOut);
+            zipOut.closeEntry();
+            return true;
+        } catch (IOException e) {
+            System.err.println("Failed to download: " + imageUrl + " - " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean downloadFromLocal(Path imagePath, ZipOutputStream zipOut, int index) {
+        if (Files.exists(imagePath)) {
+            try (InputStream in = Files.newInputStream(imagePath)) {
+                String imageName = String.format("%03d.png", index);
+                ZipEntry entry = new ZipEntry(imageName);
+                zipOut.putNextEntry(entry);
+                in.transferTo(zipOut);
+                zipOut.closeEntry();
+                return true;
+            } catch (IOException e) {
+                System.err.println("Failed to read local file: " + imagePath + " - " + e.getMessage());
+                return false;
+            }
+        } else {
+            System.err.println("Local image not found: " + imagePath);
+            return true; // Mark as 'downloaded' to skip retries if file is missing
         }
     }
 }
