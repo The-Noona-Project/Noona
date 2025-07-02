@@ -1,0 +1,55 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.3'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'org.graalvm.buildtools.native' version '0.10.6'
+}
+
+group = 'com.paxkun'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // ───── Spring Boot Core ─────
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // ───── Lombok ─────
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // ───── Raven scraper dependencies ─────
+    implementation 'org.jsoup:jsoup:1.17.2'
+    implementation 'commons-io:commons-io:2.15.1'
+    implementation 'org.apache.commons:commons-lang3:3.14.0'
+    implementation 'com.google.guava:guava:33.2.0-jre'
+
+    // ───── WebClient (Reactive HTTP calls) ─────
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
+    // ───── Development Only ─────
+    developmentOnly 'org.springframework.boot:spring-boot-devtools'
+    developmentOnly 'org.springframework.boot:spring-boot-docker-compose'
+
+    // ───── Testing ─────
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
