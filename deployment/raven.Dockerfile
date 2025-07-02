@@ -1,20 +1,23 @@
 # ────────────────────────────────────────────────
-# Build Stage: Build Raven jar with shadowJar
+# 🦅 Noona Raven - Build Stage (Spring Boot bootJar)
 # ────────────────────────────────────────────────
-FROM gradle:8-jdk17 AS builder
+FROM gradle:8-jdk21 AS builder
 
 WORKDIR /app
 
-# Copy your raven service source code into the build context
+# Copy your Raven service source code into the build context
 COPY services/raven /app
 
-# Build the fat jar using shadowJar
-RUN gradle shadowJar
+# Ensure gradlew is executable
+RUN chmod +x ./gradlew
+
+# Build the Spring Boot fat jar using bootJar
+RUN ./gradlew bootJar
 
 # ────────────────────────────────────────────────
-# Runtime Stage: Minimal JRE with Chrome and Chromedriver
+# 🦅 Noona Raven - Runtime Stage with Chrome installed
 # ────────────────────────────────────────────────
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:21-jre
 
 # Install dependencies and Google Chrome
 RUN apt-get update && \
@@ -31,7 +34,14 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy built jar from builder stage
-COPY --from=builder /app/build/libs/raven.jar ./raven.jar
+COPY --from=builder /app/build/libs/*.jar app.jar
 
-# Entry point to run your Raven scraper
-ENTRYPOINT ["java", "-jar", "raven.jar"]
+# Expose Raven API port
+EXPOSE 8080
+
+# Healthcheck to confirm readiness (optional, if you have a health endpoint)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/api/health || exit 1
+
+# Entry point to run your Raven Spring Boot API
+ENTRYPOINT ["java", "-jar", "app.jar"]
