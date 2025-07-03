@@ -77,18 +77,19 @@ public class DownloadService {
             log.info("Starting download for title [{}] from URL [{}]", titleName, chapterUrl);
 
             // 1. Find the base source URL for images
-            String baseSourceUrl = SourceFinder.findSource(chapterUrl);
-
-            if (baseSourceUrl == null || baseSourceUrl.isEmpty()) {
-                throw new RuntimeException("Could not find base source URL for: " + chapterUrl);
-            }
+            String baseSourceUrl = SourceFinder.findSource(chapterUrl)
+                    .orElseThrow(() -> new RuntimeException("Could not find base source URL for: " + chapterUrl));
 
             log.info("Base source URL resolved: {}", baseSourceUrl);
 
             // 2. Build image URLs by page until missing page is encountered
             List<String> imageUrls = new ArrayList<>();
             for (int i = 1; i < PAGE_LIMIT; i++) {
-                String imageUrl = baseSourceUrl + String.format("%04d-%03d.png", optionIndex + 1, i);
+                String imageUrl = baseSourceUrl
+                        + String.format("%04d", userIndex)
+                        + "-"
+                        + String.format("%03d", i)
+                        + ".png";
 
                 if (urlExists(imageUrl)) {
                     imageUrls.add(imageUrl);

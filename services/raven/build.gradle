@@ -1,7 +1,7 @@
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.3'
-    id 'io.spring.dependency-management' version '1.1.7'
+    id 'io.spring.dependency-management' version '1.1.7' // use stable available version
     id 'org.graalvm.buildtools.native' version '0.10.6'
 }
 
@@ -27,26 +27,24 @@ repositories {
 dependencies {
     // ───── Spring Boot Core ─────
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
 
     // ───── Lombok ─────
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
-    // ───── JetBrains Annotations (@NotNull) ─────
-    implementation 'org.jetbrains:annotations:24.1.0'
+    // ───── JetBrains Annotations ─────
+    implementation 'org.jetbrains:annotations:26.0.2'
 
-    // ───── Selenium + Scraper dependencies ─────
+    // ───── Web Scraping & Utilities ─────
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'commons-io:commons-io:2.15.1'
     implementation 'org.apache.commons:commons-lang3:3.14.0'
-    implementation 'com.google.guava:guava:33.2.0-jre'
+    implementation 'com.google.guava:guava:33.2.0-jre' // <=== revert to latest available
 
-    // ───── WebClient (Reactive HTTP calls) ─────
-    implementation 'org.springframework.boot:spring-boot-starter-webflux'
-
-    // ───── Selenium WebDriver + Manager ─────
-    implementation 'org.seleniumhq.selenium:selenium-java:4.19.1'
-    implementation 'io.github.bonigarcia:webdrivermanager:5.8.0'
+    // ───── Selenium & WebDriverManager ─────
+    implementation 'org.seleniumhq.selenium:selenium-java:4.31.0'
+    implementation 'io.github.bonigarcia:webdrivermanager:6.1.0'
 
     // ───── Development Only ─────
     developmentOnly 'org.springframework.boot:spring-boot-devtools'

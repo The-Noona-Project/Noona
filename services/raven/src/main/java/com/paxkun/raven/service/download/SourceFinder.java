@@ -8,50 +8,45 @@ import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * SourceFinder locates the base source URL for chapter images using Selenium and ChromeDriver.
- * Used by Raven for chapter downloads.
- *
- * @author Pax
- */
 @Slf4j
 public class SourceFinder {
 
-    /**
-     * Finds the base source URL for chapter images.
-     *
-     * @param chapterUrl the URL of the chapter page
-     * @return the source URL prefix, or an empty string if not found
-     */
-    public static String findSource(String chapterUrl) {
+    public static Optional<String> findSource(String chapterUrl) {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
 
-        WebDriver driver = new ChromeDriver(options);
-        String result = "";
+        Pattern pattern = Pattern.compile("(https://\\S+/manga/[^/]+/\\d{4}-001\\.png)");
+        ChromeDriver driver = null;
 
         try {
+            driver = new ChromeDriver(options);
             driver.get(chapterUrl);
-            Thread.sleep(2000); // Ensure page fully loads
+            Thread.sleep(2000);
 
             List<WebElement> images = driver.findElements(By.tagName("img"));
-            Pattern pattern = Pattern.compile("(https://[^\\s]+/manga/[^/]+/\\d{4}-001\\.png)");
+            log.info("Found {} <img> tags on page {}", images.size(), chapterUrl);
 
             for (WebElement img : images) {
                 String src = img.getAttribute("src");
+                if ((src == null || src.isEmpty()) && img.getAttribute("data-src") != null) {
+                    src = img.getAttribute("data-src");
+                }
                 if (src == null || src.isEmpty()) continue;
+
+                log.debug("Checking image src: {}", src);
 
                 Matcher matcher = pattern.matcher(src);
                 if (matcher.find()) {
                     String fullUrl = matcher.group(1);
-                    int index = fullUrl.indexOf("/manga/");
-                    if (index != -1) {
-                        result = fullUrl.substring(0, index + 7);
+                    int lastSlash = fullUrl.lastIndexOf('/');
+                    if (lastSlash != -1) {
+                        String result = fullUrl.substring(0, lastSlash + 1);
                         log.info("Base source URL found: {}", result);
-                        return result;
+                        return Optional.of(result);
                     }
                 }
             }
@@ -59,14 +54,16 @@ public class SourceFinder {
             log.warn("No matching image source found for URL: {}", chapterUrl);
 
         } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt(); // restore interrupt status
+            Thread.currentThread().interrupt();
             log.error("Interrupted while finding source: {}", ie.getMessage(), ie);
         } catch (Exception e) {
             log.error("Error finding source for URL: {}", chapterUrl, e);
         } finally {
-            driver.quit();
+            if (driver != null) {
+                driver.quit();
+            }
         }
 
-        return result;
+        return Optional.empty();
     }
 }
