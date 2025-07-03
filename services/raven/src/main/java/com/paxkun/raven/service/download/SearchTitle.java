@@ -4,9 +4,11 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+import java.util.Map;
+
 /**
- * Represents a search result for a manga or webtoon title.
- * Contains a search ID and title name for selection workflows.
+ * Represents a search result with an ID and list of manga options.
  *
  * @author Pax
  */
@@ -14,8 +16,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SearchTitle {
-
     private String searchId;
-    private String titleName;
-
+    private List<Map<String, String>> options;
 }

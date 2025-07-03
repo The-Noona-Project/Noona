@@ -8,8 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * REST controller for Raven download endpoints.
- * Handles searching and downloading new titles.
+ * DownloadController handles endpoints for searching and downloading manga titles and chapters.
  */
 @RestController
 @RequestMapping("/v1/download")
@@ -19,9 +18,9 @@ public class DownloadController {
     private final DownloadService downloadService;
 
     /**
-     * Health check endpoint for Raven downloads.
+     * Health check endpoint for Raven's download module.
      *
-     * @return status message
+     * @return a simple "OK" response if the service is up
      */
     @GetMapping("/health")
     public ResponseEntity<String> healthCheck() {
@@ -29,28 +28,29 @@ public class DownloadController {
     }
 
     /**
-     * Search for a new title by name.
+     * Search for a manga title.
      *
-     * @param titleName name to search
-     * @return SearchTitle containing search ID and possible matches
+     * @param titleName the title to search for
+     * @return SearchTitle object containing possible matches and a generated searchId
      */
-    @GetMapping("/new/{titleName}")
+    @GetMapping("/search/{titleName}")
     public ResponseEntity<SearchTitle> searchTitle(@PathVariable String titleName) {
         SearchTitle result = downloadService.searchTitle(titleName);
         return ResponseEntity.ok(result);
     }
 
     /**
-     * Download a selected title by search ID and user option.
+     * Download a chapter for a previously searched manga.
      *
-     * @param searchId unique search session ID
-     * @param optionIndex index of selected option
-     * @return DownloadChapter result after downloading
+     * @param searchId the search session ID returned by /search
+     * @param optionIndex the selected option index from the search results (1-based index)
+     * @return DownloadChapter result with status
      */
-    @PostMapping("/search/{searchId}")
-    public ResponseEntity<DownloadChapter> downloadSelectedTitle(
-            @PathVariable String searchId,
+    @PostMapping("/select")
+    public ResponseEntity<DownloadChapter> downloadChapter(
+            @RequestParam String searchId,
             @RequestParam int optionIndex) {
+
         DownloadChapter result = downloadService.downloadSelectedTitle(searchId, optionIndex);
         return ResponseEntity.ok(result);
     }

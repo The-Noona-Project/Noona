@@ -4,22 +4,15 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
 /**
- * Represents a new title entry in the user's library.
+ * Represents a manga title.
+ * Includes titleName field with Lombok-generated getters, setters, and constructors.
+ *
+ * @author Pax
  */
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
+@AllArgsConstructor
 public class NewTitle {
-
-    /** Name of the manga, webtoon, or light novel. */
-    private String title;
-
-    /** Author of the title if available. */
-    private String author;
-
-    /** List of chapters under this title. */
-    private List<NewChapter> chapters;
+    private String titleName;
 }

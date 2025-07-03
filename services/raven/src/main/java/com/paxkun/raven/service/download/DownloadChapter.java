@@ -14,8 +14,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class DownloadChapter {
-
     private String chapterName;
     private String status;
-
 }

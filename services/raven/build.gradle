@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'com.paxkun'
-version = '0.0.1-SNAPSHOT'
+version = '1.0.0'
 
 java {
     toolchain {
@@ -32,7 +32,10 @@ dependencies {
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
-    // ───── Raven scraper dependencies ─────
+    // ───── JetBrains Annotations (@NotNull) ─────
+    implementation 'org.jetbrains:annotations:24.1.0'
+
+    // ───── Selenium + Scraper dependencies ─────
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'commons-io:commons-io:2.15.1'
     implementation 'org.apache.commons:commons-lang3:3.14.0'
@@ -40,6 +43,10 @@ dependencies {
 
     // ───── WebClient (Reactive HTTP calls) ─────
     implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
+    // ───── Selenium WebDriver + Manager ─────
+    implementation 'org.seleniumhq.selenium:selenium-java:4.19.1'
+    implementation 'io.github.bonigarcia:webdrivermanager:5.8.0'
 
     // ───── Development Only ─────
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
@@ -49,6 +56,7 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
+
 
 tasks.named('test') {
     useJUnitPlatform()
