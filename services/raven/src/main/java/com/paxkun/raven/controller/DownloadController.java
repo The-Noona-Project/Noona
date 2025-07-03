@@ -9,6 +9,10 @@ import org.springframework.web.bind.annotation.*;
 
 /**
  * DownloadController handles endpoints for searching and downloading manga titles and chapters.
+ *
+ * Note: The download endpoint triggers a download operation with file writing.
+ * While it currently uses GET for convenience in internal tools, POST is preferred
+ * for non-idempotent write operations in public REST APIs.
  */
 @RestController
 @RequestMapping("/v1/download")
@@ -41,15 +45,18 @@ public class DownloadController {
 
     /**
      * Download a chapter for a previously searched manga.
+     * <p>
+     * Note: This endpoint performs a write action (download + save as CBZ) but is using GET
+     * for simplicity. For production/public APIs, consider changing to POST.
      *
      * @param searchId the search session ID returned by /search
      * @param optionIndex the selected option index from the search results (1-based index)
      * @return DownloadChapter result with status
      */
-    @PostMapping("/select")
+    @GetMapping("/select/{searchId}/{optionIndex}")
     public ResponseEntity<DownloadChapter> downloadChapter(
-            @RequestParam String searchId,
-            @RequestParam int optionIndex) {
+            @PathVariable String searchId,
+            @PathVariable int optionIndex) {
 
         DownloadChapter result = downloadService.downloadSelectedTitle(searchId, optionIndex);
         return ResponseEntity.ok(result);

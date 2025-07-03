@@ -27,6 +27,13 @@ public class DownloadService {
     private final TitleScraper titleScraper = new TitleScraper();
     private static final int PAGE_LIMIT = 9999;
 
+    // Define persistent download root folder from environment or default
+    private static final Path DOWNLOAD_ROOT = Path.of(
+            Optional.ofNullable(System.getenv("APPDATA"))
+                    .orElse("/app/downloads") // Fallback for container
+                    + "/Noona/raven"
+    );
+
     /**
      * Searches for a manga title and returns matching results.
      *
@@ -94,13 +101,13 @@ public class DownloadService {
                 throw new RuntimeException("No pages found for download.");
             }
 
-            // 3. Create CBZ file
+            // 3. Create CBZ file in persistent download folder
             String cbzFilename = titleName.replaceAll("\\s+", "_") + ".cbz";
-            String outputFolder = "downloads/" + titleName;
-            createCbzFromImages(imageUrls, cbzFilename, outputFolder);
+            Path titleFolder = DOWNLOAD_ROOT.resolve(titleName);
+            createCbzFromImages(imageUrls, cbzFilename, titleFolder);
 
             result.setChapterName(titleName);
-            result.setStatus("Downloaded and saved as CBZ successfully.");
+            result.setStatus("Downloaded and saved as CBZ successfully at " + titleFolder.toAbsolutePath());
         } catch (Exception e) {
             log.error("Failed to download chapter: {}", e.getMessage(), e);
             result.setChapterName("Unknown");
@@ -117,12 +124,11 @@ public class DownloadService {
      * @param cbzFilename output CBZ filename
      * @param outputFolder output folder path
      */
-    private void createCbzFromImages(List<String> imageUrls, String cbzFilename, String outputFolder) {
-        Path outputDir = Path.of(outputFolder);
-        Path cbzPath = outputDir.resolve(cbzFilename);
+    private void createCbzFromImages(List<String> imageUrls, String cbzFilename, Path outputFolder) {
+        Path cbzPath = outputFolder.resolve(cbzFilename);
 
         try {
-            Files.createDirectories(outputDir);
+            Files.createDirectories(outputFolder);
 
             try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(cbzPath))) {
                 int index = 1;
