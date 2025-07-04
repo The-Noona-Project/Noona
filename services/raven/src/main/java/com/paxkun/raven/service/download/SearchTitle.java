@@ -21,6 +21,7 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class SearchTitle {
+
     /** Unique search session ID for this search request. */
     private String searchId;
 

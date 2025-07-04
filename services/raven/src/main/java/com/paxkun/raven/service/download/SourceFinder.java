@@ -1,11 +1,12 @@
 package com.paxkun.raven.service.download;
 
-import lombok.extern.slf4j.Slf4j;
+import com.paxkun.raven.service.LoggerService;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.HttpURLConnection;
@@ -18,18 +19,14 @@ import java.util.List;
  *
  * Author: Pax
  */
-@Slf4j
 @Component
 public class SourceFinder {
 
+    @Autowired
+    private LoggerService logger;
+
     private static final int MAX_PAGES = 500;
 
-    /**
-     * Retrieves all image URLs for the given chapter.
-     *
-     * @param chapterUrl The URL of the manga chapter page.
-     * @return List of full image URLs for the chapter.
-     */
     public List<String> findSource(String chapterUrl) {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
@@ -39,12 +36,11 @@ public class SourceFinder {
 
         try {
             driver.get(chapterUrl);
-            Thread.sleep(2000); // Ensure full page load
+            Thread.sleep(2000);
 
             List<WebElement> images = driver.findElements(By.tagName("img"));
             String baseSourceUrl = null;
 
-            // Pattern logic similar to your old CLI approach to ensure correct base URL
             for (WebElement img : images) {
                 String src = img.getAttribute("src");
                 if (src == null) continue;
@@ -54,25 +50,21 @@ public class SourceFinder {
                     int endIndex = src.lastIndexOf("/");
                     if (index != -1 && endIndex != -1 && endIndex > index + 7) {
                         baseSourceUrl = src.substring(0, endIndex + 1);
-                        break; // Found valid base
+                        break;
                     }
                 }
             }
 
             if (baseSourceUrl == null) {
-                log.warn("⚠️ No base source URL found on page: {}", chapterUrl);
+                logger.warn("SOURCE", "⚠️ No base source URL found on page: " + chapterUrl);
                 return imageUrls;
             }
 
-            log.info("✅ Found base source URL: {}", baseSourceUrl);
+            logger.info("SOURCE", "✅ Found base source URL: " + baseSourceUrl);
 
-            // Extract manga folder from URL (e.g., Solo-Leveling)
             String mangaName = extractMangaName(baseSourceUrl);
-
-            // Extract chapter number from URL or fallback logic
             String chapterNumber = extractChapterNumber(chapterUrl);
 
-            // Generate sequential page URLs and test existence
             for (int i = 1; i <= MAX_PAGES; i++) {
                 String pageFile = String.format("%s/%s-%03d.png", mangaName, chapterNumber, i);
                 String fullUrl = baseSourceUrl + pageFile;
@@ -80,14 +72,14 @@ public class SourceFinder {
                 if (urlExists(fullUrl)) {
                     imageUrls.add(fullUrl);
                 } else {
-                    break; // No more pages for this chapter
+                    break;
                 }
             }
 
-            log.info("📄 Found {} pages for Chapter {}", imageUrls.size(), chapterNumber);
+            logger.info("SOURCE", "📄 Found " + imageUrls.size() + " pages for Chapter " + chapterNumber);
 
         } catch (Exception e) {
-            log.error("❌ Error finding source for URL: {}", chapterUrl, e);
+            logger.error("SOURCE", "❌ Error finding source for URL: " + chapterUrl + " | " + e.getMessage(), e);
         } finally {
             driver.quit();
         }
@@ -95,12 +87,6 @@ public class SourceFinder {
         return imageUrls;
     }
 
-    /**
-     * Extracts the manga name from the base source URL.
-     *
-     * @param baseSourceUrl The base URL string.
-     * @return Manga folder name.
-     */
     private String extractMangaName(String baseSourceUrl) {
         String[] parts = baseSourceUrl.split("/");
         for (int i = 0; i < parts.length; i++) {
@@ -111,14 +97,7 @@ public class SourceFinder {
         return "unknown_manga";
     }
 
-    /**
-     * Extracts chapter number from the chapter URL, zero-padded to 4 digits.
-     *
-     * @param chapterUrl The chapter URL.
-     * @return Chapter number as string.
-     */
     private String extractChapterNumber(String chapterUrl) {
-        // Example fallback logic for extracting numeric chapter identifier
         String[] parts = chapterUrl.split("/");
         String last = parts[parts.length - 1];
         if (last.matches("\\d+")) {
@@ -127,12 +106,6 @@ public class SourceFinder {
         return "0000";
     }
 
-    /**
-     * Checks if a URL exists using HEAD request with proper headers.
-     *
-     * @param urlStr The URL to check.
-     * @return true if exists, false otherwise.
-     */
     private boolean urlExists(String urlStr) {
         try {
             HttpURLConnection connection = (HttpURLConnection) new URL(urlStr).openConnection();
@@ -144,7 +117,7 @@ public class SourceFinder {
             int responseCode = connection.getResponseCode();
             return (200 <= responseCode && responseCode < 400);
         } catch (Exception e) {
-            log.warn("⚠️ Failed HEAD request for {}: {}", urlStr, e.getMessage());
+            logger.warn("SOURCE", "⚠️ Failed HEAD request for " + urlStr + ": " + e.getMessage());
             return false;
         }
     }

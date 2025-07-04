@@ -5,19 +5,21 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Represents a new chapter entry to be saved in the library.
+ * Represents a chapter entry saved in the library.
+ * <p>
+ * Author: Pax
  */
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
+@AllArgsConstructor
 public class NewChapter {
 
-    /** Title name the chapter belongs to. */
+    /** The title of this chapter belongs to. */
     private String title;
 
-    /** Chapter number or name. */
+    /** The chapter identifier (number or name). */
     private String chapter;
 
-    /** Downloaded file path. */
+    /** The file path where the chapter is downloaded. */
     private String path;
 }

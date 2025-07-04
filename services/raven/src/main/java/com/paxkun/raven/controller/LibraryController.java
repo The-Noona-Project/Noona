@@ -11,8 +11,8 @@ import java.util.List;
 /**
  * REST controller for Raven library endpoints.
  * Handles retrieving titles and chapters from the library.
- *
- * @author Pax
+ * <p>
+ * Author: Pax
  */
 @RestController
 @RequestMapping("/v1/library")
@@ -38,7 +38,7 @@ public class LibraryController {
      */
     @GetMapping("/getall")
     public ResponseEntity<List<NewTitle>> getAllTitles() {
-        List<NewTitle> titles = libraryService.getAllTitleObjects(); // updated method name
+        List<NewTitle> titles = libraryService.getAllTitleObjects();
         return ResponseEntity.ok(titles);
     }
 

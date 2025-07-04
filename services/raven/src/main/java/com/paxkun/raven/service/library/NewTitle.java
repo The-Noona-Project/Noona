@@ -5,14 +5,16 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Represents a manga title.
+ * Represents a manga title in the library.
  * Includes titleName field with Lombok-generated getters, setters, and constructors.
- *
- * @author Pax
+ * <p>
+ * Author: Pax
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class NewTitle {
+
+    /** The name of the manga title. */
     private String titleName;
 }

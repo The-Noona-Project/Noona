@@ -2,6 +2,7 @@ package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -14,10 +15,13 @@ import java.util.Map;
  * Provides operations to add titles and chapters, retrieve titles, and chapters by title.
  * Replace in-memory storage with real database integration later.
  *
- * @author Pax
+ * Author: Pax
  */
 @Service
 public class LibraryService {
+
+    @Autowired
+    private LoggerService logger;
 
     // In-memory store for demonstration purposes
     private final Map<String, List<NewChapter>> library = new HashMap<>();
@@ -30,6 +34,7 @@ public class LibraryService {
      */
     public void addTitleWithChapter(NewTitle title, NewChapter chapter) {
         library.computeIfAbsent(title.getTitleName(), k -> new ArrayList<>()).add(chapter);
+        logger.info("LIBRARY", "📚 Added chapter [" + chapter.getChapter() + "] to title [" + title.getTitleName() + "]");
     }
 
     /**
@@ -42,6 +47,7 @@ public class LibraryService {
         for (String titleName : library.keySet()) {
             titles.add(new NewTitle(titleName));
         }
+        logger.info("LIBRARY", "🔍 Retrieved " + titles.size() + " titles from library.");
         return titles;
     }
 
@@ -53,8 +59,10 @@ public class LibraryService {
      */
     public NewTitle getTitle(String titleName) {
         if (library.containsKey(titleName)) {
+            logger.info("LIBRARY", "✅ Title found: " + titleName);
             return new NewTitle(titleName);
         }
+        logger.warn("LIBRARY", "⚠️ Title not found: " + titleName);
         return null;
     }
 
@@ -65,6 +73,8 @@ public class LibraryService {
      * @return list of chapters for that title
      */
     public List<NewChapter> getChaptersByTitle(String titleName) {
-        return library.getOrDefault(titleName, new ArrayList<>());
+        List<NewChapter> chapters = library.getOrDefault(titleName, new ArrayList<>());
+        logger.info("LIBRARY", "📄 Retrieved " + chapters.size() + " chapters for title [" + titleName + "]");
+        return chapters;
     }
 }

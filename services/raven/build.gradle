@@ -43,7 +43,7 @@ dependencies {
     implementation 'com.google.guava:guava:33.2.0-jre' // <=== revert to latest available
 
     // ───── Selenium & WebDriverManager ─────
-    implementation 'org.seleniumhq.selenium:selenium-java:4.31.0'
+    implementation 'org.seleniumhq.selenium:selenium-java:4.16.1'
     implementation 'io.github.bonigarcia:webdrivermanager:6.1.0'
 
     // ───── Development Only ─────
