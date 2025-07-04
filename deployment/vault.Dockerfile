@@ -1,22 +1,23 @@
-# 🧠 Noona-Vault Dockerfile
-# Location: deployment/single/vault.Dockerfile
+# deployment/vault.Dockerfile
 
-FROM node:23-slim AS noona-builder
+FROM node:24-slim
 
-WORKDIR /noona
+WORKDIR /app/Noona
 
-# Shared user, deps, and utilities
-RUN groupadd -r noona && useradd -r -g noona -m -d /home/noona -s /bin/bash noona
-COPY package*.json ./
-RUN npm install
+# Copy relevant folders
+COPY services/vault ./services/vault
 COPY utilities ./utilities
-USER noona
 
+# Install dependencies in utilities
+WORKDIR /app/Noona/utilities
+RUN npm install --production
 
-FROM noona-builder AS noona-vault
-WORKDIR /noona/services/vault
-USER root
-COPY services/vault ./
-RUN npm install
-USER noona
-CMD ["node", "initmain.mjs"]
+# Install dependencies in vault
+WORKDIR /app/Noona/services/vault
+RUN npm install --production
+
+# Expose Vault's port
+EXPOSE 4000
+
+# Set default command
+CMD ["node", "initVault.mjs"]
