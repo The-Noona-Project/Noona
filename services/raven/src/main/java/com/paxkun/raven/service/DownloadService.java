@@ -14,15 +14,17 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * DownloadService manages manga download operations.
- * Downloads each chapter as a CBZ containing all page images.
- *
+ * DownloadService manages manga download operations asynchronously.
+ * Supports downloading all titles (option index 0) or a specific title.
+ * Ensures only one active download per title, with multiple titles in parallel.
+ * <p>
  * Author: Pax
  */
 @Service
@@ -42,6 +44,9 @@ public class DownloadService {
                     .orElse("/app/downloads") + "/Noona/raven/downloads"
     );
 
+    private final ExecutorService executor = Executors.newFixedThreadPool(3);
+    private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
+
     public SearchTitle searchTitle(String titleName) {
         List<Map<String, String>> searchResults = titleScraper.searchManga(titleName);
         String searchId = UUID.randomUUID().toString();
@@ -53,15 +58,55 @@ public class DownloadService {
         return new SearchTitle(searchId, searchResults);
     }
 
-    public DownloadChapter downloadAllChapters(String searchId, int userIndex) {
-        DownloadChapter result = new DownloadChapter();
+    public String queueDownloadAllChapters(String searchId, int userIndex) {
+        List<Map<String, String>> results = titleScraper.getLastSearchResults();
 
-        try {
+        if (userIndex == 0) {
+            // Queue all titles
+            if (results == null || results.isEmpty()) {
+                return "⚠️ No search results to download.";
+            }
+
+            StringBuilder queuedTitles = new StringBuilder("✅ Queued downloads for: ");
+            for (Map<String, String> title : results) {
+                String titleName = title.get("title");
+
+                synchronized (activeDownloads) {
+                    if (activeDownloads.containsKey(titleName)) {
+                        logger.info("DOWNLOAD", "🔁 Skipping already active download: " + titleName);
+                        continue;
+                    }
+
+                    Future<?> future = executor.submit(() -> runDownload(titleName, title));
+                    activeDownloads.put(titleName, future);
+                    queuedTitles.append(titleName).append(", ");
+                }
+            }
+
+            return queuedTitles.toString();
+
+        } else {
+            // Queue single selected title
             Map<String, String> selectedTitle = getSelectedTitle(userIndex);
             String titleName = selectedTitle.get("title");
-            String titleUrl = selectedTitle.get("href");
 
-            logger.info("DOWNLOAD", "🚀 Starting full download for [" + titleName + "]");
+            synchronized (activeDownloads) {
+                if (activeDownloads.containsKey(titleName)) {
+                    return "⚠️ Download already in progress for: " + titleName;
+                }
+
+                Future<?> future = executor.submit(() -> runDownload(titleName, selectedTitle));
+                activeDownloads.put(titleName, future);
+                return "✅ Download queued for: " + titleName;
+            }
+        }
+    }
+
+    private void runDownload(String titleName, Map<String, String> selectedTitle) {
+        DownloadChapter result = new DownloadChapter();
+        try {
+            String titleUrl = selectedTitle.get("href");
+            logger.info("DOWNLOAD", "🚀 Starting download for [" + titleName + "]");
 
             List<Map<String, String>> chapters = fetchAllChaptersWithRetry(titleUrl);
             if (chapters.isEmpty()) {
@@ -105,15 +150,13 @@ public class DownloadService {
             }
 
             result.setChapterName(titleName);
-            result.setStatus("✅ All chapters downloaded successfully.");
+            result.setStatus("✅ Download completed.");
 
         } catch (Exception e) {
-            logger.error("DOWNLOAD", "❌ Failed to download all chapters: " + e.getMessage(), e);
-            result.setChapterName("Unknown");
-            result.setStatus("Download failed: " + e.getMessage());
+            logger.error("DOWNLOAD", "❌ Download failed for [" + titleName + "]: " + e.getMessage(), e);
+        } finally {
+            activeDownloads.remove(titleName);
         }
-
-        return result;
     }
 
     private List<Map<String, String>> fetchAllChaptersWithRetry(String titleUrl) {
@@ -145,14 +188,10 @@ public class DownloadService {
         if (text == null || text.isEmpty()) return "0000";
 
         Matcher m = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)").matcher(text);
-        if (m.find()) {
-            return m.group(1);
-        }
+        if (m.find()) return m.group(1);
 
         m = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
-        if (m.find()) {
-            return m.group(1);
-        }
+        if (m.find()) return m.group(1);
 
         return "0000";
     }
