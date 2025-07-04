@@ -1,7 +1,6 @@
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
-import com.paxkun.raven.service.download.DownloadChapter;
 import com.paxkun.raven.service.download.SearchTitle;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -42,18 +41,19 @@ public class DownloadController {
     }
 
     /**
-     * Downloads all chapters for a selected manga title.
+     * Queues downloading of chapters for a selected manga title asynchronously.
+     * If optionIndex is 0, queues downloads for all available titles in the search result.
      *
      * @param searchId    The search session ID returned by /search.
-     * @param optionIndex The selected option index from the search results (1-based).
-     * @return DownloadChapter result with status of full download.
+     * @param optionIndex The selected option index from the search results (1-based). Use 0 for ALL.
+     * @return Status message indicating the queue result.
      */
     @GetMapping("/select/{searchId}/{optionIndex}")
-    public ResponseEntity<DownloadChapter> downloadAllChapters(
+    public ResponseEntity<String> queueDownload(
             @PathVariable String searchId,
             @PathVariable int optionIndex) {
 
-        DownloadChapter result = downloadService.downloadAllChapters(searchId, optionIndex);
+        String result = downloadService.queueDownloadAllChapters(searchId, optionIndex);
         return ResponseEntity.ok(result);
     }
 }
