@@ -6,7 +6,10 @@ import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -14,7 +17,7 @@ import java.util.regex.Pattern;
 
 /**
  * SourceFinder locates the base source URL for chapter images using Selenium and ChromeDriver.
- * Used by Raven for chapter downloads.
+ * Targets Tailwind and Glide structures for reliability.
  *
  * Author: Pax
  */
@@ -31,16 +34,19 @@ public class SourceFinder {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
 
-        Pattern pattern = Pattern.compile("(https://[^\\s\"']+/(?:uploads|manga)/[^/]+/\\d{3,4}-001\\.png)");
+        Pattern pattern = Pattern.compile("(https://[^\\s\"']+/(?:uploads|manga)/[^/]+/\\d{4}-001\\.png)");
 
         WebDriver driver = null;
         try {
             driver = new ChromeDriver(options);
             driver.get(chapterUrl);
-            Thread.sleep(2000); // Wait for page to load
 
-            List<WebElement> images = driver.findElements(By.tagName("img"));
-            log.info("Found {} <img> tags on page {}", images.size(), chapterUrl);
+            // Wait up to 10s for Glide slides or images to load
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(".glide__slide img, img")));
+
+            List<WebElement> images = driver.findElements(By.cssSelector(".glide__slide img, img"));
+            log.info("🔍 Found {} images on page {}", images.size(), chapterUrl);
 
             for (WebElement img : images) {
                 String src = img.getAttribute("src");
@@ -63,11 +69,8 @@ public class SourceFinder {
 
             log.warn("⚠️ No matching image source found for URL: {}", chapterUrl);
 
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            log.error("Interrupted while finding source: {}", ie.getMessage(), ie);
         } catch (Exception e) {
-            log.error("Error finding source for URL: {}", chapterUrl, e);
+            log.error("❌ Error finding source for URL: {}", chapterUrl, e);
         } finally {
             if (driver != null) {
                 driver.quit();

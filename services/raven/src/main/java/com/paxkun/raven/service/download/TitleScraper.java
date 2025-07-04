@@ -5,13 +5,17 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.stereotype.Component;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 
 /**
@@ -45,10 +49,15 @@ public class TitleScraper {
                     "&sort=Best+Match&order=Ascending&official=Any&anime=Any&adult=Any&display_mode=Full+Display";
 
             driver.get(searchUrl);
-            Thread.sleep(2000); // Wait for page to load fully
 
-            Document doc = Jsoup.parse(Objects.requireNonNull(driver.getPageSource()));
+            // Wait up to 10s for search results to load
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.link.link-hover")));
+
+            Document doc = Jsoup.parse(driver.getPageSource());
             Elements mangaResults = doc.select("a.link.link-hover, a.line-clamp-1.link.link-hover");
+
+            log.info("🔍 Found {} search results for '{}'", mangaResults.size(), titleName);
 
             int index = 1;
             for (Element manga : mangaResults) {
@@ -57,16 +66,14 @@ public class TitleScraper {
                 data.put("title", manga.text());
                 data.put("href", manga.absUrl("href"));
                 results.add(data);
+                log.info("➡️ [{}] {} -> {}", index, manga.text(), manga.absUrl("href"));
                 index++;
             }
 
             lastSearchResults = results;
 
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            log.error("Interrupted during manga search: {}", ie.getMessage(), ie);
         } catch (Exception e) {
-            log.error("Error searching manga: {}", e.getMessage(), e);
+            log.error("❌ Error searching manga: {}", e.getMessage(), e);
         } finally {
             driver.quit();
         }
@@ -113,26 +120,32 @@ public class TitleScraper {
 
         try {
             driver.get(titleUrl);
-            Thread.sleep(2000); // Wait for page to load
+
+            // Wait up to 10s for chapter list to load (targeting glide or list container)
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.text-xs, a.chapter-link")));
 
             Document doc = Jsoup.parse(driver.getPageSource());
-            Elements chapterLinks = doc.select("a.text-xs"); // adjust selector if needed
+
+            // Adjust selector to match real site structure after inspecting your HTML
+            Elements chapterLinks = doc.select("a.text-xs, a.chapter-link");
+
+            log.info("🔍 Found {} chapter links for URL: {}", chapterLinks.size(), titleUrl);
 
             int index = 0;
             for (Element chapter : chapterLinks) {
+                String chapterNumber = chapter.text().replaceAll("[^0-9]", "");
                 Map<String, String> data = new HashMap<>();
-                data.put("chapter_number", String.valueOf(index));
+                data.put("chapter_number", chapterNumber.isEmpty() ? String.valueOf(index) : chapterNumber);
                 data.put("chapter_title", chapter.text());
                 data.put("href", chapter.absUrl("href"));
                 chapters.add(data);
+                log.info("📄 Chapter [{}]: {} -> {}", index, chapter.text(), chapter.absUrl("href"));
                 index++;
             }
 
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Interrupted during chapter scraping: {}", e.getMessage(), e);
         } catch (Exception e) {
-            log.error("Error scraping chapters: {}", e.getMessage(), e);
+            log.error("❌ Error scraping chapters: {}", e.getMessage(), e);
         } finally {
             driver.quit();
         }
