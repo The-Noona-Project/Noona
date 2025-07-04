@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.*;
 import java.util.*;
@@ -76,12 +77,15 @@ public class DownloadService {
                 throw new RuntimeException("No chapters found for this title.");
             }
 
-            String titleSlug = titleName.replaceAll("\\s+", "_").toLowerCase();
+            String cleanTitleName = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
+            Path titleFolder = DOWNLOAD_ROOT.resolve(cleanTitleName);
+            Files.createDirectories(titleFolder);
 
             for (Map<String, String> chapter : chapters) {
-                String chapterNumber = chapter.get("chapter_number");
+                String chapterNumberStr = chapter.get("chapter_number");
                 String chapterUrl = chapter.get("href");
 
+                int chapterNumber = Integer.parseInt(chapterNumberStr.replaceAll("[^\\d]", ""));
                 log.info("📥 Downloading Chapter [{}]: {}", chapterNumber, chapterUrl);
 
                 List<String> pageUrls = sourceFinder.findSource(chapterUrl);
@@ -90,13 +94,14 @@ public class DownloadService {
                     continue;
                 }
 
-                Path chapterFolder = DOWNLOAD_ROOT.resolve(titleSlug).resolve(chapterNumber);
-                saveImagesToFolder(pageUrls, chapterFolder);
+                Path chapterFolder = titleFolder.resolve(String.format("Chapter %03d", chapterNumber));
+                int pageCount = saveImagesToFolder(pageUrls, chapterFolder);
 
-                Path cbzPath = DOWNLOAD_ROOT.resolve(titleSlug).resolve(chapterNumber + ".cbz");
+                String cbzFileName = String.format("Chapter %03d Pages 1-%d.cbz", chapterNumber, pageCount);
+                Path cbzPath = titleFolder.resolve(cbzFileName);
                 zipFolderAsCbz(chapterFolder, cbzPath);
 
-                log.info("📦 Chapter [{}] saved as CBZ at {}", chapterNumber, cbzPath);
+                log.info("📦 Saved [{}] with {} pages at {}", cbzFileName, pageCount, cbzPath);
 
                 deleteFolder(chapterFolder);
             }
@@ -130,25 +135,38 @@ public class DownloadService {
     /**
      * Saves images from URLs into a chapter folder, retaining original extensions.
      *
-     * @param imageUrls URLs of images to save.
+     * @param imageUrls  URLs of images to save.
      * @param folderPath Destination folder path.
+     * @return Number of images saved.
      */
-    private void saveImagesToFolder(List<String> imageUrls, Path folderPath) {
+    private int saveImagesToFolder(List<String> imageUrls, Path folderPath) {
+        int count = 0;
         try {
             Files.createDirectories(folderPath);
             int index = 1;
             for (String imageUrl : imageUrls) {
                 String ext = imageUrl.substring(imageUrl.lastIndexOf('.')); // retain original extension
                 Path imagePath = folderPath.resolve(String.format("%03d%s", index, ext));
-                try (InputStream in = new URL(imageUrl).openStream()) {
-                    Files.copy(in, imagePath, StandardCopyOption.REPLACE_EXISTING);
-                    log.info("➕ Saved image: {}", imagePath);
+                try {
+                    HttpURLConnection connection = (HttpURLConnection) new URL(imageUrl).openConnection();
+                    connection.setRequestProperty("User-Agent", "Mozilla/5.0");
+                    connection.setRequestProperty("Referer", "https://weebcentral.com/");
+                    connection.connect();
+
+                    try (InputStream in = connection.getInputStream()) {
+                        Files.copy(in, imagePath, StandardCopyOption.REPLACE_EXISTING);
+                        log.info("➕ Saved image: {}", imagePath);
+                        count++;
+                    }
+                } catch (IOException e) {
+                    log.error("❌ Failed downloading image {}: {}", imageUrl, e.getMessage());
                 }
                 index++;
             }
         } catch (IOException e) {
             log.error("❌ Failed saving images: {}", e.getMessage(), e);
         }
+        return count;
     }
 
     /**
@@ -163,7 +181,7 @@ public class DownloadService {
                     .filter(Files::isRegularFile)
                     .forEach(path -> {
                         try (InputStream in = Files.newInputStream(path)) {
-                            zipOut.putNextEntry(new ZipEntry(folderPath.relativize(path).toString()));
+                            zipOut.putNextEntry(new ZipEntry(path.getFileName().toString()));
                             in.transferTo(zipOut);
                             zipOut.closeEntry();
                         } catch (IOException e) {
