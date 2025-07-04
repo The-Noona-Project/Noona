@@ -107,18 +107,32 @@ public class TitleScraper {
                 logger.info("SCRAPER", "🔄 'Show All Chapters' button found, clicking...");
                 button.click();
 
-                wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.flex.items-center.p-2")));
-                Thread.sleep(1000);
-                logger.info("SCRAPER", "🔁 Re-fetching chapter links after expanding full list...");
+                // Adaptive wait loop with scroll to ensure all chapters load
+                int lastSize = 0;
+                int sameCount = 0;
+                while (sameCount < 3) {
+                    List<WebElement> chaptersLoaded = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
+                    if (chaptersLoaded.size() == lastSize) {
+                        sameCount++;
+                    } else {
+                        sameCount = 0;
+                        lastSize = chaptersLoaded.size();
+                    }
+
+                    ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, document.body.scrollHeight);");
+                    Thread.sleep(500);
+                }
+
+                logger.info("SCRAPER", "🔁 Finished scrolling. Total chapters loaded: " + lastSize);
             }
 
-            // Refetch chapter links fresh after DOM update
+            // Final chapter extraction
             List<WebElement> chapterLinks = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
             logger.info("SCRAPER", "🔍 Found " + chapterLinks.size() + " chapter links for URL: " + titleUrl);
 
             for (int index = 0; index < chapterLinks.size(); index++) {
                 try {
-                    WebElement chapter = driver.findElements(By.cssSelector("a.flex.items-center.p-2")).get(index);
+                    WebElement chapter = chapterLinks.get(index);
 
                     String chapterTitle = chapter.getText();
                     String href = chapter.getAttribute("href");

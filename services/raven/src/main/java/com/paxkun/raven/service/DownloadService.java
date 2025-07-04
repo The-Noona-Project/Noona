@@ -4,6 +4,7 @@ import com.paxkun.raven.service.download.DownloadChapter;
 import com.paxkun.raven.service.download.SearchTitle;
 import com.paxkun.raven.service.download.SourceFinder;
 import com.paxkun.raven.service.download.TitleScraper;
+import org.openqa.selenium.StaleElementReferenceException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -13,6 +14,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.*;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -60,7 +63,7 @@ public class DownloadService {
 
             logger.info("DOWNLOAD", "🚀 Starting full download for [" + titleName + "]");
 
-            List<Map<String, String>> chapters = titleScraper.getChapters(titleUrl);
+            List<Map<String, String>> chapters = fetchAllChaptersWithRetry(titleUrl);
             if (chapters.isEmpty()) {
                 throw new RuntimeException("No chapters found for this title.");
             }
@@ -82,13 +85,15 @@ public class DownloadService {
                     continue;
                 }
 
+                String firstPageUrl = pageUrls.get(0);
+                String sourceDomain = extractDomain(firstPageUrl);
+
                 Path chapterFolder = titleFolder.resolve("temp_" + chapterNumberStr);
                 int pageCount = saveImagesToFolder(pageUrls, chapterFolder);
 
-                // 📝 New naming scheme
                 String cbzFileName = String.format(
-                        "Chapter %s [Pages:%d planeptune.us | Noona].cbz",
-                        chapterNumberStr, pageCount
+                        "Chapter %s [Pages %d %s - Noona].cbz",
+                        chapterNumberStr, pageCount, sourceDomain
                 );
 
                 Path cbzPath = titleFolder.resolve(cbzFileName);
@@ -111,6 +116,22 @@ public class DownloadService {
         return result;
     }
 
+    private List<Map<String, String>> fetchAllChaptersWithRetry(String titleUrl) {
+        int attempts = 0;
+        while (attempts < 3) {
+            try {
+                return titleScraper.getChapters(titleUrl);
+            } catch (StaleElementReferenceException e) {
+                attempts++;
+                logger.warn("SCRAPER", "⚠️ Stale element detected, retrying fetch (" + attempts + "/3)");
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {}
+            }
+        }
+        throw new RuntimeException("Failed to fetch chapters after multiple retries.");
+    }
+
     private Map<String, String> getSelectedTitle(int userIndex) {
         int optionIndex = userIndex - 1;
         List<Map<String, String>> results = titleScraper.getLastSearchResults();
@@ -120,28 +141,30 @@ public class DownloadService {
         return results.get(optionIndex);
     }
 
-    /**
-     * Extracts chapter number using regex to avoid concatenated date/timestamp artifacts.
-     * Supports optional decimal parts.
-     */
     private String extractChapterNumberFull(String text) {
         if (text == null || text.isEmpty()) return "0000";
 
-        // Regex to match "Chapter" followed by optional space, digits, and optional .digit
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)")
-                .matcher(text);
-
+        Matcher m = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)").matcher(text);
         if (m.find()) {
             return m.group(1);
         }
 
-        // Fallback: extract first numeric sequence anywhere
-        m = java.util.regex.Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
+        m = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
         if (m.find()) {
             return m.group(1);
         }
 
         return "0000";
+    }
+
+    private String extractDomain(String url) {
+        try {
+            URL u = new URL(url);
+            return u.getHost();
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD", "⚠️ Failed to parse domain from URL: " + url);
+            return "unknown";
+        }
     }
 
     private int saveImagesToFolder(List<String> imageUrls, Path folderPath) {
@@ -150,7 +173,7 @@ public class DownloadService {
             Files.createDirectories(folderPath);
             int index = 1;
             for (String imageUrl : imageUrls) {
-                String ext = imageUrl.substring(imageUrl.lastIndexOf('.')).split("\\?")[0]; // strip URL params
+                String ext = imageUrl.substring(imageUrl.lastIndexOf('.')).split("\\?")[0];
                 Path imagePath = folderPath.resolve(String.format("%03d%s", index, ext));
                 try {
                     HttpURLConnection connection = (HttpURLConnection) new URL(imageUrl).openConnection();
