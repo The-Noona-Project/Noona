@@ -1,16 +1,17 @@
-# 🦉 Raven
+# 🦅 Raven
 
-Raven is the **manga downloader and scraper microservice** for the Noona project. It powers automatic searching, scraping, and downloading of manga chapters into organized CBZ files for your personal library.
+**Raven** is the **manga downloader and scraper microservice** for the Noona project.  
+It powers automatic searching, scraping, and downloading of manga chapters into organized `.cbz` files for your personal library.
 
 ---
 
-## ✨ **Goal of Raven**
+## ✨ **What does Raven do?**
 
-Raven's goal is to:
-
-* Provide an **API to search and download manga** from supported sources (currently [WeebCentral](https://weebcentral.com)).
-* Organize downloaded chapters into a structured library.
-* Integrate seamlessly with the Noona ecosystem as its dedicated scraper service.
+✅ Provides an **API to search and download manga** from supported sources (currently [WeebCentral](https://weebcentral.com))  
+✅ Organizes downloaded chapters into a clean, structured library  
+✅ Uses **headless Selenium & Jsoup** for scraping  
+✅ Integrates seamlessly as the dedicated scraper within the Noona ecosystem  
+✅ Names chapters dynamically with **page count, source domain, and powered by Noona**
 
 ---
 
@@ -18,19 +19,23 @@ Raven's goal is to:
 
 1. **Search**
 
-    * Client calls `/v1/download/search/{titleName}`
-    * Raven uses Selenium & Jsoup to scrape WeebCentral for matching titles.
+   - Client calls `/v1/download/search/{titleName}`
+   - Raven scrapes WeebCentral for matching titles using Selenium + Jsoup
 
 2. **Select**
 
-    * Client selects a title by index via `/v1/download/select/{searchId}/{optionIndex}`
-    * Raven retrieves the correct URL, finds chapter images, and begins download.
+   - Client selects a title by index via `/v1/download/select/{searchId}/{optionIndex}`
+   - Raven retrieves the URL, finds chapters, and initiates download
 
 3. **Download**
 
-    * Raven scrapes available chapter images.
-    * Downloads them into a `.cbz` file saved under a structured folder by title.
-    * Adds the title & chapter to the local library for retrieval.
+   - For each chapter:
+     - Scrapes and downloads all pages
+     - Packages them into a `.cbz` archive with clean naming:
+       ```
+       Chapter {Number} [Pages {Count} {Source} - Noona].cbz
+       ```
+   - Adds the title & chapter to the local library
 
 ---
 
@@ -40,22 +45,43 @@ Raven's goal is to:
 | ------ | ---------------------------------------------------- | --------------------------------------------------------------------------------- |
 | GET    | `/v1/download/health`                                | Health check for the download module.                                             |
 | GET    | `/v1/download/search/{titleName}`                    | Search WeebCentral for a manga title. Returns options and a generated `searchId`. |
-| POST   | `/v1/download/search/{searchId}?optionIndex={index}` | Download a chapter from a previously searched title.                              |
+| GET    | `/v1/download/select/{searchId}/{optionIndex}`       | Download all chapters from a previously searched title.                           |
 | GET    | `/v1/library/health`                                 | Health check for the library module.                                              |
 | GET    | `/v1/library/getall`                                 | Get all titles currently in the library.                                          |
 | GET    | `/v1/library/get/{titleName}`                        | Get details of a specific title by name.                                          |
 
 ---
 
-## 📁 **Project Structure**
+## 📁 **Download Output Example**
 
-Example Windows folder path output (run `tree /f` in `services/raven`):
+Downloaded files are saved under:
+
+````
+
+/downloads/{Title}/Chapter {Number} \[Pages {Count} from {Source} - Noona].cbz
 
 ```
+
+For example:
+
+```
+
+Chapter 120 [Pages 34 hot.planeptune.us - Noona].cbz
+
+```
+
+---
+
+## 🗂️ **Project Structure**
+
+Example folder tree (`tree /f` in `services/raven`):
+
+```
+
 C:.
 │   build.gradle
 │   gradlew
-│   gradlew.bat
+│   gradlew\.bat
 │   settings.gradle
 │
 ├───gradle
@@ -64,103 +90,83 @@ C:.
 │           gradle-wrapper.properties
 │
 └───src
-    ├───main
-    │   ├───java
-    │   │   └───com
-    │   │       └───paxkun
-    │   │           └───raven
-    │   │               │   RavenApplication.java
-    │   │               │
-    │   │               ├───controller
-    │   │               │       DownloadController.java
-    │   │               │       LibraryController.java
-    │   │               │
-    │   │               └───service
-    │   │                   │   DownloadService.java
-    │   │                   │   LibraryService.java
-    │   │                   │
-    │   │                   ├───download
-    │   │                   │       DownloadChapter.java
-    │   │                   │       SearchTitle.java
-    │   │                   │       SourceFinder.java
-    │   │                   │       TitleScraper.java
-    │   │                   │
-    │   │                   └───library
-    │   │                           NewChapter.java
-    │   │                           NewTitle.java
-    │   │
-    │   └───resources
-    │       │   application.properties
-    │
-    └───test
-        └───java
-            └───com
-                └───paxkun
-                    └───raven
-                            RavenApplicationTests.java
-```
+├───main
+│   ├───java
+│   │   └───com.paxkun.raven
+│   │       │   RavenApplication.java
+│   │       ├───controller
+│   │       │       DownloadController.java
+│   │       │       LibraryController.java
+│   │       └───service
+│   │           │   DownloadService.java
+│   │           │   LibraryService.java
+│   │           ├───download
+│   │           │       DownloadChapter.java
+│   │           │       SearchTitle.java
+│   │           │       SourceFinder.java
+│   │           │       TitleScraper.java
+│   │           └───library
+│   │                   NewChapter.java
+│   │                   NewTitle.java
+│   └───resources
+│       │   application.properties
+└───test
+└───java.com.paxkun.raven
+RavenApplicationTests.java
+
+````
 
 ---
 
-## 🚀 **Building and Running Raven**
+## 🚀 **Running Raven**
 
-### **🛠️ Prerequisites**
-
-* JDK 21
-* [Gradle](https://gradle.org/) (or use `./gradlew`)
-* Docker (if running in container)
+### 🛠️ **Prerequisites**
+ 
+- Docker Desktop
 
 ---
 
-### **🔧 Build**
-
+### 🔧 **Build**
+From project root:
 ```bash
-cd services/raven
-./gradlew build
-```
+docker build --no-cache -f deployment/raven.Dockerfile -t captainpax/noona-raven . 
+````
 
-Or on Windows:
-
-```powershell
-cd services\raven
-.\gradlew.bat build
-```
-
----
-
-### **▶️ Run Locally**
-
+### ▶️ **Run Locally**
+From project root:
 ```bash
-./gradlew bootRun
+docker run -p 8080:8080 `                                        
+>>   -v ${env:APPDATA}:/app/downloads `
+>>   captainpax/noona-raven
 ```
-
-Or with Docker (from project root):
-
-```bash
-docker build -f deployment/raven.Dockerfile -t captainpax/noona-raven .
-docker run -p 8080:8080 `
-  -v ${env:APPDATA}\Noona\raven:/app/downloads `
-  captainpax/noona-raven
-```
-
----
 
 ### ✅ **Verify health**
 
-Open:
+Visit:
 
 * [http://localhost:8080/v1/download/health](http://localhost:8080/v1/download/health)
 * [http://localhost:8080/v1/library/health](http://localhost:8080/v1/library/health)
 
-You should see **“Raven Download API is up and running!”** and **“Raven Library API is up and running!”**
+You should see:
+
+```
+Raven Download API is up and running!
+Raven Library API is up and running!
+```
 
 ---
 
-### 📝 **Notes**
+## 📝 **Notes**
 
-* Downloaded CBZ files are saved under `/downloads/{title}/{chapter}.cbz`.
-* Future enhancements will integrate a persistent database instead of in-memory storage.
+* Logs are saved under `/downloads/logs` with automatic rotation.
+* Uses **headless Chrome with Selenium**; ensure your environment supports it.
+* Future enhancements:
+
+   * Volume packaging into volume-level CBZ files
+   * Persistent database integration for the library
 
 ---
 
+### 👤 **Maintained by Pax**
 
+🚀 *Powered by Noona.*
