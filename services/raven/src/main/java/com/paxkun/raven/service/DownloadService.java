@@ -70,22 +70,27 @@ public class DownloadService {
             Files.createDirectories(titleFolder);
 
             for (Map<String, String> chapter : chapters) {
-                String chapterNumberStr = chapter.get("chapter_number");
+                String chapterTitle = chapter.get("chapter_title");
+                String chapterNumberStr = extractChapterNumberFull(chapterTitle);
                 String chapterUrl = chapter.get("href");
 
-                int chapterNumber = parseChapterNumber(chapterNumberStr);
-                logger.info("DOWNLOAD", "📥 Downloading Chapter [" + chapterNumber + "]: " + chapterUrl);
+                logger.info("DOWNLOAD", "📥 Downloading Chapter [" + chapterNumberStr + "]: " + chapterUrl);
 
                 List<String> pageUrls = sourceFinder.findSource(chapterUrl);
                 if (pageUrls.isEmpty()) {
-                    logger.warn("DOWNLOAD", "⚠️ No pages found for chapter " + chapterNumber + ". Skipping.");
+                    logger.warn("DOWNLOAD", "⚠️ No pages found for chapter " + chapterNumberStr + ". Skipping.");
                     continue;
                 }
 
-                Path chapterFolder = titleFolder.resolve(String.format("Chapter %03d", chapterNumber));
+                Path chapterFolder = titleFolder.resolve("temp_" + chapterNumberStr);
                 int pageCount = saveImagesToFolder(pageUrls, chapterFolder);
 
-                String cbzFileName = String.format("Chapter %03d Pages 1-%d.cbz", chapterNumber, pageCount);
+                // 📝 New naming scheme
+                String cbzFileName = String.format(
+                        "Chapter %s [Pages:%d planeptune.us | Noona].cbz",
+                        chapterNumberStr, pageCount
+                );
+
                 Path cbzPath = titleFolder.resolve(cbzFileName);
                 zipFolderAsCbz(chapterFolder, cbzPath);
 
@@ -115,13 +120,28 @@ public class DownloadService {
         return results.get(optionIndex);
     }
 
-    private int parseChapterNumber(String chapterNumberStr) {
-        try {
-            return Integer.parseInt(chapterNumberStr.replaceAll("[^\\d]", ""));
-        } catch (NumberFormatException e) {
-            logger.warn("DOWNLOAD", "⚠️ Failed to parse chapter number from: " + chapterNumberStr + ". Using 0.");
-            return 0;
+    /**
+     * Extracts chapter number using regex to avoid concatenated date/timestamp artifacts.
+     * Supports optional decimal parts.
+     */
+    private String extractChapterNumberFull(String text) {
+        if (text == null || text.isEmpty()) return "0000";
+
+        // Regex to match "Chapter" followed by optional space, digits, and optional .digit
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)")
+                .matcher(text);
+
+        if (m.find()) {
+            return m.group(1);
         }
+
+        // Fallback: extract first numeric sequence anywhere
+        m = java.util.regex.Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
+        if (m.find()) {
+            return m.group(1);
+        }
+
+        return "0000";
     }
 
     private int saveImagesToFolder(List<String> imageUrls, Path folderPath) {
