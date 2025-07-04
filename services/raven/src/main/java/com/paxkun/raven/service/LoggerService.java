@@ -9,13 +9,13 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 @Slf4j
 @Service
 public class LoggerService implements InitializingBean {
 
-    private static final String LOGS_DIR = "logs";
     private static final String LATEST_LOG = "latest.log";
     private static final int MAX_LOGS = 5;
     private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
@@ -27,14 +27,29 @@ public class LoggerService implements InitializingBean {
     @Override
     public void afterPropertiesSet() {
         try {
-            logsPath = Paths.get(LOGS_DIR);
+            Path downloadsRoot = Path.of(
+                    Optional.ofNullable(System.getenv("APPDATA"))
+                            .orElse("/app/downloads"),
+                    "Noona", "raven", "downloads"
+            );
+
+            logsPath = downloadsRoot.resolve("logs");
+
             if (!Files.exists(logsPath)) {
                 Files.createDirectories(logsPath);
+                log.info("📂 Created logs directory at {}", logsPath.toAbsolutePath());
+            } else {
+                log.info("📂 Logs directory already exists at {}", logsPath.toAbsolutePath());
             }
+
             rotateLogs();
+
             Path latestLogPath = logsPath.resolve(LATEST_LOG);
             writer = Files.newBufferedWriter(latestLogPath, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            log.info("LoggerService initialized. Logging to {}", latestLogPath.toAbsolutePath());
+
+            logSystemEnvironment();
+
+            log.info("📝 LoggerService initialized. Logging to {}", latestLogPath.toAbsolutePath());
         } catch (IOException e) {
             throw new RuntimeException("Failed to initialize LoggerService", e);
         }
@@ -42,10 +57,11 @@ public class LoggerService implements InitializingBean {
 
     private void rotateLogs() throws IOException {
         Path latestLog = logsPath.resolve(LATEST_LOG);
-        if (Files.exists(latestLog)) {
+        if (Files.exists(latestLog) && Files.size(latestLog) > 0) {
             String timestamp = LocalDateTime.now().format(FILE_FORMATTER);
             Path archivedLog = logsPath.resolve(timestamp + ".log");
             Files.move(latestLog, archivedLog, StandardCopyOption.REPLACE_EXISTING);
+            log.info("🔄 Rotated log to {}", archivedLog.getFileName());
         }
 
         try (Stream<Path> files = Files.list(logsPath)
@@ -57,8 +73,9 @@ public class LoggerService implements InitializingBean {
                     .forEach(p -> {
                         try {
                             Files.delete(p);
+                            log.info("🗑️ Deleted old log file: {}", p.getFileName());
                         } catch (IOException e) {
-                            log.warn("Failed to delete old log file: {}", p, e);
+                            log.warn("⚠️ Failed to delete old log file: {}", p.getFileName(), e);
                         }
                     });
         }
@@ -83,7 +100,7 @@ public class LoggerService implements InitializingBean {
             writer.flush();
             System.out.print(logLine); // also output to console
         } catch (IOException e) {
-            log.error("Failed to write to log file", e);
+            log.error("❌ Failed to write to log file", e);
         }
     }
 
@@ -101,5 +118,11 @@ public class LoggerService implements InitializingBean {
 
     public void debug(String tag, String message) {
         write("DEBUG", tag, message);
+    }
+
+    private void logSystemEnvironment() {
+        write("SYSTEM", "APPDATA", System.getenv("APPDATA"));
+        write("SYSTEM", "USER", System.getProperty("user.name"));
+        write("SYSTEM", "OS", System.getProperty("os.name") + " " + System.getProperty("os.version"));
     }
 }

@@ -19,7 +19,7 @@ import java.util.zip.ZipOutputStream;
 /**
  * DownloadService manages manga download operations.
  * Downloads each chapter as a CBZ containing all page images.
- * <p>
+ *
  * Author: Pax
  */
 @Service
@@ -108,10 +108,11 @@ public class DownloadService {
 
     private Map<String, String> getSelectedTitle(int userIndex) {
         int optionIndex = userIndex - 1;
-        if (optionIndex < 0 || optionIndex >= titleScraper.getLastSearchResults().size()) {
+        List<Map<String, String>> results = titleScraper.getLastSearchResults();
+        if (results == null || optionIndex < 0 || optionIndex >= results.size()) {
             throw new IndexOutOfBoundsException("Invalid option index: " + userIndex);
         }
-        return titleScraper.getResultByIndex(userIndex);
+        return results.get(optionIndex);
     }
 
     private int parseChapterNumber(String chapterNumberStr) {
@@ -129,7 +130,7 @@ public class DownloadService {
             Files.createDirectories(folderPath);
             int index = 1;
             for (String imageUrl : imageUrls) {
-                String ext = imageUrl.substring(imageUrl.lastIndexOf('.'));
+                String ext = imageUrl.substring(imageUrl.lastIndexOf('.')).split("\\?")[0]; // strip URL params
                 Path imagePath = folderPath.resolve(String.format("%03d%s", index, ext));
                 try {
                     HttpURLConnection connection = (HttpURLConnection) new URL(imageUrl).openConnection();

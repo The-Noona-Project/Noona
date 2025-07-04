@@ -5,9 +5,7 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.openqa.selenium.By;
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
+import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
@@ -101,7 +99,6 @@ public class TitleScraper {
 
         try {
             driver.get(titleUrl);
-
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
 
             List<WebElement> showAllButtons = driver.findElements(By.xpath("//button[contains(text(), 'Show All Chapters')]"));
