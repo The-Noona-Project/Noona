@@ -18,9 +18,7 @@ import java.util.List;
 
 /**
  * SourceFinder scrapes all page image URLs for a given manga chapter.
- * Uses headless Chrome via Selenium to load dynamic content,
- * then parses with Jsoup to extract <img> src attributes.
- *
+ * <p>
  * Author: Pax
  */
 @Slf4j
@@ -43,13 +41,14 @@ public class SourceFinder {
         try {
             driver.get(chapterUrl);
 
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20)); // increased wait time
 
-            // Wait for at least one image to appear
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("img")));
+            // Use a more specific selector if possible (update based on actual site)
+            By imageSelector = By.cssSelector("img"); // e.g. "img.page-image"
+            wait.until(ExpectedConditions.presenceOfElementLocated(imageSelector));
 
             Document doc = Jsoup.parse(driver.getPageSource());
-            Elements imgElements = doc.select("img");
+            Elements imgElements = doc.select("img"); // e.g. "img.page-image"
 
             for (var img : imgElements) {
                 String src = img.absUrl("src");
@@ -59,11 +58,15 @@ public class SourceFinder {
                 }
             }
 
-            log.info("✅ Found {} images on page {}", images.size(), chapterUrl);
+            if (images.isEmpty()) {
+                log.warn("⚠️ No images found on page: {}", chapterUrl);
+            } else {
+                log.info("✅ Found {} images on page {}", images.size(), chapterUrl);
+            }
 
         } catch (Exception e) {
             log.error("❌ Error finding source for URL: {}", chapterUrl, e);
-            throw new RuntimeException("Could not find images for chapter at URL: " + chapterUrl);
+            // Do NOT throw here; return empty list so DownloadService can skip
         } finally {
             driver.quit();
         }
