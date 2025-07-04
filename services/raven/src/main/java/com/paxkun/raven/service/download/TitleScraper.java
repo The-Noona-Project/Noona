@@ -112,12 +112,14 @@ public class TitleScraper {
                 logger.info("SCRAPER", "🔁 Re-fetching chapter links after expanding full list...");
             }
 
+            // Refetch chapter links fresh after DOM update
             List<WebElement> chapterLinks = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
             logger.info("SCRAPER", "🔍 Found " + chapterLinks.size() + " chapter links for URL: " + titleUrl);
 
-            int index = 0;
-            for (WebElement chapter : chapterLinks) {
+            for (int index = 0; index < chapterLinks.size(); index++) {
                 try {
+                    WebElement chapter = driver.findElements(By.cssSelector("a.flex.items-center.p-2")).get(index);
+
                     String chapterTitle = chapter.getText();
                     String href = chapter.getAttribute("href");
 
@@ -132,7 +134,6 @@ public class TitleScraper {
                 } catch (Exception inner) {
                     logger.warn("SCRAPER", "⚠️ Failed to parse chapter at index " + index + ": " + inner.getMessage());
                 }
-                index++;
             }
 
         } catch (Exception e) {
