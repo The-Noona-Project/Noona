@@ -1,7 +1,7 @@
 ﻿// dockerUtilties.mjs
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
-import {debugMSG, log} from '../../../utilities/etc/logger.mjs';
+import { debugMSG, log } from '../../../utilities/etc/logger.mjs';
 
 const docker = new Docker();
 
@@ -12,7 +12,7 @@ export async function ensureNetwork(dockerInstance, networkName) {
     const networks = await dockerInstance.listNetworks();
     if (!networks.some(n => n.Name === networkName)) {
         log(`Creating Docker network: ${networkName}`);
-        await dockerInstance.createNetwork({Name: networkName});
+        await dockerInstance.createNetwork({ Name: networkName });
     }
 }
 
@@ -26,7 +26,7 @@ export async function attachSelfToNetwork(dockerInstance, networkName) {
 
     if (!networks[networkName]) {
         log(`Attaching Warden to Docker network: ${networkName}`);
-        await dockerInstance.getNetwork(networkName).connect({Container: id});
+        await dockerInstance.getNetwork(networkName).connect({ Container: id });
     }
 }
 
@@ -34,7 +34,7 @@ export async function attachSelfToNetwork(dockerInstance, networkName) {
  * Checks if a Docker container exists by name (any state)
  */
 export async function containerExists(name) {
-    const list = await docker.listContainers({all: true});
+    const list = await docker.listContainers({ all: true });
     return list.some(c => c.Names.includes(`/${name}`));
 }
 
@@ -69,9 +69,8 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
     const binds = service.volumes || [];
     const envVars = [...(service.env || []), `SERVICE_NAME=${service.name}`];
 
-    const isMoon = service.name === 'noona-moon';
-    const exposed = isMoon ? {'80/tcp': {}} : service.exposed || {};
-    const ports = isMoon ? {'80/tcp': [{HostPort: '3000'}]} : service.ports || {};
+    const exposed = service.exposed || {};
+    const ports = service.ports || {};
 
     const container = await docker.createContainer({
         name: service.name,
@@ -80,13 +79,13 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
         ExposedPorts: exposed,
         HostConfig: {
             PortBindings: ports,
-            Binds: binds.length ? binds : undefined
+            Binds: binds.length ? binds : undefined,
         },
         NetworkingConfig: {
             EndpointsConfig: {
-                [networkName]: {}
-            }
-        }
+                [networkName]: {},
+            },
+        },
     });
 
     trackedContainers.add(service.name);
@@ -98,7 +97,7 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
             follow: true,
             stdout: true,
             stderr: true,
-            tail: 10
+            tail: 10,
         });
         logs.on('data', chunk => process.stdout.write(`[${service.name}] ${chunk.toString()}`));
     }
@@ -117,7 +116,8 @@ export async function waitForHealthyStatus(name, url, tries = 20, delay = 1000) 
                 debugMSG(`[dockerUtil] ✅ ${name} is healthy after ${i + 1} tries`);
                 return;
             }
-        } catch {
+        } catch (err) {
+            debugMSG(`[dockerUtil] Waiting for ${name}... attempt ${i + 1}`);
         }
         await new Promise(r => setTimeout(r, delay));
         process.stdout.write('.');

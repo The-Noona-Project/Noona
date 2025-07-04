@@ -7,6 +7,7 @@ const rawList = [
         port: 3004,
         internalPort: 3004,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-sage'],
+        health: 'http://noona-sage:3004/health',
     },
     {
         name: 'noona-moon',
@@ -14,6 +15,7 @@ const rawList = [
         port: 3000,
         internalPort: 3000,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-moon'],
+        health: 'http://noona-moon:3000/',
     },
     {
         name: 'noona-oracle',
@@ -21,6 +23,7 @@ const rawList = [
         port: 3001,
         internalPort: 3001,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-oracle'],
+        health: 'http://noona-oracle:3001/',
     },
     {
         name: 'noona-raven',
@@ -28,6 +31,7 @@ const rawList = [
         port: 3002,
         internalPort: 3002,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-raven'],
+        health: 'http://noona-raven:3002/',
     },
     {
         name: 'noona-portal',
@@ -35,6 +39,7 @@ const rawList = [
         port: 3003,
         internalPort: 3003,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-portal'],
+        health: 'http://noona-portal:3003/',
     },
     {
         name: 'noona-vault',
@@ -42,16 +47,17 @@ const rawList = [
         port: 3005,
         internalPort: 3005,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-vault'],
-    }
+        health: 'http://noona-vault:3005/',
+    },
 ];
 
 const noonaDockers = Object.fromEntries(
     rawList.map(service => {
         const internal = service.internalPort || service.port;
-        const exposed = internal ? {[`${internal}/tcp`]: {}} : undefined;
+        const exposed = internal ? { [`${internal}/tcp`]: {} } : {};
         const ports = internal && service.port
-            ? {[`${internal}/tcp`]: [{HostPort: String(service.port)}]}
-            : undefined;
+            ? { [`${internal}/tcp`]: [{ HostPort: String(service.port) }] }
+            : {};
 
         return [
             service.name,
@@ -59,7 +65,7 @@ const noonaDockers = Object.fromEntries(
                 ...service,
                 exposed,
                 ports,
-            }
+            },
         ];
     })
 );

@@ -47,12 +47,32 @@ async function bootFull() {
         ...noonaDockers
     };
 
-    for (const name of Object.keys(services)) {
+    const superBootOrder = [
+        'noona-redis',
+        'noona-mongo',
+        'noona-sage',
+        'noona-moon',
+        'noona-vault',
+        'noona-raven',
+    ];
+
+    for (const name of superBootOrder) {
         const svc = services[name];
+        if (!svc) {
+            warn(`Service ${name} not found in addonDockers or noonaDockers.`);
+            continue;
+        }
+
         const defaultHealthUrl = svc.port || svc.internalPort
             ? `http://${name}:${svc.internalPort || svc.port}/`
             : null;
-        await startService(svc, defaultHealthUrl);
+
+        // Special health URL overrides if needed
+        let healthUrl = defaultHealthUrl;
+        if (name === 'noona-redis') healthUrl = 'http://noona-redis:8001/';
+        if (name === 'noona-sage') healthUrl = 'http://noona-sage:3004/health';
+
+        await startService(svc, healthUrl);
     }
 }
 
@@ -82,7 +102,7 @@ async function init() {
     await attachSelfToNetwork(docker, networkName);
 
     if (SUPER_MODE) {
-        log('[Warden] 💥 DEBUG=super — launching full stack...');
+        log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
         await bootFull();
     } else {
         log('[Warden] 🧪 Minimal mode — launching redis, sage, moon only');
