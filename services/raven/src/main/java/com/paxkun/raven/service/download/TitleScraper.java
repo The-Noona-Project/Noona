@@ -1,5 +1,6 @@
 package com.paxkun.raven.service.download;
 
+import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -14,11 +15,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
- * Scraper for searching manga titles from weebcentral.com.
- * Uses Selenium to load dynamic content and Jsoup for parsing.
+ * TitleScraper handles searching for manga titles and scraping chapter lists
+ * from weebcentral.com using Selenium and Jsoup.
  *
- * @author Pax
+ * Author: Pax
  */
+@Slf4j
 @Component
 public class TitleScraper {
 
@@ -48,30 +50,23 @@ public class TitleScraper {
             Document doc = Jsoup.parse(Objects.requireNonNull(driver.getPageSource()));
             Elements mangaResults = doc.select("a.link.link-hover, a.line-clamp-1.link.link-hover");
 
-            if (mangaResults.isEmpty()) {
-                System.out.println("No manga found for search: " + titleName);
-                return results;
-            }
-
             int index = 1;
             for (Element manga : mangaResults) {
                 Map<String, String> data = new HashMap<>();
-                data.put("index", String.valueOf(index)); // Add human-friendly index starting from 1
+                data.put("index", String.valueOf(index));
                 data.put("title", manga.text());
                 data.put("href", manga.absUrl("href"));
                 results.add(data);
                 index++;
             }
 
-            // Cache last search for index-based retrieval
             lastSearchResults = results;
 
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-            System.err.println("Interrupted during manga search: " + ie.getMessage());
+            log.error("Interrupted during manga search: {}", ie.getMessage(), ie);
         } catch (Exception e) {
-            System.err.println("Error searching manga: " + e.getMessage());
-            e.printStackTrace();
+            log.error("Error searching manga: {}", e.getMessage(), e);
         } finally {
             driver.quit();
         }
@@ -84,7 +79,6 @@ public class TitleScraper {
      *
      * @param index The 1-based index of the desired result.
      * @return Map containing "index", "title", and "href" keys.
-     * @throws IndexOutOfBoundsException if index is invalid.
      */
     public Map<String, String> getResultByIndex(int index) {
         int adjustedIndex = index - 1;
@@ -98,9 +92,51 @@ public class TitleScraper {
     /**
      * Returns the most recent search results.
      *
-     * @return List of maps containing search results
+     * @return List of maps containing search results.
      */
     public List<Map<String, String>> getLastSearchResults() {
         return Collections.unmodifiableList(lastSearchResults);
+    }
+
+    /**
+     * Retrieves all chapters for a given title page.
+     *
+     * @param titleUrl The main title page URL.
+     * @return List of chapters with "chapter_number", "chapter_title", and "href".
+     */
+    public List<Map<String, String>> getChapters(String titleUrl) {
+        ChromeOptions options = new ChromeOptions();
+        options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+
+        WebDriver driver = new ChromeDriver(options);
+        List<Map<String, String>> chapters = new ArrayList<>();
+
+        try {
+            driver.get(titleUrl);
+            Thread.sleep(2000); // Wait for page to load
+
+            Document doc = Jsoup.parse(driver.getPageSource());
+            Elements chapterLinks = doc.select("a.text-xs"); // adjust selector if needed
+
+            int index = 0;
+            for (Element chapter : chapterLinks) {
+                Map<String, String> data = new HashMap<>();
+                data.put("chapter_number", String.valueOf(index));
+                data.put("chapter_title", chapter.text());
+                data.put("href", chapter.absUrl("href"));
+                chapters.add(data);
+                index++;
+            }
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted during chapter scraping: {}", e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("Error scraping chapters: {}", e.getMessage(), e);
+        } finally {
+            driver.quit();
+        }
+
+        return chapters;
     }
 }

@@ -10,9 +10,7 @@ import org.springframework.web.bind.annotation.*;
 /**
  * DownloadController handles endpoints for searching and downloading manga titles and chapters.
  *
- * Note: The download endpoint triggers a download operation with file writing.
- * While it currently uses GET for convenience in internal tools, POST is preferred
- * for non-idempotent write operations in public REST APIs.
+ * Author: Pax
  */
 @RestController
 @RequestMapping("/v1/download")
@@ -24,7 +22,7 @@ public class DownloadController {
     /**
      * Health check endpoint for Raven's download module.
      *
-     * @return a simple "OK" response if the service is up
+     * @return Status message
      */
     @GetMapping("/health")
     public ResponseEntity<String> healthCheck() {
@@ -32,10 +30,10 @@ public class DownloadController {
     }
 
     /**
-     * Search for a manga title.
+     * Searches for a manga title.
      *
-     * @param titleName the title to search for
-     * @return SearchTitle object containing possible matches and a generated searchId
+     * @param titleName The title to search.
+     * @return SearchTitle object containing possible matches and a generated searchId.
      */
     @GetMapping("/search/{titleName}")
     public ResponseEntity<SearchTitle> searchTitle(@PathVariable String titleName) {
@@ -44,21 +42,18 @@ public class DownloadController {
     }
 
     /**
-     * Download a chapter for a previously searched manga.
-     * <p>
-     * Note: This endpoint performs a write action (download + save as CBZ) but is using GET
-     * for simplicity. For production/public APIs, consider changing to POST.
+     * Downloads all chapters for a selected manga title.
      *
-     * @param searchId the search session ID returned by /search
-     * @param optionIndex the selected option index from the search results (1-based index)
-     * @return DownloadChapter result with status
+     * @param searchId    The search session ID returned by /search.
+     * @param optionIndex The selected option index from the search results (1-based).
+     * @return DownloadChapter result with status of full download.
      */
     @GetMapping("/select/{searchId}/{optionIndex}")
-    public ResponseEntity<DownloadChapter> downloadChapter(
+    public ResponseEntity<DownloadChapter> downloadAllChapters(
             @PathVariable String searchId,
             @PathVariable int optionIndex) {
 
-        DownloadChapter result = downloadService.downloadSelectedTitle(searchId, optionIndex);
+        DownloadChapter result = downloadService.downloadAllChapters(searchId, optionIndex);
         return ResponseEntity.ok(result);
     }
 }

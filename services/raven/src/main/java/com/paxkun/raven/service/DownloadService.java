@@ -11,14 +11,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * DownloadService manages search and download operations, including creating CBZ archives.
+ * DownloadService manages manga download operations.
+ * Provides search and full title download as CBZ files.
+ *
+ * Author: Pax
  */
 @Slf4j
 @Service
@@ -29,9 +31,15 @@ public class DownloadService {
 
     private static final Path DOWNLOAD_ROOT = Path.of(
             Optional.ofNullable(System.getenv("APPDATA"))
-                    .orElse("/app/downloads") + "/Noona/raven"
+                    .orElse("/app/downloads") + "/Noona/raven/downloads"
     );
 
+    /**
+     * Searches for a manga title and returns possible matches.
+     *
+     * @param titleName The title to search.
+     * @return SearchTitle containing results and a generated searchId.
+     */
     public SearchTitle searchTitle(String titleName) {
         List<Map<String, String>> searchResults = titleScraper.searchManga(titleName);
         String searchId = UUID.randomUUID().toString();
@@ -43,54 +51,59 @@ public class DownloadService {
         return new SearchTitle(searchId, searchResults);
     }
 
-    public DownloadChapter downloadSelectedTitle(String searchId, int userIndex) {
+    /**
+     * Downloads all chapters for a selected title.
+     *
+     * @param searchId  The search session ID.
+     * @param userIndex The selected option index (1-based).
+     * @return DownloadChapter status.
+     */
+    public DownloadChapter downloadAllChapters(String searchId, int userIndex) {
         DownloadChapter result = new DownloadChapter();
 
         try {
-            int optionIndex = userIndex - 1;
-
-            if (optionIndex < 0 || optionIndex >= titleScraper.getLastSearchResults().size()) {
-                throw new IndexOutOfBoundsException("Invalid option index: " + userIndex);
-            }
-
-            Map<String, String> selectedTitle = titleScraper.getResultByIndex(userIndex);
+            Map<String, String> selectedTitle = getSelectedTitle(userIndex);
             String titleName = selectedTitle.get("title");
-            String chapterUrl = selectedTitle.get("href");
+            String titleUrl = selectedTitle.get("href");
 
-            log.info("🚀 Starting download for title [{}] from URL [{}]", titleName, chapterUrl);
+            log.info("🚀 Starting full download for [{}]", titleName);
 
-            String baseSourceUrl = SourceFinder.findSource(chapterUrl)
-                    .orElseThrow(() -> new RuntimeException("Could not find base source URL for: " + chapterUrl));
+            List<Map<String, String>> chapters = titleScraper.getChapters(titleUrl);
+            if (chapters.isEmpty()) {
+                throw new RuntimeException("No chapters found for this title.");
+            }
 
-            log.info("✅ Base source URL resolved: {}", baseSourceUrl);
+            String titleSlug = titleName.replaceAll("\\s+", "_").toLowerCase();
 
-            List<String> imageUrls = new ArrayList<>();
-            for (int i = 1; i < PAGE_LIMIT; i++) {
-                String imageUrl = baseSourceUrl
-                        + String.format("%04d", userIndex)
-                        + "-"
-                        + String.format("%03d", i)
-                        + ".png";
+            for (Map<String, String> chapter : chapters) {
+                String chapterNumber = chapter.get("chapter_number");
+                String chapterUrl = chapter.get("href");
 
-                if (urlExists(imageUrl)) {
-                    imageUrls.add(imageUrl);
-                } else {
-                    break;
+                log.info("📥 Downloading Chapter [{}]: {}", chapterNumber, chapterUrl);
+
+                String baseSourceUrl = SourceFinder.findSource(chapterUrl)
+                        .orElseThrow(() -> new RuntimeException("Could not find source for chapter: " + chapterNumber));
+
+                List<String> imageUrls = fetchImageUrls(baseSourceUrl, chapterNumber);
+                if (imageUrls.isEmpty()) {
+                    log.warn("⚠️ No pages found for chapter {}. Skipping.", chapterNumber);
+                    continue;
                 }
-            }
 
-            if (imageUrls.isEmpty()) {
-                throw new RuntimeException("No pages found for download.");
-            }
+                Path chapterFolder = DOWNLOAD_ROOT.resolve(titleSlug).resolve(chapterNumber);
+                saveImagesToFolder(imageUrls, chapterFolder);
 
-            String cbzFilename = titleName.replaceAll("\\s+", "_") + ".cbz";
-            Path titleFolder = DOWNLOAD_ROOT.resolve(titleName);
-            createCbzFromImages(imageUrls, cbzFilename, titleFolder);
+                Path cbzPath = DOWNLOAD_ROOT.resolve(titleSlug).resolve(chapterNumber + ".cbz");
+                zipFolderAsCbz(chapterFolder, cbzPath);
+
+                log.info("📦 Chapter [{}] saved as CBZ at {}", chapterNumber, cbzPath);
+            }
 
             result.setChapterName(titleName);
-            result.setStatus("✅ Downloaded and saved as CBZ at " + titleFolder.toAbsolutePath());
+            result.setStatus("✅ All chapters downloaded successfully.");
+
         } catch (Exception e) {
-            log.error("❌ Failed to download chapter: {}", e.getMessage(), e);
+            log.error("❌ Failed to download all chapters: {}", e.getMessage(), e);
             result.setChapterName("Unknown");
             result.setStatus("Download failed: " + e.getMessage());
         }
@@ -98,51 +111,79 @@ public class DownloadService {
         return result;
     }
 
-    private void createCbzFromImages(List<String> imageUrls, String cbzFilename, Path outputFolder) {
-        Path cbzPath = outputFolder.resolve(cbzFilename);
-
-        try {
-            Files.createDirectories(outputFolder);
-
-            try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(cbzPath))) {
-                int index = 1;
-                for (String imageUrl : imageUrls) {
-                    addImageToZip(imageUrl, zipOut, index);
-                    index++;
-                }
-            }
-
-            log.info("💾 Saved CBZ: {}", cbzPath);
-        } catch (IOException e) {
-            log.error("❌ Failed to create CBZ: {}", e.getMessage(), e);
+    /** Helper: Retrieves selected title from last search results. */
+    private Map<String, String> getSelectedTitle(int userIndex) {
+        int optionIndex = userIndex - 1;
+        if (optionIndex < 0 || optionIndex >= titleScraper.getLastSearchResults().size()) {
+            throw new IndexOutOfBoundsException("Invalid option index: " + userIndex);
         }
+        return titleScraper.getResultByIndex(userIndex);
+    }
+
+    /** Helper: Builds list of page image URLs for a chapter. */
+    private List<String> fetchImageUrls(String baseSourceUrl, String chapterNumber) {
+        List<String> imageUrls = new ArrayList<>();
+        for (int i = 1; i < PAGE_LIMIT; i++) {
+            String imageUrl = baseSourceUrl
+                    + String.format("%04d", Integer.parseInt(chapterNumber))
+                    + "-"
+                    + String.format("%03d", i)
+                    + ".png";
+
+            if (urlExists(imageUrl)) {
+                imageUrls.add(imageUrl);
+            } else {
+                break;
+            }
+        }
+        return imageUrls;
     }
 
     private boolean urlExists(String urlStr) {
         try {
-            URL url = new URL(urlStr);
-            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            HttpURLConnection connection = (HttpURLConnection) new URL(urlStr).openConnection();
             connection.setRequestMethod("HEAD");
             connection.setConnectTimeout(3000);
             connection.setReadTimeout(3000);
-            int responseCode = connection.getResponseCode();
-            return (200 <= responseCode && responseCode < 400);
+            return (200 <= connection.getResponseCode() && connection.getResponseCode() < 400);
         } catch (IOException e) {
             log.warn("⚠️ Failed to check URL: {} - {}", urlStr, e.getMessage());
             return false;
         }
     }
 
-    private void addImageToZip(String imageUrl, ZipOutputStream zipOut, int index) {
-        try (InputStream in = new URL(imageUrl).openStream()) {
-            String imageName = String.format("%03d.png", index);
-            ZipEntry entry = new ZipEntry(imageName);
-            zipOut.putNextEntry(entry);
-            in.transferTo(zipOut);
-            zipOut.closeEntry();
-            log.info("➕ Added image to CBZ: {}", imageName);
+    private void saveImagesToFolder(List<String> imageUrls, Path folderPath) {
+        try {
+            Files.createDirectories(folderPath);
+            int index = 1;
+            for (String imageUrl : imageUrls) {
+                Path imagePath = folderPath.resolve(String.format("%04d-%03d.png", index, index));
+                try (InputStream in = new URL(imageUrl).openStream()) {
+                    Files.copy(in, imagePath, StandardCopyOption.REPLACE_EXISTING);
+                    log.info("➕ Saved image: {}", imagePath);
+                }
+                index++;
+            }
         } catch (IOException e) {
-            log.error("❌ Failed to download and add image to zip: {} - {}", imageUrl, e.getMessage());
+            log.error("❌ Failed saving images: {}", e.getMessage(), e);
+        }
+    }
+
+    private void zipFolderAsCbz(Path folderPath, Path cbzPath) {
+        try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(cbzPath))) {
+            Files.walk(folderPath)
+                    .filter(Files::isRegularFile)
+                    .forEach(path -> {
+                        try (InputStream in = Files.newInputStream(path)) {
+                            zipOut.putNextEntry(new ZipEntry(folderPath.relativize(path).toString()));
+                            in.transferTo(zipOut);
+                            zipOut.closeEntry();
+                        } catch (IOException e) {
+                            log.error("❌ Failed adding to CBZ: {}", e.getMessage(), e);
+                        }
+                    });
+        } catch (IOException e) {
+            log.error("❌ Failed to create CBZ: {}", e.getMessage(), e);
         }
     }
 }
