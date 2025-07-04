@@ -6,19 +6,19 @@ import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
-import org.openqa.selenium.support.ui.ExpectedConditions;
-import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * SourceFinder scrapes all page image URLs for a given manga chapter.
- * <p>
+ * SourceFinder scrapes base image source URLs for a given manga chapter.
+ *
  * Author: Pax
  */
 @Slf4j
@@ -26,51 +26,50 @@ import java.util.List;
 public class SourceFinder {
 
     /**
-     * Retrieves all page image URLs for a given chapter URL.
+     * Retrieves the base URL for chapter page images.
+     * For example:
+     * "<a href="https://hot.planeptune.us/manga/Solo-Leveling/">...</a>"
      *
      * @param chapterUrl The URL of the manga chapter page.
-     * @return List of image URLs.
+     * @return List with one entry: the base source URL.
      */
     public List<String> findSource(String chapterUrl) {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
 
         WebDriver driver = new ChromeDriver(options);
-        List<String> images = new ArrayList<>();
+        List<String> sources = new ArrayList<>();
 
         try {
             driver.get(chapterUrl);
+            Thread.sleep(2000); // Wait to ensure full page load
 
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20)); // increased wait time
+            List<WebElement> images = driver.findElements(By.tagName("img"));
+            Pattern pattern = Pattern.compile("(https://[^\\s]+/manga/[^/]+/)");
 
-            // Use a more specific selector if possible (update based on actual site)
-            By imageSelector = By.cssSelector("img"); // e.g. "img.page-image"
-            wait.until(ExpectedConditions.presenceOfElementLocated(imageSelector));
+            for (WebElement img : images) {
+                String src = img.getAttribute("src");
+                if (src == null) continue;
 
-            Document doc = Jsoup.parse(driver.getPageSource());
-            Elements imgElements = doc.select("img"); // e.g. "img.page-image"
-
-            for (var img : imgElements) {
-                String src = img.absUrl("src");
-                if (!src.isEmpty()) {
-                    images.add(src);
-                    log.info("🖼️ Found image: {}", src);
+                Matcher matcher = pattern.matcher(src);
+                if (matcher.find()) {
+                    String baseSourceUrl = matcher.group(1);
+                    log.info("✅ Found base source URL: {}", baseSourceUrl);
+                    sources.add(baseSourceUrl);
+                    break; // Only need the first valid match
                 }
             }
 
-            if (images.isEmpty()) {
-                log.warn("⚠️ No images found on page: {}", chapterUrl);
-            } else {
-                log.info("✅ Found {} images on page {}", images.size(), chapterUrl);
+            if (sources.isEmpty()) {
+                log.warn("⚠️ No valid image base source found on page: {}", chapterUrl);
             }
 
         } catch (Exception e) {
             log.error("❌ Error finding source for URL: {}", chapterUrl, e);
-            // Do NOT throw here; return empty list so DownloadService can skip
         } finally {
             driver.quit();
         }
 
-        return images;
+        return sources;
     }
 }
