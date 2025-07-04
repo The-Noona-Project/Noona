@@ -44,14 +44,18 @@ public class SourceFinder {
             List<WebElement> images = driver.findElements(By.tagName("img"));
             String baseSourceUrl = null;
 
+            // Pattern logic similar to your old CLI approach to ensure correct base URL
             for (WebElement img : images) {
                 String src = img.getAttribute("src");
                 if (src == null) continue;
 
-                if (src.contains("/manga/")) {
+                if (src.contains("/manga/") && src.endsWith(".png")) {
                     int index = src.indexOf("/manga/");
-                    baseSourceUrl = src.substring(0, index + 7); // includes "/manga/"
-                    break;
+                    int endIndex = src.lastIndexOf("/");
+                    if (index != -1 && endIndex != -1 && endIndex > index + 7) {
+                        baseSourceUrl = src.substring(0, endIndex + 1);
+                        break; // Found valid base
+                    }
                 }
             }
 
@@ -62,10 +66,10 @@ public class SourceFinder {
 
             log.info("✅ Found base source URL: {}", baseSourceUrl);
 
-            // Determine manga folder from URL structure
+            // Extract manga folder from URL (e.g., Solo-Leveling)
             String mangaName = extractMangaName(baseSourceUrl);
 
-            // Determine chapter number from the page URL or site pattern if needed
+            // Extract chapter number from URL or fallback logic
             String chapterNumber = extractChapterNumber(chapterUrl);
 
             // Generate sequential page URLs and test existence
@@ -99,19 +103,28 @@ public class SourceFinder {
      */
     private String extractMangaName(String baseSourceUrl) {
         String[] parts = baseSourceUrl.split("/");
-        return parts[parts.length - 1].isEmpty() ? parts[parts.length - 2] : parts[parts.length - 1];
+        for (int i = 0; i < parts.length; i++) {
+            if (parts[i].equals("manga") && i + 1 < parts.length) {
+                return parts[i + 1];
+            }
+        }
+        return "unknown_manga";
     }
 
     /**
-     * Extracts chapter number from the chapter URL.
-     * Adjust logic based on your site pattern.
+     * Extracts chapter number from the chapter URL, zero-padded to 4 digits.
      *
      * @param chapterUrl The chapter URL.
      * @return Chapter number as string.
      */
     private String extractChapterNumber(String chapterUrl) {
+        // Example fallback logic for extracting numeric chapter identifier
         String[] parts = chapterUrl.split("/");
-        return parts[parts.length - 1];
+        String last = parts[parts.length - 1];
+        if (last.matches("\\d+")) {
+            return String.format("%04d", Integer.parseInt(last));
+        }
+        return "0000";
     }
 
     /**
@@ -131,6 +144,7 @@ public class SourceFinder {
             int responseCode = connection.getResponseCode();
             return (200 <= responseCode && responseCode < 400);
         } catch (Exception e) {
+            log.warn("⚠️ Failed HEAD request for {}: {}", urlStr, e.getMessage());
             return false;
         }
     }

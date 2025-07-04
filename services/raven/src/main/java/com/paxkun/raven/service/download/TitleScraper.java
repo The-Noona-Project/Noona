@@ -22,7 +22,7 @@ import java.util.*;
 /**
  * TitleScraper handles searching for manga titles and scraping chapter lists
  * from weebcentral.com using Selenium and Jsoup.
- *
+ * <p>
  * Author: Pax
  */
 @Slf4j
@@ -51,7 +51,6 @@ public class TitleScraper {
 
             driver.get(searchUrl);
 
-            // Wait up to 10s for manga search results to load
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
             wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("section#search-results a.line-clamp-1.link.link-hover")));
 
@@ -83,12 +82,6 @@ public class TitleScraper {
         return results;
     }
 
-    /**
-     * Retrieves a search result by its 1-based index from the last performed search.
-     *
-     * @param index The 1-based index of the desired result.
-     * @return Map containing "index", "title", and "href" keys.
-     */
     public Map<String, String> getResultByIndex(int index) {
         int adjustedIndex = index - 1;
         if (lastSearchResults != null && adjustedIndex >= 0 && adjustedIndex < lastSearchResults.size()) {
@@ -98,11 +91,6 @@ public class TitleScraper {
         }
     }
 
-    /**
-     * Returns the most recent search results.
-     *
-     * @return List of maps containing search results.
-     */
     public List<Map<String, String>> getLastSearchResults() {
         return Collections.unmodifiableList(lastSearchResults);
     }
@@ -125,35 +113,42 @@ public class TitleScraper {
 
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
 
-            // Click "Show All Chapters" button if it exists
+            // Click "Show All Chapters" if it exists
             List<WebElement> showAllButtons = driver.findElements(By.xpath("//button[contains(text(), 'Show All Chapters')]"));
             if (!showAllButtons.isEmpty()) {
                 WebElement button = showAllButtons.get(0);
-                log.info("🔄 'Show All Chapters' button found, clicking to load full list...");
+                log.info("🔄 'Show All Chapters' button found, clicking...");
                 button.click();
 
-                // Wait for chapters to load
                 wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.flex.items-center.p-2")));
                 Thread.sleep(1000); // buffer for DOM update
+
+                // ✅ Re-fetch after DOM update to avoid stale references
+                log.info("🔁 Re-fetching chapter links after expanding full list...");
             }
 
-            // Now scrape chapters
+            // Always fetch chapter links fresh after any click
             List<WebElement> chapterLinks = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
             log.info("🔍 Found {} chapter links for URL: {}", chapterLinks.size(), titleUrl);
 
             int index = 0;
             for (WebElement chapter : chapterLinks) {
-                String chapterTitle = chapter.getText();
-                String href = chapter.getAttribute("href");
-                String chapterNumber = chapterTitle.replaceAll("[^0-9]", "");
+                try {
+                    String chapterTitle = chapter.getText();
+                    String href = chapter.getAttribute("href");
 
-                Map<String, String> data = new HashMap<>();
-                data.put("chapter_number", chapterNumber.isEmpty() ? String.valueOf(index) : chapterNumber);
-                data.put("chapter_title", chapterTitle);
-                data.put("href", href);
-                chapters.add(data);
+                    // Extract numeric chapter number safely
+                    String chapterNumber = extractChapterNumber(chapterTitle);
+                    Map<String, String> data = new HashMap<>();
+                    data.put("chapter_number", chapterNumber.isEmpty() ? String.valueOf(index) : chapterNumber);
+                    data.put("chapter_title", chapterTitle);
+                    data.put("href", href);
+                    chapters.add(data);
 
-                log.info("📄 Chapter [{}]: {} -> {}", index, chapterTitle, href);
+                    log.info("📄 Chapter [{}]: {} -> {}", index, chapterTitle, href);
+                } catch (Exception inner) {
+                    log.warn("⚠️ Failed to parse chapter at index {}: {}", index, inner.getMessage());
+                }
                 index++;
             }
 
@@ -164,5 +159,20 @@ public class TitleScraper {
         }
 
         return chapters;
+    }
+
+    /**
+     * Extracts a numeric chapter number from a string.
+     *
+     * @param text Input text containing chapter info.
+     * @return Chapter number as string, or empty if not found.
+     */
+    private String extractChapterNumber(String text) {
+        String cleaned = text.replaceAll("[^0-9.]", "");
+        if (cleaned.contains(".")) {
+            String[] parts = cleaned.split("\\.");
+            return parts[0]; // return integer part
+        }
+        return cleaned;
     }
 }
