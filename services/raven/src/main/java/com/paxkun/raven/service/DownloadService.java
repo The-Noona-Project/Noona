@@ -5,11 +5,11 @@ import com.paxkun.raven.service.download.SearchTitle;
 import com.paxkun.raven.service.download.SourceFinder;
 import com.paxkun.raven.service.download.TitleScraper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.*;
 import java.util.*;
@@ -18,7 +18,7 @@ import java.util.zip.ZipOutputStream;
 
 /**
  * DownloadService manages manga download operations.
- * Provides search and full title download as CBZ files.
+ * Downloads each chapter as a CBZ containing all page images.
  *
  * Author: Pax
  */
@@ -26,8 +26,11 @@ import java.util.zip.ZipOutputStream;
 @Service
 public class DownloadService {
 
-    private final TitleScraper titleScraper = new TitleScraper();
-    private static final int PAGE_LIMIT = 9999;
+    @Autowired
+    private TitleScraper titleScraper;
+
+    @Autowired
+    private SourceFinder sourceFinder;
 
     private static final Path DOWNLOAD_ROOT = Path.of(
             Optional.ofNullable(System.getenv("APPDATA"))
@@ -52,7 +55,7 @@ public class DownloadService {
     }
 
     /**
-     * Downloads all chapters for a selected title.
+     * Downloads all chapters for a selected title as CBZ files.
      *
      * @param searchId  The search session ID.
      * @param userIndex The selected option index (1-based).
@@ -81,22 +84,21 @@ public class DownloadService {
 
                 log.info("📥 Downloading Chapter [{}]: {}", chapterNumber, chapterUrl);
 
-                String baseSourceUrl = SourceFinder.findSource(chapterUrl)
-                        .orElseThrow(() -> new RuntimeException("Could not find source for chapter: " + chapterNumber));
-
-                List<String> imageUrls = fetchImageUrls(baseSourceUrl, chapterNumber);
-                if (imageUrls.isEmpty()) {
+                List<String> pageUrls = sourceFinder.findSource(chapterUrl);
+                if (pageUrls.isEmpty()) {
                     log.warn("⚠️ No pages found for chapter {}. Skipping.", chapterNumber);
                     continue;
                 }
 
                 Path chapterFolder = DOWNLOAD_ROOT.resolve(titleSlug).resolve(chapterNumber);
-                saveImagesToFolder(imageUrls, chapterFolder);
+                saveImagesToFolder(pageUrls, chapterFolder);
 
                 Path cbzPath = DOWNLOAD_ROOT.resolve(titleSlug).resolve(chapterNumber + ".cbz");
                 zipFolderAsCbz(chapterFolder, cbzPath);
 
                 log.info("📦 Chapter [{}] saved as CBZ at {}", chapterNumber, cbzPath);
+
+                deleteFolder(chapterFolder);
             }
 
             result.setChapterName(titleName);
@@ -111,7 +113,12 @@ public class DownloadService {
         return result;
     }
 
-    /** Helper: Retrieves selected title from last search results. */
+    /**
+     * Retrieves the selected title from last search results.
+     *
+     * @param userIndex 1-based index provided by user.
+     * @return Map with title data.
+     */
     private Map<String, String> getSelectedTitle(int userIndex) {
         int optionIndex = userIndex - 1;
         if (optionIndex < 0 || optionIndex >= titleScraper.getLastSearchResults().size()) {
@@ -120,44 +127,19 @@ public class DownloadService {
         return titleScraper.getResultByIndex(userIndex);
     }
 
-    /** Helper: Builds list of page image URLs for a chapter. */
-    private List<String> fetchImageUrls(String baseSourceUrl, String chapterNumber) {
-        List<String> imageUrls = new ArrayList<>();
-        for (int i = 1; i < PAGE_LIMIT; i++) {
-            String imageUrl = baseSourceUrl
-                    + String.format("%04d", Integer.parseInt(chapterNumber))
-                    + "-"
-                    + String.format("%03d", i)
-                    + ".png";
-
-            if (urlExists(imageUrl)) {
-                imageUrls.add(imageUrl);
-            } else {
-                break;
-            }
-        }
-        return imageUrls;
-    }
-
-    private boolean urlExists(String urlStr) {
-        try {
-            HttpURLConnection connection = (HttpURLConnection) new URL(urlStr).openConnection();
-            connection.setRequestMethod("HEAD");
-            connection.setConnectTimeout(3000);
-            connection.setReadTimeout(3000);
-            return (200 <= connection.getResponseCode() && connection.getResponseCode() < 400);
-        } catch (IOException e) {
-            log.warn("⚠️ Failed to check URL: {} - {}", urlStr, e.getMessage());
-            return false;
-        }
-    }
-
+    /**
+     * Saves images from URLs into a chapter folder, retaining original extensions.
+     *
+     * @param imageUrls URLs of images to save.
+     * @param folderPath Destination folder path.
+     */
     private void saveImagesToFolder(List<String> imageUrls, Path folderPath) {
         try {
             Files.createDirectories(folderPath);
             int index = 1;
             for (String imageUrl : imageUrls) {
-                Path imagePath = folderPath.resolve(String.format("%04d-%03d.png", index, index));
+                String ext = imageUrl.substring(imageUrl.lastIndexOf('.')); // retain original extension
+                Path imagePath = folderPath.resolve(String.format("%03d%s", index, ext));
                 try (InputStream in = new URL(imageUrl).openStream()) {
                     Files.copy(in, imagePath, StandardCopyOption.REPLACE_EXISTING);
                     log.info("➕ Saved image: {}", imagePath);
@@ -169,6 +151,12 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Zips a chapter folder as a CBZ archive.
+     *
+     * @param folderPath Folder containing images.
+     * @param cbzPath    Destination CBZ file path.
+     */
     private void zipFolderAsCbz(Path folderPath, Path cbzPath) {
         try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(cbzPath))) {
             Files.walk(folderPath)
@@ -184,6 +172,28 @@ public class DownloadService {
                     });
         } catch (IOException e) {
             log.error("❌ Failed to create CBZ: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Deletes a folder and all its contents.
+     *
+     * @param folderPath Folder path to delete.
+     */
+    private void deleteFolder(Path folderPath) {
+        try {
+            Files.walk(folderPath)
+                    .sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                        } catch (IOException e) {
+                            log.warn("⚠️ Failed to delete file {}: {}", path, e.getMessage());
+                        }
+                    });
+            log.info("🗑️ Deleted temp folder: {}", folderPath);
+        } catch (IOException e) {
+            log.warn("⚠️ Failed to delete folder {}: {}", folderPath, e.getMessage());
         }
     }
 }

@@ -7,6 +7,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
@@ -50,14 +51,14 @@ public class TitleScraper {
 
             driver.get(searchUrl);
 
-            // Wait up to 10s for search results to load
+            // Wait up to 10s for manga search results to load
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.link.link-hover")));
+            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("section#search-results a.line-clamp-1.link.link-hover")));
 
             Document doc = Jsoup.parse(driver.getPageSource());
-            Elements mangaResults = doc.select("a.link.link-hover, a.line-clamp-1.link.link-hover");
+            Elements mangaResults = doc.select("section#search-results a.line-clamp-1.link.link-hover");
 
-            log.info("🔍 Found {} search results for '{}'", mangaResults.size(), titleName);
+            log.info("🔍 Found {} manga search results for '{}'", mangaResults.size(), titleName);
 
             int index = 1;
             for (Element manga : mangaResults) {
@@ -66,6 +67,7 @@ public class TitleScraper {
                 data.put("title", manga.text());
                 data.put("href", manga.absUrl("href"));
                 results.add(data);
+
                 log.info("➡️ [{}] {} -> {}", index, manga.text(), manga.absUrl("href"));
                 index++;
             }
@@ -106,7 +108,7 @@ public class TitleScraper {
     }
 
     /**
-     * Retrieves all chapters for a given title page.
+     * Retrieves all chapters for a given title page, clicking "Show All Chapters" if available.
      *
      * @param titleUrl The main title page URL.
      * @return List of chapters with "chapter_number", "chapter_title", and "href".
@@ -121,26 +123,37 @@ public class TitleScraper {
         try {
             driver.get(titleUrl);
 
-            // Wait up to 10s for chapter list to load (targeting glide or list container)
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.text-xs, a.chapter-link")));
 
-            Document doc = Jsoup.parse(driver.getPageSource());
+            // Click "Show All Chapters" button if it exists
+            List<WebElement> showAllButtons = driver.findElements(By.xpath("//button[contains(text(), 'Show All Chapters')]"));
+            if (!showAllButtons.isEmpty()) {
+                WebElement button = showAllButtons.get(0);
+                log.info("🔄 'Show All Chapters' button found, clicking to load full list...");
+                button.click();
 
-            // Adjust selector to match real site structure after inspecting your HTML
-            Elements chapterLinks = doc.select("a.text-xs, a.chapter-link");
+                // Wait for chapters to load
+                wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("a.flex.items-center.p-2")));
+                Thread.sleep(1000); // buffer for DOM update
+            }
 
+            // Now scrape chapters
+            List<WebElement> chapterLinks = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
             log.info("🔍 Found {} chapter links for URL: {}", chapterLinks.size(), titleUrl);
 
             int index = 0;
-            for (Element chapter : chapterLinks) {
-                String chapterNumber = chapter.text().replaceAll("[^0-9]", "");
+            for (WebElement chapter : chapterLinks) {
+                String chapterTitle = chapter.getText();
+                String href = chapter.getAttribute("href");
+                String chapterNumber = chapterTitle.replaceAll("[^0-9]", "");
+
                 Map<String, String> data = new HashMap<>();
                 data.put("chapter_number", chapterNumber.isEmpty() ? String.valueOf(index) : chapterNumber);
-                data.put("chapter_title", chapter.text());
-                data.put("href", chapter.absUrl("href"));
+                data.put("chapter_title", chapterTitle);
+                data.put("href", href);
                 chapters.add(data);
-                log.info("📄 Chapter [{}]: {} -> {}", index, chapter.text(), chapter.absUrl("href"));
+
+                log.info("📄 Chapter [{}]: {} -> {}", index, chapterTitle, href);
                 index++;
             }
 

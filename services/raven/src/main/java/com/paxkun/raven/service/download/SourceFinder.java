@@ -1,82 +1,73 @@
 package com.paxkun.raven.service.download;
 
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.select.Elements;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * SourceFinder locates the base source URL for chapter images using Selenium and ChromeDriver.
- * Targets Tailwind and Glide structures for reliability.
+ * SourceFinder scrapes all page image URLs for a given manga chapter.
+ * Uses headless Chrome via Selenium to load dynamic content,
+ * then parses with Jsoup to extract <img> src attributes.
  *
  * Author: Pax
  */
 @Slf4j
+@Component
 public class SourceFinder {
 
     /**
-     * Finds the base source URL for chapter images.
+     * Retrieves all page image URLs for a given chapter URL.
      *
-     * @param chapterUrl the URL of the chapter page
-     * @return Optional of the source URL prefix, empty if not found
+     * @param chapterUrl The URL of the manga chapter page.
+     * @return List of image URLs.
      */
-    public static Optional<String> findSource(String chapterUrl) {
+    public List<String> findSource(String chapterUrl) {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
 
-        Pattern pattern = Pattern.compile("(https://[^\\s\"']+/(?:uploads|manga)/[^/]+/\\d{4}-001\\.png)");
+        WebDriver driver = new ChromeDriver(options);
+        List<String> images = new ArrayList<>();
 
-        WebDriver driver = null;
         try {
-            driver = new ChromeDriver(options);
             driver.get(chapterUrl);
 
-            // Wait up to 10s for Glide slides or images to load
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(".glide__slide img, img")));
 
-            List<WebElement> images = driver.findElements(By.cssSelector(".glide__slide img, img"));
-            log.info("🔍 Found {} images on page {}", images.size(), chapterUrl);
+            // Wait for at least one image to appear
+            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("img")));
 
-            for (WebElement img : images) {
-                String src = img.getAttribute("src");
-                if (src == null || src.isEmpty()) {
-                    src = img.getAttribute("data-src");
-                }
-                if (src == null || src.isEmpty()) continue;
+            Document doc = Jsoup.parse(driver.getPageSource());
+            Elements imgElements = doc.select("img");
 
-                Matcher matcher = pattern.matcher(src);
-                if (matcher.find()) {
-                    String fullUrl = matcher.group(1);
-                    int lastSlash = fullUrl.lastIndexOf('/');
-                    if (lastSlash != -1) {
-                        String result = fullUrl.substring(0, lastSlash + 1);
-                        log.info("✅ Base source URL found: {}", result);
-                        return Optional.of(result);
-                    }
+            for (var img : imgElements) {
+                String src = img.absUrl("src");
+                if (!src.isEmpty()) {
+                    images.add(src);
+                    log.info("🖼️ Found image: {}", src);
                 }
             }
 
-            log.warn("⚠️ No matching image source found for URL: {}", chapterUrl);
+            log.info("✅ Found {} images on page {}", images.size(), chapterUrl);
 
         } catch (Exception e) {
             log.error("❌ Error finding source for URL: {}", chapterUrl, e);
+            throw new RuntimeException("Could not find images for chapter at URL: " + chapterUrl);
         } finally {
-            if (driver != null) {
-                driver.quit();
-            }
+            driver.quit();
         }
 
-        return Optional.empty();
+        return images;
     }
 }
