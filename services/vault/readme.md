@@ -92,10 +92,7 @@ Tokens are set via the `SERVICE_TOKENS` environment variable as a comma-separate
 
 ```bash
 docker build -f deployment/vault.Dockerfile -t noona-vault .
-docker run -e MONGO_URI=mongodb://noona-mongo:27017 \
-           -e SERVICE_TOKENS=moon123,sage456 \
-           -e REDIS_HOST=noona-redis \
-           -p 4000:4000 noona-vault
+docker run -e MONGO_URI=mongodb://noona-mongo:27017 -e SERVICE_TOKENS=moon123,sage456 -e REDIS_HOST=noona-redis -p 4000:4000 noona-vault
 ```
 
 ---
