@@ -18,6 +18,14 @@ public class NewChapter {
     /** Chapter identifier (e.g. "101", "12.5", etc). */
     private String chapter;
 
-    public NewChapter(String titleName, String latest, String s) {
+    /** Title this chapter belongs to (optional for logging). */
+    private String titleName;
+
+    /** Downloaded file path (can be empty for updates). */
+    private String path;
+
+    // Convenience constructor if only a chapter number is needed
+    public NewChapter(String chapter) {
+        this.chapter = chapter;
     }
 }

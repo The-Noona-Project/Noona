@@ -15,24 +15,38 @@ import java.util.List;
  * Author: Pax
  */
 @RestController
-@RequestMapping("/v1/library")
 @RequiredArgsConstructor
 public class LibraryController {
 
     private final LibraryService libraryService;
 
-    @GetMapping("/health")
-    public ResponseEntity<String> healthCheck() {
+    // ─────────────────────────────
+    // 🔍 Health Check Endpoints
+    // ─────────────────────────────
+
+    // Used by Docker/Warden for health check
+    @GetMapping("/api/health")
+    public ResponseEntity<String> apiHealthCheck() {
+        return ResponseEntity.ok("Raven is alive!");
+    }
+
+    // Optional: Used for internal status checks
+    @GetMapping("/v1/library/health")
+    public ResponseEntity<String> libraryHealthCheck() {
         return ResponseEntity.ok("Raven Library API is up and running!");
     }
 
-    @GetMapping("/getall")
+    // ─────────────────────────────
+    // 📚 Library API
+    // ─────────────────────────────
+
+    @GetMapping("/v1/library/getall")
     public ResponseEntity<List<NewTitle>> getAllTitles() {
         List<NewTitle> titles = libraryService.getAllTitleObjects();
         return ResponseEntity.ok(titles);
     }
 
-    @GetMapping("/get/{titleName}")
+    @GetMapping("/v1/library/get/{titleName}")
     public ResponseEntity<NewTitle> getTitle(@PathVariable String titleName) {
         NewTitle title = libraryService.getTitle(titleName);
         if (title != null) {
@@ -47,7 +61,7 @@ public class LibraryController {
      * Calls Vault to get the library data, scrapes sources,
      * and queues downloads for missing chapters.
      */
-    @PostMapping("/checkForNew")
+    @PostMapping("/v1/library/checkForNew")
     public ResponseEntity<String> checkForNewChapters() {
         String result = libraryService.checkForNewChapters();
         return ResponseEntity.ok(result);

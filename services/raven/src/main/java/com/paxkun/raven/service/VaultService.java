@@ -13,8 +13,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * VaultService handles secure communication with Noona Vault using JWT auth.
- * Provides basic database operations (insert, find, update) on MongoDB via Vault.
+ * VaultService handles secure JWT-based communication with Noona Vault.
+ * Provides helper methods for MongoDB-style insert, find, update operations.
  *
  * Author: Pax
  */
@@ -22,7 +22,7 @@ import java.util.Map;
 @Service
 public class VaultService {
 
-    private final WebClient webClient;
+    private final WebClient webClient = WebClient.builder().build();
     private final Gson gson = new Gson();
 
     @Value("${vault.url:http://noona-vault:3005}")
@@ -33,9 +33,9 @@ public class VaultService {
 
     private String jwtToken;
 
-    public VaultService() {
-        this.webClient = WebClient.builder().build();
-    }
+    // ─────────────────────────────────────────────────────────────
+    // AUTH
+    // ─────────────────────────────────────────────────────────────
 
     private void ensureAuth() {
         if (jwtToken == null || jwtToken.isEmpty()) {
@@ -50,7 +50,10 @@ public class VaultService {
                         .bodyToMono(Map.class)
                         .block();
 
-                this.jwtToken = (String) res.get("token");
+                if (res == null || res.get("token") == null)
+                    throw new RuntimeException("No token received from Vault.");
+
+                jwtToken = (String) res.get("token");
                 log.info("[VaultService] ✅ JWT token received.");
             } catch (Exception e) {
                 throw new RuntimeException("Failed to authenticate with Vault: " + e.getMessage(), e);
@@ -73,10 +76,15 @@ public class VaultService {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // DATABASE OPS
+    // ─────────────────────────────────────────────────────────────
+
     public void insert(String collection, Map<String, Object> doc) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("collection", collection);
-        payload.put("data", doc);
+        Map<String, Object> payload = Map.of(
+                "collection", collection,
+                "data", doc
+        );
 
         Map<String, Object> packet = Map.of(
                 "storageType", "mongo",
@@ -99,7 +107,12 @@ public class VaultService {
                 "payload", payload
         );
 
-        return (Map<String, Object>) sendPacket(packet).get("data");
+        Object data = sendPacket(packet).get("data");
+        if (data instanceof Map) {
+            return (Map<String, Object>) data;
+        }
+
+        return null;
     }
 
     public List<Map<String, Object>> findAll(String collection) {
@@ -138,22 +151,32 @@ public class VaultService {
         sendPacket(packet);
     }
 
-    // ──────────────────────────────
-    // UTILITY: JSON wrapper
-    // ──────────────────────────────
+    // ─────────────────────────────────────────────────────────────
+    // UTILS
+    // ─────────────────────────────────────────────────────────────
 
+    /**
+     * Deserialize an object to a target type using Gson.
+     */
     public <T> T parseJson(Object raw, Type typeOfT) {
         return gson.fromJson(gson.toJson(raw), typeOfT);
     }
 
-    // ──────────────────────────────
-    // UTILITY: FETCH LATEST CHAPTER
-    // ──────────────────────────────
+    /**
+     * Converts a list of Vault documents into typed objects.
+     */
+    public <T> List<T> parseDocuments(List<Map<String, Object>> docs, Type typeOfT) {
+        return gson.fromJson(gson.toJson(docs), typeOfT);
+    }
 
+    /**
+     * Fetches the latest chapter number from a given manga source URL.
+     */
     public String fetchLatestChapterFromSource(String sourceUrl) {
         try {
             List<Map<String, String>> chapters = DownloadService.parseChapters(sourceUrl);
             if (chapters == null || chapters.isEmpty()) return "0";
+
             return chapters.get(0).get("chapter_title").replaceAll("[^\\d.]", "");
         } catch (Exception e) {
             log.warn("[VaultService] ⚠️ Failed to fetch latest chapter from source: " + e.getMessage());

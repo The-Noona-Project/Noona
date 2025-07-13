@@ -43,7 +43,7 @@ public class LibraryService {
     public List<NewTitle> getAllTitleObjects() {
         List<Map<String, Object>> raw = vaultService.findAll(COLLECTION);
         Type listType = new TypeToken<List<NewTitle>>() {}.getType();
-        return vaultService.parseJson(raw, listType);
+        return vaultService.parseDocuments(raw, listType);
     }
 
     public NewTitle getTitle(String titleName) {
@@ -78,7 +78,7 @@ public class LibraryService {
                     downloadService.downloadSingleChapter(title, latest);
 
                     title.setLastDownloaded(latest);
-                    addOrUpdateTitle(title, new NewChapter(title.getTitleName(), latest, "")); // blank path for now
+                    addOrUpdateTitle(title, new NewChapter(latest));
                     updated++;
                 } else {
                     logger.info("LIBRARY", "✅ No update needed for " + title.getTitleName());
