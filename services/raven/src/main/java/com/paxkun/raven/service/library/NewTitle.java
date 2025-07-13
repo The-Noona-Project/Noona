@@ -5,9 +5,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Represents a manga title in the library.
- * Includes titleName field with Lombok-generated getters, setters, and constructors.
- * <p>
+ * Represents a manga title stored in the Raven library.
+ * Includes title metadata and progress tracking for downloads.
+ *
  * Author: Pax
  */
 @Data
@@ -15,6 +15,15 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class NewTitle {
 
-    /** The name of the manga title. */
+    /** The human-readable name of the manga title. */
     private String titleName;
+
+    /** Unique UUID assigned when the title is first added. */
+    private String uuid;
+
+    /** Source URL used for scraping chapter list. */
+    private String sourceUrl;
+
+    /** Last downloaded chapter number (used for update checking). */
+    private String lastDownloaded;
 }

@@ -5,8 +5,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Represents a chapter entry saved in the library.
- * <p>
+ * Represents a newly discovered or downloaded chapter.
+ * Typically used during library updates and Vault sync.
+ *
  * Author: Pax
  */
 @Data
@@ -14,12 +15,9 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class NewChapter {
 
-    /** The title of this chapter belongs to. */
-    private String title;
-
-    /** The chapter identifier (number or name). */
+    /** Chapter identifier (e.g. "101", "12.5", etc). */
     private String chapter;
 
-    /** The file path where the chapter is downloaded. */
-    private String path;
+    public NewChapter(String titleName, String latest, String s) {
+    }
 }

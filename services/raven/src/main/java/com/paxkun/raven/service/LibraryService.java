@@ -1,80 +1,102 @@
 package com.paxkun.raven.service;
 
+import com.google.gson.reflect.TypeToken;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.lang.reflect.Type;
+import java.util.*;
 
 /**
- * LibraryService manages Raven's local manga library.
- * Provides operations to add titles and chapters, retrieve titles, and chapters by title.
- * Replace in-memory storage with real database integration later.
+ * LibraryService manages Raven's manga library via VaultService.
+ * Tracks downloaded chapters and triggers downloads for new ones.
  *
  * Author: Pax
  */
 @Service
+@RequiredArgsConstructor
 public class LibraryService {
 
-    @Autowired
-    private LoggerService logger;
+    private final VaultService vaultService;
+    private final DownloadService downloadService;
+    private final LoggerService logger;
 
-    // In-memory store for demonstration purposes
-    private final Map<String, List<NewChapter>> library = new HashMap<>();
+    private static final String COLLECTION = "manga_library";
 
-    /**
-     * Adds a new title with its initial chapter to the library.
-     *
-     * @param title   the manga title object
-     * @param chapter the initial chapter object
-     */
-    public void addTitleWithChapter(NewTitle title, NewChapter chapter) {
-        library.computeIfAbsent(title.getTitleName(), k -> new ArrayList<>()).add(chapter);
-        logger.info("LIBRARY", "📚 Added chapter [" + chapter.getChapter() + "] to title [" + title.getTitleName() + "]");
+    public void addOrUpdateTitle(NewTitle title, NewChapter chapter) {
+        Map<String, Object> query = Map.of("uuid", title.getUuid());
+        Map<String, Object> update = Map.of(
+                "$set", Map.of(
+                        "uuid", title.getUuid(),
+                        "title", title.getTitleName(),
+                        "sourceUrl", title.getSourceUrl(),
+                        "lastDownloaded", chapter.getChapter()
+                )
+        );
+
+        vaultService.update(COLLECTION, query, update, true);
+        logger.info("LIBRARY", "📚 Updated title [" + title.getTitleName() + "] to chapter " + chapter.getChapter());
     }
 
-    /**
-     * Retrieves all titles in the library as NewTitle objects.
-     *
-     * @return list of NewTitle
-     */
     public List<NewTitle> getAllTitleObjects() {
-        List<NewTitle> titles = new ArrayList<>();
-        for (String titleName : library.keySet()) {
-            titles.add(new NewTitle(titleName));
-        }
-        logger.info("LIBRARY", "🔍 Retrieved " + titles.size() + " titles from library.");
-        return titles;
+        List<Map<String, Object>> raw = vaultService.findAll(COLLECTION);
+        Type listType = new TypeToken<List<NewTitle>>() {}.getType();
+        return vaultService.parseJson(raw, listType);
     }
 
-    /**
-     * Retrieves a specific title by name.
-     *
-     * @param titleName the manga title
-     * @return NewTitle object or null if not found
-     */
     public NewTitle getTitle(String titleName) {
-        if (library.containsKey(titleName)) {
-            logger.info("LIBRARY", "✅ Title found: " + titleName);
-            return new NewTitle(titleName);
-        }
-        logger.warn("LIBRARY", "⚠️ Title not found: " + titleName);
-        return null;
+        Map<String, Object> query = Map.of("title", titleName);
+        Map<String, Object> doc = vaultService.findOne(COLLECTION, query);
+        if (doc == null) return null;
+
+        return new NewTitle(
+                (String) doc.get("title"),
+                (String) doc.get("uuid"),
+                (String) doc.get("sourceUrl"),
+                (String) doc.getOrDefault("lastDownloaded", "0")
+        );
     }
 
-    /**
-     * Retrieves all chapters downloaded for a given title.
-     *
-     * @param titleName the manga title
-     * @return list of chapters for that title
-     */
-    public List<NewChapter> getChaptersByTitle(String titleName) {
-        List<NewChapter> chapters = library.getOrDefault(titleName, new ArrayList<>());
-        logger.info("LIBRARY", "📄 Retrieved " + chapters.size() + " chapters for title [" + titleName + "]");
-        return chapters;
+    public String checkForNewChapters() {
+        List<NewTitle> titles = getAllTitleObjects();
+        if (titles.isEmpty()) {
+            logger.warn("LIBRARY", "⚠️ No titles in Vault to check.");
+            return "No titles in Vault.";
+        }
+
+        int updated = 0;
+        for (NewTitle title : titles) {
+            try {
+                String sourceUrl = title.getSourceUrl();
+                String latest = vaultService.fetchLatestChapterFromSource(sourceUrl);
+                String last = Optional.ofNullable(title.getLastDownloaded()).orElse("0");
+
+                if (isNewer(latest, last)) {
+                    logger.info("LIBRARY", "⬆️ New chapter found for " + title.getTitleName() + ": " + latest);
+                    downloadService.downloadSingleChapter(title, latest);
+
+                    title.setLastDownloaded(latest);
+                    addOrUpdateTitle(title, new NewChapter(title.getTitleName(), latest, "")); // blank path for now
+                    updated++;
+                } else {
+                    logger.info("LIBRARY", "✅ No update needed for " + title.getTitleName());
+                }
+
+            } catch (Exception e) {
+                logger.warn("LIBRARY", "⚠️ Failed to check/update " + title.getTitleName() + ": " + e.getMessage());
+            }
+        }
+
+        return updated == 0 ? "✅ All titles up-to-date." : "⬇️ Downloaded " + updated + " new chapters.";
+    }
+
+    private boolean isNewer(String latest, String current) {
+        try {
+            return Float.parseFloat(latest) > Float.parseFloat(current);
+        } catch (NumberFormatException e) {
+            return !latest.equals(current);
+        }
     }
 }

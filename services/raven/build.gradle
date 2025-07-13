@@ -1,7 +1,7 @@
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.3'
-    id 'io.spring.dependency-management' version '1.1.7' // use stable available version
+    id 'io.spring.dependency-management' version '1.1.7'
     id 'org.graalvm.buildtools.native' version '0.10.6'
 }
 
@@ -25,22 +25,23 @@ repositories {
 }
 
 dependencies {
-    // ───── Spring Boot Core ─────
+    // ───── Spring Boot ─────
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
+    // ───── VaultService: JSON (Gson) ─────
+    implementation 'com.google.code.gson:gson:2.11.0'
 
     // ───── Lombok ─────
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
-    // ───── JetBrains Annotations ─────
+    // ───── Utilities ─────
     implementation 'org.jetbrains:annotations:26.0.2'
-
-    // ───── Web Scraping & Utilities ─────
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'commons-io:commons-io:2.15.1'
     implementation 'org.apache.commons:commons-lang3:3.14.0'
-    implementation 'com.google.guava:guava:33.2.0-jre' // <=== revert to latest available
+    implementation 'com.google.guava:guava:33.2.0-jre'
 
     // ───── Selenium & WebDriverManager ─────
     implementation 'org.seleniumhq.selenium:selenium-java:4.16.1'
@@ -54,7 +55,6 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
-
 
 tasks.named('test') {
     useJUnitPlatform()
