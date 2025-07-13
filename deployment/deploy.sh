@@ -1,7 +1,7 @@
 ﻿#!/bin/bash
 
 # deploy.sh — AIO manager for Noona Docker services
-set -e
+set -euo pipefail
 
 # === CONFIG ===
 DOCKERHUB_USER="captainpax"
@@ -59,7 +59,7 @@ print_error() {
 while true; do
   print_header
   print_main_menu
-  read -p "Enter choice: " main_choice
+  read -rp "Enter choice: " main_choice
 
   if [[ "$main_choice" == "0" ]]; then
     echo -e "${CYAN}Goodbye!${RESET}"
@@ -72,9 +72,8 @@ while true; do
   fi
 
   print_services_menu
-  read -p "Enter service choice: " svc_choice
+  read -rp "Enter service choice: " svc_choice
 
-  # Determine selected services
   if [[ "$svc_choice" == "0" ]]; then
     SELECTED_SERVICES=("${SERVICES[@]}")
   elif [[ "$svc_choice" =~ ^[1-9][0-9]*$ ]] && (( svc_choice >= 1 && svc_choice <= ${#SERVICES[@]} )); then
@@ -93,9 +92,9 @@ while true; do
 
     case $main_choice in
       1) # Build
-        echo -e "${YELLOW}🔨 Building ${SERVICE}...${RESET}"
+        echo -e "${YELLOW}🔨 Building ${SERVICE} with no cache...${RESET}"
         set +e
-        docker build -f "$DOCKERFILE" -t "$LOCAL_TAG" "$ROOT_DIR"
+        docker build --no-cache -f "$DOCKERFILE" -t "$LOCAL_TAG" "$ROOT_DIR"
         BUILD_EXIT=$?
         set -e
         if [ $BUILD_EXIT -ne 0 ]; then
@@ -127,7 +126,9 @@ while true; do
         fi
 
         docker run -d \
+          --rm \
           --name "$LOCAL_TAG" \
+          --network noona-network \
           -v /var/run/docker.sock:/var/run/docker.sock \
           $DEBUG_ENV \
           "${IMAGE_NAME}:latest"
@@ -144,7 +145,7 @@ while true; do
   done
 
   echo ""
-  read -p "Return to main menu? (y/N): " again
+  read -rp "Return to main menu? (y/N): " again
   if [[ "$again" != "y" ]]; then
     echo -e "${CYAN}Goodbye!${RESET}"
     exit 0

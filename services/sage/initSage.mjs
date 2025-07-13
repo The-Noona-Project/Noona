@@ -1,10 +1,15 @@
 ﻿// services/sage/initSage.mjs
 
+/**
+ * @fileoverview
+ * Sage is the backend service for Noona, providing API routes for Moon.
+ * Dynamic page logic has been deprecated.
+ */
+
 import express from 'express'
 import cors from 'cors'
 
-import {getPages} from '../../utilities/dynamic/pages/getPages.mjs'
-import {debugMSG, errMSG, log} from '../../utilities/etc/logger.mjs'
+import { debugMSG, errMSG, log } from '../../utilities/etc/logger.mjs'
 
 const PORT = process.env.API_PORT || 3004
 const SERVICE_NAME = process.env.SERVICE_NAME || 'noona-sage'
@@ -14,7 +19,7 @@ const app = express()
 // Enable CORS so Moon can safely call this backend within the Docker network
 app.use(cors())
 
-// Enable JSON body parsing (useful for future POST/PUT routes)
+// Enable JSON body parsing
 app.use(express.json())
 
 /**
@@ -23,29 +28,22 @@ app.use(express.json())
  */
 app.get('/health', (req, res) => {
     debugMSG(`[${SERVICE_NAME}] ✅ Healthcheck OK`)
-    res.status(200).send('ok')
+    res.status(200).send('Sage is live!')
 })
 
 /**
  * GET /api/pages
- * Returns all dynamic page slugs stored in Redis.
- * Each entry is transformed into { name, path } for Moon to render as Vuetify cards.
+ * (Static placeholder route)
+ * Returns a predefined set of page slugs for Moon to render setup/dashboard content.
  */
-app.get('/api/pages', async (req, res) => {
-    try {
-        const rawPages = await getPages()
+app.get('/api/pages', (req, res) => {
+    const pages = [
+        { name: 'Setup', path: '/setup' },
+        { name: 'Dashboard', path: '/dashboard' },
+    ]
 
-        const pages = rawPages.map(p => ({
-            name: p.slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-            path: `/dynamic/${p.slug}`,
-        }))
-
-        debugMSG(`[${SERVICE_NAME}] 📦 Found ${pages.length} pages`)
-        res.json(pages)
-    } catch (err) {
-        errMSG(`[${SERVICE_NAME}] ❌ Failed to fetch pages: ${err.message}`)
-        res.status(500).json({error: 'Failed to load dynamic pages'})
-    }
+    debugMSG(`[${SERVICE_NAME}] 🗂️ Serving ${pages.length} static page entries`)
+    res.json(pages)
 })
 
 // Start the Express server

@@ -1,4 +1,6 @@
-﻿const rawList = [
+﻿// services/warden/docker/addonDockers.mjs
+
+const rawList = [
     {
         name: 'noona-redis',
         image: 'redis/redis-stack:latest',
@@ -30,20 +32,20 @@
         env: [
             'MONGO_INITDB_ROOT_USERNAME=root',
             'MONGO_INITDB_ROOT_PASSWORD=example',
-            'SERVICE_NAME=noona-mongo'
+            'SERVICE_NAME=noona-mongo',
         ],
         volumes: ['/noona-mongo-data:/data/db'],
-        health: null, // Mongo doesn't expose an HTTP health endpoint by default
-    }
+        health: null, // Mongo doesn't expose an HTTP endpoint
+    },
 ];
 
 const addonDockers = Object.fromEntries(
     rawList.map(service => {
         const internal = service.internalPort || service.port;
-        const exposed = internal ? { [`${internal}/tcp`]: {} } : {};
-        const ports = internal && service.port
+        const exposed = service.exposed || (internal ? { [`${internal}/tcp`]: {} } : {});
+        const ports = service.ports || (internal && service.port
             ? { [`${internal}/tcp`]: [{ HostPort: String(service.port) }] }
-            : {};
+            : {});
 
         return [
             service.name,

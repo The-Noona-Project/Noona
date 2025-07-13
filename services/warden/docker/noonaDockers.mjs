@@ -1,4 +1,6 @@
-﻿const DEBUG = process.env.DEBUG || 'false';
+﻿// services/warden/docker/noonaDockers.mjs
+
+const DEBUG = process.env.DEBUG || 'false';
 
 const rawList = [
     {
@@ -29,7 +31,7 @@ const rawList = [
         name: 'noona-raven',
         image: 'captainpax/noona-raven:latest',
         port: 3002,
-        internalPort: 3002,
+        internalPort: 8080,
         env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-raven'],
         health: 'http://noona-raven:3002/',
     },
@@ -46,8 +48,8 @@ const rawList = [
         image: 'captainpax/noona-vault:latest',
         port: 3005,
         internalPort: 3005,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-vault'],
-        health: 'http://noona-vault:3005/',
+        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-vault', 'PORT=3005'],
+        health: 'http://noona-vault:3005/v1/vault/health',
     },
 ];
 
@@ -55,9 +57,10 @@ const noonaDockers = Object.fromEntries(
     rawList.map(service => {
         const internal = service.internalPort || service.port;
         const exposed = internal ? { [`${internal}/tcp`]: {} } : {};
-        const ports = internal && service.port
-            ? { [`${internal}/tcp`]: [{ HostPort: String(service.port) }] }
-            : {};
+        const ports =
+            internal && service.port
+                ? { [`${internal}/tcp`]: [{ HostPort: String(service.port) }] }
+                : {};
 
         return [
             service.name,

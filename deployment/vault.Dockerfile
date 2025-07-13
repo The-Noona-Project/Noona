@@ -17,7 +17,11 @@ WORKDIR /app/Noona/services/vault
 RUN npm install --production
 
 # Expose Vault's port
-EXPOSE 4000
+EXPOSE 3005
+
+# Add healthcheck for Vault
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:4000/v1/vault/health', res => res.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))"
 
 # Set default command
 CMD ["node", "initVault.mjs"]
