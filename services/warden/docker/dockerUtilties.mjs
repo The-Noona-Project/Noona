@@ -1,12 +1,12 @@
-﻿// dockerUtilties.mjs
+﻿// services/warden/docker/dockerUtilties.mjs
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
-import { debugMSG, log } from '../../../utilities/etc/logger.mjs';
+import { debugMSG, log, warn } from '../../../utilities/etc/logger.mjs';
 
 const docker = new Docker();
 
 /**
- * Ensures a Docker network exists (idempotent)
+ * Ensures the Docker network exists (idempotent)
  */
 export async function ensureNetwork(dockerInstance, networkName) {
     const networks = await dockerInstance.listNetworks();
@@ -17,7 +17,7 @@ export async function ensureNetwork(dockerInstance, networkName) {
 }
 
 /**
- * Attaches the current container to the shared Docker network
+ * Attaches the Warden container to the Docker network if not already connected
  */
 export async function attachSelfToNetwork(dockerInstance, networkName) {
     const id = process.env.HOSTNAME;
@@ -31,7 +31,7 @@ export async function attachSelfToNetwork(dockerInstance, networkName) {
 }
 
 /**
- * Checks if a Docker container exists by name (any state)
+ * Checks whether a container by name exists (running or stopped)
  */
 export async function containerExists(name) {
     const list = await docker.listContainers({ all: true });
@@ -39,7 +39,7 @@ export async function containerExists(name) {
 }
 
 /**
- * Pulls an image if it is not already present
+ * Pulls a Docker image if not already present
  */
 export async function pullImageIfNeeded(image) {
     const images = await docker.listImages();
@@ -54,20 +54,32 @@ export async function pullImageIfNeeded(image) {
     await new Promise((resolve, reject) => {
         docker.pull(image, (err, stream) => {
             if (err) return reject(err);
-            docker.modem.followProgress(stream, resolve, event => {
-                if (event.status) process.stdout.write(`\r[warden] ${event.status} ${event.progress || ''}  `);
-            });
+            docker.modem.followProgress(
+                stream,
+                resolve,
+                (event) => {
+                    if (event.status) {
+                        process.stdout.write(`\r[warden] ${event.status} ${event.progress || ''}  `);
+                    }
+                }
+            );
         });
     });
+
     log(`\nPull complete for ${image}`);
 }
 
 /**
- * Starts a Docker container and optionally pipes its logs
+ * Creates and starts a container, attaches logs if DEBUG=true or required
  */
 export async function runContainerWithLogs(service, networkName, trackedContainers, DEBUG) {
     const binds = service.volumes || [];
-    const envVars = [...(service.env || []), `SERVICE_NAME=${service.name}`];
+
+    // Avoid double-injecting SERVICE_NAME
+    const envVars = [...(service.env || [])];
+    if (!envVars.some(e => e.startsWith('SERVICE_NAME='))) {
+        envVars.push(`SERVICE_NAME=${service.name}`);
+    }
 
     const exposed = service.exposed || {};
     const ports = service.ports || {};
@@ -99,14 +111,18 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
             stderr: true,
             tail: 10,
         });
-        logs.on('data', chunk => process.stdout.write(`[${service.name}] ${chunk.toString()}`));
+
+        logs.on('data', chunk => {
+            const line = chunk.toString().trim();
+            if (line) process.stdout.write(`[${service.name}] ${line}\n`);
+        });
     }
 
     log(`${service.name} is now running.`);
 }
 
 /**
- * Waits for a health endpoint to return 200 OK
+ * Waits for a service's HTTP healthcheck to return 200 OK
  */
 export async function waitForHealthyStatus(name, url, tries = 20, delay = 1000) {
     for (let i = 0; i < tries; i++) {
@@ -119,8 +135,10 @@ export async function waitForHealthyStatus(name, url, tries = 20, delay = 1000) 
         } catch (err) {
             debugMSG(`[dockerUtil] Waiting for ${name}... attempt ${i + 1}`);
         }
+
         await new Promise(r => setTimeout(r, delay));
         process.stdout.write('.');
     }
+
     throw new Error(`[dockerUtil] ❌ ${name} did not become healthy in time`);
 }

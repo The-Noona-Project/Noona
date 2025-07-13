@@ -1,3 +1,4 @@
+// services/warden/initWarden.mjs
 import Docker from 'dockerode';
 import noonaDockers from './docker/noonaDockers.mjs';
 import addonDockers from './docker/addonDockers.mjs';
@@ -9,7 +10,7 @@ import {
     runContainerWithLogs,
     waitForHealthyStatus
 } from './docker/dockerUtilties.mjs';
-import {errMSG, log, warn} from '../../utilities/etc/logger.mjs';
+import { errMSG, log, warn } from '../../utilities/etc/logger.mjs';
 
 const docker = new Docker();
 const networkName = 'noona-network';
@@ -53,7 +54,7 @@ async function bootFull() {
         'noona-sage',
         'noona-moon',
         'noona-vault',
-        'noona-raven',
+        'noona-raven'
     ];
 
     for (const name of superBootOrder) {
@@ -63,22 +64,17 @@ async function bootFull() {
             continue;
         }
 
-        const defaultHealthUrl = svc.port || svc.internalPort
-            ? `http://${name}:${svc.internalPort || svc.port}/`
-            : null;
-
-        // Special health URL overrides if needed
-        let healthUrl = defaultHealthUrl;
-        if (name === 'noona-redis') healthUrl = 'http://noona-redis:8001/';
-        if (name === 'noona-sage') healthUrl = 'http://noona-sage:3004/health';
+        let healthUrl =
+            name === 'noona-redis'
+                ? 'http://noona-redis:8001/'
+                : name === 'noona-sage'
+                    ? 'http://noona-sage:3004/health'
+                    : svc.health || null;
 
         await startService(svc, healthUrl);
     }
 }
 
-/**
- * Gracefully shutdown all tracked containers
- */
 async function shutdownAll() {
     warn(`Shutting down all containers...`);
     for (const name of trackedContainers) {

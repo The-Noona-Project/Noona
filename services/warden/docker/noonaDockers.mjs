@@ -1,75 +1,74 @@
 ﻿// services/warden/docker/noonaDockers.mjs
+import crypto from 'crypto';
 
 const DEBUG = process.env.DEBUG || 'false';
 
+function genPassword() {
+    return crypto.randomBytes(24).toString('base64url'); // Strong and Docker-friendly
+}
+
 const rawList = [
-    {
-        name: 'noona-sage',
-        image: 'captainpax/noona-sage:latest',
-        port: 3004,
-        internalPort: 3004,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-sage'],
-        health: 'http://noona-sage:3004/health',
-    },
-    {
-        name: 'noona-moon',
-        image: 'captainpax/noona-moon:latest',
-        port: 3000,
-        internalPort: 3000,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-moon'],
-        health: 'http://noona-moon:3000/',
-    },
-    {
-        name: 'noona-oracle',
-        image: 'captainpax/noona-oracle:latest',
-        port: 3001,
-        internalPort: 3001,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-oracle'],
-        health: 'http://noona-oracle:3001/',
-    },
-    {
-        name: 'noona-raven',
-        image: 'captainpax/noona-raven:latest',
-        port: 3002,
-        internalPort: 8080,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-raven'],
-        health: 'http://noona-raven:3002/',
-    },
-    {
-        name: 'noona-portal',
-        image: 'captainpax/noona-portal:latest',
-        port: 3003,
-        internalPort: 3003,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-portal'],
-        health: 'http://noona-portal:3003/',
-    },
-    {
-        name: 'noona-vault',
-        image: 'captainpax/noona-vault:latest',
-        port: 3005,
-        internalPort: 3005,
-        env: [`DEBUG=${DEBUG}`, 'SERVICE_NAME=noona-vault', 'PORT=3005'],
-        health: 'http://noona-vault:3005/v1/vault/health',
-    },
+    'noona-sage',
+    'noona-moon',
+    'noona-oracle',
+    'noona-raven',
+    'noona-portal',
+    'noona-vault'
 ];
 
+const passwordMap = {};
+const serviceDefs = rawList.map(name => {
+    const portMap = {
+        'noona-sage': 3004,
+        'noona-moon': 3000,
+        'noona-oracle': 3001,
+        'noona-raven': 3002,
+        'noona-portal': 3003,
+        'noona-vault': 3005
+    };
+
+    const internalPort = name === 'noona-raven' ? 8080 : portMap[name];
+    const password = genPassword();
+    passwordMap[name] = password;
+
+    const env = [
+        `DEBUG=${DEBUG}`,
+        `SERVICE_NAME=${name}`,
+        `WARDENPASS=${password}`
+    ];
+
+    // Vault gets the full password map
+    if (name === 'noona-vault') {
+        const passMapString = Object.entries(passwordMap)
+            .map(([svc, pass]) => `${svc}:${pass}`)
+            .join(',');
+        env.push(`PORT=3005`, `WARDENPASSMAP=${passMapString}`);
+    }
+
+    return {
+        name,
+        image: `captainpax/${name}:latest`,
+        port: portMap[name],
+        internalPort,
+        env,
+        health:
+            name === 'noona-sage'
+                ? 'http://noona-sage:3004/health'
+                : name === 'noona-vault'
+                    ? 'http://noona-vault:3005/v1/vault/health'
+                    : `http://${name}:${portMap[name]}/`
+    };
+});
+
 const noonaDockers = Object.fromEntries(
-    rawList.map(service => {
+    serviceDefs.map(service => {
         const internal = service.internalPort || service.port;
         const exposed = internal ? { [`${internal}/tcp`]: {} } : {};
         const ports =
             internal && service.port
                 ? { [`${internal}/tcp`]: [{ HostPort: String(service.port) }] }
                 : {};
-
-        return [
-            service.name,
-            {
-                ...service,
-                exposed,
-                ports,
-            },
-        ];
+        return [service.name, { ...service, exposed, ports }];
     })
 );
 

@@ -1,5 +1,3 @@
-// utilities/database/packagePacker.mjs
-
 /**
  * @fileoverview
  * Utility to create valid Vault packets for MongoDB and Redis.
@@ -12,12 +10,11 @@ const allowedRedisOps = ['set', 'get', 'del'];
 /**
  * Creates a packet for MongoDB-based Vault operations.
  *
- * @param {'insert' | 'find' | 'update'} operation - Mongo operation type
- * @param {string} collection - MongoDB collection name
- * @param {object} data - Document (insert), query (find), or update object
- * @param {object} [options] - Optional fields for update/query/upsert
+ * @param {'insert' | 'find' | 'update'} operation
+ * @param {string} collection
+ * @param {object} data
+ * @param {object} [options]
  * @returns {object} Vault packet
- * @throws {Error} If inputs are invalid
  */
 export function packMongo(operation, collection, data, options = {}) {
     if (!allowedMongoOps.includes(operation)) {
@@ -48,12 +45,11 @@ export function packMongo(operation, collection, data, options = {}) {
 /**
  * Creates a packet for Redis-based Vault operations.
  *
- * @param {'set' | 'get' | 'del'} operation - Redis operation type
- * @param {string} key - Redis key
- * @param {*} [value] - Value to set (only for 'set')
- * @param {number} [ttl] - Optional time-to-live in seconds (only for 'set')
+ * @param {'set' | 'get' | 'del'} operation
+ * @param {string} key
+ * @param {*} [value]
+ * @param {number} [ttl]
  * @returns {object} Vault packet
- * @throws {Error} If inputs are invalid
  */
 export function packRedis(operation, key, value, ttl) {
     if (!allowedRedisOps.includes(operation)) {
@@ -70,7 +66,7 @@ export function packRedis(operation, key, value, ttl) {
             throw new Error('Redis SET operation requires a value');
         }
         payload.value = value;
-        if (ttl) {
+        if (ttl !== undefined) {
             if (typeof ttl !== 'number' || ttl <= 0) {
                 throw new Error('TTL must be a positive number (in seconds)');
             }
