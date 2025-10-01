@@ -28,7 +28,7 @@ public class VaultService {
     @Value("${vault.url:http://noona-vault:3005}")
     private String vaultUrl;
 
-    @Value("${WARDENPASS}")
+    @Value("${vault.wardenPass:${WARDENPASS:}}")
     private String wardenPass;
 
     private String jwtToken;
@@ -39,6 +39,9 @@ public class VaultService {
 
     private void ensureAuth() {
         if (jwtToken == null || jwtToken.isEmpty()) {
+            if (wardenPass == null || wardenPass.isBlank()) {
+                throw new IllegalStateException("WARDENPASS is not configured. Set the WARDENPASS environment variable or the 'vault.wardenPass' property.");
+            }
             log.info("[VaultService] 🔐 Authenticating with Vault...");
             Map<String, String> authRequest = Map.of("password", wardenPass);
 
