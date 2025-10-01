@@ -4,6 +4,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { chmod } from 'fs/promises';
 
 const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,20 @@ const print = {
     error: msg => console.error(`${colors.red}❌ ${msg}${colors.reset}`)
 };
 
+const ensureExecutables = async service => {
+    if (service !== 'raven') return;
+
+    const gradlewPath = resolve(ROOT_DIR, 'services', service, 'gradlew');
+
+    try {
+        await chmod(gradlewPath, 0o755);
+    } catch (error) {
+        if (error?.code !== 'ENOENT') {
+            console.warn(`${colors.yellow}⚠️  Unable to update permissions for ${gradlewPath}: ${error.message}${colors.reset}`);
+        }
+    }
+};
+
 const dockerRunPowerShell = async (service, image) => {
     const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --network noona-network -v /var/run/docker.sock:/var/run/docker.sock -e DEBUG=false ${image}:latest"`;
     await execAsync(cmd);
@@ -75,6 +90,7 @@ const run = async () => {
                 case '1': // Build
                     console.log(`${colors.yellow}🔨 Building ${svc}...${colors.reset}`);
                     try {
+                        await ensureExecutables(svc);
                         await execAsync(`docker build --no-cache -f "${dockerfile}" -t "${image}" "${ROOT_DIR}"`, { stdio: 'inherit' });
                         print.success(`Build complete: ${image}`);
                     } catch (e) {
