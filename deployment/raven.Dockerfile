@@ -8,11 +8,15 @@ WORKDIR /app
 # Copy your Raven service source code into the build context
 COPY services/raven /app
 
-# Ensure gradlew is executable
+# Ensure gradlew is executable for local development consistency
 RUN chmod +x ./gradlew
 
-# Build the Shadow fat jar
-RUN ./gradlew shadowJar
+# Build the Shadow fat jar using the Gradle distribution provided by the image.
+# On some hosts (notably Windows), the copied gradlew script may retain CRLF
+# line endings and become unusable during the Docker build stage. Invoking the
+# Gradle runtime directly avoids those line-ending issues while still
+# respecting the project configuration.
+RUN gradle --no-daemon shadowJar
 
 # ────────────────────────────────────────────────
 # 🦅 Noona Raven - Runtime Stage with Chrome installed
