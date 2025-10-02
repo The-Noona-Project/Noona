@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node initWarden.mjs",
-    "dev": "nodemon initWarden.mjs"
+    "dev": "nodemon initWarden.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "dockerode": "^4.0.7",
