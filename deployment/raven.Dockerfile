@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────
-# 🦅 Noona Raven - Build Stage (Spring Boot bootJar)
+# 🦅 Noona Raven - Build Stage (Shadow Jar)
 # ────────────────────────────────────────────────
 FROM gradle:8-jdk21 AS builder
 
@@ -11,8 +11,8 @@ COPY services/raven /app
 # Ensure gradlew is executable
 RUN chmod +x ./gradlew
 
-# Build the Spring Boot fat jar using bootJar
-RUN ./gradlew bootJar
+# Build the Shadow fat jar
+RUN ./gradlew shadowJar
 
 # ────────────────────────────────────────────────
 # 🦅 Noona Raven - Runtime Stage with Chrome installed
@@ -34,7 +34,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy built jar from builder stage
-COPY --from=builder /app/build/libs/*.jar app.jar
+COPY --from=builder /app/build/libs/*-all.jar app.jar
 
 # Expose Raven API port
 EXPOSE 8080
