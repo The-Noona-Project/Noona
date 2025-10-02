@@ -1,6 +1,7 @@
 // services/warden/docker/noonaDockers.mjs
 
 const DEBUG = process.env.DEBUG || 'false';
+const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
 
 const DEFAULT_TOKENS = {
     'noona-sage': 'noona-sage-dev-token',
@@ -63,18 +64,34 @@ const serviceDefs = rawList.map(name => {
         env.push(`PORT=3005`, `VAULT_TOKEN_MAP=${tokenMapString}`);
     }
 
+    const hostServiceUrl = portMap[name]
+        ? `${HOST_SERVICE_URL}:${portMap[name]}`
+        : null;
+
+    const healthChecks = (() => {
+        if (name === 'noona-sage') {
+            return 'http://noona-sage:3004/health';
+        }
+
+        if (name === 'noona-vault') {
+            return 'http://noona-vault:3005/v1/vault/health';
+        }
+
+        if (name === 'noona-raven') {
+            return 'http://noona-raven:8080/v1/library/health';
+        }
+
+        return `http://${name}:${portMap[name]}/`;
+    })();
+
     return {
         name,
         image: `captainpax/${name}:latest`,
         port: portMap[name],
         internalPort,
         env,
-        health:
-            name === 'noona-sage'
-                ? 'http://noona-sage:3004/health'
-                : name === 'noona-vault'
-                    ? 'http://noona-vault:3005/v1/vault/health'
-                    : `http://${name}:${portMap[name]}/`
+        hostServiceUrl,
+        health: healthChecks
     };
 });
 
