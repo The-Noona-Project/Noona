@@ -1,5 +1,7 @@
 ﻿// services/warden/docker/addonDockers.mjs
 
+const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
+
 const rawList = [
     {
         name: 'noona-redis',
@@ -17,6 +19,7 @@ const rawList = [
         env: ['SERVICE_NAME=noona-redis'],
         volumes: ['/noona-redis-data:/data'],
         health: 'http://noona-redis:8001/',
+        hostServiceUrl: `${HOST_SERVICE_URL}:8001`,
     },
     {
         name: 'noona-mongo',
@@ -36,6 +39,7 @@ const rawList = [
         ],
         volumes: ['/noona-mongo-data:/data/db'],
         health: null, // Mongo doesn't expose an HTTP endpoint
+        hostServiceUrl: `mongodb://localhost:27017`,
     },
 ];
 

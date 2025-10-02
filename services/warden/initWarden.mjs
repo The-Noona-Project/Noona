@@ -18,9 +18,25 @@ const trackedContainers = new Set();
 
 const DEBUG = process.env.DEBUG || 'false';
 const SUPER_MODE = DEBUG === 'super';
+const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
+
+function resolveHostServiceUrl(service) {
+    if (service.hostServiceUrl) {
+        return service.hostServiceUrl;
+    }
+
+    if (service.port) {
+        return `${HOST_SERVICE_URL}:${service.port}`;
+    }
+
+    return null;
+}
 
 async function startService(service, healthUrl = null) {
-    if (!(await containerExists(service.name))) {
+    const hostServiceUrl = resolveHostServiceUrl(service);
+    const alreadyRunning = await containerExists(service.name);
+
+    if (!alreadyRunning) {
         await pullImageIfNeeded(service.image);
         await runContainerWithLogs(service, networkName, trackedContainers, DEBUG);
     } else {
@@ -29,6 +45,12 @@ async function startService(service, healthUrl = null) {
 
     if (healthUrl) {
         await waitForHealthyStatus(service.name, healthUrl);
+    }
+
+    if (hostServiceUrl) {
+        log(`[${service.name}] ✅ Ready (host_service_url: ${hostServiceUrl})`);
+    } else {
+        log(`[${service.name}] ✅ Ready.`);
     }
 }
 
