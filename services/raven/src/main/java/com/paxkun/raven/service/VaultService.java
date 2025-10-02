@@ -8,12 +8,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.lang.reflect.Type;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * VaultService handles secure JWT-based communication with Noona Vault.
+ * VaultService handles authenticated communication with Noona Vault using static API tokens.
  * Provides helper methods for MongoDB-style insert, find, update operations.
  *
  * Author: Pax
@@ -28,48 +27,21 @@ public class VaultService {
     @Value("${vault.url:http://noona-vault:3005}")
     private String vaultUrl;
 
-    @Value("${vault.wardenPass:${WARDENPASS:}}")
-    private String wardenPass;
-
-    private String jwtToken;
+    @Value("${vault.apiToken:${VAULT_API_TOKEN:}}")
+    private String vaultApiToken;
 
     // ─────────────────────────────────────────────────────────────
     // AUTH
     // ─────────────────────────────────────────────────────────────
 
-    private void ensureAuth() {
-        if (jwtToken == null || jwtToken.isEmpty()) {
-            if (wardenPass == null || wardenPass.isBlank()) {
-                throw new IllegalStateException("WARDENPASS is not configured. Set the WARDENPASS environment variable or the 'vault.wardenPass' property.");
-            }
-            log.info("[VaultService] 🔐 Authenticating with Vault...");
-            Map<String, String> authRequest = Map.of("password", wardenPass);
-
-            try {
-                Map<?, ?> res = webClient.post()
-                        .uri(vaultUrl + "/v1/auth")
-                        .bodyValue(authRequest)
-                        .retrieve()
-                        .bodyToMono(Map.class)
-                        .block();
-
-                if (res == null || res.get("token") == null)
-                    throw new RuntimeException("No token received from Vault.");
-
-                jwtToken = (String) res.get("token");
-                log.info("[VaultService] ✅ JWT token received.");
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to authenticate with Vault: " + e.getMessage(), e);
-            }
-        }
-    }
-
     private Map<String, Object> sendPacket(Map<String, Object> packet) {
-        ensureAuth();
+        if (vaultApiToken == null || vaultApiToken.isBlank()) {
+            throw new IllegalStateException("VAULT_API_TOKEN is not configured. Set the VAULT_API_TOKEN environment variable or the 'vault.apiToken' property.");
+        }
         try {
             return webClient.post()
                     .uri(vaultUrl + "/v1/vault/handle")
-                    .header("x-service-token", jwtToken)
+                    .header("Authorization", "Bearer " + vaultApiToken)
                     .bodyValue(packet)
                     .retrieve()
                     .bodyToMono(Map.class)

@@ -1,6 +1,6 @@
 # 🗝️ Noona Vault
 
-**Noona Vault** is the storage and authentication microservice for the Noona ecosystem. It manages data storage requests and routes them to the appropriate backend (MongoDB, Redis), and provides basic service authentication.
+**Noona Vault** is the storage and authentication microservice for the Noona ecosystem. It manages data storage requests and routes them to the appropriate backend (MongoDB, Redis), and validates incoming requests with deterministic API tokens issued by Warden.
 
 ---
 
@@ -57,23 +57,15 @@ Returns `Vault is up and running`.
 
 ---
 
-### Auth Test
-
-`POST /v1/vault/auth`
-
-Returns `{ "status": "authorized" }` if the `x-service-token` header is valid.
-
----
-
 ## 🔐 Authentication
 
-All routes (except health check) require a valid **service token** sent in the header:
+All routes (except health check) require a valid **service token** sent via the standard Authorization header:
 
 ```
-x-service-token: your_service_token
+Authorization: Bearer <service_token>
 ```
 
-Tokens are set via the `SERVICE_TOKENS` environment variable as a comma-separated list.
+Tokens are provided to Vault through the `VAULT_TOKEN_MAP` environment variable. The value is a comma-separated list of `service:token` pairs (e.g. `noona-moon:moon-token,noona-sage:sage-token`). Requests presenting a token not present in the map will be rejected with `401 Unauthorized`.
 
 ---
 
@@ -82,7 +74,7 @@ Tokens are set via the `SERVICE_TOKENS` environment variable as a comma-separate
 | Variable         | Description                        | Example                     |
 | ---------------- | ---------------------------------- | --------------------------- |
 | `PORT`           | Port Vault listens on              | 4000                        |
-| `SERVICE_TOKENS` | Comma-separated allowed tokens     | moon123,sage456,portal789   |
+| `VAULT_TOKEN_MAP` | Comma-separated `service:token` pairs | `noona-moon:moon123,noona-sage:sage456` |
 | `MONGO_URI`      | MongoDB connection URI             | mongodb://noona-mongo:27017 |
 | `REDIS_HOST`     | Redis host (default `noona-redis`) | noona-redis                 |
 
@@ -92,7 +84,7 @@ Tokens are set via the `SERVICE_TOKENS` environment variable as a comma-separate
 
 ```bash
 docker build -f deployment/vault.Dockerfile -t noona-vault .
-docker run -e MONGO_URI=mongodb://noona-mongo:27017 -e SERVICE_TOKENS=moon123,sage456 -e REDIS_HOST=noona-redis -p 4000:4000 noona-vault
+docker run -e MONGO_URI=mongodb://noona-mongo:27017 -e VAULT_TOKEN_MAP=noona-moon:moon123,noona-sage:sage456 -e REDIS_HOST=noona-redis -p 4000:4000 noona-vault
 ```
 
 ---

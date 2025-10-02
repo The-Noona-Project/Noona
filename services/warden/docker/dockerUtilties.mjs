@@ -84,6 +84,9 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
     const exposed = service.exposed || {};
     const ports = service.ports || {};
 
+    const debugValue = (DEBUG || '').toString().toLowerCase();
+    const shouldStreamLogs = ['true', '1', 'yes', 'super'].includes(debugValue);
+
     const container = await docker.createContainer({
         name: service.name,
         Image: service.image,
@@ -103,8 +106,7 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
     trackedContainers.add(service.name);
     await container.start();
 
-    const showLogs = service.name !== 'noona-redis' || DEBUG;
-    if (showLogs) {
+    if (shouldStreamLogs) {
         const logs = await container.logs({
             follow: true,
             stdout: true,
@@ -116,6 +118,8 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
             const line = chunk.toString().trim();
             if (line) process.stdout.write(`[${service.name}] ${line}\n`);
         });
+    } else {
+        debugMSG(`[dockerUtil] Log streaming disabled for ${service.name}`);
     }
 
     log(`${service.name} is now running.`);

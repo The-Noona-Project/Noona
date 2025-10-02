@@ -11,6 +11,8 @@ Warden is the **central orchestrator** for the Noona ecosystem. It manages conta
 - Attaches itself and managed containers to the shared `noona-network`.
 - Tracks and gracefully shuts down running containers on exit.
 - Supports **minimal mode** for rapid development and **super mode** for full stack deployment.
+- Provisions deterministic Vault API tokens and shares them with every service at boot.
+- Keeps container log streams muted by default for signal-rich startup output (enable with `DEBUG=true`).
 
 ---
 
@@ -46,9 +48,10 @@ DEBUG=super node initWarden.mjs
 
 ## 📝 Environment Variables
 
-| Variable | Description                                       | Default |
-| -------- | ------------------------------------------------- | ------- |
-| `DEBUG`  | Controls launch mode. Use `super` for full stack. | `false` |
+| Variable | Description                                                                 | Default |
+| -------- | --------------------------------------------------------------------------- | ------- |
+| `DEBUG`  | Controls launch mode and enables log streaming when set to `true` or `super`. | `false` |
+| `*_VAULT_TOKEN` | Optional per-service override (e.g. `NOONA_SAGE_VAULT_TOKEN`) for Vault API tokens. | Built-in dev token |
 
 ---
 
