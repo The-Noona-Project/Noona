@@ -1,134 +1,19 @@
 // services/warden/initWarden.mjs
-import Docker from 'dockerode';
-import noonaDockers from './docker/noonaDockers.mjs';
-import addonDockers from './docker/addonDockers.mjs';
-import {
-    attachSelfToNetwork,
-    containerExists,
-    ensureNetwork,
-    pullImageIfNeeded,
-    runContainerWithLogs,
-    waitForHealthyStatus
-} from './docker/dockerUtilties.mjs';
-import { errMSG, log, warn } from '../../utilities/etc/logger.mjs';
+import { createWarden } from './shared/wardenCore.mjs';
+import { errMSG } from '../../utilities/etc/logger.mjs';
 
-const docker = new Docker();
-const networkName = 'noona-network';
-const trackedContainers = new Set();
+const warden = createWarden();
 
-const DEBUG = process.env.DEBUG || 'false';
-const SUPER_MODE = DEBUG === 'super';
-const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
+process.on('SIGINT', () => {
+    void warden.shutdownAll();
+});
 
-function resolveHostServiceUrl(service) {
-    if (service.hostServiceUrl) {
-        return service.hostServiceUrl;
-    }
+process.on('SIGTERM', () => {
+    void warden.shutdownAll();
+});
 
-    if (service.port) {
-        return `${HOST_SERVICE_URL}:${service.port}`;
-    }
-
-    return null;
-}
-
-async function startService(service, healthUrl = null) {
-    const hostServiceUrl = resolveHostServiceUrl(service);
-    const alreadyRunning = await containerExists(service.name);
-
-    if (!alreadyRunning) {
-        await pullImageIfNeeded(service.image);
-        await runContainerWithLogs(service, networkName, trackedContainers, DEBUG);
-    } else {
-        log(`${service.name} already running.`);
-    }
-
-    if (healthUrl) {
-        await waitForHealthyStatus(service.name, healthUrl);
-    }
-
-    if (hostServiceUrl) {
-        log(`[${service.name}] ✅ Ready (host_service_url: ${hostServiceUrl})`);
-    } else {
-        log(`[${service.name}] ✅ Ready.`);
-    }
-}
-
-async function bootMinimal() {
-    const redis = addonDockers['noona-redis'];
-    const moon = noonaDockers['noona-moon'];
-    const sage = noonaDockers['noona-sage'];
-
-    await startService(redis, 'http://noona-redis:8001/');
-    await startService(sage, 'http://noona-sage:3004/health');
-    await startService(moon, 'http://noona-moon:3000/');
-}
-
-async function bootFull() {
-    const services = {
-        ...addonDockers,
-        ...noonaDockers
-    };
-
-    const superBootOrder = [
-        'noona-redis',
-        'noona-mongo',
-        'noona-sage',
-        'noona-moon',
-        'noona-vault',
-        'noona-raven'
-    ];
-
-    for (const name of superBootOrder) {
-        const svc = services[name];
-        if (!svc) {
-            warn(`Service ${name} not found in addonDockers or noonaDockers.`);
-            continue;
-        }
-
-        let healthUrl =
-            name === 'noona-redis'
-                ? 'http://noona-redis:8001/'
-                : name === 'noona-sage'
-                    ? 'http://noona-sage:3004/health'
-                    : svc.health || null;
-
-        await startService(svc, healthUrl);
-    }
-}
-
-async function shutdownAll() {
-    warn(`Shutting down all containers...`);
-    for (const name of trackedContainers) {
-        try {
-            const container = docker.getContainer(name);
-            await container.stop();
-            await container.remove();
-            log(`Stopped & removed ${name}`);
-        } catch (err) {
-            warn(`Error stopping ${name}: ${err.message}`);
-        }
-    }
-    process.exit(0);
-}
-
-process.on('SIGINT', shutdownAll);
-process.on('SIGTERM', shutdownAll);
-
-async function init() {
-    await ensureNetwork(docker, networkName);
-    await attachSelfToNetwork(docker, networkName);
-
-    if (SUPER_MODE) {
-        log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
-        await bootFull();
-    } else {
-        log('[Warden] 🧪 Minimal mode — launching redis, sage, moon only');
-        await bootMinimal();
-    }
-
-    log(`✅ Warden is ready.`);
-    setInterval(() => process.stdout.write('.'), 60000);
-}
-
-init().catch(err => errMSG(`[Warden Init] ❌ Fatal: ${err.message}`));
+warden.init()
+    .then(() => {
+        setInterval(() => process.stdout.write('.'), 60000);
+    })
+    .catch(err => errMSG(`[Warden Init] ❌ Fatal: ${err.message}`));
