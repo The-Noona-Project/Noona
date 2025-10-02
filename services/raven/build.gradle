@@ -1,8 +1,11 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.3'
     id 'io.spring.dependency-management' version '1.1.7'
     id 'org.graalvm.buildtools.native' version '0.10.6'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 group = 'com.paxkun'
@@ -12,6 +15,18 @@ java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)
     }
+}
+
+springBoot {
+    mainClass = 'com.paxkun.raven.RavenApplication'
+}
+
+bootJar {
+    enabled = false
+}
+
+jar {
+    enabled = true
 }
 
 configurations {
@@ -56,6 +71,18 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-tasks.named('test') {
+tasks.withType(Test).configureEach {
     useJUnitPlatform()
+}
+
+tasks.named('shadowJar') {
+    archiveClassifier.set('all')
+    mergeServiceFiles()
+    manifest {
+        attributes('Main-Class': springBoot.mainClass)
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('shadowJar')
 }
