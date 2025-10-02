@@ -63,10 +63,33 @@ const ensureExecutables = async service => {
     }
 };
 
-const dockerRunPowerShell = async (service, image) => {
-    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --network noona-network -v /var/run/docker.sock:/var/run/docker.sock -e DEBUG=false ${image}:latest"`;
+const dockerRunPowerShell = async (service, image, envVars = {}) => {
+    const envString = Object.entries(envVars)
+        .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+        .map(([key, value]) => `-e ${key}=${value}`)
+        .join(' ');
+
+    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --network noona-network -v /var/run/docker.sock:/var/run/docker.sock ${envString} ${image}:latest"`;
     await execAsync(cmd);
     print.success(`${service} started in new PowerShell window.`);
+};
+
+const askDebugSetting = async () => {
+    const answer = (await rl.question('Select DEBUG level (false/true/super) [false]: ')).trim().toLowerCase();
+    const allowed = new Set(['false', 'true', 'super']);
+    if (!answer) return 'false';
+    if (allowed.has(answer)) return answer;
+    print.error('Invalid DEBUG level supplied. Defaulting to "false".');
+    return 'false';
+};
+
+const askBootMode = async () => {
+    const answer = (await rl.question('Select boot mode (minimal/super) [minimal]: ')).trim().toLowerCase();
+    const allowed = new Set(['minimal', 'super']);
+    if (!answer) return 'minimal';
+    if (allowed.has(answer)) return answer;
+    print.error('Invalid boot mode supplied. Defaulting to "minimal".');
+    return 'minimal';
 };
 
 const run = async () => {
@@ -77,9 +100,16 @@ const run = async () => {
         if (mainChoice === '0') break;
         if (!['1','2','3','4','5'].includes(mainChoice)) { print.error('Invalid main choice'); continue; }
 
-        printServicesMenu();
-        const svcChoice = await rl.question('Enter service choice: ');
-        const selected = svcChoice === '0' ? SERVICES : [SERVICES[parseInt(svcChoice) - 1]];
+        let selected;
+
+        if (mainChoice === '4') {
+            console.log(`${colors.cyan}▶️  Start is limited to launching the warden orchestrator.${colors.reset}`);
+            selected = ['warden'];
+        } else {
+            printServicesMenu();
+            const svcChoice = await rl.question('Enter service choice: ');
+            selected = svcChoice === '0' ? SERVICES : [SERVICES[parseInt(svcChoice) - 1]];
+        }
 
         for (const svc of selected) {
             const image = `${DOCKERHUB_USER}/noona-${svc}`;
@@ -114,7 +144,9 @@ const run = async () => {
                     console.log(`${colors.yellow}▶️  Starting ${svc}...${colors.reset}`);
                     try {
                         await execAsync(`docker network inspect noona-network >/dev/null 2>&1 || docker network create noona-network`);
-                        await dockerRunPowerShell(svc, image);
+                        const DEBUG = await askDebugSetting();
+                        const BOOT_MODE = await askBootMode();
+                        await dockerRunPowerShell(svc, image, { DEBUG, BOOT_MODE });
                     } catch (e) {
                         print.error(`Failed to start ${svc}: ${e.message}`);
                     }
