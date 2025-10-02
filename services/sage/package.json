@@ -5,7 +5,8 @@
   "main": "initSage.mjs",
   "type": "module",
   "scripts": {
-    "start": "node initSage.mjs"
+    "start": "node initSage.mjs",
+    "test": "node --test"
   },
   "repository": {
     "type": "git",
