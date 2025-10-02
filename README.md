@@ -27,7 +27,7 @@ Noona is organized into seven primary services that communicate through authenti
 | **Sage** | Monitoring and logging backbone using Prometheus for metrics collection and Grafana for visualization. |
 | **Moon** | Web-based control center built with React. Provides dashboards for admins and readers, Discord authentication, AI chat, request management, and service status. |
 | **Raven** | Custom Java-based scraper/downloader. Automates content acquisition, metadata enrichment, and CBZ packaging. |
-| **Oracle** | AI assistant layer powered by Python, LangChain, LocalAI/AnythingLLM for conversational insights and recommendations. |
+| **Oracle** | AI assistant layer powered by LangChain, LocalAI/AnythingLLM for conversational insights and recommendations. |
 
 ### Master/Node Topology
 
@@ -55,7 +55,7 @@ This design allows you to keep the core management stack on a primary machine wh
 - **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
 - **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
 
-The `deployment/` directory contains Dockerfiles for single-service containers as well as grouped builds. The `deploy.sh` script provides a starting point for bootstrapping the stack. Expect additional automation as the 2.x overhaul progresses.
+The `deployment/` directory contains Dockerfiles for single-service containers. The `deploy.mjs` script provides a starting point for bootstrapping the stack. Expect additional automation as the 2.x overhaul progresses.
 
 ## Roadmap & Vision
 
