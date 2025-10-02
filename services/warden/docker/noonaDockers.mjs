@@ -11,6 +11,11 @@ const DEFAULT_TOKENS = {
     'noona-vault': 'noona-vault-dev-token'
 };
 
+/**
+ * Resolve the Vault token for a given service name.
+ * @param {string} name - Service name (e.g., "noona-sage").
+ * @returns {string} The resolved token: the environment variable value for `<NAME>_VAULT_TOKEN` if set, otherwise the entry from `DEFAULT_TOKENS` for the service, otherwise the fallback `"<name>-dev-token"`.
+ */
 function resolveToken(name) {
     const envKey = `${name.replace(/-/g, '_').toUpperCase()}_VAULT_TOKEN`;
     return process.env[envKey] || DEFAULT_TOKENS[name] || `${name}-dev-token`;

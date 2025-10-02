@@ -39,7 +39,11 @@ if (!tokenPairs.length) {
     log(`[Vault] Loaded API tokens for: ${serviceList}`);
 }
 
-// ====== AUTH MIDDLEWARE ======
+/**
+ * Extracts a Bearer token from the request Authorization header.
+ * @param {import('express').Request} req - The incoming HTTP request.
+ * @returns {string|null} The token string if a valid `Bearer` Authorization header is present; `null` otherwise.
+ */
 function extractBearerToken(req) {
     const authHeader = req.headers.authorization || '';
     if (typeof authHeader !== 'string') return null;
@@ -52,6 +56,16 @@ function extractBearerToken(req) {
     return token.trim();
 }
 
+/**
+ * Express middleware that authenticates requests using a Bearer token mapped to a service.
+ *
+ * If the Authorization header is missing or malformed, responds with 401 and
+ * `{ error: 'Missing or invalid Authorization header' }`. If the token is not
+ * recognized, responds with 401 and `{ error: 'Unauthorized service token' }`.
+ * On success, sets `req.serviceName` to the authenticated service name and calls `next()`.
+ *
+ * @param {import('express').Request & { serviceName?: string }} req - Express request; on success `serviceName` is attached.
+ */
 function requireAuth(req, res, next) {
     const token = extractBearerToken(req);
     if (!token) {

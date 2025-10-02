@@ -32,7 +32,14 @@ public class VaultService {
 
     // ─────────────────────────────────────────────────────────────
     // AUTH
-    // ─────────────────────────────────────────────────────────────
+    /**
+     * Send a packet to the Vault service's /v1/vault/handle endpoint and return the parsed JSON response.
+     *
+     * @param packet the request payload to send to Vault; must be serializable to JSON
+     * @return       the response body deserialized to a Map<String, Object>
+     * @throws IllegalStateException if the VAULT_API_TOKEN configuration is missing or blank
+     * @throws RuntimeException      if the HTTP request to Vault fails
+     */
 
     private Map<String, Object> sendPacket(Map<String, Object> packet) {
         if (vaultApiToken == null || vaultApiToken.isBlank()) {

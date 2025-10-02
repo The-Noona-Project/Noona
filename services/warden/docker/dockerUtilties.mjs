@@ -1,4 +1,4 @@
-﻿// services/warden/docker/dockerUtilties.mjs
+// services/warden/docker/dockerUtilties.mjs
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
 import { debugMSG, log, warn } from '../../../utilities/etc/logger.mjs';
@@ -70,7 +70,16 @@ export async function pullImageIfNeeded(image) {
 }
 
 /**
- * Creates and starts a container, attaches logs if DEBUG=true or required
+ * Create and start a Docker container for the given service and optionally stream its logs.
+ *
+ * Ensures the service's environment includes `SERVICE_NAME`, creates the container attached to the specified network,
+ * records the service name in `trackedContainers`, starts the container, and conditionally streams its stdout/stderr
+ * to stdout when `DEBUG` is set to a truthy debug value (`"true"`, `"1"`, `"yes"`, or `"super"`).
+ *
+ * @param {Object} service - Service descriptor with properties such as `name`, `image`, `env`, `volumes`, `exposed`, and `ports`.
+ * @param {string} networkName - Name of the Docker network to attach the container to.
+ * @param {Set<string>} trackedContainers - Set used to record the started container's service name.
+ * @param {string|boolean|undefined} DEBUG - Debug flag that enables log streaming when set to a recognized truthy value.
  */
 export async function runContainerWithLogs(service, networkName, trackedContainers, DEBUG) {
     const binds = service.volumes || [];
