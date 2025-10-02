@@ -7,9 +7,8 @@
 
 import express from 'express';
 import dotenv from 'dotenv';
-import jwt from 'jsonwebtoken';
 import { handlePacket } from '../../utilities/database/packetParser.mjs';
-import { log, errMSG, debugMSG } from '../../utilities/etc/logger.mjs';
+import { log, errMSG, debugMSG, warn } from '../../utilities/etc/logger.mjs';
 
 dotenv.config();
 
@@ -18,48 +17,68 @@ app.use(express.json());
 
 // ====== ENV CONFIG ======
 const PORT = process.env.PORT || 3005;
-const JWT_SECRET = process.env.JWT_SECRET || 'noona-vault-dev-secret';
-const JWT_EXPIRES_IN = '10m'; // 10 minutes
-const WARDENPASSMAP = process.env.WARDENPASSMAP || ''; // e.g. noona-moon:pass1,noona-sage:pass2
+const VAULT_TOKEN_MAP = process.env.VAULT_TOKEN_MAP || '';
 
-// ====== PARSE PASSWORD MAP ======
-const validPassMap = Object.fromEntries(
-    WARDENPASSMAP.split(',')
-        .map(pair => pair.trim())
-        .filter(Boolean)
-        .map(pair => {
-            const [name, pass] = pair.split(':');
-            return [name, pass];
-        })
-);
+// ====== PARSE TOKEN MAP ======
+const tokenPairs = VAULT_TOKEN_MAP.split(',')
+    .map(pair => pair.trim())
+    .filter(Boolean)
+    .map(pair => {
+        const [service, token] = pair.split(':');
+        return [service?.trim(), token?.trim()];
+    })
+    .filter(([service, token]) => Boolean(service && token));
 
-// ====== JWT UTIL ======
-function createToken(serviceName) {
-    return jwt.sign({ sub: serviceName }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+const tokensByService = Object.fromEntries(tokenPairs);
+const serviceByToken = Object.fromEntries(tokenPairs.map(([service, token]) => [token, service]));
+
+if (!tokenPairs.length) {
+    warn('[Vault] ⚠️ No service tokens were loaded. Protected routes will reject all requests.');
+} else {
+    const serviceList = tokenPairs.map(([service]) => service).join(', ');
+    log(`[Vault] Loaded API tokens for: ${serviceList}`);
 }
 
-function verifyToken(token) {
-    try {
-        return jwt.verify(token, JWT_SECRET);
-    } catch (err) {
+/**
+ * Extracts a Bearer token from the request Authorization header.
+ * @param {import('express').Request} req - The incoming HTTP request.
+ * @returns {string|null} The token string if a valid `Bearer` Authorization header is present; `null` otherwise.
+ */
+function extractBearerToken(req) {
+    const authHeader = req.headers.authorization || '';
+    if (typeof authHeader !== 'string') return null;
+
+    const [scheme, token] = authHeader.split(' ');
+    if (!scheme || scheme.toLowerCase() !== 'bearer' || !token) {
         return null;
     }
+
+    return token.trim();
 }
 
-// ====== AUTH MIDDLEWARE ======
+/**
+ * Express middleware that authenticates requests using a Bearer token mapped to a service.
+ *
+ * If the Authorization header is missing or malformed, responds with 401 and
+ * `{ error: 'Missing or invalid Authorization header' }`. If the token is not
+ * recognized, responds with 401 and `{ error: 'Unauthorized service token' }`.
+ * On success, sets `req.serviceName` to the authenticated service name and calls `next()`.
+ *
+ * @param {import('express').Request & { serviceName?: string }} req - Express request; on success `serviceName` is attached.
+ */
 function requireAuth(req, res, next) {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) {
+    const token = extractBearerToken(req);
+    if (!token) {
         return res.status(401).json({ error: 'Missing or invalid Authorization header' });
     }
 
-    const token = auth.split(' ')[1];
-    const decoded = verifyToken(token);
-    if (!decoded) {
-        return res.status(401).json({ error: 'Invalid or expired token' });
+    const serviceName = serviceByToken[token];
+    if (!serviceName) {
+        debugMSG(`[Vault] ❌ Unknown token presented: ${token.slice(0, 6)}***`);
+        return res.status(401).json({ error: 'Unauthorized service token' });
     }
 
-    req.serviceName = decoded.sub;
+    req.serviceName = serviceName;
     next();
 }
 
@@ -73,52 +92,12 @@ app.get('/v1/vault/health', (req, res) => {
 });
 
 /**
- * Service login
- */
-app.post('/v1/vault/auth', (req, res) => {
-    const { name, password } = req.body;
-
-    if (!name || !password) {
-        return res.status(400).json({ error: 'Missing name or password' });
-    }
-
-    const expected = validPassMap[name];
-    if (!expected || expected !== password) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    const token = createToken(name);
-    debugMSG(`[Vault] ✅ Authenticated ${name}`);
-    res.json({ token });
-});
-
-/**
- * Token refresh
- */
-app.post('/v1/vault/refresh', (req, res) => {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-    }
-
-    const oldToken = auth.split(' ')[1];
-    const decoded = verifyToken(oldToken);
-
-    if (!decoded) {
-        return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-
-    const newToken = createToken(decoded.sub);
-    debugMSG(`[Vault] 🔄 Refreshed token for ${decoded.sub}`);
-    res.json({ token: newToken });
-});
-
-/**
  * Unified packet handler (secured)
  */
 app.post('/v1/vault/handle', requireAuth, async (req, res) => {
     const packet = req.body;
 
+    debugMSG(`[Vault] Handling packet from ${req.serviceName}`);
     const result = await handlePacket(packet);
     if (result.error) {
         return res.status(400).json({ error: result.error });

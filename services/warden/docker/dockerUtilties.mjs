@@ -1,4 +1,4 @@
-﻿// services/warden/docker/dockerUtilties.mjs
+// services/warden/docker/dockerUtilties.mjs
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
 import { debugMSG, log, warn } from '../../../utilities/etc/logger.mjs';
@@ -70,7 +70,16 @@ export async function pullImageIfNeeded(image) {
 }
 
 /**
- * Creates and starts a container, attaches logs if DEBUG=true or required
+ * Create and start a Docker container for the given service and optionally stream its logs.
+ *
+ * Ensures the service's environment includes `SERVICE_NAME`, creates the container attached to the specified network,
+ * records the service name in `trackedContainers`, starts the container, and conditionally streams its stdout/stderr
+ * to stdout when `DEBUG` is set to a truthy debug value (`"true"`, `"1"`, `"yes"`, or `"super"`).
+ *
+ * @param {Object} service - Service descriptor with properties such as `name`, `image`, `env`, `volumes`, `exposed`, and `ports`.
+ * @param {string} networkName - Name of the Docker network to attach the container to.
+ * @param {Set<string>} trackedContainers - Set used to record the started container's service name.
+ * @param {string|boolean|undefined} DEBUG - Debug flag that enables log streaming when set to a recognized truthy value.
  */
 export async function runContainerWithLogs(service, networkName, trackedContainers, DEBUG) {
     const binds = service.volumes || [];
@@ -83,6 +92,9 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
 
     const exposed = service.exposed || {};
     const ports = service.ports || {};
+
+    const debugValue = (DEBUG || '').toString().toLowerCase();
+    const shouldStreamLogs = ['true', '1', 'yes', 'super'].includes(debugValue);
 
     const container = await docker.createContainer({
         name: service.name,
@@ -103,8 +115,7 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
     trackedContainers.add(service.name);
     await container.start();
 
-    const showLogs = service.name !== 'noona-redis' || DEBUG;
-    if (showLogs) {
+    if (shouldStreamLogs) {
         const logs = await container.logs({
             follow: true,
             stdout: true,
@@ -116,6 +127,8 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
             const line = chunk.toString().trim();
             if (line) process.stdout.write(`[${service.name}] ${line}\n`);
         });
+    } else {
+        debugMSG(`[dockerUtil] Log streaming disabled for ${service.name}`);
     }
 
     log(`${service.name} is now running.`);

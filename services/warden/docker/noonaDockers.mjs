@@ -1,10 +1,24 @@
-﻿// services/warden/docker/noonaDockers.mjs
-import crypto from 'crypto';
+// services/warden/docker/noonaDockers.mjs
 
 const DEBUG = process.env.DEBUG || 'false';
 
-function genPassword() {
-    return crypto.randomBytes(24).toString('base64url'); // Strong and Docker-friendly
+const DEFAULT_TOKENS = {
+    'noona-sage': 'noona-sage-dev-token',
+    'noona-moon': 'noona-moon-dev-token',
+    'noona-oracle': 'noona-oracle-dev-token',
+    'noona-raven': 'noona-raven-dev-token',
+    'noona-portal': 'noona-portal-dev-token',
+    'noona-vault': 'noona-vault-dev-token'
+};
+
+/**
+ * Resolve the Vault token for a given service name.
+ * @param {string} name - Service name (e.g., "noona-sage").
+ * @returns {string} The resolved token: the environment variable value for `<NAME>_VAULT_TOKEN` if set, otherwise the entry from `DEFAULT_TOKENS` for the service, otherwise the fallback `"<name>-dev-token"`.
+ */
+function resolveToken(name) {
+    const envKey = `${name.replace(/-/g, '_').toUpperCase()}_VAULT_TOKEN`;
+    return process.env[envKey] || DEFAULT_TOKENS[name] || `${name}-dev-token`;
 }
 
 const rawList = [
@@ -16,7 +30,10 @@ const rawList = [
     'noona-vault'
 ];
 
-const passwordMap = {};
+const tokensByService = Object.fromEntries(
+    rawList.map(name => [name, resolveToken(name)])
+);
+
 const serviceDefs = rawList.map(name => {
     const portMap = {
         'noona-sage': 3004,
@@ -28,21 +45,22 @@ const serviceDefs = rawList.map(name => {
     };
 
     const internalPort = name === 'noona-raven' ? 8080 : portMap[name];
-    const password = genPassword();
-    passwordMap[name] = password;
+    const token = tokensByService[name];
 
     const env = [
         `DEBUG=${DEBUG}`,
-        `SERVICE_NAME=${name}`,
-        `WARDENPASS=${password}`
+        `SERVICE_NAME=${name}`
     ];
 
-    // Vault gets the full password map
+    if (token) {
+        env.push(`VAULT_API_TOKEN=${token}`);
+    }
+
     if (name === 'noona-vault') {
-        const passMapString = Object.entries(passwordMap)
-            .map(([svc, pass]) => `${svc}:${pass}`)
+        const tokenMapString = Object.entries(tokensByService)
+            .map(([svc, svcToken]) => `${svc}:${svcToken}`)
             .join(',');
-        env.push(`PORT=3005`, `WARDENPASSMAP=${passMapString}`);
+        env.push(`PORT=3005`, `VAULT_TOKEN_MAP=${tokenMapString}`);
     }
 
     return {
