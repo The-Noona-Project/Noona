@@ -112,7 +112,10 @@ test('POST /api/services/install returns results and status code for errors', as
     const response = await fetch(`${baseUrl}/api/services/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ services: ['noona-sage', 'noona-bad'] }),
+        body: JSON.stringify({ services: [
+            { name: 'noona-sage', env: { DEBUG: 'true' } },
+            { name: 'noona-bad' },
+        ] }),
     });
 
     assert.equal(response.status, 207);
@@ -122,7 +125,10 @@ test('POST /api/services/install returns results and status code for errors', as
             { name: 'noona-bad', status: 'error', error: 'boom' },
         ],
     });
-    assert.deepEqual(installCalls, [['noona-sage', 'noona-bad']]);
+    assert.deepEqual(installCalls, [[
+        { name: 'noona-sage', env: { DEBUG: 'true' } },
+        { name: 'noona-bad' },
+    ]]);
 });
 
 test('POST /api/services/install validates payload', async (t) => {

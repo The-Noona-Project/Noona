@@ -4,7 +4,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 
-import { createSageApp, startSage } from '../shared/sageApp.mjs'
+import {
+    SetupValidationError,
+    createSageApp,
+    normalizeServiceInstallPayload,
+    startSage,
+} from '../shared/sageApp.mjs'
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -29,6 +34,31 @@ const closeServer = (server) => new Promise((resolve, reject) => {
             resolve()
         }
     })
+})
+
+test('normalizeServiceInstallPayload normalizes entries and trims values', () => {
+    const payload = normalizeServiceInstallPayload([
+        '  noona-sage  ',
+        { name: 'noona-moon', env: { DEBUG: true, ' EXTRA ': 'value', EMPTY: null } },
+    ])
+
+    assert.deepEqual(payload, [
+        { name: 'noona-sage' },
+        { name: 'noona-moon', env: { DEBUG: 'true', EXTRA: 'value', EMPTY: '' } },
+    ])
+})
+
+test('normalizeServiceInstallPayload rejects invalid payloads', () => {
+    assert.throws(() => normalizeServiceInstallPayload([]), SetupValidationError)
+    assert.throws(() => normalizeServiceInstallPayload(['   ']), SetupValidationError)
+    assert.throws(
+        () => normalizeServiceInstallPayload([{ name: 'noona-sage', env: 'boom' }]),
+        SetupValidationError,
+    )
+    assert.throws(
+        () => normalizeServiceInstallPayload([{ name: '', env: {} }]),
+        SetupValidationError,
+    )
 })
 
 test('GET /health responds with success message', async (t) => {
@@ -229,12 +259,12 @@ test('POST /api/setup/install forwards request to setup client', async (t) => {
     const response = await fetch(`${baseUrl}/api/setup/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ services: ['noona-sage'] }),
+        body: JSON.stringify({ services: [{ name: 'noona-sage', env: { DEBUG: 'true' } }] }),
     })
 
     assert.equal(response.status, 207)
     assert.deepEqual(await response.json(), { results: [{ name: 'noona-sage', status: 'installed' }] })
-    assert.deepEqual(calls, [['noona-sage']])
+    assert.deepEqual(calls, [[{ name: 'noona-sage', env: { DEBUG: 'true' } }]])
 })
 
 test('POST /api/setup/install validates payload', async (t) => {
@@ -244,8 +274,9 @@ test('POST /api/setup/install validates payload', async (t) => {
             async listServices() {
                 return []
             },
-            async installServices() {
-                throw new Error('installServices should not be called')
+            async installServices(services) {
+                normalizeServiceInstallPayload(services)
+                return { status: 200, results: [] }
             },
         },
     })
@@ -262,4 +293,44 @@ test('POST /api/setup/install validates payload', async (t) => {
     assert.equal(response.status, 400)
     const payload = await response.json()
     assert.ok(payload.error.includes('non-empty'))
+})
+
+test('setupClient.installServices normalizes payload before forwarding to Warden', async (t) => {
+    const bodies = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            fetchImpl: async (url, options = {}) => {
+                bodies.push({ url, body: options.body })
+                return {
+                    ok: true,
+                    status: 200,
+                    async json() {
+                        return { results: [{ name: 'noona-sage', status: 'installed' }] }
+                    },
+                }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: ['noona-sage', { name: 'noona-moon', env: { DEBUG: false } }] }),
+    })
+
+    assert.equal(response.status, 200)
+    await response.json()
+
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].url, 'http://warden.local/api/services/install')
+    const parsedBody = JSON.parse(bodies[0].body)
+    assert.deepEqual(parsedBody.services, [
+        { name: 'noona-sage' },
+        { name: 'noona-moon', env: { DEBUG: 'false' } },
+    ])
 })

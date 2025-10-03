@@ -128,6 +128,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             hostServiceUrl: 'http://localhost:3000',
             description: null,
             health: null,
+            envConfig: [],
             installed: false,
         },
         {
@@ -138,6 +139,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             hostServiceUrl: 'http://localhost:8001',
             description: 'Cache',
             health: null,
+            envConfig: [],
             installed: true,
         },
         {
@@ -148,6 +150,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             hostServiceUrl: 'http://custom-sage',
             description: null,
             health: 'http://health',
+            envConfig: [],
             installed: false,
         },
     ]);
@@ -233,6 +236,66 @@ test('installServices returns per-service results with errors', async () => {
     ]);
 
     assert.deepEqual(started, ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage']);
+});
+
+test('installServices merges environment overrides before starting services', async () => {
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', env: ['SERVICE_NAME=noona-vault'] },
+                'noona-sage': {
+                    name: 'noona-sage',
+                    image: 'sage',
+                    env: ['DEBUG=false', 'SERVICE_NAME=noona-sage', 'WARDEN_BASE_URL=http://default'],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push({ name: service.name, env: service.env });
+    };
+
+    const results = await warden.installServices([
+        { name: 'noona-sage', env: { DEBUG: 'true', WARDEN_BASE_URL: 'http://custom' } },
+    ]);
+
+    const sageStart = started.find((entry) => entry.name === 'noona-sage');
+    assert.ok(sageStart, 'noona-sage should be started');
+    assert.ok(sageStart.env.includes('DEBUG=true'));
+    assert.ok(sageStart.env.includes('WARDEN_BASE_URL=http://custom'));
+    assert.ok(sageStart.env.includes('SERVICE_NAME=noona-sage'));
+
+    const vaultStart = started.find((entry) => entry.name === 'noona-vault');
+    assert.ok(vaultStart, 'noona-vault should be started as a dependency');
+    const resultNames = results.map((entry) => entry.name);
+    assert.ok(resultNames.includes('noona-vault'));
+    assert.ok(resultNames.includes('noona-sage'));
+});
+
+test('installServices reports invalid environment overrides', async () => {
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault' },
+                'noona-sage': { name: 'noona-sage', image: 'sage' },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const results = await warden.installServices([
+        { name: 'noona-sage', env: 'not-an-object' },
+    ]);
+
+    const entry = results.find((item) => item.name === 'noona-sage');
+    assert.ok(entry, 'Result should include the invalid entry');
+    assert.equal(entry.status, 'error');
+    assert.match(entry.error, /Environment overrides must be provided as an object map/i);
 });
 
 test('installService installs required vault dependencies before target service', async () => {
