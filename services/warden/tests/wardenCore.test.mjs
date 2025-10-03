@@ -84,6 +84,104 @@ test('startService skips pull and run when container already exists', async () =
     assert.ok(logs.some(line => line.includes('host_service_url: http://custom')));
 });
 
+test('listServices returns sorted metadata with host URLs', () => {
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001, description: 'Cache' },
+            },
+            core: {
+                'noona-sage': { name: 'noona-sage', image: 'sage', hostServiceUrl: 'http://custom-sage', health: 'http://health' },
+                'noona-moon': { name: 'noona-moon', image: 'moon', port: 3000 },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+    });
+
+    const services = warden.listServices();
+
+    assert.deepEqual(services, [
+        {
+            name: 'noona-moon',
+            category: 'core',
+            image: 'moon',
+            port: 3000,
+            hostServiceUrl: 'http://localhost:3000',
+            description: null,
+            health: null,
+        },
+        {
+            name: 'noona-redis',
+            category: 'addon',
+            image: 'redis',
+            port: 8001,
+            hostServiceUrl: 'http://localhost:8001',
+            description: 'Cache',
+            health: null,
+        },
+        {
+            name: 'noona-sage',
+            category: 'core',
+            image: 'sage',
+            port: null,
+            hostServiceUrl: 'http://custom-sage',
+            description: null,
+            health: 'http://health',
+        },
+    ]);
+});
+
+test('installServices returns per-service results with errors', async () => {
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+            },
+            core: {
+                'noona-sage': { name: 'noona-sage', image: 'sage', port: 3004 },
+            },
+        },
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    const results = await warden.installServices(['noona-sage', 'noona-redis', 'unknown', '']);
+
+    assert.deepEqual(results, [
+        {
+            name: 'noona-sage',
+            category: 'core',
+            status: 'installed',
+            hostServiceUrl: 'http://localhost:3004',
+            image: 'sage',
+            port: 3004,
+        },
+        {
+            name: 'noona-redis',
+            category: 'addon',
+            status: 'installed',
+            hostServiceUrl: 'http://localhost:8001',
+            image: 'redis',
+            port: 8001,
+        },
+        {
+            name: 'unknown',
+            status: 'error',
+            error: 'Service unknown is not registered with Warden.',
+        },
+        {
+            name: '',
+            status: 'error',
+            error: 'Invalid service name provided.',
+        },
+    ]);
+
+    assert.deepEqual(started, ['noona-sage', 'noona-redis']);
+});
+
 test('bootFull launches services in super boot order with correct health URLs', async () => {
     const dockerUtils = {
         ensureNetwork: async () => {},
