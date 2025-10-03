@@ -182,6 +182,90 @@ test('installServices returns per-service results with errors', async () => {
     assert.deepEqual(started, ['noona-sage', 'noona-redis']);
 });
 
+test('installService injects Kavita mount for Raven when detected', async () => {
+    const dockerInstance = {
+        listContainers: async () => [
+            { Id: 'abc', Image: 'ghcr.io/example/kavita:latest' },
+        ],
+        getContainer: (id) => ({
+            inspect: async () => ({
+                Mounts: [
+                    { Destination: '/data', Source: '/host/kavita-data' },
+                ],
+            }),
+        }),
+    };
+    const services = {
+        addon: {},
+        core: {
+            'noona-raven': {
+                name: 'noona-raven',
+                image: 'captainpax/noona-raven:latest',
+                env: ['EXISTING_ENV=1'],
+            },
+        },
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services,
+        logger: { log: () => {}, warn: () => {} },
+    });
+
+    let receivedService = null;
+    warden.startService = async (service) => {
+        receivedService = service;
+    };
+
+    const result = await warden.installService('noona-raven');
+
+    assert.ok(receivedService, 'startService should be invoked');
+    assert.ok(receivedService.volumes.includes('/host/kavita-data:/kavita-data'));
+    assert.ok(receivedService.env.includes('EXISTING_ENV=1'));
+    assert.ok(receivedService.env.includes('APPDATA=/kavita-data'));
+    assert.ok(receivedService.env.includes('KAVITA_DATA_MOUNT=/kavita-data'));
+    assert.equal(result.kavitaDataMount, '/host/kavita-data');
+});
+
+test('installService handles missing Kavita mount for Raven gracefully', async () => {
+    let listCalls = 0;
+    const dockerInstance = {
+        listContainers: async () => {
+            listCalls += 1;
+            return [];
+        },
+    };
+    const services = {
+        addon: {},
+        core: {
+            'noona-raven': {
+                name: 'noona-raven',
+                image: 'captainpax/noona-raven:latest',
+                env: ['BASE_ENV=1'],
+            },
+        },
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services,
+        logger: { log: () => {}, warn: () => {} },
+    });
+
+    let receivedService = null;
+    warden.startService = async (service) => {
+        receivedService = service;
+    };
+
+    const result = await warden.installService('noona-raven');
+
+    assert.equal(listCalls, 1);
+    assert.ok(receivedService, 'startService should still run');
+    assert.deepEqual(receivedService.env, ['BASE_ENV=1']);
+    assert.equal(receivedService.volumes, undefined);
+    assert.equal(result.kavitaDataMount, null);
+});
+
 test('bootFull launches services in super boot order with correct health URLs', async () => {
     const dockerUtils = {
         ensureNetwork: async () => {},

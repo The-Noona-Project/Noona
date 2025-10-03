@@ -88,6 +88,37 @@ export function createWarden(options = {}) {
         'noona-raven',
     ];
 
+    async function detectKavitaDataMount() {
+        try {
+            const containers = await dockerInstance.listContainers({ all: true });
+            const kavitaContainer = containers.find(container =>
+                typeof container?.Image === 'string' && container.Image.toLowerCase().includes('kavita'),
+            );
+
+            if (!kavitaContainer) {
+                logger.warn('[Warden] Kavita container not found while detecting data mount.');
+                return null;
+            }
+
+            const inspected = await dockerInstance
+                .getContainer(kavitaContainer.Id)
+                .inspect();
+            const mounts = inspected?.Mounts || [];
+            const dataMount = mounts.find(mount => mount?.Destination === '/data');
+
+            if (dataMount?.Source) {
+                logger.log(`[Warden] Kavita data mount detected at ${dataMount.Source}.`);
+                return dataMount.Source;
+            }
+
+            logger.warn('[Warden] Kavita container found but /data mount was not detected.');
+        } catch (error) {
+            logger.warn(`[Warden] Failed to detect Kavita data mount: ${error.message}`);
+        }
+
+        return null;
+    }
+
     const api = {
         trackedContainers,
         networkName,
@@ -165,9 +196,30 @@ export function createWarden(options = {}) {
 
         const { descriptor, category } = entry;
         const healthUrl = descriptor.health || null;
-        await api.startService(descriptor, healthUrl);
+        let kavitaDataMount = null;
+        let serviceDescriptor = descriptor;
 
-        return {
+        if (descriptor.name === 'noona-raven') {
+            kavitaDataMount = await detectKavitaDataMount();
+
+            if (kavitaDataMount) {
+                const baseEnv = Array.isArray(descriptor.env) ? [...descriptor.env] : [];
+                const volumes = Array.isArray(descriptor.volumes) ? [...descriptor.volumes] : [];
+
+                volumes.push(`${kavitaDataMount}:/kavita-data`);
+                baseEnv.push('APPDATA=/kavita-data', 'KAVITA_DATA_MOUNT=/kavita-data');
+
+                serviceDescriptor = {
+                    ...descriptor,
+                    env: baseEnv,
+                    volumes,
+                };
+            }
+        }
+
+        await api.startService(serviceDescriptor, healthUrl);
+
+        const result = {
             name: descriptor.name,
             category,
             status: 'installed',
@@ -175,6 +227,12 @@ export function createWarden(options = {}) {
             image: descriptor.image,
             port: descriptor.port ?? null,
         };
+
+        if (descriptor.name === 'noona-raven') {
+            result.kavitaDataMount = kavitaDataMount;
+        }
+
+        return result;
     };
 
     api.installServices = async function installServices(names = []) {
