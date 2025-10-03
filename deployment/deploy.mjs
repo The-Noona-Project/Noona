@@ -10,7 +10,7 @@ const execAsync = promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(__dirname, '..');
 const DOCKERHUB_USER = 'captainpax';
-const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault'];
+const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault', 'portal'];
 const NETWORK_NAME = 'noona-network';
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
