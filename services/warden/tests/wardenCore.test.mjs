@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createWarden } from '../shared/wardenCore.mjs';
 
 test('resolveHostServiceUrl prefers explicit hostServiceUrl', () => {
-    const warden = createWarden({ services: { addon: {}, core: {} } });
+    const warden = createWarden({ services: { addon: {}, core: {} }, hostDockerSockets: [] });
     const service = { hostServiceUrl: 'http://custom.local' };
 
     assert.equal(warden.resolveHostServiceUrl(service), 'http://custom.local');
@@ -15,6 +15,7 @@ test('resolveHostServiceUrl falls back to HOST_SERVICE_URL and port', () => {
     const warden = createWarden({
         services: { addon: {}, core: {} },
         env: { HOST_SERVICE_URL: 'http://host.example' },
+        hostDockerSockets: [],
     });
     const service = { port: 8080 };
 
@@ -44,6 +45,7 @@ test('startService pulls, runs, waits, and logs when container is absent', async
         services: { addon: {}, core: {} },
         logger: { log: (message) => logs.push(message), warn: () => {} },
         env: { HOST_SERVICE_URL: 'http://host', DEBUG: 'true' },
+        hostDockerSockets: [],
     });
 
     const service = { name: 'noona-test', image: 'noona/test:latest', port: 1234 };
@@ -76,6 +78,7 @@ test('startService skips pull and run when container already exists', async () =
         dockerUtils,
         services: { addon: {}, core: {} },
         logger: { log: (message) => logs.push(message), warn: () => {} },
+        hostDockerSockets: [],
     });
 
     await warden.startService({ name: 'noona-test', image: 'ignored', hostServiceUrl: 'http://custom' });
@@ -96,6 +99,7 @@ test('listServices returns sorted metadata with host URLs', () => {
             },
         },
         env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
     });
 
     const services = warden.listServices();
@@ -141,6 +145,7 @@ test('installServices returns per-service results with errors', async () => {
                 'noona-sage': { name: 'noona-sage', image: 'sage', port: 3004 },
             },
         },
+        hostDockerSockets: [],
     });
 
     const started = [];
@@ -185,7 +190,7 @@ test('installServices returns per-service results with errors', async () => {
 test('installService injects Kavita mount for Raven when detected', async () => {
     const dockerInstance = {
         listContainers: async () => [
-            { Id: 'abc', Image: 'ghcr.io/example/kavita:latest' },
+            { Id: 'abc', Image: 'ghcr.io/example/kavita:latest', Names: ['/kavita-instance'] },
         ],
         getContainer: (id) => ({
             inspect: async () => ({
@@ -194,6 +199,7 @@ test('installService injects Kavita mount for Raven when detected', async () => 
                 ],
             }),
         }),
+        modem: { socketPath: '/var/run/docker.sock' },
     };
     const services = {
         addon: {},
@@ -210,6 +216,7 @@ test('installService injects Kavita mount for Raven when detected', async () => 
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
+        hostDockerSockets: [],
     });
 
     let receivedService = null;
@@ -225,6 +232,12 @@ test('installService injects Kavita mount for Raven when detected', async () => 
     assert.ok(receivedService.env.includes('APPDATA=/kavita-data'));
     assert.ok(receivedService.env.includes('KAVITA_DATA_MOUNT=/kavita-data'));
     assert.equal(result.kavitaDataMount, '/host/kavita-data');
+    assert.deepEqual(result.kavitaDetection, {
+        mountPath: '/host/kavita-data',
+        socketPath: '/var/run/docker.sock',
+        containerId: 'abc',
+        containerName: 'kavita-instance',
+    });
 });
 
 test('installService handles missing Kavita mount for Raven gracefully', async () => {
@@ -250,6 +263,7 @@ test('installService handles missing Kavita mount for Raven gracefully', async (
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
+        hostDockerSockets: [],
     });
 
     let receivedService = null;
@@ -264,6 +278,76 @@ test('installService handles missing Kavita mount for Raven gracefully', async (
     assert.deepEqual(receivedService.env, ['BASE_ENV=1']);
     assert.equal(receivedService.volumes, undefined);
     assert.equal(result.kavitaDataMount, null);
+    assert.equal(result.kavitaDetection, null);
+});
+
+test('installService inspects alternate docker sockets when primary is missing Kavita', async () => {
+    const dockerInstance = {
+        listContainers: async () => [],
+        getContainer: () => ({
+            inspect: async () => ({ Mounts: [] }),
+        }),
+    };
+
+    const alternateClient = {
+        listContainers: async () => [
+            { Id: 'secondary', Image: 'ghcr.io/example/kavita:nightly', Names: ['/secondary-kavita'] },
+        ],
+        getContainer: () => ({
+            inspect: async () => ({
+                Mounts: [
+                    { Destination: '/data', Source: '/alt/kavita-data' },
+                ],
+            }),
+        }),
+    };
+
+    const services = {
+        addon: {},
+        core: {
+            'noona-raven': {
+                name: 'noona-raven',
+                image: 'captainpax/noona-raven:latest',
+            },
+        },
+    };
+
+    const fsStub = {
+        existsSync: (candidate) => candidate === '/remote/docker.sock',
+        statSync: () => ({ isSocket: () => true }),
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services,
+        logger: { log: () => {}, warn: () => {} },
+        hostDockerSockets: ['/remote/docker.sock'],
+        dockerFactory: (socketPath) => {
+            if (socketPath !== '/remote/docker.sock') {
+                throw new Error(`Unexpected socket request: ${socketPath}`);
+            }
+
+            return alternateClient;
+        },
+        fs: fsStub,
+    });
+
+    let receivedService = null;
+    warden.startService = async (service) => {
+        receivedService = service;
+    };
+
+    const result = await warden.installService('noona-raven');
+
+    assert.ok(receivedService, 'startService should be invoked');
+    assert.ok(receivedService.volumes.includes('/alt/kavita-data:/kavita-data'));
+    assert.equal(result.kavitaDataMount, '/alt/kavita-data');
+    assert.deepEqual(result.kavitaDetection, {
+        mountPath: '/alt/kavita-data',
+        socketPath: '/remote/docker.sock',
+        containerId: 'secondary',
+        containerName: 'secondary-kavita',
+    });
 });
 
 test('bootFull launches services in super boot order with correct health URLs', async () => {
