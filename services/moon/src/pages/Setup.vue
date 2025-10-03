@@ -4,6 +4,9 @@ import Header from '../components/Header.vue';
 import SetupCard from '../components/SetupCard.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 
+const DEFAULT_INSTALL_ENDPOINT = '/api/services/install';
+const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
+
 const state = reactive({
   loading: true,
   services: [],
@@ -11,6 +14,7 @@ const state = reactive({
 });
 
 const selectedServices = ref([]);
+const installEndpoint = ref(DEFAULT_INSTALL_ENDPOINT);
 const installing = ref(false);
 const installError = ref('');
 const installResults = ref(null);
@@ -82,6 +86,36 @@ const toggleService = (name) => {
 
 const SERVICE_ENDPOINTS = buildServiceEndpointCandidates();
 
+const deriveInstallEndpoint = (servicesEndpoint) => {
+  if (typeof servicesEndpoint !== 'string') {
+    return DEFAULT_INSTALL_ENDPOINT;
+  }
+
+  const trimmed = servicesEndpoint.trim();
+  if (!trimmed) {
+    return DEFAULT_INSTALL_ENDPOINT;
+  }
+
+  const [withoutQuery] = trimmed.split('?');
+  let sanitized = withoutQuery.replace(/\/+$/, '');
+
+  if (!sanitized) {
+    return DEFAULT_INSTALL_ENDPOINT;
+  }
+
+  sanitized = sanitized.replace('/setup/services', '/services');
+
+  if (!sanitized.endsWith('/services')) {
+    return DEFAULT_INSTALL_ENDPOINT;
+  }
+
+  if (!ABSOLUTE_URL_REGEX.test(sanitized) && !sanitized.startsWith('/')) {
+    sanitized = `/${sanitized}`;
+  }
+
+  return `${sanitized}/install`;
+};
+
 const loadServicesFromEndpoint = async (endpoint) => {
   const response = await fetch(endpoint);
   if (!response.ok) {
@@ -97,6 +131,7 @@ const loadServicesFromEndpoint = async (endpoint) => {
 const refreshServices = async () => {
   state.loading = true;
   state.loadError = '';
+  installEndpoint.value = DEFAULT_INSTALL_ENDPOINT;
 
   const errors = [];
 
@@ -105,6 +140,7 @@ const refreshServices = async () => {
       try {
         const services = await loadServicesFromEndpoint(endpoint);
         state.services = services;
+        installEndpoint.value = deriveInstallEndpoint(endpoint);
         const validSelections = new Set(
           services.filter((service) => service.installed !== true).map((service) => service.name),
         );
@@ -137,7 +173,7 @@ const submitSelection = async () => {
   const services = [...selectedServices.value];
 
   try {
-    const response = await fetch('/api/setup/install', {
+    const response = await fetch(installEndpoint.value || DEFAULT_INSTALL_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ services }),
