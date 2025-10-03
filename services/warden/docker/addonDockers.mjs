@@ -23,7 +23,7 @@ const rawList = [
     },
     {
         name: 'noona-mongo',
-        image: 'mongo:7',
+        image: 'mongo:8',
         port: 27017,
         internalPort: 27017,
         ports: {
