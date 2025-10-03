@@ -97,23 +97,38 @@ const deriveInstallEndpoint = (servicesEndpoint) => {
   }
 
   const [withoutQuery] = trimmed.split('?');
-  let sanitized = withoutQuery.replace(/\/+$/, '');
+  const sanitized = withoutQuery.replace(/\/+$/, '');
 
   if (!sanitized) {
     return DEFAULT_INSTALL_ENDPOINT;
   }
 
-  sanitized = sanitized.replace('/setup/services', '/services');
+  const setupSuffix = '/setup/services';
+  const servicesSuffix = '/services';
 
-  if (!sanitized.endsWith('/services')) {
+  const ensureLeadingSlash = (value) =>
+    value.startsWith('/') ? value : `/${value}`;
+
+  let comparable = sanitized;
+  if (!ABSOLUTE_URL_REGEX.test(comparable)) {
+    comparable = ensureLeadingSlash(comparable);
+  }
+
+  let target;
+
+  if (comparable.endsWith(setupSuffix)) {
+    target = `${comparable.slice(0, -setupSuffix.length)}/setup/install`;
+  } else if (comparable.endsWith(servicesSuffix)) {
+    target = `${comparable}/install`;
+  } else {
     return DEFAULT_INSTALL_ENDPOINT;
   }
 
-  if (!ABSOLUTE_URL_REGEX.test(sanitized) && !sanitized.startsWith('/')) {
-    sanitized = `/${sanitized}`;
+  if (ABSOLUTE_URL_REGEX.test(comparable)) {
+    return target;
   }
 
-  return `${sanitized}/install`;
+  return ensureLeadingSlash(target);
 };
 
 const loadServicesFromEndpoint = async (endpoint) => {
