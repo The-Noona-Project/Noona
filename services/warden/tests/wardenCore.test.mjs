@@ -166,9 +166,15 @@ test('installServices returns per-service results with errors', async () => {
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                    hostServiceUrl: 'mongodb://localhost:27017',
+                },
             },
             core: {
                 'noona-sage': { name: 'noona-sage', image: 'sage', port: 3004 },
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             },
         },
         hostDockerSockets: [],
@@ -183,12 +189,12 @@ test('installServices returns per-service results with errors', async () => {
 
     assert.deepEqual(results, [
         {
-            name: 'noona-sage',
-            category: 'core',
+            name: 'noona-mongo',
+            category: 'addon',
             status: 'installed',
-            hostServiceUrl: 'http://localhost:3004',
-            image: 'sage',
-            port: 3004,
+            hostServiceUrl: 'mongodb://localhost:27017',
+            image: 'mongo',
+            port: null,
         },
         {
             name: 'noona-redis',
@@ -197,6 +203,22 @@ test('installServices returns per-service results with errors', async () => {
             hostServiceUrl: 'http://localhost:8001',
             image: 'redis',
             port: 8001,
+        },
+        {
+            name: 'noona-vault',
+            category: 'core',
+            status: 'installed',
+            hostServiceUrl: 'http://localhost:3005',
+            image: 'vault',
+            port: 3005,
+        },
+        {
+            name: 'noona-sage',
+            category: 'core',
+            status: 'installed',
+            hostServiceUrl: 'http://localhost:3004',
+            image: 'sage',
+            port: 3004,
         },
         {
             name: 'unknown',
@@ -210,7 +232,87 @@ test('installServices returns per-service results with errors', async () => {
         },
     ]);
 
-    assert.deepEqual(started, ['noona-sage', 'noona-redis']);
+    assert.deepEqual(started, ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage']);
+});
+
+test('installService installs required vault dependencies before target service', async () => {
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+                'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+            },
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+                'noona-sage': { name: 'noona-sage', image: 'sage', port: 3004 },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const order = [];
+    warden.startService = async (service) => {
+        order.push(service.name);
+    };
+
+    const result = await warden.installService('noona-sage');
+
+    assert.equal(result.name, 'noona-sage');
+    assert.deepEqual(order, ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage']);
+});
+
+test('installServices installs vault and dependencies when selected explicitly', async () => {
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                    hostServiceUrl: 'mongodb://localhost:27017',
+                },
+            },
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const order = [];
+    warden.startService = async (service) => {
+        order.push(service.name);
+    };
+
+    const results = await warden.installServices(['noona-vault']);
+
+    assert.deepEqual(order, ['noona-mongo', 'noona-redis', 'noona-vault']);
+    assert.deepEqual(results, [
+        {
+            name: 'noona-mongo',
+            category: 'addon',
+            status: 'installed',
+            hostServiceUrl: 'mongodb://localhost:27017',
+            image: 'mongo',
+            port: null,
+        },
+        {
+            name: 'noona-redis',
+            category: 'addon',
+            status: 'installed',
+            hostServiceUrl: 'http://localhost:8001',
+            image: 'redis',
+            port: 8001,
+        },
+        {
+            name: 'noona-vault',
+            category: 'core',
+            status: 'installed',
+            hostServiceUrl: 'http://localhost:3005',
+            image: 'vault',
+            port: 3005,
+        },
+    ]);
 });
 
 test('installService injects Kavita mount for Raven when detected', async () => {
@@ -228,8 +330,12 @@ test('installService injects Kavita mount for Raven when detected', async () => 
         modem: { socketPath: '/var/run/docker.sock' },
     };
     const services = {
-        addon: {},
+        addon: {
+            'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+            'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+        },
         core: {
+            'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
                 image: 'captainpax/noona-raven:latest',
@@ -275,8 +381,12 @@ test('installService handles missing Kavita mount for Raven gracefully', async (
         },
     };
     const services = {
-        addon: {},
+        addon: {
+            'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+            'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+        },
         core: {
+            'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
                 image: 'captainpax/noona-raven:latest',
@@ -329,8 +439,12 @@ test('installService inspects alternate docker sockets when primary is missing K
     };
 
     const services = {
-        addon: {},
+        addon: {
+            'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+            'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+        },
         core: {
+            'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
                 image: 'captainpax/noona-raven:latest',
