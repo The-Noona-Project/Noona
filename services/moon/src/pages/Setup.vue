@@ -13,6 +13,7 @@ const state = reactive({
   loadError: '',
 });
 
+const envForms = reactive({});
 const selectedServices = ref([]);
 const installEndpoint = ref(DEFAULT_INSTALL_ENDPOINT);
 const installing = ref(false);
@@ -65,6 +66,22 @@ const hasSelection = computed(() => selectedServices.value.length > 0);
 const selectedCount = computed(() => selectedServices.value.length);
 const availableCount = computed(() => installableServices.value.length);
 
+const serviceMap = computed(() => {
+  const map = new Map();
+  for (const service of state.services) {
+    if (service?.name) {
+      map.set(service.name, service);
+    }
+  }
+  return map;
+});
+
+const selectedServiceDetails = computed(() =>
+  selectedServices.value
+    .map((name) => serviceMap.value.get(name))
+    .filter(Boolean),
+);
+
 const categoryLabel = (category) => {
   if (category === 'core') return 'Core Services';
   if (category === 'addon') return 'Add-ons';
@@ -82,6 +99,86 @@ const toggleService = (name) => {
   }
 
   selectedServices.value = Array.from(next);
+};
+
+const ensureEnvForm = (service) => {
+  if (!service || typeof service.name !== 'string') {
+    return;
+  }
+
+  const existing = envForms[service.name];
+  const config = Array.isArray(service.envConfig) ? service.envConfig : [];
+
+  if (!existing) {
+    const defaults = {};
+    for (const field of config) {
+      if (!field || typeof field.key !== 'string') {
+        continue;
+      }
+
+      const key = field.key;
+      defaults[key] = field.defaultValue != null ? String(field.defaultValue) : '';
+    }
+
+    envForms[service.name] = defaults;
+    return;
+  }
+
+  for (const field of config) {
+    if (!field || typeof field.key !== 'string') {
+      continue;
+    }
+
+    const key = field.key;
+    if (!(key in existing)) {
+      existing[key] = field.defaultValue != null ? String(field.defaultValue) : '';
+    }
+  }
+};
+
+const syncEnvForms = (services) => {
+  const validNames = new Set();
+
+  for (const service of services) {
+    if (!service || typeof service.name !== 'string') {
+      continue;
+    }
+
+    validNames.add(service.name);
+    ensureEnvForm(service);
+  }
+
+  for (const name of Object.keys(envForms)) {
+    if (!validNames.has(name)) {
+      delete envForms[name];
+    }
+  }
+};
+
+const buildEnvPayload = (service) => {
+  if (!service || typeof service.name !== 'string') {
+    return {};
+  }
+
+  const config = Array.isArray(service.envConfig) ? service.envConfig : [];
+  if (!config.length) {
+    return {};
+  }
+
+  const values = envForms[service.name] || {};
+  const payload = {};
+
+  for (const field of config) {
+    if (!field || typeof field.key !== 'string') {
+      continue;
+    }
+
+    const key = field.key;
+    const rawValue = values[key];
+    payload[key] = rawValue != null ? String(rawValue) : '';
+  }
+
+  return payload;
 };
 
 const SERVICE_ENDPOINTS = buildServiceEndpointCandidates();
@@ -155,6 +252,7 @@ const refreshServices = async () => {
       try {
         const services = await loadServicesFromEndpoint(endpoint);
         state.services = services;
+        syncEnvForms(services);
         installEndpoint.value = deriveInstallEndpoint(endpoint);
         const validSelections = new Set(
           services.filter((service) => service.installed !== true).map((service) => service.name),
@@ -168,6 +266,7 @@ const refreshServices = async () => {
     }
 
     state.services = [];
+    syncEnvForms([]);
     if (errors.length) {
       state.loadError = errors.join(' | ');
     } else {
@@ -185,17 +284,26 @@ const submitSelection = async () => {
   installError.value = '';
   installResults.value = null;
 
-  const services = [...selectedServices.value];
+  const descriptors = selectedServiceDetails.value;
+  const servicePayload = descriptors.map((service) => {
+    const env = buildEnvPayload(service);
+    if (!Object.keys(env).length) {
+      return { name: service.name };
+    }
+
+    return { name: service.name, env };
+  });
+  const requestedNames = servicePayload.map((item) => item.name);
 
   try {
     const response = await fetch(installEndpoint.value || DEFAULT_INSTALL_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ services }),
+      body: JSON.stringify({ services: servicePayload }),
     });
 
-    const payload = await response.json().catch(() => ({}));
-    const results = Array.isArray(payload.results) ? payload.results : [];
+    const responsePayload = await response.json().catch(() => ({}));
+    const results = Array.isArray(responsePayload.results) ? responsePayload.results : [];
     installResults.value = {
       status: response.status,
       results,
@@ -203,7 +311,7 @@ const submitSelection = async () => {
 
     if (response.ok) {
       const successful = new Set(results.filter((item) => item.status === 'installed').map((item) => item.name));
-      const remaining = services.filter((name) => !successful.has(name));
+      const remaining = requestedNames.filter((name) => !successful.has(name));
       selectedServices.value = remaining;
       await refreshServices();
     }
@@ -316,6 +424,60 @@ onMounted(() => {
                     </v-row>
                   </div>
                 </div>
+                <v-expand-transition>
+                  <div v-if="hasSelection" class="mt-8">
+                    <v-alert
+                      type="warning"
+                      variant="tonal"
+                      border="start"
+                      class="mb-4"
+                    >
+                      Change environment values only if you know exactly how the service should be configured.
+                    </v-alert>
+
+                    <div
+                      v-for="service in selectedServiceDetails"
+                      :key="service.name"
+                      class="mb-6"
+                    >
+                      <v-card variant="tonal" color="primary" class="pa-4">
+                        <div class="text-subtitle-1 font-weight-medium mb-2">
+                          {{ service.name }} environment
+                        </div>
+                        <div
+                          v-if="!service.envConfig || service.envConfig.length === 0"
+                          class="text-body-2 text-medium-emphasis"
+                        >
+                          This service does not expose configurable environment variables.
+                        </div>
+                        <v-row v-else dense class="mt-1">
+                          <v-col
+                            v-for="field in service.envConfig"
+                            :key="field.key"
+                            cols="12"
+                            md="6"
+                          >
+                            <v-text-field
+                              v-model="envForms[service.name][field.key]"
+                              :label="field.readOnly ? `${field.label || field.key} (read only)` : field.label || field.key"
+                              :hint="field.description || field.warning || ''"
+                              :persistent-hint="Boolean(field.description || field.warning)"
+                              :readonly="field.readOnly"
+                              :disabled="installing"
+                              density="comfortable"
+                              variant="outlined"
+                              color="primary"
+                            >
+                              <template #append-inner v-if="field.readOnly">
+                                <v-icon icon="mdi-lock-outline" />
+                              </template>
+                            </v-text-field>
+                          </v-col>
+                        </v-row>
+                      </v-card>
+                    </div>
+                  </div>
+                </v-expand-transition>
               </div>
             </v-card-text>
 

@@ -5,6 +5,13 @@ import cors from 'cors'
 
 import { debugMSG, errMSG, log } from '../../../utilities/etc/logger.mjs'
 
+export class SetupValidationError extends Error {
+    constructor(message) {
+        super(message)
+        this.name = 'SetupValidationError'
+    }
+}
+
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
 const normalizeUrl = (candidate) => {
@@ -70,6 +77,60 @@ const resolveLogger = (overrides = {}) => ({
     info: log,
     ...overrides,
 })
+
+export const normalizeServiceInstallPayload = (services) => {
+    if (!Array.isArray(services) || services.length === 0) {
+        throw new SetupValidationError('Body must include a non-empty "services" array.')
+    }
+
+    return services.map((entry) => {
+        if (typeof entry === 'string' || typeof entry === 'number') {
+            const trimmed = String(entry).trim()
+            if (!trimmed) {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            return { name: trimmed }
+        }
+
+        if (!entry || typeof entry !== 'object') {
+            throw new SetupValidationError('Service entries must be strings or objects with a "name" field.')
+        }
+
+        const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+        if (!name) {
+            throw new SetupValidationError('Service descriptor is missing a valid "name" field.')
+        }
+
+        if (entry.env != null && (typeof entry.env !== 'object' || Array.isArray(entry.env))) {
+            throw new SetupValidationError(`Environment overrides for ${name} must be provided as an object.`)
+        }
+
+        let env = null
+        if (entry.env) {
+            const normalized = {}
+
+            for (const [key, value] of Object.entries(entry.env)) {
+                if (typeof key !== 'string') {
+                    continue
+                }
+
+                const trimmedKey = key.trim()
+                if (!trimmedKey) {
+                    continue
+                }
+
+                normalized[trimmedKey] = value == null ? '' : String(value)
+            }
+
+            if (Object.keys(normalized).length > 0) {
+                env = normalized
+            }
+        }
+
+        return env ? { name, env } : { name }
+    })
+}
 
 const createSetupClient = ({
     baseUrl,
@@ -137,10 +198,11 @@ const createSetupClient = ({
         },
 
         async installServices(services) {
+            const normalized = normalizeServiceInstallPayload(services)
             const response = await fetchFromWarden('/api/services/install', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ services }),
+                body: JSON.stringify({ services: normalized }),
             })
 
             const payload = await response.json().catch(() => ({}))
@@ -148,7 +210,7 @@ const createSetupClient = ({
             const status = response.status || 200
 
             logger.info?.(
-                `[${serviceName}] 🚀 Installation request forwarded for ${services.length} services (status: ${status}) via ${preferredBaseUrl}`,
+                `[${serviceName}] 🚀 Installation request forwarded for ${normalized.length} services (status: ${status}) via ${preferredBaseUrl}`,
             )
             return { status, results }
         },
@@ -203,17 +265,15 @@ export const createSageApp = ({
     })
 
     app.post('/api/setup/install', async (req, res) => {
-        const services = req.body?.services
-
-        if (!Array.isArray(services) || services.length === 0) {
-            res.status(400).json({ error: 'Body must include a non-empty "services" array.' })
-            return
-        }
-
         try {
-            const { status, results } = await setupClient.installServices(services)
+            const { status, results } = await setupClient.installServices(req.body?.services)
             res.status(status ?? 200).json({ results })
         } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
             logger.error(`[${serviceName}] ❌ Failed to install services: ${error.message}`)
             res.status(502).json({ error: 'Failed to install services.' })
         }

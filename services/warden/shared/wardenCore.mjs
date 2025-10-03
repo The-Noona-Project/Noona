@@ -162,6 +162,75 @@ function createServiceCatalog(services) {
     return catalog;
 }
 
+function cloneEnvConfig(config) {
+    if (!Array.isArray(config)) {
+        return [];
+    }
+
+    return config.map((entry) => ({
+        key: entry?.key ?? null,
+        label: entry?.label ?? entry?.key ?? null,
+        defaultValue: entry?.defaultValue ?? '',
+        description: entry?.description ?? null,
+        warning: entry?.warning ?? null,
+        required: entry?.required !== false,
+        readOnly: entry?.readOnly === true,
+    })).filter((entry) => typeof entry.key === 'string' && entry.key.trim().length > 0);
+}
+
+function applyEnvOverrides(descriptor, overrides) {
+    if (!descriptor || !overrides || typeof overrides !== 'object') {
+        return descriptor;
+    }
+
+    const envEntries = Array.isArray(descriptor.env) ? [...descriptor.env] : [];
+    const order = [];
+    const envMap = new Map();
+
+    for (const entry of envEntries) {
+        if (typeof entry !== 'string') {
+            continue;
+        }
+
+        const [rawKey, ...rest] = entry.split('=');
+        const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+
+        if (!key) {
+            continue;
+        }
+
+        if (!order.includes(key)) {
+            order.push(key);
+        }
+
+        envMap.set(key, rest.join('=') ?? '');
+    }
+
+    for (const [candidateKey, candidateValue] of Object.entries(overrides)) {
+        if (typeof candidateKey !== 'string') {
+            continue;
+        }
+
+        const trimmedKey = candidateKey.trim();
+        if (!trimmedKey) {
+            continue;
+        }
+
+        if (!order.includes(trimmedKey)) {
+            order.push(trimmedKey);
+        }
+
+        envMap.set(trimmedKey, candidateValue == null ? '' : String(candidateValue));
+    }
+
+    const mergedEnv = order.map((key) => `${key}=${envMap.get(key) ?? ''}`);
+
+    return {
+        ...descriptor,
+        env: mergedEnv,
+    };
+}
+
 export function createWarden(options = {}) {
     const {
         dockerInstance = new Docker(),
@@ -401,6 +470,7 @@ export function createWarden(options = {}) {
                 hostServiceUrl: api.resolveHostServiceUrl(descriptor),
                 description: descriptor.description ?? null,
                 health: descriptor.health ?? null,
+                envConfig: cloneEnvConfig(descriptor.envConfig),
             }))
             .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -431,33 +501,91 @@ export function createWarden(options = {}) {
         const invalidEntries = [];
         const seen = new Set();
         const prioritized = [];
+        const envOverrides = new Map();
+
+        const register = (name) => {
+            if (!seen.has(name)) {
+                seen.add(name);
+                prioritized.push(name);
+            }
+        };
 
         for (const required of requiredServices) {
-            if (!seen.has(required)) {
-                seen.add(required);
-                prioritized.push(required);
-            }
+            register(required);
         }
 
         for (const candidate of candidates) {
-            const trimmed = typeof candidate === 'string' ? candidate.trim() : '';
+            if (typeof candidate === 'string' || typeof candidate === 'number') {
+                const trimmed = String(candidate).trim();
 
-            if (!trimmed) {
+                if (!trimmed) {
+                    invalidEntries.push({
+                        name: typeof candidate === 'string' ? candidate.trim() : candidate ?? null,
+                        status: 'error',
+                        error: 'Invalid service name provided.',
+                    });
+                    continue;
+                }
+
+                register(trimmed);
+                continue;
+            }
+
+            if (!candidate || typeof candidate !== 'object') {
                 invalidEntries.push({
-                    name: typeof candidate === 'string' ? candidate.trim() : candidate ?? null,
+                    name: candidate ?? null,
                     status: 'error',
-                    error: 'Invalid service name provided.',
+                    error: 'Service entry must be a string name or object descriptor.',
                 });
                 continue;
             }
 
-            if (!seen.has(trimmed)) {
-                seen.add(trimmed);
-                prioritized.push(trimmed);
+            const rawName = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+
+            if (!rawName) {
+                invalidEntries.push({
+                    name: candidate.name ?? null,
+                    status: 'error',
+                    error: 'Service descriptor is missing a valid "name" field.',
+                });
+                continue;
+            }
+
+            if (candidate.env != null && (typeof candidate.env !== 'object' || Array.isArray(candidate.env))) {
+                invalidEntries.push({
+                    name: rawName,
+                    status: 'error',
+                    error: 'Environment overrides must be provided as an object map.',
+                });
+                continue;
+            }
+
+            register(rawName);
+
+            if (candidate.env) {
+                const normalized = {};
+
+                for (const [key, value] of Object.entries(candidate.env)) {
+                    if (typeof key !== 'string') {
+                        continue;
+                    }
+
+                    const trimmedKey = key.trim();
+                    if (!trimmedKey) {
+                        continue;
+                    }
+
+                    normalized[trimmedKey] = value == null ? '' : String(value);
+                }
+
+                if (Object.keys(normalized).length > 0) {
+                    const existing = envOverrides.get(rawName) || {};
+                    envOverrides.set(rawName, { ...existing, ...normalized });
+                }
             }
         }
 
-        return { prioritized, invalidEntries };
+        return { prioritized, invalidEntries, overridesByName: envOverrides };
     };
 
     const resolveInstallOrder = (names = []) => {
@@ -494,7 +622,7 @@ export function createWarden(options = {}) {
         return order;
     };
 
-    const installSingleServiceByName = async (name) => {
+    const installSingleServiceByName = async (name, envOverrides = null) => {
         const entry = serviceCatalog.get(name);
 
         if (!entry) {
@@ -505,15 +633,19 @@ export function createWarden(options = {}) {
         const healthUrl = descriptor.health || null;
         let kavitaDetection = null;
         let kavitaDataMount = null;
-        let serviceDescriptor = descriptor;
+        let serviceDescriptor = {
+            ...descriptor,
+            env: Array.isArray(descriptor.env) ? [...descriptor.env] : descriptor.env,
+            volumes: Array.isArray(descriptor.volumes) ? [...descriptor.volumes] : descriptor.volumes,
+        };
 
         if (descriptor.name === 'noona-raven') {
             kavitaDetection = await detectKavitaDataMount();
             kavitaDataMount = kavitaDetection?.mountPath ?? null;
 
             if (kavitaDataMount) {
-                const baseEnv = Array.isArray(descriptor.env) ? [...descriptor.env] : [];
-                const volumes = Array.isArray(descriptor.volumes) ? [...descriptor.volumes] : [];
+                const baseEnv = Array.isArray(serviceDescriptor.env) ? [...serviceDescriptor.env] : [];
+                const volumes = Array.isArray(serviceDescriptor.volumes) ? [...serviceDescriptor.volumes] : [];
 
                 volumes.push(`${kavitaDataMount}:/kavita-data`);
                 baseEnv.push('APPDATA=/kavita-data', 'KAVITA_DATA_MOUNT=/kavita-data');
@@ -525,6 +657,8 @@ export function createWarden(options = {}) {
                 };
             }
         }
+
+        serviceDescriptor = applyEnvOverrides(serviceDescriptor, envOverrides);
 
         await api.startService(serviceDescriptor, healthUrl);
 
@@ -556,7 +690,7 @@ export function createWarden(options = {}) {
             throw new Error('Service name must be a non-empty string.');
         }
 
-        const { prioritized } = buildInstallationList([trimmedName]);
+        const { prioritized, overridesByName } = buildInstallationList([trimmedName]);
         const order = resolveInstallOrder(prioritized);
         const attempted = new Set();
         let targetResult = null;
@@ -567,7 +701,8 @@ export function createWarden(options = {}) {
             }
 
             attempted.add(serviceName);
-            const result = await installSingleServiceByName(serviceName);
+            const overrides = overridesByName.get(serviceName) || null;
+            const result = await installSingleServiceByName(serviceName, overrides);
 
             if (serviceName === trimmedName) {
                 targetResult = result;
@@ -582,7 +717,7 @@ export function createWarden(options = {}) {
     };
 
     api.installServices = async function installServices(names = []) {
-        const { prioritized, invalidEntries } = buildInstallationList(names);
+        const { prioritized, invalidEntries, overridesByName } = buildInstallationList(names);
         const results = [];
         let order;
 
@@ -610,7 +745,8 @@ export function createWarden(options = {}) {
             attempted.add(serviceName);
 
             try {
-                const result = await installSingleServiceByName(serviceName);
+                const overrides = overridesByName.get(serviceName) || null;
+                const result = await installSingleServiceByName(serviceName, overrides);
                 results.push(result);
             } catch (error) {
                 results.push({
