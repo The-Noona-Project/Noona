@@ -1,0 +1,12 @@
+{
+  "name": "noona-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs": "node scripts/generate-docs.mjs"
+  },
+  "devDependencies": {
+    "docdash": "^2.0.1",
+    "jsdoc": "^4.0.3"
+  }
+}

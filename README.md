@@ -73,3 +73,8 @@ This is a passion project that doubles as a testbed for new technologies. Contri
 3. **Join the conversation** by opening issues, suggesting features, or sharing how you're using Noona with your Kavita instance.
 
 Thanks for checking out Noona. This project is growing quickly, and I hope it becomes a powerful companion for the Kavita community.
+
+## Documentation
+
+- Run `npm install` at the repository root (if you haven't already) to set up the shared tooling dependencies.
+- Execute `npm run docs` to regenerate `docs/docs.json`, which now aggregates both the JSDoc output from the Node.js services and parsed Javadoc comments from the Raven (Java) service.
