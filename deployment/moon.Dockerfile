@@ -18,9 +18,11 @@ RUN npx vite build
 ### Stage 2: Serve with nginx
 FROM nginx:alpine
 
+RUN apk add --no-cache curl
+
 # Add healthcheck
 HEALTHCHECK --interval=5s --timeout=2s --start-period=3s --retries=5 \
-  CMD wget -q -O /dev/null http://localhost:3000 || exit 1
+  CMD curl -fsS http://localhost:3000/ || exit 1
 
 COPY services/moon/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/services/moon/dist /usr/share/nginx/html
