@@ -198,6 +198,10 @@ export function createWarden(options = {}) {
         'noona-vault',
         'noona-raven',
     ];
+    const dependencyGraph = new Map([
+        ['noona-vault', ['noona-mongo', 'noona-redis']],
+    ]);
+    const requiredServices = ['noona-vault'];
 
     const dockerFactory = dockerFactoryOption || ((socketPath) => new Docker({ socketPath }));
 
@@ -423,16 +427,78 @@ export function createWarden(options = {}) {
         return entries.filter((service) => service.installed !== true);
     };
 
-    api.installService = async function installService(name) {
-        if (!name || typeof name !== 'string') {
-            throw new Error('Service name must be a non-empty string.');
+    const buildInstallationList = (candidates = []) => {
+        const invalidEntries = [];
+        const seen = new Set();
+        const prioritized = [];
+
+        for (const required of requiredServices) {
+            if (!seen.has(required)) {
+                seen.add(required);
+                prioritized.push(required);
+            }
         }
 
-        const trimmedName = name.trim();
-        const entry = serviceCatalog.get(trimmedName);
+        for (const candidate of candidates) {
+            const trimmed = typeof candidate === 'string' ? candidate.trim() : '';
+
+            if (!trimmed) {
+                invalidEntries.push({
+                    name: typeof candidate === 'string' ? candidate.trim() : candidate ?? null,
+                    status: 'error',
+                    error: 'Invalid service name provided.',
+                });
+                continue;
+            }
+
+            if (!seen.has(trimmed)) {
+                seen.add(trimmed);
+                prioritized.push(trimmed);
+            }
+        }
+
+        return { prioritized, invalidEntries };
+    };
+
+    const resolveInstallOrder = (names = []) => {
+        const order = [];
+        const visited = new Set();
+        const visiting = new Set();
+
+        const visit = (name) => {
+            if (visited.has(name)) {
+                return;
+            }
+
+            if (visiting.has(name)) {
+                const chain = [...visiting, name].join(' -> ');
+                throw new Error(`Circular dependency detected: ${chain}`);
+            }
+
+            visiting.add(name);
+
+            const dependencies = dependencyGraph.get(name) || [];
+            for (const dependency of dependencies) {
+                visit(dependency);
+            }
+
+            visiting.delete(name);
+            visited.add(name);
+            order.push(name);
+        };
+
+        for (const name of names) {
+            visit(name);
+        }
+
+        return order;
+    };
+
+    const installSingleServiceByName = async (name) => {
+        const entry = serviceCatalog.get(name);
 
         if (!entry) {
-            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+            throw new Error(`Service ${name} is not registered with Warden.`);
         }
 
         const { descriptor, category } = entry;
@@ -479,34 +545,83 @@ export function createWarden(options = {}) {
         return result;
     };
 
-    api.installServices = async function installServices(names = []) {
-        const results = [];
+    api.installService = async function installService(name) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
 
-        for (const candidate of names) {
-            const name = typeof candidate === 'string' ? candidate.trim() : '';
+        const trimmedName = name.trim();
 
-            if (!name) {
-                results.push({
-                    name: candidate ?? null,
-                    status: 'error',
-                    error: 'Invalid service name provided.',
-                });
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const { prioritized } = buildInstallationList([trimmedName]);
+        const order = resolveInstallOrder(prioritized);
+        const attempted = new Set();
+        let targetResult = null;
+
+        for (const serviceName of order) {
+            if (attempted.has(serviceName)) {
                 continue;
             }
 
+            attempted.add(serviceName);
+            const result = await installSingleServiceByName(serviceName);
+
+            if (serviceName === trimmedName) {
+                targetResult = result;
+            }
+        }
+
+        if (!targetResult) {
+            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+        }
+
+        return targetResult;
+    };
+
+    api.installServices = async function installServices(names = []) {
+        const { prioritized, invalidEntries } = buildInstallationList(names);
+        const results = [];
+        let order;
+
+        try {
+            order = resolveInstallOrder(prioritized);
+        } catch (error) {
+            return [
+                ...results,
+                ...invalidEntries,
+                {
+                    name: 'installation',
+                    status: 'error',
+                    error: error.message,
+                },
+            ];
+        }
+
+        const attempted = new Set();
+
+        for (const serviceName of order) {
+            if (attempted.has(serviceName)) {
+                continue;
+            }
+
+            attempted.add(serviceName);
+
             try {
-                const result = await api.installService(name);
+                const result = await installSingleServiceByName(serviceName);
                 results.push(result);
             } catch (error) {
                 results.push({
-                    name,
+                    name: serviceName,
                     status: 'error',
                     error: error.message,
                 });
             }
         }
 
-        return results;
+        return [...results, ...invalidEntries];
     };
 
     api.bootMinimal = async function bootMinimal() {
