@@ -385,18 +385,42 @@ export function createWarden(options = {}) {
         }
     };
 
-    api.listServices = function listServices() {
-        const formatted = Array.from(serviceCatalog.values()).map(({ category, descriptor }) => ({
-            name: descriptor.name,
-            category,
-            image: descriptor.image,
-            port: descriptor.port ?? null,
-            hostServiceUrl: api.resolveHostServiceUrl(descriptor),
-            description: descriptor.description ?? null,
-            health: descriptor.health ?? null,
-        }));
+    api.listServices = async function listServices(options = {}) {
+        const { includeInstalled = true } = options;
 
-        return formatted.sort((a, b) => a.name.localeCompare(b.name));
+        const formatted = Array.from(serviceCatalog.values())
+            .map(({ category, descriptor }) => ({
+                name: descriptor.name,
+                category,
+                image: descriptor.image,
+                port: descriptor.port ?? null,
+                hostServiceUrl: api.resolveHostServiceUrl(descriptor),
+                description: descriptor.description ?? null,
+                health: descriptor.health ?? null,
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+        const entries = await Promise.all(
+            formatted.map(async (service) => {
+                let installed = false;
+
+                try {
+                    installed = await dockerUtils.containerExists(service.name);
+                } catch (error) {
+                    logger.warn?.(
+                        `[Warden] Failed to determine install status for ${service.name}: ${error.message}`,
+                    );
+                }
+
+                return { ...service, installed };
+            }),
+        );
+
+        if (includeInstalled) {
+            return entries;
+        }
+
+        return entries.filter((service) => service.installed !== true);
     };
 
     api.installService = async function installService(name) {

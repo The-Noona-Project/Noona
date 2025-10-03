@@ -83,7 +83,12 @@ export const startWardenServer = ({
 
         if (req.method === 'GET' && url.pathname === '/api/services') {
             try {
-                const services = warden.listServices();
+                const includeParam = url.searchParams.get('includeInstalled');
+                const includeInstalled = includeParam
+                    ? ['1', 'true', 'yes', 'all'].includes(includeParam.trim().toLowerCase())
+                    : false;
+
+                const services = await warden.listServices({ includeInstalled });
                 sendJson(res, 200, { services });
             } catch (error) {
                 logger.error(`[Warden API] Failed to list services: ${error.message}`);
