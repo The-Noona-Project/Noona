@@ -74,22 +74,44 @@ const toggleService = (name) => {
   selectedServices.value = Array.from(next);
 };
 
+const SERVICE_ENDPOINTS = ['/api/setup/services', '/api/services'];
+
+const loadServicesFromEndpoint = async (endpoint) => {
+  const response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(`[${endpoint}] Request failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const services = Array.isArray(payload.services) ? payload.services : [];
+  services.sort((a, b) => a.name.localeCompare(b.name));
+  return services;
+};
+
 const refreshServices = async () => {
   state.loading = true;
   state.loadError = '';
 
+  const errors = [];
+
   try {
-    const response = await fetch('/api/setup/services');
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}`);
+    for (const endpoint of SERVICE_ENDPOINTS) {
+      try {
+        const services = await loadServicesFromEndpoint(endpoint);
+        state.services = services;
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(message);
+      }
     }
 
-    const payload = await response.json();
-    const services = Array.isArray(payload.services) ? payload.services : [];
-    services.sort((a, b) => a.name.localeCompare(b.name));
-    state.services = services;
-  } catch (error) {
-    state.loadError = error instanceof Error ? error.message : String(error);
+    state.services = [];
+    if (errors.length) {
+      state.loadError = errors.join(' | ');
+    } else {
+      state.loadError = 'Unable to retrieve installable services.';
+    }
   } finally {
     state.loading = false;
   }
