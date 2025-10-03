@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import Header from '../components/Header.vue';
 import SetupCard from '../components/SetupCard.vue';
+import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 
 const state = reactive({
   loading: true,
@@ -79,7 +80,7 @@ const toggleService = (name) => {
   selectedServices.value = Array.from(next);
 };
 
-const SERVICE_ENDPOINTS = ['/api/setup/services', '/api/services?includeInstalled=false'];
+const SERVICE_ENDPOINTS = buildServiceEndpointCandidates();
 
 const loadServicesFromEndpoint = async (endpoint) => {
   const response = await fetch(endpoint);
