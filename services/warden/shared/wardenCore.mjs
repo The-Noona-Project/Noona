@@ -1,4 +1,7 @@
 // services/warden/shared/wardenCore.mjs
+import fs from 'node:fs';
+import path from 'node:path';
+
 import Docker from 'dockerode';
 import addonDockers from '../docker/addonDockers.mjs';
 import noonaDockers from '../docker/noonaDockers.mjs';
@@ -37,6 +40,109 @@ function createDefaultLogger(loggerOption = {}) {
     };
 }
 
+function normalizeSocketPath(candidate) {
+    if (!candidate || typeof candidate !== 'string') {
+        return null;
+    }
+
+    const trimmed = candidate.trim();
+
+    if (!trimmed) {
+        return null;
+    }
+
+    if (trimmed.startsWith('unix://')) {
+        return trimmed.slice('unix://'.length);
+    }
+
+    if (trimmed.startsWith('tcp://')) {
+        return null;
+    }
+
+    return trimmed;
+}
+
+function defaultDockerSocketDetector({ env = process.env, fs: fsModule = fs } = {}) {
+    const sockets = new Set();
+
+    const envCandidates = [env?.NOONA_HOST_DOCKER_SOCKETS, env?.HOST_DOCKER_SOCKETS]
+        .filter(value => typeof value === 'string' && value.trim().length > 0)
+        .flatMap(value => value.split(',').map(entry => normalizeSocketPath(entry)));
+
+    for (const candidate of envCandidates) {
+        if (candidate) {
+            sockets.add(candidate);
+        }
+    }
+
+    const dockerHost = normalizeSocketPath(env?.DOCKER_HOST);
+    if (dockerHost) {
+        sockets.add(dockerHost);
+    }
+
+    const defaultCandidates = [
+        '/var/run/docker.sock',
+        '/var/run/docker/docker.sock',
+        '/run/docker.sock',
+        '/run/docker/docker.sock',
+        '/var/run/podman/podman.sock',
+        '/run/podman/podman.sock',
+    ];
+
+    for (const candidate of defaultCandidates) {
+        const normalized = normalizeSocketPath(candidate);
+        if (normalized) {
+            sockets.add(normalized);
+        }
+    }
+
+    if (typeof fsModule?.readdirSync === 'function') {
+        const directories = [
+            '/var/run',
+            '/run',
+            '/var/run/docker',
+            '/run/docker',
+            '/var/run/podman',
+            '/run/podman',
+        ];
+
+        for (const directory of directories) {
+            try {
+                const entries = fsModule.readdirSync(directory, { withFileTypes: true });
+
+                for (const entry of entries) {
+                    if (!entry) {
+                        continue;
+                    }
+
+                    const isSocket = typeof entry.isSocket === 'function' && entry.isSocket();
+                    const isFile = typeof entry.isFile === 'function' && entry.isFile();
+
+                    if (!isSocket && !isFile) {
+                        continue;
+                    }
+
+                    const name = entry.name;
+                    if (!name || !name.toLowerCase().includes('sock')) {
+                        continue;
+                    }
+
+                    if (!/(docker|podman)/i.test(name)) {
+                        continue;
+                    }
+
+                    const fullPath = path.posix.join(directory, name);
+                    sockets.add(fullPath);
+                }
+            } catch (error) {
+                // Ignore inaccessible directories.
+            }
+        }
+    }
+
+    return Array.from(sockets);
+}
+
 function createServiceCatalog(services) {
     const catalog = new Map();
 
@@ -67,12 +173,17 @@ export function createWarden(options = {}) {
         networkName: networkNameOption,
         trackedContainers: trackedContainersOption,
         superBootOrder: superBootOrderOption,
+        hostDockerSockets: hostDockerSocketsOption,
+        dockerSocketDetector = defaultDockerSocketDetector,
+        dockerFactory: dockerFactoryOption,
+        fs: fsOption,
     } = options;
 
     const services = normalizeServices(servicesOption);
     const dockerUtils = normalizeDockerUtils(dockerUtilsOption);
     const logger = createDefaultLogger(loggerOption);
     const serviceCatalog = createServiceCatalog(services);
+    const fsModule = fsOption || fs;
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
@@ -88,30 +199,136 @@ export function createWarden(options = {}) {
         'noona-raven',
     ];
 
+    const dockerFactory = dockerFactoryOption || ((socketPath) => new Docker({ socketPath }));
+
+    const hostDockerSockets = Array.from(new Set((Array.isArray(hostDockerSocketsOption)
+        ? hostDockerSocketsOption
+        : dockerSocketDetector({ env, fs: fsModule }))
+        .map(normalizeSocketPath)
+        .filter(Boolean)));
+
     async function detectKavitaDataMount() {
         try {
-            const containers = await dockerInstance.listContainers({ all: true });
-            const kavitaContainer = containers.find(container =>
-                typeof container?.Image === 'string' && container.Image.toLowerCase().includes('kavita'),
+            const contexts = [];
+            const visitedSockets = new Set();
+
+            const primarySocketPath = normalizeSocketPath(
+                dockerInstance?.modem?.socketPath || env?.DOCKER_HOST || null,
             );
 
-            if (!kavitaContainer) {
+            contexts.push({
+                client: dockerInstance,
+                socketPath: primarySocketPath,
+                label: 'default Docker instance',
+            });
+
+            if (primarySocketPath) {
+                visitedSockets.add(primarySocketPath);
+            }
+
+            for (const candidate of hostDockerSockets) {
+                if (!candidate || visitedSockets.has(candidate)) {
+                    continue;
+                }
+
+                if (typeof fsModule?.existsSync === 'function') {
+                    try {
+                        if (!fsModule.existsSync(candidate)) {
+                            continue;
+                        }
+                    } catch {
+                        continue;
+                    }
+                }
+
+                if (typeof fsModule?.statSync === 'function') {
+                    try {
+                        const stats = fsModule.statSync(candidate);
+                        if (typeof stats?.isSocket === 'function' && !stats.isSocket()) {
+                            continue;
+                        }
+                    } catch {
+                        continue;
+                    }
+                }
+
+                try {
+                    const client = dockerFactory(candidate);
+                    if (client) {
+                        contexts.push({ client, socketPath: candidate, label: `socket ${candidate}` });
+                        visitedSockets.add(candidate);
+                    }
+                } catch (error) {
+                    logger.warn(`[Warden] Failed to initialize Docker client for socket ${candidate}: ${error.message}`);
+                }
+            }
+
+            let foundContainer = false;
+
+            for (const context of contexts) {
+                const contextLabel = context.socketPath ? `socket ${context.socketPath}` : context.label;
+
+                try {
+                    const containers = await context.client.listContainers({ all: true });
+                    const kavitaContainer = containers.find(container => {
+                        const image = typeof container?.Image === 'string' ? container.Image.toLowerCase() : '';
+                        if (image.includes('kavita')) {
+                            return true;
+                        }
+
+                        const names = Array.isArray(container?.Names) ? container.Names : [];
+                        return names.some(name => typeof name === 'string' && name.toLowerCase().includes('kavita'));
+                    });
+
+                    if (!kavitaContainer) {
+                        continue;
+                    }
+
+                    foundContainer = true;
+
+                    const inspected = await context.client
+                        .getContainer(kavitaContainer.Id)
+                        .inspect();
+                    const mounts = inspected?.Mounts || [];
+                    const dataMount = mounts.find(mount => mount?.Destination === '/data');
+
+                    if (dataMount?.Source) {
+                        const rawName = Array.isArray(kavitaContainer?.Names)
+                            ? kavitaContainer.Names.find(Boolean)
+                            : inspected?.Name;
+                        const cleanName = typeof rawName === 'string' ? rawName.replace(/^\//, '') : null;
+
+                        const details = [];
+
+                        if (contextLabel) {
+                            details.push(contextLabel);
+                        }
+
+                        if (cleanName) {
+                            details.push(`container ${cleanName}`);
+                        }
+
+                        const suffix = details.length ? ` (${details.join(', ')})` : '';
+
+                        logger.log(`[Warden] Kavita data mount detected at ${dataMount.Source}${suffix}.`);
+
+                        return {
+                            mountPath: dataMount.Source,
+                            socketPath: context.socketPath ?? null,
+                            containerId: kavitaContainer.Id ?? null,
+                            containerName: cleanName ?? null,
+                        };
+                    }
+
+                    logger.warn(`[Warden] Kavita container found on ${contextLabel} but /data mount was not detected.`);
+                } catch (error) {
+                    logger.warn(`[Warden] Failed to query Docker on ${contextLabel}: ${error.message}`);
+                }
+            }
+
+            if (!foundContainer) {
                 logger.warn('[Warden] Kavita container not found while detecting data mount.');
-                return null;
             }
-
-            const inspected = await dockerInstance
-                .getContainer(kavitaContainer.Id)
-                .inspect();
-            const mounts = inspected?.Mounts || [];
-            const dataMount = mounts.find(mount => mount?.Destination === '/data');
-
-            if (dataMount?.Source) {
-                logger.log(`[Warden] Kavita data mount detected at ${dataMount.Source}.`);
-                return dataMount.Source;
-            }
-
-            logger.warn('[Warden] Kavita container found but /data mount was not detected.');
         } catch (error) {
             logger.warn(`[Warden] Failed to detect Kavita data mount: ${error.message}`);
         }
@@ -196,11 +413,13 @@ export function createWarden(options = {}) {
 
         const { descriptor, category } = entry;
         const healthUrl = descriptor.health || null;
+        let kavitaDetection = null;
         let kavitaDataMount = null;
         let serviceDescriptor = descriptor;
 
         if (descriptor.name === 'noona-raven') {
-            kavitaDataMount = await detectKavitaDataMount();
+            kavitaDetection = await detectKavitaDataMount();
+            kavitaDataMount = kavitaDetection?.mountPath ?? null;
 
             if (kavitaDataMount) {
                 const baseEnv = Array.isArray(descriptor.env) ? [...descriptor.env] : [];
@@ -230,6 +449,7 @@ export function createWarden(options = {}) {
 
         if (descriptor.name === 'noona-raven') {
             result.kavitaDataMount = kavitaDataMount;
+            result.kavitaDetection = kavitaDetection;
         }
 
         return result;
