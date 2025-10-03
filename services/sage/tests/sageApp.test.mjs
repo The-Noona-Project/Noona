@@ -97,3 +97,83 @@ test('startSage starts server on provided port and logs startup message', async 
     assert.ok(infoMessages.some((line) => line.includes('test-sage')))
     assert.equal(debugMessages.length, 0)
 })
+
+test('GET /api/setup/services proxies to setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                calls.push('list')
+                return [{ name: 'noona-moon' }]
+            },
+            async installServices() {
+                throw new Error('installServices should not be called')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { services: [{ name: 'noona-moon' }] })
+    assert.deepEqual(calls, ['list'])
+})
+
+test('POST /api/setup/install forwards request to setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices(services) {
+                calls.push(services)
+                return { status: 207, results: [{ name: 'noona-sage', status: 'installed' }] }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: ['noona-sage'] }),
+    })
+
+    assert.equal(response.status, 207)
+    assert.deepEqual(await response.json(), { results: [{ name: 'noona-sage', status: 'installed' }] })
+    assert.deepEqual(calls, [['noona-sage']])
+})
+
+test('POST /api/setup/install validates payload', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                throw new Error('installServices should not be called')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: [] }),
+    })
+
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('non-empty'))
+})

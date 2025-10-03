@@ -6,6 +6,12 @@ export default defineConfig({
   server: {
     port: 3000,
     // 👇 THIS is the correct setting for SPA routing
-    historyApiFallback: true
+    historyApiFallback: true,
+    proxy: {
+      '/api': {
+        target: process.env.VITE_API_TARGET ?? 'http://localhost:3004',
+        changeOrigin: true,
+      },
+    },
   }
 });

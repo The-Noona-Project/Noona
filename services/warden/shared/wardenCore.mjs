@@ -37,6 +37,25 @@ function createDefaultLogger(loggerOption = {}) {
     };
 }
 
+function createServiceCatalog(services) {
+    const catalog = new Map();
+
+    for (const [category, entries] of Object.entries(services)) {
+        for (const service of Object.values(entries)) {
+            if (!service?.name) {
+                continue;
+            }
+
+            catalog.set(service.name, {
+                category,
+                descriptor: service,
+            });
+        }
+    }
+
+    return catalog;
+}
+
 export function createWarden(options = {}) {
     const {
         dockerInstance = new Docker(),
@@ -53,6 +72,7 @@ export function createWarden(options = {}) {
     const services = normalizeServices(servicesOption);
     const dockerUtils = normalizeDockerUtils(dockerUtilsOption);
     const logger = createDefaultLogger(loggerOption);
+    const serviceCatalog = createServiceCatalog(services);
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
@@ -115,6 +135,76 @@ export function createWarden(options = {}) {
         } else {
             logger.log(`[${service.name}] ✅ Ready.`);
         }
+    };
+
+    api.listServices = function listServices() {
+        const formatted = Array.from(serviceCatalog.values()).map(({ category, descriptor }) => ({
+            name: descriptor.name,
+            category,
+            image: descriptor.image,
+            port: descriptor.port ?? null,
+            hostServiceUrl: api.resolveHostServiceUrl(descriptor),
+            description: descriptor.description ?? null,
+            health: descriptor.health ?? null,
+        }));
+
+        return formatted.sort((a, b) => a.name.localeCompare(b.name));
+    };
+
+    api.installService = async function installService(name) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        const entry = serviceCatalog.get(trimmedName);
+
+        if (!entry) {
+            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+        }
+
+        const { descriptor, category } = entry;
+        const healthUrl = descriptor.health || null;
+        await api.startService(descriptor, healthUrl);
+
+        return {
+            name: descriptor.name,
+            category,
+            status: 'installed',
+            hostServiceUrl: api.resolveHostServiceUrl(descriptor),
+            image: descriptor.image,
+            port: descriptor.port ?? null,
+        };
+    };
+
+    api.installServices = async function installServices(names = []) {
+        const results = [];
+
+        for (const candidate of names) {
+            const name = typeof candidate === 'string' ? candidate.trim() : '';
+
+            if (!name) {
+                results.push({
+                    name: candidate ?? null,
+                    status: 'error',
+                    error: 'Invalid service name provided.',
+                });
+                continue;
+            }
+
+            try {
+                const result = await api.installService(name);
+                results.push(result);
+            } catch (error) {
+                results.push({
+                    name,
+                    status: 'error',
+                    error: error.message,
+                });
+            }
+        }
+
+        return results;
     };
 
     api.bootMinimal = async function bootMinimal() {
