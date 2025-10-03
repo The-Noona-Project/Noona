@@ -1,26 +1,11 @@
 // services/warden/docker/noonaDockers.mjs
 
+import { buildVaultTokenRegistry, stringifyTokenMap } from './vaultTokens.mjs';
+
 const DEBUG = process.env.DEBUG || 'false';
 const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
-
-const DEFAULT_TOKENS = {
-    'noona-sage': 'noona-sage-dev-token',
-    'noona-moon': 'noona-moon-dev-token',
-    'noona-oracle': 'noona-oracle-dev-token',
-    'noona-raven': 'noona-raven-dev-token',
-    'noona-portal': 'noona-portal-dev-token',
-    'noona-vault': 'noona-vault-dev-token'
-};
-
-/**
- * Resolve the Vault token for a given service name.
- * @param {string} name - Service name (e.g., "noona-sage").
- * @returns {string} The resolved token: the environment variable value for `<NAME>_VAULT_TOKEN` if set, otherwise the entry from `DEFAULT_TOKENS` for the service, otherwise the fallback `"<name>-dev-token"`.
- */
-function resolveToken(name) {
-    const envKey = `${name.replace(/-/g, '_').toUpperCase()}_VAULT_TOKEN`;
-    return process.env[envKey] || DEFAULT_TOKENS[name] || `${name}-dev-token`;
-}
+const DOCKER_WARDEN_URL =
+    process.env.WARDEN_DOCKER_URL || process.env.INTERNAL_WARDEN_BASE_URL || 'http://noona-warden:4001';
 
 const rawList = [
     'noona-sage',
@@ -31,9 +16,7 @@ const rawList = [
     'noona-vault'
 ];
 
-const tokensByService = Object.fromEntries(
-    rawList.map(name => [name, resolveToken(name)])
-);
+const tokensByService = buildVaultTokenRegistry(rawList);
 
 const serviceDefs = rawList.map(name => {
     const portMap = {
@@ -57,10 +40,12 @@ const serviceDefs = rawList.map(name => {
         env.push(`VAULT_API_TOKEN=${token}`);
     }
 
+    if (name === 'noona-sage') {
+        env.push(`WARDEN_BASE_URL=${DOCKER_WARDEN_URL}`);
+    }
+
     if (name === 'noona-vault') {
-        const tokenMapString = Object.entries(tokensByService)
-            .map(([svc, svcToken]) => `${svc}:${svcToken}`)
-            .join(',');
+        const tokenMapString = stringifyTokenMap(tokensByService);
         env.push(`PORT=3005`, `VAULT_TOKEN_MAP=${tokenMapString}`);
     }
 

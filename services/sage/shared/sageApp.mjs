@@ -7,7 +7,62 @@ import { debugMSG, errMSG, log } from '../../../utilities/etc/logger.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
-const defaultWardenBaseUrl = () => process.env.WARDEN_BASE_URL || 'http://localhost:4001'
+const normalizeUrl = (candidate) => {
+    if (!candidate || typeof candidate !== 'string') {
+        return null
+    }
+
+    const trimmed = candidate.trim()
+    if (!trimmed) {
+        return null
+    }
+
+    if (/^https?:\/\//i.test(trimmed)) {
+        return trimmed
+    }
+
+    return `http://${trimmed}`
+}
+
+const resolveDefaultWardenUrls = (env = process.env) => {
+    const candidates = [
+        env?.WARDEN_BASE_URL,
+        env?.WARDEN_INTERNAL_BASE_URL,
+        env?.WARDEN_DOCKER_URL,
+    ]
+
+    const hostCandidates = [
+        env?.WARDEN_HOST,
+        env?.WARDEN_SERVICE_HOST,
+    ]
+
+    for (const host of hostCandidates) {
+        if (typeof host === 'string' && host.trim()) {
+            const port = env?.WARDEN_PORT || '4001'
+            const normalizedHost = host.trim()
+            candidates.push(`${normalizedHost}:${port}`)
+        }
+    }
+
+    candidates.push(
+        'http://noona-warden:4001',
+        'http://warden:4001',
+        'http://host.docker.internal:4001',
+        'http://127.0.0.1:4001',
+        'http://localhost:4001',
+    )
+
+    const normalized = candidates
+        .map(normalizeUrl)
+        .filter(Boolean)
+
+    return Array.from(new Set(normalized))
+}
+
+const defaultWardenBaseUrl = (env = process.env) => {
+    const [first] = resolveDefaultWardenUrls(env)
+    return first || 'http://localhost:4001'
+}
 
 const resolveLogger = (overrides = {}) => ({
     debug: debugMSG,
@@ -16,40 +71,89 @@ const resolveLogger = (overrides = {}) => ({
     ...overrides,
 })
 
-const createSetupClient = ({ baseUrl = defaultWardenBaseUrl(), fetchImpl = fetch, logger, serviceName }) => ({
-    async listServices(options = {}) {
-        const includeInstalled = options.includeInstalled ?? false
-        const requestUrl = new URL('/api/services', baseUrl)
-        requestUrl.searchParams.set('includeInstalled', includeInstalled ? 'true' : 'false')
+const createSetupClient = ({
+    baseUrl,
+    baseUrls = [],
+    fetchImpl = fetch,
+    logger,
+    serviceName,
+    env = process.env,
+} = {}) => {
+    const defaults = resolveDefaultWardenUrls(env)
+    const deduped = Array.from(
+        new Set([
+            normalizeUrl(baseUrl),
+            ...baseUrls.map(normalizeUrl),
+            ...defaults,
+        ].filter(Boolean)),
+    )
 
-        const response = await fetchImpl(requestUrl.toString())
+    if (deduped.length === 0) {
+        deduped.push('http://localhost:4001')
+    }
 
-        if (!response.ok) {
-            throw new Error(`Warden responded with status ${response.status}`)
+    let preferredBaseUrl = deduped[0]
+
+    const fetchFromWarden = async (path, options) => {
+        const errors = []
+        const candidates = preferredBaseUrl
+            ? [preferredBaseUrl, ...deduped.filter((url) => url !== preferredBaseUrl)]
+            : deduped
+
+        for (const candidate of candidates) {
+            try {
+                const requestUrl = new URL(path, candidate)
+                const response = await fetchImpl(requestUrl.toString(), options)
+
+                if (!response.ok) {
+                    throw new Error(`Warden responded with status ${response.status}`)
+                }
+
+                preferredBaseUrl = candidate
+                return response
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                errors.push(`${candidate} (${message})`)
+            }
         }
 
-        const payload = await response.json()
-        const services = Array.isArray(payload.services) ? payload.services : []
+        throw new Error(`All Warden endpoints failed: ${errors.join(' | ')}`)
+    }
 
-        logger.debug?.(`[${serviceName}] 📦 Retrieved ${services.length} services from Warden`)
-        return services
-    },
+    return {
+        async listServices(options = {}) {
+            const includeInstalled = options.includeInstalled ?? false
+            const response = await fetchFromWarden(
+                `/api/services?includeInstalled=${includeInstalled ? 'true' : 'false'}`,
+            )
 
-    async installServices(services) {
-        const response = await fetchImpl(`${baseUrl}/api/services/install`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ services }),
-        })
+            const payload = await response.json()
+            const services = Array.isArray(payload.services) ? payload.services : []
 
-        const payload = await response.json().catch(() => ({}))
-        const results = Array.isArray(payload.results) ? payload.results : []
-        const status = response.status || 200
+            logger.debug?.(
+                `[${serviceName}] 📦 Retrieved ${services.length} services from Warden via ${preferredBaseUrl}`,
+            )
+            return services
+        },
 
-        logger.info?.(`[${serviceName}] 🚀 Installation request forwarded for ${services.length} services (status: ${status})`)
-        return { status, results }
-    },
-})
+        async installServices(services) {
+            const response = await fetchFromWarden('/api/services/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ services }),
+            })
+
+            const payload = await response.json().catch(() => ({}))
+            const results = Array.isArray(payload.results) ? payload.results : []
+            const status = response.status || 200
+
+            logger.info?.(
+                `[${serviceName}] 🚀 Installation request forwarded for ${services.length} services (status: ${status}) via ${preferredBaseUrl}`,
+            )
+            return { status, results }
+        },
+    }
+}
 
 export const createSageApp = ({
     serviceName = defaultServiceName(),
@@ -62,9 +166,11 @@ export const createSageApp = ({
         setupClientOverride ||
         createSetupClient({
             baseUrl: setupOptions.baseUrl ?? defaultWardenBaseUrl(),
+            baseUrls: setupOptions.baseUrls ?? [],
             fetchImpl: setupOptions.fetchImpl ?? setupOptions.fetch ?? fetch,
             logger,
             serviceName,
+            env: setupOptions.env ?? process.env,
         })
     const app = express()
 
