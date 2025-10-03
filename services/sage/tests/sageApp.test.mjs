@@ -150,6 +150,64 @@ test('GET /api/setup/services requests installable set from Warden by default', 
     assert.deepEqual(fetchCalls, ['http://warden.local/api/services?includeInstalled=false'])
 })
 
+test('GET /api/setup/services falls back across Warden base URLs', async (t) => {
+    const fetchCalls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://unreachable.local:4001',
+            baseUrls: ['http://warden-ok.local:4001'],
+            fetchImpl: async (url) => {
+                fetchCalls.push(url)
+
+                if (url.startsWith('http://unreachable.local:4001')) {
+                    return { ok: false, status: 404, async json() { return {} } }
+                }
+
+                return {
+                    ok: true,
+                    async json() {
+                        return { services: [{ name: 'noona-moon' }] }
+                    },
+                }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.services, [{ name: 'noona-moon' }])
+
+    assert.deepEqual(fetchCalls, [
+        'http://unreachable.local:4001/api/services?includeInstalled=false',
+        'http://warden-ok.local:4001/api/services?includeInstalled=false',
+    ])
+})
+
+test('GET /api/setup/services surfaces aggregated failure errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrls: ['http://unreachable.local:4001'],
+            fetchImpl: async () => {
+                throw new Error('boom')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services`)
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to retrieve installable services'))
+})
+
 test('POST /api/setup/install forwards request to setup client', async (t) => {
     const calls = []
     const app = createSageApp({
