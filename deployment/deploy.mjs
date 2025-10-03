@@ -11,6 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(__dirname, '..');
 const DOCKERHUB_USER = 'captainpax';
 const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault'];
+const NETWORK_NAME = 'noona-network';
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -33,7 +34,9 @@ const printMainMenu = () => {
     console.log('2) 📤 Push');
     console.log('3) 📥 Pull');
     console.log('4) ▶️  Start');
-    console.log('5) 🧹 Clean');
+    console.log('5) ⏹ Stop All');
+    console.log('6) 🧹 Clean');
+    console.log('7) 🗑️ Delete Docker');
     console.log('0) ❌ Exit\n');
 };
 
@@ -69,9 +72,117 @@ const dockerRunPowerShell = async (service, image, envVars = {}) => {
         .map(([key, value]) => `-e ${key}=${value}`)
         .join(' ');
 
-    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --network noona-network -v /var/run/docker.sock:/var/run/docker.sock ${envString} ${image}:latest"`;
+    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --network ${NETWORK_NAME} -v /var/run/docker.sock:/var/run/docker.sock ${envString} ${image}:latest"`;
     await execAsync(cmd);
     print.success(`${service} started in new PowerShell window.`);
+};
+
+const execLines = async command => {
+    try {
+        const { stdout } = await execAsync(command);
+        return stdout
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean);
+    } catch {
+        return [];
+    }
+};
+
+const ensureNetwork = async () => {
+    const networks = await execLines(`docker network ls --filter "name=^${NETWORK_NAME}$" --format "{{.Name}}"`);
+    if (networks.length) {
+        console.log(`${colors.cyan}🔗 Using existing Docker network ${NETWORK_NAME}.${colors.reset}`);
+        return;
+    }
+
+    console.log(`${colors.yellow}🌐 Creating Docker network ${NETWORK_NAME}...${colors.reset}`);
+    await execAsync(`docker network create ${NETWORK_NAME}`);
+    print.success(`Created Docker network ${NETWORK_NAME}`);
+};
+
+const stopAllContainers = async () => {
+    console.log(`${colors.yellow}⏹ Stopping all running Noona containers...${colors.reset}`);
+    const containers = await execLines('docker ps --filter "name=noona-" --format "{{.Names}}"');
+
+    if (containers.length === 0) {
+        print.success('No running Noona containers found.');
+        return;
+    }
+
+    for (const name of containers) {
+        await execAsync(`docker stop ${name} 2>/dev/null || true`);
+    }
+
+    print.success('Stop command sent to all running Noona containers.');
+};
+
+const cleanService = async service => {
+    const image = `${DOCKERHUB_USER}/noona-${service}`;
+    const local = `noona-${service}`;
+
+    await execAsync(`docker rm -f ${local} 2>/dev/null || true`);
+    await execAsync(`docker image rm ${image}:latest 2>/dev/null || true`);
+    await execAsync(`docker image rm ${image} 2>/dev/null || true`);
+    await execAsync(`docker image rm ${local}:latest 2>/dev/null || true`);
+    await execAsync(`docker image rm ${local} 2>/dev/null || true`);
+};
+
+const deleteDockerResources = async () => {
+    const confirmation = (await rl.question(`${colors.red}This will delete ALL local Noona Docker containers, images, volumes, and networks. Type DELETE to continue: ${colors.reset}`)).trim().toUpperCase();
+
+    if (confirmation !== 'DELETE') {
+        print.error('Delete aborted.');
+        return;
+    }
+
+    console.log(`${colors.yellow}🗑️ Deleting Noona Docker resources...${colors.reset}`);
+
+    const containers = await execLines('docker ps -a --filter "name=noona-" --format "{{.Names}}"');
+    for (const name of containers) {
+        await execAsync(`docker rm -f ${name} 2>/dev/null || true`);
+    }
+
+    const images = await execLines('docker images --format "{{.Repository}}:{{.Tag}}"');
+    for (const image of images) {
+        if (image.startsWith('captainpax/noona-') || image.startsWith('noona-')) {
+            await execAsync(`docker image rm ${image} 2>/dev/null || true`);
+        }
+    }
+
+    const volumes = await execLines('docker volume ls --filter "name=noona-" --format "{{.Name}}"');
+    for (const volume of volumes) {
+        await execAsync(`docker volume rm ${volume} 2>/dev/null || true`);
+    }
+
+    const networks = await execLines('docker network ls --filter "name=noona-" --format "{{.Name}}"');
+    for (const network of networks) {
+        await execAsync(`docker network rm ${network} 2>/dev/null || true`);
+    }
+
+    print.success('All local Noona Docker resources deleted.');
+};
+
+const selectServices = async mainChoice => {
+    if (mainChoice === '4') {
+        console.log(`${colors.cyan}▶️  Start is limited to launching the warden orchestrator.${colors.reset}`);
+        return ['warden'];
+    }
+
+    printServicesMenu();
+    const svcChoice = (await rl.question('Enter service choice: ')).trim();
+
+    if (svcChoice === '0') {
+        return [...SERVICES];
+    }
+
+    const index = Number.parseInt(svcChoice, 10);
+    if (!Number.isInteger(index) || index < 1 || index > SERVICES.length) {
+        print.error('Invalid service choice.');
+        return null;
+    }
+
+    return [SERVICES[index - 1]];
 };
 
 const askDebugSetting = async () => {
@@ -96,22 +207,39 @@ const run = async () => {
     while (true) {
         printHeader();
         printMainMenu();
-        const mainChoice = await rl.question('Enter choice: ');
+        const mainChoice = (await rl.question('Enter choice: ')).trim();
         if (mainChoice === '0') break;
-        if (!['1','2','3','4','5'].includes(mainChoice)) { print.error('Invalid main choice'); continue; }
 
-        let selected;
+        if (!['1','2','3','4','5','6','7'].includes(mainChoice)) {
+            print.error('Invalid main choice');
+            continue;
+        }
 
-        if (mainChoice === '4') {
-            console.log(`${colors.cyan}▶️  Start is limited to launching the warden orchestrator.${colors.reset}`);
-            selected = ['warden'];
-        } else {
-            printServicesMenu();
-            const svcChoice = await rl.question('Enter service choice: ');
-            selected = svcChoice === '0' ? SERVICES : [SERVICES[parseInt(svcChoice) - 1]];
+        if (mainChoice === '5') {
+            try {
+                await stopAllContainers();
+            } catch (e) {
+                print.error(`Failed to stop containers: ${e.message}`);
+            }
+            continue;
+        }
+
+        if (mainChoice === '7') {
+            try {
+                await deleteDockerResources();
+            } catch (e) {
+                print.error(`Failed to delete Docker resources: ${e.message}`);
+            }
+            continue;
+        }
+
+        const selected = await selectServices(mainChoice);
+        if (!selected || selected.length === 0) {
+            continue;
         }
 
         for (const svc of selected) {
+            if (!svc) continue;
             const image = `${DOCKERHUB_USER}/noona-${svc}`;
             const local = `noona-${svc}`;
             const dockerfile = `${ROOT_DIR}/deployment/${svc}.Dockerfile`;
@@ -143,7 +271,7 @@ const run = async () => {
                 case '4': // Start
                     console.log(`${colors.yellow}▶️  Starting ${svc}...${colors.reset}`);
                     try {
-                        await execAsync(`docker network inspect noona-network >/dev/null 2>&1 || docker network create noona-network`);
+                        await ensureNetwork();
                         const DEBUG = await askDebugSetting();
                         const BOOT_MODE = await askBootMode();
                         await dockerRunPowerShell(svc, image, { DEBUG, BOOT_MODE });
@@ -152,11 +280,17 @@ const run = async () => {
                     }
                     break;
 
-                case '5': // Clean
+                case '6': // Clean
                     console.log(`${colors.yellow}🧹 Cleaning ${svc}...${colors.reset}`);
-                    await execAsync(`docker rm -f ${local} 2>/dev/null || true`);
-                    await execAsync(`docker rmi ${image} 2>/dev/null || true`);
-                    print.success(`Cleaned ${svc}`);
+                    try {
+                        await cleanService(svc);
+                        if (svc === 'warden') {
+                            await execAsync(`docker network rm ${NETWORK_NAME} 2>/dev/null || true`);
+                        }
+                        print.success(`Cleaned ${svc}`);
+                    } catch (e) {
+                        print.error(`Failed to clean ${svc}: ${e.message}`);
+                    }
                     break;
             }
         }
