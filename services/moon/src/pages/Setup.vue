@@ -14,8 +14,12 @@ const installing = ref(false);
 const installError = ref('');
 const installResults = ref(null);
 
+const installableServices = computed(() =>
+  state.services.filter((service) => service.installed !== true),
+);
+
 const groupedServices = computed(() => {
-  return state.services.reduce((groups, service) => {
+  return installableServices.value.reduce((groups, service) => {
     const category = service.category || 'other';
     if (!groups[category]) {
       groups[category] = [];
@@ -54,6 +58,7 @@ const sortedCategoryEntries = computed(() => {
 const selectedSet = computed(() => new Set(selectedServices.value));
 const hasSelection = computed(() => selectedServices.value.length > 0);
 const selectedCount = computed(() => selectedServices.value.length);
+const availableCount = computed(() => installableServices.value.length);
 
 const categoryLabel = (category) => {
   if (category === 'core') return 'Core Services';
@@ -74,7 +79,7 @@ const toggleService = (name) => {
   selectedServices.value = Array.from(next);
 };
 
-const SERVICE_ENDPOINTS = ['/api/setup/services', '/api/services'];
+const SERVICE_ENDPOINTS = ['/api/setup/services', '/api/services?includeInstalled=false'];
 
 const loadServicesFromEndpoint = async (endpoint) => {
   const response = await fetch(endpoint);
@@ -99,6 +104,10 @@ const refreshServices = async () => {
       try {
         const services = await loadServicesFromEndpoint(endpoint);
         state.services = services;
+        const validSelections = new Set(
+          services.filter((service) => service.installed !== true).map((service) => service.name),
+        );
+        selectedServices.value = selectedServices.value.filter((name) => validSelections.has(name));
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -144,6 +153,7 @@ const submitSelection = async () => {
       const successful = new Set(results.filter((item) => item.status === 'installed').map((item) => item.name));
       const remaining = services.filter((name) => !successful.has(name));
       selectedServices.value = remaining;
+      await refreshServices();
     }
   } catch (error) {
     installError.value = error instanceof Error ? error.message : String(error);
@@ -193,7 +203,7 @@ onMounted(() => {
               <div v-else>
                 <div class="d-flex justify-space-between align-center mb-4">
                   <div class="text-subtitle-1 font-weight-medium">
-                    Available services ({{ state.services.length }})
+                    Available services ({{ availableCount }})
                   </div>
                   <v-btn
                     variant="text"
@@ -206,13 +216,18 @@ onMounted(() => {
                 </div>
 
                 <v-alert
-                  v-if="!state.services.length"
+                  v-if="availableCount === 0"
                   type="info"
                   variant="tonal"
                   border="start"
                   class="mb-6"
                 >
-                  No services are available for installation yet.
+                  <template v-if="state.services.length">
+                    All registered services have already been installed.
+                  </template>
+                  <template v-else>
+                    No services are available for installation yet.
+                  </template>
                 </v-alert>
 
                 <div v-else>

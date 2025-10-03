@@ -17,8 +17,12 @@ const resolveLogger = (overrides = {}) => ({
 })
 
 const createSetupClient = ({ baseUrl = defaultWardenBaseUrl(), fetchImpl = fetch, logger, serviceName }) => ({
-    async listServices() {
-        const response = await fetchImpl(`${baseUrl}/api/services`)
+    async listServices(options = {}) {
+        const includeInstalled = options.includeInstalled ?? false
+        const requestUrl = new URL('/api/services', baseUrl)
+        requestUrl.searchParams.set('includeInstalled', includeInstalled ? 'true' : 'false')
+
+        const response = await fetchImpl(requestUrl.toString())
 
         if (!response.ok) {
             throw new Error(`Warden responded with status ${response.status}`)

@@ -122,6 +122,34 @@ test('GET /api/setup/services proxies to setup client', async (t) => {
     assert.deepEqual(calls, ['list'])
 })
 
+test('GET /api/setup/services requests installable set from Warden by default', async (t) => {
+    const fetchCalls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            fetchImpl: async (url) => {
+                fetchCalls.push(url)
+                return {
+                    ok: true,
+                    async json() {
+                        return { services: [] }
+                    },
+                }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services`)
+    assert.equal(response.status, 200)
+    await response.json()
+
+    assert.deepEqual(fetchCalls, ['http://warden.local/api/services?includeInstalled=false'])
+})
+
 test('POST /api/setup/install forwards request to setup client', async (t) => {
     const calls = []
     const app = createSageApp({

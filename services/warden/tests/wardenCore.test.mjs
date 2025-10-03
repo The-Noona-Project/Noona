@@ -87,22 +87,37 @@ test('startService skips pull and run when container already exists', async () =
     assert.ok(logs.some(line => line.includes('host_service_url: http://custom')));
 });
 
-test('listServices returns sorted metadata with host URLs', () => {
+test('listServices returns sorted metadata with host URLs and install state', async () => {
+    const containerChecks = [];
+    const dockerUtils = {
+        containerExists: async (name) => {
+            containerChecks.push(name);
+            return name === 'noona-redis';
+        },
+    };
+    const warnings = [];
     const warden = createWarden({
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001, description: 'Cache' },
             },
             core: {
-                'noona-sage': { name: 'noona-sage', image: 'sage', hostServiceUrl: 'http://custom-sage', health: 'http://health' },
+                'noona-sage': {
+                    name: 'noona-sage',
+                    image: 'sage',
+                    hostServiceUrl: 'http://custom-sage',
+                    health: 'http://health',
+                },
                 'noona-moon': { name: 'noona-moon', image: 'moon', port: 3000 },
             },
         },
+        dockerUtils,
         env: { HOST_SERVICE_URL: 'http://localhost' },
         hostDockerSockets: [],
+        logger: { warn: (message) => warnings.push(message), log: () => {} },
     });
 
-    const services = warden.listServices();
+    const services = await warden.listServices();
 
     assert.deepEqual(services, [
         {
@@ -113,6 +128,7 @@ test('listServices returns sorted metadata with host URLs', () => {
             hostServiceUrl: 'http://localhost:3000',
             description: null,
             health: null,
+            installed: false,
         },
         {
             name: 'noona-redis',
@@ -122,6 +138,7 @@ test('listServices returns sorted metadata with host URLs', () => {
             hostServiceUrl: 'http://localhost:8001',
             description: 'Cache',
             health: null,
+            installed: true,
         },
         {
             name: 'noona-sage',
@@ -131,8 +148,17 @@ test('listServices returns sorted metadata with host URLs', () => {
             hostServiceUrl: 'http://custom-sage',
             description: null,
             health: 'http://health',
+            installed: false,
         },
     ]);
+    assert.deepEqual(containerChecks, ['noona-moon', 'noona-redis', 'noona-sage']);
+    assert.equal(warnings.length, 0);
+
+    const installable = await warden.listServices({ includeInstalled: false });
+    assert.deepEqual(
+        installable.map((service) => service.name),
+        ['noona-moon', 'noona-sage'],
+    );
 });
 
 test('installServices returns per-service results with errors', async () => {

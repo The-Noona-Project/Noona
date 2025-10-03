@@ -35,12 +35,16 @@ const closeServer = (server) => new Promise((resolve, reject) => {
     });
 });
 
-test('GET /api/services returns list of services', async (t) => {
+test('GET /api/services returns installable services by default', async (t) => {
+    const calls = [];
     const warden = {
-        listServices: () => [
-            { name: 'noona-sage', category: 'core' },
-            { name: 'noona-redis', category: 'addon' },
-        ],
+        async listServices(options) {
+            calls.push(options);
+            return [
+                { name: 'noona-sage', category: 'core' },
+                { name: 'noona-redis', category: 'addon' },
+            ];
+        },
         installServices: async () => {
             throw new Error('installServices should not be called');
         },
@@ -57,12 +61,42 @@ test('GET /api/services returns list of services', async (t) => {
             { name: 'noona-redis', category: 'addon' },
         ],
     });
+    assert.deepEqual(calls, [{ includeInstalled: false }]);
+});
+
+test('GET /api/services can include installed services when requested', async (t) => {
+    const calls = [];
+    const warden = {
+        async listServices(options) {
+            calls.push(options);
+            return [
+                { name: 'noona-sage', category: 'core', installed: true },
+                { name: 'noona-redis', category: 'addon', installed: false },
+            ];
+        },
+        installServices: async () => {
+            throw new Error('installServices should not be called');
+        },
+    };
+
+    const { server, baseUrl } = await listen({ warden });
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services?includeInstalled=true`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        services: [
+            { name: 'noona-sage', category: 'core', installed: true },
+            { name: 'noona-redis', category: 'addon', installed: false },
+        ],
+    });
+    assert.deepEqual(calls, [{ includeInstalled: true }]);
 });
 
 test('POST /api/services/install returns results and status code for errors', async (t) => {
     const installCalls = [];
     const warden = {
-        listServices: () => [],
+        listServices: async () => [],
         installServices: async (services) => {
             installCalls.push(services);
             return [
@@ -93,7 +127,7 @@ test('POST /api/services/install returns results and status code for errors', as
 
 test('POST /api/services/install validates payload', async (t) => {
     const warden = {
-        listServices: () => [],
+        listServices: async () => [],
         installServices: async () => {
             throw new Error('installServices should not be called');
         },
