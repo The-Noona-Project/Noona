@@ -1,4 +1,4 @@
-// services/portal/initmain.mjs
+// services/portal/initPortal.mjs
 
 import { errMSG, log } from '../../utilities/etc/logger.mjs';
 import { safeLoadPortalConfig } from './shared/config.mjs';
