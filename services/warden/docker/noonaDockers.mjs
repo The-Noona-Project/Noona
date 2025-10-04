@@ -86,6 +86,57 @@ const serviceDefs = rawList.map(name => {
         );
     }
 
+    if (name === 'noona-portal') {
+        const portalEnvFields = [
+            {
+                key: 'DISCORD_BOT_TOKEN',
+                label: 'Discord Bot Token',
+                description: 'Authentication token for the Discord bot used by the portal.',
+            },
+            {
+                key: 'DISCORD_CLIENT_ID',
+                label: 'Discord Client ID',
+                description: 'OAuth2 client identifier for the Discord application.',
+            },
+            {
+                key: 'DISCORD_GUILD_ID',
+                label: 'Discord Guild ID',
+                description: 'Identifier of the Discord server that the portal should connect to.',
+            },
+            {
+                key: 'KAVITA_BASE_URL',
+                label: 'Kavita Base URL',
+                description: 'Base URL of the Kavita instance providing library content.',
+            },
+            {
+                key: 'KAVITA_API_KEY',
+                label: 'Kavita API Key',
+                description: 'API key used by the portal when communicating with Kavita.',
+            },
+            {
+                key: 'VAULT_BASE_URL',
+                label: 'Vault Base URL',
+                description: 'URL where the Vault service is exposed for the portal.',
+            },
+            {
+                key: 'VAULT_ACCESS_TOKEN',
+                label: 'Vault Access Token',
+                description: 'Authentication token that allows the portal to access Vault.',
+            },
+        ];
+
+        portalEnvFields.forEach(field => {
+            env.push(`${field.key}=`);
+            envConfig.push(
+                createEnvField(field.key, '', {
+                    label: field.label,
+                    description: field.description,
+                    required: true,
+                }),
+            );
+        });
+    }
+
     if (name === 'noona-vault') {
         const tokenMapString = stringifyTokenMap(tokensByService);
         env.push(`PORT=3005`, `VAULT_TOKEN_MAP=${tokenMapString}`);
