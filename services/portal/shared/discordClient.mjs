@@ -18,12 +18,36 @@ const DEFAULT_PARTIALS = [
     Partials.User,
 ];
 
+const normaliseCommandMap = (commands = new Map()) => {
+    if (commands instanceof Map) {
+        return commands;
+    }
+
+    if (Array.isArray(commands)) {
+        return new Map(commands);
+    }
+
+    if (commands && typeof commands === 'object') {
+        return new Map(Object.entries(commands));
+    }
+
+    return new Map();
+};
+
+const extractCommandDefinitions = (commandMap) =>
+    Array.from(commandMap.values())
+        .map(command => command?.definition)
+        .filter(Boolean);
+
 export const createDiscordClient = ({
     token,
     guildId,
+    clientId,
     defaultRoleId = null,
     intents = DEFAULT_INTENTS,
     partials = DEFAULT_PARTIALS,
+    commands,
+    clientFactory,
 } = {}) => {
     if (!token) {
         throw new Error('Discord token is required to initialise the Portal Discord client.');
@@ -33,7 +57,11 @@ export const createDiscordClient = ({
         throw new Error('Discord guild id is required to initialise the Portal Discord client.');
     }
 
-    const client = new Client({ intents, partials });
+    const commandMap = normaliseCommandMap(commands);
+
+    const client = typeof clientFactory === 'function'
+        ? clientFactory({ intents, partials })
+        : new Client({ intents, partials });
 
     let readyResolve;
     let readyReject;
@@ -43,8 +71,8 @@ export const createDiscordClient = ({
     });
 
     client.once(Events.ClientReady, bot => {
-        log(`[Portal/Discord] Logged in as ${bot.user.tag}`);
-        readyResolve(bot);
+        log(`[Portal/Discord] Logged in as ${bot?.user?.tag ?? 'unknown user'}`);
+        readyResolve(bot ?? client);
     });
 
     client.on('error', error => {
@@ -55,10 +83,31 @@ export const createDiscordClient = ({
         errMSG(`[Portal/Discord] Shard error: ${error.message}`);
     });
 
+    const registerCommands = async () => {
+        const definitions = extractCommandDefinitions(commandMap);
+        if (!definitions.length) {
+            return;
+        }
+
+        if (!clientId) {
+            errMSG('[Portal/Discord] Client id missing, skipping slash command registration.');
+            return;
+        }
+
+        try {
+            await client.application?.commands?.set?.(definitions, guildId);
+            log(`[Portal/Discord] Registered ${definitions.length} slash command(s) for guild ${guildId}.`);
+        } catch (error) {
+            errMSG(`[Portal/Discord] Failed to register slash commands: ${error.message}`);
+            throw error;
+        }
+    };
+
     const login = async () => {
         try {
             await client.login(token);
             await ready;
+            await registerCommands();
         } catch (error) {
             errMSG(`[Portal/Discord] Failed to login: ${error.message}`);
             readyReject?.(error);
@@ -97,6 +146,35 @@ export const createDiscordClient = ({
             throw error;
         }
     };
+
+    client.on(Events.InteractionCreate, async interaction => {
+        if (!interaction?.isChatInputCommand?.()) {
+            return;
+        }
+
+        const handler = commandMap.get(interaction.commandName);
+        if (!handler?.execute) {
+            return;
+        }
+
+        try {
+            await handler.execute(interaction);
+        } catch (error) {
+            errMSG(`[Portal/Discord] Handler for /${interaction.commandName} failed: ${error.message}`);
+
+            const fallbackResponse = { content: 'Something went wrong while processing that command.', ephemeral: true };
+
+            try {
+                if (interaction.deferred || interaction.replied) {
+                    await interaction.editReply?.(fallbackResponse);
+                } else {
+                    await interaction.reply?.(fallbackResponse);
+                }
+            } catch (responseError) {
+                errMSG(`[Portal/Discord] Failed to send error response: ${responseError.message}`);
+            }
+        }
+    });
 
     const destroy = () => {
         client.destroy();
