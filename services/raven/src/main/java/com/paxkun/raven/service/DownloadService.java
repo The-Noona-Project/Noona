@@ -233,8 +233,8 @@ public class DownloadService {
         }
     }
 
-    public static List<Map<String, String>> parseChapters(String url) {
-        return new TitleScraper().getChapters(url);
+    public List<Map<String, String>> fetchChapters(String titleUrl) {
+        return fetchAllChaptersWithRetry(titleUrl);
     }
 
     public void downloadSingleChapter(NewTitle title, String chapterNumber) {
