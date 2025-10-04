@@ -8,8 +8,8 @@ WORKDIR /app
 # Copy your Raven service source code into the build context
 COPY services/raven /app
 
-# Ensure gradlew is executable for local development consistency
-RUN chmod +x ./gradlew
+# Normalize line endings and ensure the Gradle wrapper is executable
+RUN sed -i 's/\r$//' ./gradlew && chmod +x ./gradlew
 
 # Build the Spring Boot executable jar using the Gradle distribution provided by the image.
 # Using the wrapper keeps the build aligned with the project's Gradle configuration.
@@ -18,7 +18,7 @@ RUN ./gradlew --no-daemon bootJar
 # ────────────────────────────────────────────────
 # 🦅 Noona Raven - Runtime Stage with Chrome installed
 # ────────────────────────────────────────────────
-FROM eclipse-temurin:24-jre-alpine
+FROM eclipse-temurin:24-jre
 
 # Install dependencies and Google Chrome
 RUN apt-get update && \
