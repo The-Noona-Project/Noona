@@ -21,7 +21,7 @@ const createEnvField = (key, defaultValue, {
 const rawList = [
     {
         name: 'noona-redis',
-        image: 'redis/redis-stack:latest',
+        image: 'redis/redis-stack:7.2.0-v19',
         port: 8001,
         internalPort: 8001,
         ports: {

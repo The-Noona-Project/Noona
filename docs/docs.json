@@ -10506,7 +10506,7 @@
           "id": "astnode100003672",
           "name": "rawList",
           "type": "ArrayExpression",
-          "value": "[\"{\\\"name\\\":\\\"noona-redis\\\",\\\"image\\\":\\\"redis/redis-stack:latest\\\",\\\"port\\\":8001,\\\"internalPort\\\":8001,\\\"ports\\\":\\\"\\\",\\\"exposed\\\":\\\"\\\",\\\"env\\\":\\\"\\\",\\\"volumes\\\":\\\"\\\",\\\"health\\\":\\\"http://noona-redis:8001/\\\",\\\"hostServiceUrl\\\":\\\"\\\"}\",\"{\\\"name\\\":\\\"noona-mongo\\\",\\\"image\\\":\\\"mongo:8\\\",\\\"port\\\":27017,\\\"internalPort\\\":27017,\\\"ports\\\":\\\"\\\",\\\"exposed\\\":\\\"\\\",\\\"env\\\":\\\"\\\",\\\"volumes\\\":\\\"\\\",\\\"health\\\":null,\\\"hostServiceUrl\\\":\\\"\\\"}\"]"
+          "value": "[\"{\\\"name\\\":\\\"noona-redis\\\",\\\"image\\\":\\\"redis/redis-stack:7.2.0-v19\\\",\\\"port\\\":8001,\\\"internalPort\\\":8001,\\\"ports\\\":\\\"\\\",\\\"exposed\\\":\\\"\\\",\\\"env\\\":\\\"\\\",\\\"volumes\\\":\\\"\\\",\\\"health\\\":\\\"http://noona-redis:8001/\\\",\\\"hostServiceUrl\\\":\\\"\\\"}\",\"{\\\"name\\\":\\\"noona-mongo\\\",\\\"image\\\":\\\"mongo:8\\\",\\\"port\\\":27017,\\\"internalPort\\\":27017,\\\"ports\\\":\\\"\\\",\\\"exposed\\\":\\\"\\\",\\\"env\\\":\\\"\\\",\\\"volumes\\\":\\\"\\\",\\\"health\\\":null,\\\"hostServiceUrl\\\":\\\"\\\"}\"]"
         }
       },
       "undocumented": true,
@@ -10555,7 +10555,7 @@
           "id": "astnode100003678",
           "name": "image",
           "type": "Literal",
-          "value": "redis/redis-stack:latest"
+          "value": "redis/redis-stack:7.2.0-v19"
         }
       },
       "undocumented": true,
