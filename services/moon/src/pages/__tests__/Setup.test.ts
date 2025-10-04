@@ -44,4 +44,30 @@ describe('Setup page', () => {
     const progressBar = wrapper.find('[aria-label="Downloading services"]');
     expect(progressBar.exists()).toBe(true);
   });
+
+  it('shows an install progress bar while services are installing', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ services: [] }),
+    } as Response);
+
+    const wrapper = mount(SetupPage, {
+      global: {
+        stubs,
+      },
+    });
+
+    const vm = wrapper.vm as unknown as {
+      $: { setupState: { installing: boolean } };
+    };
+
+    vm.$.setupState.installing = true;
+    await wrapper.vm.$nextTick();
+
+    const progressBar = wrapper.find('[aria-label="Installing selected services"]');
+    expect(progressBar.exists()).toBe(true);
+    const progressText = wrapper.find('.setup-actions__progress-text');
+    expect(progressText.text()).toContain('Installing selected services');
+  });
 });
