@@ -21,7 +21,7 @@ RUN gradle --no-daemon shadowJar
 # ────────────────────────────────────────────────
 # 🦅 Noona Raven - Runtime Stage with Chrome installed
 # ────────────────────────────────────────────────
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:24-jre-alpine
 
 # Install dependencies and Google Chrome
 RUN apt-get update && \
