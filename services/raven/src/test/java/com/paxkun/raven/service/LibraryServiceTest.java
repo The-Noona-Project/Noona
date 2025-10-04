@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -103,5 +104,34 @@ class LibraryServiceTest {
         assertEquals("✅ All titles up-to-date.", result);
         verify(downloadService, never()).downloadSingleChapter(any(), anyString());
         verify(vaultService, never()).update(anyString(), anyMap(), anyMap(), anyBoolean());
+    }
+
+    @Test
+    void getAllTitleObjectsPopulatesTitleNameAndCheckForNewChaptersUsesIt() {
+        Map<String, Object> vaultDoc = Map.of(
+                "title", "The Beginning After The End",
+                "uuid", "uuid-111",
+                "sourceUrl", "http://tbate",
+                "lastDownloaded", "23"
+        );
+
+        when(vaultService.findAll("manga_library")).thenReturn(List.of(vaultDoc));
+        when(vaultService.parseDocuments(anyList(), any(Type.class))).thenAnswer(invocation -> {
+            List<Map<String, Object>> docs = invocation.getArgument(0);
+            Type type = invocation.getArgument(1);
+            com.google.gson.Gson gson = new com.google.gson.Gson();
+            return gson.fromJson(gson.toJson(docs), type);
+        });
+        when(vaultService.fetchLatestChapterFromSource("http://tbate")).thenReturn("24");
+
+        List<NewTitle> titles = libraryService.getAllTitleObjects();
+        assertThat(titles).hasSize(1);
+        NewTitle title = titles.get(0);
+        assertThat(title.getTitleName()).isEqualTo("The Beginning After The End");
+
+        String result = assertDoesNotThrow(() -> libraryService.checkForNewChapters());
+        assertEquals("⬇️ Downloaded 1 new chapters.", result);
+
+        verify(downloadService).downloadSingleChapter(argThat(t -> "The Beginning After The End".equals(t.getTitleName())), eq("24"));
     }
 }
