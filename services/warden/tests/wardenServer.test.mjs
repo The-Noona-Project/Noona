@@ -41,8 +41,8 @@ test('GET /api/services returns installable services by default', async (t) => {
         async listServices(options) {
             calls.push(options);
             return [
-                { name: 'noona-sage', category: 'core' },
-                { name: 'noona-redis', category: 'addon' },
+                { name: 'noona-sage', category: 'core', required: false },
+                { name: 'noona-redis', category: 'addon', required: true },
             ];
         },
         installServices: async () => {
@@ -57,8 +57,8 @@ test('GET /api/services returns installable services by default', async (t) => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         services: [
-            { name: 'noona-sage', category: 'core' },
-            { name: 'noona-redis', category: 'addon' },
+            { name: 'noona-sage', category: 'core', required: false },
+            { name: 'noona-redis', category: 'addon', required: true },
         ],
     });
     assert.deepEqual(calls, [{ includeInstalled: false }]);
@@ -70,8 +70,8 @@ test('GET /api/services can include installed services when requested', async (t
         async listServices(options) {
             calls.push(options);
             return [
-                { name: 'noona-sage', category: 'core', installed: true },
-                { name: 'noona-redis', category: 'addon', installed: false },
+                { name: 'noona-sage', category: 'core', installed: true, required: false },
+                { name: 'noona-redis', category: 'addon', installed: false, required: true },
             ];
         },
         installServices: async () => {
@@ -86,8 +86,8 @@ test('GET /api/services can include installed services when requested', async (t
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         services: [
-            { name: 'noona-sage', category: 'core', installed: true },
-            { name: 'noona-redis', category: 'addon', installed: false },
+            { name: 'noona-sage', category: 'core', installed: true, required: false },
+            { name: 'noona-redis', category: 'addon', installed: false, required: true },
         ],
     });
     assert.deepEqual(calls, [{ includeInstalled: true }]);
@@ -100,8 +100,8 @@ test('POST /api/services/install returns results and status code for errors', as
         installServices: async (services) => {
             installCalls.push(services);
             return [
-                { name: 'noona-sage', status: 'installed', category: 'core' },
-                { name: 'noona-bad', status: 'error', error: 'boom' },
+                { name: 'noona-sage', status: 'installed', category: 'core', required: true },
+                { name: 'noona-bad', status: 'error', error: 'boom', required: false },
             ];
         },
     };
@@ -121,8 +121,8 @@ test('POST /api/services/install returns results and status code for errors', as
     assert.equal(response.status, 207);
     assert.deepEqual(await response.json(), {
         results: [
-            { name: 'noona-sage', status: 'installed', category: 'core' },
-            { name: 'noona-bad', status: 'error', error: 'boom' },
+            { name: 'noona-sage', status: 'installed', category: 'core', required: true },
+            { name: 'noona-bad', status: 'error', error: 'boom', required: false },
         ],
     });
     assert.deepEqual(installCalls, [[

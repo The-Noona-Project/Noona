@@ -130,6 +130,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             health: null,
             envConfig: [],
             installed: false,
+            required: false,
         },
         {
             name: 'noona-redis',
@@ -141,6 +142,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             health: null,
             envConfig: [],
             installed: true,
+            required: true,
         },
         {
             name: 'noona-sage',
@@ -152,10 +154,15 @@ test('listServices returns sorted metadata with host URLs and install state', as
             health: 'http://health',
             envConfig: [],
             installed: false,
+            required: false,
         },
     ]);
     assert.deepEqual(containerChecks, ['noona-moon', 'noona-redis', 'noona-sage']);
     assert.equal(warnings.length, 0);
+
+    const redis = services.find((entry) => entry.name === 'noona-redis');
+    assert.equal(redis?.required, true);
+    assert.equal(services.find((entry) => entry.name === 'noona-moon')?.required, false);
 
     const installable = await warden.listServices({ includeInstalled: false });
     assert.deepEqual(
@@ -198,6 +205,7 @@ test('installServices returns per-service results with errors', async () => {
             hostServiceUrl: 'mongodb://localhost:27017',
             image: 'mongo',
             port: null,
+            required: true,
         },
         {
             name: 'noona-redis',
@@ -206,6 +214,7 @@ test('installServices returns per-service results with errors', async () => {
             hostServiceUrl: 'http://localhost:8001',
             image: 'redis',
             port: 8001,
+            required: true,
         },
         {
             name: 'noona-vault',
@@ -214,6 +223,7 @@ test('installServices returns per-service results with errors', async () => {
             hostServiceUrl: 'http://localhost:3005',
             image: 'vault',
             port: 3005,
+            required: true,
         },
         {
             name: 'noona-sage',
@@ -222,6 +232,7 @@ test('installServices returns per-service results with errors', async () => {
             hostServiceUrl: 'http://localhost:3004',
             image: 'sage',
             port: 3004,
+            required: false,
         },
         {
             name: 'unknown',
@@ -358,6 +369,7 @@ test('installServices installs vault and dependencies when selected explicitly',
             hostServiceUrl: 'mongodb://localhost:27017',
             image: 'mongo',
             port: null,
+            required: true,
         },
         {
             name: 'noona-redis',
@@ -366,6 +378,7 @@ test('installServices installs vault and dependencies when selected explicitly',
             hostServiceUrl: 'http://localhost:8001',
             image: 'redis',
             port: 8001,
+            required: true,
         },
         {
             name: 'noona-vault',
@@ -374,6 +387,7 @@ test('installServices installs vault and dependencies when selected explicitly',
             hostServiceUrl: 'http://localhost:3005',
             image: 'vault',
             port: 3005,
+            required: true,
         },
     ]);
 });

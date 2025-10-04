@@ -11,6 +11,7 @@ interface ServiceOption {
   hostServiceUrl?: string | null;
   port?: number | null;
   health?: string | null;
+  required?: boolean;
 }
 
 const props = defineProps<{
@@ -34,8 +35,10 @@ const categoryLabel = computed(() => {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 });
 
+const isLocked = computed(() => props.service.required === true);
+
 const handleToggle = () => {
-  if (props.disabled) return;
+  if (props.disabled || isLocked.value) return;
   emit('toggle', props.service.name);
 };
 
@@ -62,12 +65,14 @@ const descriptionText = computed(() => {
     :class="{
       'setup-list-item--selected': selected,
       'setup-list-item--disabled': disabled,
+      'setup-list-item--locked': isLocked,
     }"
     role="checkbox"
     :aria-checked="selected"
-    :aria-disabled="disabled"
+    :aria-disabled="disabled || isLocked"
+    :aria-required="isLocked"
     :tabindex="disabled ? -1 : 0"
-    :ripple="!disabled"
+    :ripple="!disabled && !isLocked"
     @click="handleToggle"
     @keydown.enter.prevent="handleToggle"
     @keydown.space.prevent="handleToggle"
@@ -75,7 +80,7 @@ const descriptionText = computed(() => {
     <template #prepend>
       <v-checkbox-btn
         :model-value="selected"
-        :disabled="disabled"
+        :disabled="disabled || isLocked"
         color="primary"
         class="setup-list-item__checkbox"
         @click.stop="handleToggle"
@@ -94,6 +99,16 @@ const descriptionText = computed(() => {
           class="setup-list-item__chip text-uppercase font-weight-bold"
         >
           {{ categoryLabel }}
+        </v-chip>
+        <v-chip
+          v-if="isLocked"
+          color="error"
+          size="x-small"
+          variant="tonal"
+          class="setup-list-item__chip setup-list-item__chip--required text-uppercase font-weight-bold"
+        >
+          <v-icon icon="mdi-lock" size="small" class="mr-1" />
+          Required
         </v-chip>
       </div>
 
@@ -158,6 +173,10 @@ const descriptionText = computed(() => {
   cursor: not-allowed;
 }
 
+.setup-list-item--locked {
+  cursor: not-allowed;
+}
+
 .setup-list-item__checkbox {
   margin-inline-end: 12px;
 }
@@ -180,6 +199,12 @@ const descriptionText = computed(() => {
 
 .setup-list-item__chip {
   letter-spacing: 0.08em;
+}
+
+.setup-list-item__chip--required {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .setup-list-item__description {

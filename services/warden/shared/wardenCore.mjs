@@ -270,7 +270,8 @@ export function createWarden(options = {}) {
     const dependencyGraph = new Map([
         ['noona-vault', ['noona-mongo', 'noona-redis']],
     ]);
-    const requiredServices = ['noona-vault'];
+    const requiredServices = ['noona-mongo', 'noona-redis', 'noona-vault'];
+    const requiredServiceSet = new Set(requiredServices);
 
     const dockerFactory = dockerFactoryOption || ((socketPath) => new Docker({ socketPath }));
 
@@ -471,6 +472,7 @@ export function createWarden(options = {}) {
                 description: descriptor.description ?? null,
                 health: descriptor.health ?? null,
                 envConfig: cloneEnvConfig(descriptor.envConfig),
+                required: requiredServiceSet.has(descriptor.name),
             }))
             .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -669,6 +671,7 @@ export function createWarden(options = {}) {
             hostServiceUrl: api.resolveHostServiceUrl(descriptor),
             image: descriptor.image,
             port: descriptor.port ?? null,
+            required: requiredServiceSet.has(descriptor.name),
         };
 
         if (descriptor.name === 'noona-raven') {
