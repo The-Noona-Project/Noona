@@ -12,6 +12,7 @@ const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
 const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
+const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
 
 const rawList = [
     'noona-sage',
@@ -93,6 +94,7 @@ const serviceDefs = rawList.map(name => {
     }
 
     if (name === 'noona-raven') {
+        env.push(`VAULT_URL=${DEFAULT_RAVEN_VAULT_URL}`);
         envConfig.push(
             createEnvField('APPDATA', '', {
                 label: 'Raven Downloads Root',
@@ -109,6 +111,11 @@ const serviceDefs = rawList.map(name => {
                 warning:
                     'Supply this when Warden cannot discover your Kavita container automatically.',
                 required: false,
+            }),
+            createEnvField('VAULT_URL', DEFAULT_RAVEN_VAULT_URL, {
+                label: 'Vault Service URL',
+                warning:
+                    'Change only if Vault is reachable for Raven at a non-default address inside the Docker network.',
             }),
         );
     }

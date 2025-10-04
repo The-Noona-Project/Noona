@@ -151,6 +151,29 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
     }
 });
 
+test('noona-raven descriptor provides default Vault URL configuration', async () => {
+    const module = await import('../docker/noonaDockers.mjs?test=raven-env');
+    const { default: noonaDockers } = module;
+
+    const raven = noonaDockers['noona-raven'];
+    assert.ok(raven, 'Raven service descriptor should be defined.');
+
+    const expectedDefault = 'http://noona-vault:3005';
+    assert.ok(
+        raven.env.includes(`VAULT_URL=${expectedDefault}`),
+        'Raven env should include VAULT_URL with the default Vault endpoint.',
+    );
+
+    const field = raven.envConfig.find((entry) => entry.key === 'VAULT_URL');
+    assert.ok(field, 'Raven envConfig should include VAULT_URL field.');
+    assert.equal(field.defaultValue, expectedDefault, 'VAULT_URL default should match the container env.');
+    assert.equal(
+        field.warning,
+        'Change only if Vault is reachable for Raven at a non-default address inside the Docker network.',
+        'VAULT_URL envConfig should explain when to adjust the value.',
+    );
+});
+
 test('noona-vault descriptor exposes storage connection environment fields', async () => {
     const module = await import('../docker/noonaDockers.mjs?test=storage-env');
     const { default: noonaDockers } = module;
