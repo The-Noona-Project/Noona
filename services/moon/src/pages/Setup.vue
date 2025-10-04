@@ -33,32 +33,48 @@ const installableServices = computed(() =>
 );
 
 const groupedServices = computed(() => {
-  return installableServices.value.reduce((groups, service) => {
-    const category = service.category || 'other';
-    if (!groups[category]) {
-      groups[category] = [];
+  return state.services.reduce((groups, service) => {
+    if (!service || typeof service.name !== 'string') {
+      return groups;
     }
 
-    groups[category].push(service);
+    const category = service.category || 'other';
+    if (!groups[category]) {
+      groups[category] = { services: [], installableCount: 0 };
+    }
+
+    groups[category].services.push(service);
+    if (service.installed !== true) {
+      groups[category].installableCount += 1;
+    }
+
     return groups;
   }, {});
 });
 
 const sortedCategoryEntries = computed(() => {
-  const entries = Object.entries(groupedServices.value).map(([category, services]) => {
-    return [
-      category,
-      [...services].sort((a, b) => a.name.localeCompare(b.name)),
-    ];
-  });
+  const entries = Object.entries(groupedServices.value).map(
+    ([category, { services, installableCount }]) => {
+      const sortedServices = [...services].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+
+      return {
+        category,
+        services: sortedServices,
+        installableCount,
+        totalCount: sortedServices.length,
+      };
+    },
+  );
 
   const order = ['core', 'addon'];
   entries.sort((a, b) => {
-    const aIndex = order.indexOf(a[0]);
-    const bIndex = order.indexOf(b[0]);
+    const aIndex = order.indexOf(a.category);
+    const bIndex = order.indexOf(b.category);
 
     if (aIndex === -1 && bIndex === -1) {
-      return a[0].localeCompare(b[0]);
+      return a.category.localeCompare(b.category);
     }
 
     if (aIndex === -1) return 1;
@@ -69,10 +85,19 @@ const sortedCategoryEntries = computed(() => {
   return entries;
 });
 
-const selectedSet = computed(() => new Set(selectedServices.value));
-const hasSelection = computed(() => selectedServices.value.length > 0);
-const selectedCount = computed(() => selectedServices.value.length);
+const installableNameSet = computed(
+  () => new Set(installableServices.value.map((service) => service.name)),
+);
+
+const normalizedSelection = computed(() =>
+  selectedServices.value.filter((name) => installableNameSet.value.has(name)),
+);
+
+const selectedSet = computed(() => new Set(normalizedSelection.value));
+const hasSelection = computed(() => normalizedSelection.value.length > 0);
+const selectedCount = computed(() => normalizedSelection.value.length);
 const availableCount = computed(() => installableServices.value.length);
+const totalCount = computed(() => state.services.length);
 
 const serviceMap = computed(() => {
   const map = new Map();
@@ -85,7 +110,7 @@ const serviceMap = computed(() => {
 });
 
 const selectedServiceDetails = computed(() =>
-  selectedServices.value
+  normalizedSelection.value
     .map((name) => serviceMap.value.get(name))
     .filter(Boolean),
 );
@@ -99,12 +124,12 @@ const categoryLabel = (category) => {
 const toggleService = (name) => {
   if (installing.value) return;
 
-  const next = new Set(selectedServices.value);
   const service = serviceMap.value.get(name);
-  if (isServiceRequired(service)) {
+  if (!service || service.installed === true || isServiceRequired(service)) {
     return;
   }
 
+  const next = new Set(normalizedSelection.value);
   if (next.has(name)) {
     next.delete(name);
   } else {
@@ -273,7 +298,10 @@ const refreshServices = async () => {
         state.services = services;
         syncEnvForms(services);
         installEndpoint.value = deriveInstallEndpoint(endpoint);
-        selectedServices.value = mergeRequiredSelections(services, selectedServices.value);
+        selectedServices.value = mergeRequiredSelections(
+          services,
+          normalizedSelection.value,
+        );
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -379,8 +407,11 @@ onMounted(() => {
 
               <div v-else>
                 <div class="d-flex justify-space-between align-center mb-4">
-                  <div class="text-subtitle-1 font-weight-medium">
-                    Available services ({{ availableCount }})
+                  <div class="text-subtitle-1 font-weight-medium d-flex flex-column flex-sm-row">
+                    <span>Registered services: {{ totalCount }}</span>
+                    <span class="registered-services__installable text-body-2 text-medium-emphasis">
+                      {{ availableCount }} installable
+                    </span>
                   </div>
                   <v-btn
                     variant="text"
@@ -399,8 +430,8 @@ onMounted(() => {
                   border="start"
                   class="mb-6"
                 >
-                  <template v-if="state.services.length">
-                    All registered services have already been installed.
+                  <template v-if="totalCount">
+                    All {{ totalCount }} registered services have already been installed.
                   </template>
                   <template v-else>
                     No services are available for installation yet.
@@ -409,30 +440,35 @@ onMounted(() => {
 
                 <div v-else>
                   <div
-                    v-for="([category, services], index) in sortedCategoryEntries"
-                    :key="category"
+                    v-for="(entry, index) in sortedCategoryEntries"
+                    :key="entry.category"
                     :class="index > 0 ? 'mt-8' : ''"
                     class="setup-category"
                   >
                     <div class="setup-category__header">
                       <v-chip color="primary" variant="tonal" class="text-uppercase font-weight-bold">
-                        {{ categoryLabel(category) }}
+                        {{ categoryLabel(entry.category) }}
                       </v-chip>
                       <span class="text-body-2 text-medium-emphasis ml-3">
-                        {{ services.length }} service{{ services.length === 1 ? '' : 's' }}
+                        {{ entry.installableCount }} installable ·
+                        {{ entry.totalCount }} total
                       </span>
                     </div>
 
                     <v-list class="setup-list" density="comfortable" lines="three">
-                      <template v-for="(service, serviceIndex) in services" :key="service.name">
+                      <template
+                        v-for="(service, serviceIndex) in entry.services"
+                        :key="service.name"
+                      >
                         <SetupListItem
                           :service="service"
                           :selected="selectedSet.has(service.name)"
                           :disabled="installing"
+                          :installed="service.installed === true"
                           @toggle="toggleService"
                         />
                         <v-divider
-                          v-if="serviceIndex < services.length - 1"
+                          v-if="serviceIndex < entry.services.length - 1"
                           class="setup-list__divider"
                         />
                       </template>
@@ -575,6 +611,10 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 
+.registered-services__installable {
+  margin-top: 4px;
+}
+
 .setup-list {
   background: transparent;
   padding: 0;
@@ -589,6 +629,13 @@ onMounted(() => {
     flex-direction: column;
     align-items: flex-start;
     gap: 6px;
+  }
+}
+
+@media (min-width: 600px) {
+  .registered-services__installable {
+    margin-top: 0;
+    margin-left: 16px;
   }
 }
 </style>
