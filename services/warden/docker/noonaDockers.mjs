@@ -10,6 +10,8 @@ const DOCKER_WARDEN_URL =
 const DEFAULT_VAULT_MONGO_URI = process.env.MONGO_URI || 'mongodb://noona-mongo:27017';
 const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
 const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
+const DEFAULT_PORTAL_VAULT_BASE_URL =
+    process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
 
 const rawList = [
     'noona-sage',
@@ -121,6 +123,7 @@ const serviceDefs = rawList.map(name => {
                 key: 'VAULT_BASE_URL',
                 label: 'Vault Base URL',
                 description: 'URL where the Vault service is exposed for the portal.',
+                defaultValue: DEFAULT_PORTAL_VAULT_BASE_URL,
             },
             {
                 key: 'VAULT_ACCESS_TOKEN',

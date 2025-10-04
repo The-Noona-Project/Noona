@@ -125,6 +125,19 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         ['PORTAL_HTTP_TIMEOUT', '10000'],
     ];
 
+    const requiredExpectations = [
+        ['VAULT_BASE_URL', 'http://noona-vault:3005'],
+    ];
+
+    for (const [key, value] of requiredExpectations) {
+        assert.ok(portal.env.includes(`${key}=${value}`), `${key} should be exported with default ${value}.`);
+
+        const field = portal.envConfig.find((entry) => entry.key === key);
+        assert.ok(field, `Portal envConfig should include ${key}.`);
+        assert.equal(field.defaultValue, value, `${key} default should match container default.`);
+        assert.equal(field.required, true, `${key} should remain required in setup UI.`);
+    }
+
     for (const [key, value] of expectations) {
         assert.ok(
             portal.env.includes(`${key}=${value}`),
