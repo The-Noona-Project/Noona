@@ -31,10 +31,6 @@ public class DownloadService {
     private static final String USER_AGENT = "Mozilla/5.0";
     private static final String REFERER = "https://weebcentral.com";
 
-    private static final Path DOWNLOAD_ROOT = Path.of(
-            Optional.ofNullable(System.getenv("APPDATA")).orElse("/app/downloads") + "/Noona/raven/downloads"
-    );
-
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
 
@@ -93,7 +89,7 @@ public class DownloadService {
             if (chapters.isEmpty()) throw new RuntimeException("No chapters found for this title.");
 
             String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
-            Path titleFolder = DOWNLOAD_ROOT.resolve(cleanTitle);
+            Path titleFolder = getDownloadRoot().resolve(cleanTitle);
             Files.createDirectories(titleFolder);
 
             for (Map<String, String> chapter : chapters) {
@@ -244,7 +240,7 @@ public class DownloadService {
     public void downloadSingleChapter(NewTitle title, String chapterNumber) {
         String titleUrl = title.getSourceUrl();
         String cleanTitle = title.getTitleName().replaceAll("[^a-zA-Z0-9\\s]", "").trim();
-        Path titleFolder = DOWNLOAD_ROOT.resolve(cleanTitle);
+        Path titleFolder = getDownloadRoot().resolve(cleanTitle);
 
         try {
             List<Map<String, String>> chapters = titleScraper.getChapters(titleUrl);
@@ -280,5 +276,13 @@ public class DownloadService {
         } catch (Exception e) {
             logger.error("DOWNLOAD", "❌ Failed single chapter download: " + e.getMessage(), e);
         }
+    }
+
+    private Path getDownloadRoot() {
+        Path root = logger.getDownloadsRoot();
+        if (root == null) {
+            throw new IllegalStateException("LoggerService has not initialized the downloads root directory");
+        }
+        return root;
     }
 }
