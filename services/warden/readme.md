@@ -49,10 +49,11 @@ DEBUG=super node initWarden.mjs
 
 ## 📝 Environment Variables
 
-| Variable | Description                                                                 | Default |
-| -------- | --------------------------------------------------------------------------- | ------- |
-| `DEBUG`  | Controls launch mode and enables log streaming when set to `true` or `super`. | `false` |
+| Variable | Description | Default |
+| -------- | ----------- | ------- |
+| `DEBUG` | Controls launch mode and enables log streaming when set to `true` or `super`. | `false` |
 | `HOST_SERVICE_URL` | Base URL used when logging host-facing service endpoints (e.g. `http://localhost`). | `http://localhost` |
+| `RAVEN_VAULT_URL` | Overrides the default Vault endpoint provided to Raven containers. | `http://noona-vault:3005` |
 | `*_VAULT_TOKEN` | Optional per-service override (e.g. `NOONA_SAGE_VAULT_TOKEN`) for Vault API tokens. | Built-in dev token |
 
 ---
