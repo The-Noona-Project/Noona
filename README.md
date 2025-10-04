@@ -11,7 +11,7 @@ Noona is a full-stack companion platform for [Kavita](https://www.kavitareader.c
 - **Kavita integration** – Query, update, and upload content directly into your Kavita library once requests are approved.
 - **AI companion** – Chat with Noona to locate series (e.g., *"Is Naruto on PaxKun?"*), get summaries, and receive tailored reading suggestions.
 - **Reader suggestion workflow** – Collect reader requests, surface them to moderators, and track approvals and fulfillment end to end.
-- **Web control center (Moon)** – A React-powered dashboard for admins and readers with service health, request tracking, downloads, AI chat, and more.
+- **Web control center (Moon)** – A Vue-powered dashboard for admins and readers with service health, request tracking, downloads, AI chat, and more.
 - **Distributed deployment** – Run the stack as a master/node cluster to spread workloads across machines via Docker Swarm.
 - **Observability baked in** – Prometheus + Grafana dashboards capture service health, download status, and usage metrics.
 
