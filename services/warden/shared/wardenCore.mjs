@@ -761,11 +761,9 @@ export function createWarden(options = {}) {
     };
 
     api.bootMinimal = async function bootMinimal() {
-        const redis = services.addon['noona-redis'];
         const moon = services.core['noona-moon'];
         const sage = services.core['noona-sage'];
 
-        await api.startService(redis, 'http://noona-redis:8001/');
         await api.startService(sage, 'http://noona-sage:3004/health');
         await api.startService(moon, 'http://noona-moon:3000/');
     };
@@ -819,7 +817,7 @@ export function createWarden(options = {}) {
             logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
             await api.bootFull();
         } else {
-            logger.log('[Warden] 🧪 Minimal mode — launching redis, sage, moon only');
+            logger.log('[Warden] 🧪 Minimal mode — launching sage and moon only');
             await api.bootMinimal();
         }
 
