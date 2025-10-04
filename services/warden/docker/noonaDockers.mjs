@@ -10,6 +10,7 @@ const DOCKER_WARDEN_URL =
 const DEFAULT_VAULT_MONGO_URI = process.env.MONGO_URI || 'mongodb://noona-mongo:27017';
 const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
 const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
+const DEFAULT_RAVEN_VAULT_URL = process.env.VAULT_URL || 'http://noona-vault:3005';
 
 const rawList = [
     'noona-sage',
@@ -86,6 +87,17 @@ const serviceDefs = rawList.map(name => {
             createEnvField('WARDEN_BASE_URL', DOCKER_WARDEN_URL, {
                 label: 'Warden Base URL',
                 warning: 'Adjust only if Warden is reachable at a custom URL within the Docker network.',
+            }),
+        );
+    }
+
+    if (name === 'noona-raven') {
+        env.push(`VAULT_URL=${DEFAULT_RAVEN_VAULT_URL}`);
+        envConfig.push(
+            createEnvField('VAULT_URL', DEFAULT_RAVEN_VAULT_URL, {
+                label: 'Vault URL',
+                description: 'Base URL Raven uses when communicating with the Vault service.',
+                warning: 'Update only when Vault is exposed on a non-default host or port within your deployment.',
             }),
         );
     }
