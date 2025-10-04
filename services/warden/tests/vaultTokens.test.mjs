@@ -17,26 +17,46 @@ test('generateVaultToken produces deterministic prefix with entropy', () => {
     assert.equal(token.split('-')[1], '0123456789abcdef0123456789abcdef0123');
 });
 
-test('buildVaultTokenRegistry prefers environment overrides, then defaults', () => {
+test('buildVaultTokenRegistry prefers environment overrides and caches generated tokens', () => {
+    const cache = new Map();
+    const calls = [];
     const registry = buildVaultTokenRegistry(['noona-sage', 'noona-moon', 'custom-service'], {
         env: { NOONA_SAGE_VAULT_TOKEN: 'env-token' },
-        defaults: { 'custom-service': 'custom-default-token' },
-        generator: () => 'generated-token',
+        generator: (name) => {
+            calls.push(name);
+            return `${name}-generated`;
+        },
+        cache,
     });
 
     assert.deepEqual(registry, {
         'noona-sage': 'env-token',
-        'noona-moon': 'generated-token',
-        'custom-service': 'custom-default-token',
+        'noona-moon': 'noona-moon-generated',
+        'custom-service': 'custom-service-generated',
+    });
+    assert.deepEqual(calls, ['noona-moon', 'custom-service']);
+
+    const cachedRegistry = buildVaultTokenRegistry(['noona-moon', 'custom-service'], {
+        env: {},
+        generator: () => {
+            throw new Error('generator should not be called when cache populated');
+        },
+        cache,
+    });
+
+    assert.deepEqual(cachedRegistry, {
+        'noona-moon': 'noona-moon-generated',
+        'custom-service': 'custom-service-generated',
     });
 });
 
 test('buildVaultTokenRegistry skips invalid names', () => {
     const registry = buildVaultTokenRegistry(['', null, undefined, '  ', 'noona-portal'], {
         generator: () => 'generated-token',
+        cache: new Map(),
     });
 
-    assert.deepEqual(registry, { 'noona-portal': 'noona-portal-dev-token' });
+    assert.deepEqual(registry, { 'noona-portal': 'generated-token' });
 });
 
 test('stringifyTokenMap produces sorted, trimmed pairs', () => {
@@ -53,4 +73,41 @@ test('normalizeEnvKey helper formats service names for env lookup', () => {
     const { normalizeEnvKey } = __testables__;
     assert.equal(normalizeEnvKey('noona-sage'), 'NOONA_SAGE_VAULT_TOKEN');
     assert.equal(normalizeEnvKey('noona-portal'), 'NOONA_PORTAL_VAULT_TOKEN');
+});
+
+test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async () => {
+    const { generatedTokenCache } = __testables__;
+    generatedTokenCache.clear();
+
+    const services = [
+        'noona-sage',
+        'noona-moon',
+        'noona-oracle',
+        'noona-raven',
+        'noona-portal',
+        'noona-vault',
+    ];
+
+    for (const name of services) {
+        generatedTokenCache.set(name, `${name}-cached-token`);
+    }
+
+    const module = await import('../docker/noonaDockers.mjs?test=setup');
+    const { default: noonaDockers } = module;
+
+    for (const name of services) {
+        const service = noonaDockers[name];
+        assert.ok(service, `Service ${name} should exist in setup wizard definition.`);
+
+        const token = `${name}-cached-token`;
+        assert.ok(
+            service.env.includes(`VAULT_API_TOKEN=${token}`),
+            `Service ${name} env should include generated Vault token.`,
+        );
+
+        const field = service.envConfig.find((item) => item.key === 'VAULT_API_TOKEN');
+        if (field) {
+            assert.equal(field.defaultValue, token);
+        }
+    }
 });
