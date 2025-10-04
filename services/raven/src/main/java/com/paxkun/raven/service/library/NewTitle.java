@@ -1,5 +1,6 @@
 package com.paxkun.raven.service.library;
 
+import com.google.gson.annotations.SerializedName;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -16,6 +17,7 @@ import lombok.NoArgsConstructor;
 public class NewTitle {
 
     /** The human-readable name of the manga title. */
+    @SerializedName("title")
     private String titleName;
 
     /** Unique UUID assigned when the title is first added. */
