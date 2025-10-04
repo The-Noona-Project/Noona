@@ -2,6 +2,7 @@ package com.paxkun.raven.service;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -19,10 +20,12 @@ import java.util.Map;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class VaultService {
 
     private final WebClient webClient = WebClient.builder().build();
     private final Gson gson = new Gson();
+    private final DownloadService downloadService;
 
     @Value("${vault.url:http://noona-vault:3005}")
     private String vaultUrl;
@@ -156,7 +159,7 @@ public class VaultService {
      */
     public String fetchLatestChapterFromSource(String sourceUrl) {
         try {
-            List<Map<String, String>> chapters = DownloadService.parseChapters(sourceUrl);
+            List<Map<String, String>> chapters = downloadService.fetchChapters(sourceUrl);
             if (chapters == null || chapters.isEmpty()) return "0";
 
             return chapters.get(0).get("chapter_title").replaceAll("[^\\d.]", "");
