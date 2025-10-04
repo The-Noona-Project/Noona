@@ -640,27 +640,63 @@ export function createWarden(options = {}) {
             env: Array.isArray(descriptor.env) ? [...descriptor.env] : descriptor.env,
             volumes: Array.isArray(descriptor.volumes) ? [...descriptor.volumes] : descriptor.volumes,
         };
+        let normalizedOverrides = envOverrides ? { ...envOverrides } : null;
+        const upsertEnvValue = (entries, key, value) => {
+            const list = Array.isArray(entries) ? [...entries] : [];
+            const prefix = `${key}=`;
+            const filtered = list.filter((entry) => !(typeof entry === 'string' && entry.startsWith(prefix)));
+            filtered.push(`${key}=${value ?? ''}`);
+            return filtered;
+        };
+        const ensureVolumeEntry = (entries, mount) => {
+            const list = Array.isArray(entries) ? [...entries] : [];
+            if (!list.includes(mount)) {
+                list.push(mount);
+            }
+            return list;
+        };
 
         if (descriptor.name === 'noona-raven') {
             kavitaDetection = await detectKavitaDataMount();
             kavitaDataMount = kavitaDetection?.mountPath ?? null;
 
             if (kavitaDataMount) {
-                const baseEnv = Array.isArray(serviceDescriptor.env) ? [...serviceDescriptor.env] : [];
-                const volumes = Array.isArray(serviceDescriptor.volumes) ? [...serviceDescriptor.volumes] : [];
-
-                volumes.push(`${kavitaDataMount}:/kavita-data`);
-                baseEnv.push('APPDATA=/kavita-data', 'KAVITA_DATA_MOUNT=/kavita-data');
+                const envWithAppData = upsertEnvValue(serviceDescriptor.env, 'APPDATA', '/kavita-data');
+                const envWithKavita = upsertEnvValue(envWithAppData, 'KAVITA_DATA_MOUNT', '/kavita-data');
+                const volumes = ensureVolumeEntry(serviceDescriptor.volumes, `${kavitaDataMount}:/kavita-data`);
 
                 serviceDescriptor = {
-                    ...descriptor,
-                    env: baseEnv,
+                    ...serviceDescriptor,
+                    env: envWithKavita,
                     volumes,
                 };
+            } else {
+                const trimValue = (value) => (typeof value === 'string' ? value.trim() : '');
+                const manualAppData = trimValue(normalizedOverrides?.APPDATA);
+                const manualMount = trimValue(normalizedOverrides?.KAVITA_DATA_MOUNT);
+                const containerPath = manualAppData || (manualMount ? '/kavita-data' : null);
+                const hostPath = manualMount || manualAppData || null;
+
+                if (hostPath && containerPath) {
+                    const envWithAppData = upsertEnvValue(serviceDescriptor.env, 'APPDATA', containerPath);
+                    const envWithMount = upsertEnvValue(envWithAppData, 'KAVITA_DATA_MOUNT', containerPath);
+                    const volumes = ensureVolumeEntry(serviceDescriptor.volumes, `${hostPath}:${containerPath}`);
+
+                    serviceDescriptor = {
+                        ...serviceDescriptor,
+                        env: envWithMount,
+                        volumes,
+                    };
+
+                    normalizedOverrides = normalizedOverrides ? { ...normalizedOverrides } : {};
+                    normalizedOverrides.APPDATA = containerPath;
+                    normalizedOverrides.KAVITA_DATA_MOUNT = containerPath;
+                    kavitaDataMount = hostPath;
+                }
             }
         }
 
-        serviceDescriptor = applyEnvOverrides(serviceDescriptor, envOverrides);
+        serviceDescriptor = applyEnvOverrides(serviceDescriptor, normalizedOverrides);
 
         await api.startService(serviceDescriptor, healthUrl);
 

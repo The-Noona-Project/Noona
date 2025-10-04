@@ -494,6 +494,100 @@ test('installService handles missing Kavita mount for Raven gracefully', async (
     assert.equal(result.kavitaDetection, null);
 });
 
+test('installServices wires manual Raven overrides when Kavita detection fails', async () => {
+    const dockerInstance = {
+        listContainers: async () => [],
+    };
+    const services = {
+        addon: {
+            'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+            'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+        },
+        core: {
+            'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+            'noona-raven': {
+                name: 'noona-raven',
+                image: 'captainpax/noona-raven:latest',
+            },
+        },
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services,
+        logger: { log: () => {}, warn: () => {} },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service);
+    };
+
+    const overrides = {
+        name: 'noona-raven',
+        env: {
+            APPDATA: '/downloads',
+            KAVITA_DATA_MOUNT: '/srv/kavita',
+        },
+    };
+
+    const results = await warden.installServices([overrides]);
+
+    const ravenStart = started.find((entry) => entry.name === 'noona-raven');
+    assert.ok(ravenStart, 'Raven should be started');
+    assert.ok(ravenStart.volumes.includes('/srv/kavita:/downloads'));
+    assert.ok(ravenStart.env.includes('APPDATA=/downloads'));
+    assert.ok(ravenStart.env.includes('KAVITA_DATA_MOUNT=/downloads'));
+
+    const ravenResult = results.find((entry) => entry.name === 'noona-raven');
+    assert.ok(ravenResult, 'installServices should return Raven result');
+    assert.equal(ravenResult.kavitaDetection, null);
+    assert.equal(ravenResult.kavitaDataMount, '/srv/kavita');
+});
+
+test('installServices defaults Raven container mount path when only host path is provided', async () => {
+    const dockerInstance = {
+        listContainers: async () => [],
+    };
+    const services = {
+        addon: {
+            'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
+            'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+        },
+        core: {
+            'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+            'noona-raven': { name: 'noona-raven', image: 'captainpax/noona-raven:latest' },
+        },
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services,
+        logger: { log: () => {}, warn: () => {} },
+        hostDockerSockets: [],
+    });
+
+    let receivedService = null;
+    warden.startService = async (service) => {
+        receivedService = service;
+    };
+
+    const results = await warden.installServices([
+        { name: 'noona-raven', env: { KAVITA_DATA_MOUNT: '/srv/kavita' } },
+    ]);
+
+    assert.ok(receivedService, 'Raven should be started');
+    assert.ok(receivedService.volumes.includes('/srv/kavita:/kavita-data'));
+    assert.ok(receivedService.env.includes('APPDATA=/kavita-data'));
+    assert.ok(receivedService.env.includes('KAVITA_DATA_MOUNT=/kavita-data'));
+
+    const ravenResult = results.find((entry) => entry.name === 'noona-raven');
+    assert.ok(ravenResult, 'Result should include Raven');
+    assert.equal(ravenResult.kavitaDataMount, '/srv/kavita');
+    assert.equal(ravenResult.kavitaDetection, null);
+});
+
 test('installService inspects alternate docker sockets when primary is missing Kavita', async () => {
     const dockerInstance = {
         listContainers: async () => [],

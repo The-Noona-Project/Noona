@@ -90,6 +90,27 @@ const serviceDefs = rawList.map(name => {
         );
     }
 
+    if (name === 'noona-raven') {
+        envConfig.push(
+            createEnvField('APPDATA', '', {
+                label: 'Raven Downloads Root',
+                description:
+                    'Container path Raven should treat as the base for downloads (e.g. /kavita-data).',
+                warning:
+                    'When Kavita auto-detection fails, provide the container directory you want to persist.',
+                required: false,
+            }),
+            createEnvField('KAVITA_DATA_MOUNT', '', {
+                label: 'Kavita Data Mount (Host Path)',
+                description:
+                    'Optional host path that Warden will bind into the container alongside the Raven downloads root.',
+                warning:
+                    'Supply this when Warden cannot discover your Kavita container automatically.',
+                required: false,
+            }),
+        );
+    }
+
     if (name === 'noona-portal') {
         const portalEnvFields = [
             {
