@@ -16,6 +16,7 @@ import java.net.URL;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -33,8 +34,14 @@ public class DownloadService {
 
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
+    private final Map<String, SearchSession> searchSessions = new ConcurrentHashMap<>();
+
+    private static final long SEARCH_TTL_MILLIS = TimeUnit.MINUTES.toMillis(10);
+    private Supplier<Long> currentTimeSupplier = System::currentTimeMillis;
 
     public SearchTitle searchTitle(String titleName) {
+        cleanupExpiredSearches();
+
         List<Map<String, String>> searchResults = titleScraper.searchManga(titleName);
         String searchId = UUID.randomUUID().toString();
 
@@ -42,13 +49,26 @@ public class DownloadService {
             searchResults.get(i).put("option_number", String.valueOf(i + 1));
         }
 
+        List<Map<String, String>> storedResults = new ArrayList<>();
+        for (Map<String, String> result : searchResults) {
+            storedResults.add(new HashMap<>(result));
+        }
+
+        searchSessions.put(searchId, new SearchSession(storedResults, currentTimeSupplier.get()));
+
         return new SearchTitle(searchId, searchResults);
     }
 
     public String queueDownloadAllChapters(String searchId, int userIndex) {
-        List<Map<String, String>> results = titleScraper.getLastSearchResults();
+        List<Map<String, String>> results = getSearchResults(searchId);
+        if (results == null) {
+            return "⚠️ Search session expired or not found. Please search again.";
+        }
         if (userIndex == 0) {
-            if (results == null || results.isEmpty()) return "⚠️ No search results to download.";
+            if (results.isEmpty()) {
+                searchSessions.remove(searchId);
+                return "⚠️ No search results to download.";
+            }
 
             StringBuilder queued = new StringBuilder("✅ Queued downloads for: ");
             for (Map<String, String> title : results) {
@@ -62,10 +82,16 @@ public class DownloadService {
                 activeDownloads.put(titleName, future);
                 queued.append(titleName).append(", ");
             }
+            searchSessions.remove(searchId);
             return queued.toString();
 
         } else {
-            Map<String, String> selectedTitle = getSelectedTitle(userIndex);
+            Map<String, String> selectedTitle;
+            try {
+                selectedTitle = getSelectedTitle(results, userIndex);
+            } catch (IndexOutOfBoundsException e) {
+                return "⚠️ Invalid selection. Please choose a valid option.";
+            }
             String titleName = selectedTitle.get("title");
 
             if (activeDownloads.containsKey(titleName)) {
@@ -74,6 +100,7 @@ public class DownloadService {
 
             Future<?> future = executor.submit(() -> runDownload(titleName, selectedTitle));
             activeDownloads.put(titleName, future);
+            searchSessions.remove(searchId);
             return "✅ Download queued for: " + titleName;
         }
     }
@@ -142,10 +169,9 @@ public class DownloadService {
         throw new RuntimeException("Failed to fetch chapters after multiple retries.");
     }
 
-    private Map<String, String> getSelectedTitle(int userIndex) {
+    private Map<String, String> getSelectedTitle(List<Map<String, String>> results, int userIndex) {
         int index = userIndex - 1;
-        List<Map<String, String>> results = titleScraper.getLastSearchResults();
-        if (results == null || index < 0 || index >= results.size()) {
+        if (index < 0 || index >= results.size()) {
             throw new IndexOutOfBoundsException("Invalid index: " + userIndex);
         }
         return results.get(index);
@@ -284,5 +310,45 @@ public class DownloadService {
             throw new IllegalStateException("LoggerService has not initialized the downloads root directory");
         }
         return root;
+    }
+
+    private void cleanupExpiredSearches() {
+        long now = currentTimeSupplier.get();
+        searchSessions.entrySet().removeIf(entry -> entry.getValue().isExpired(now));
+    }
+
+    private List<Map<String, String>> getSearchResults(String searchId) {
+        cleanupExpiredSearches();
+        SearchSession session = searchSessions.get(searchId);
+        if (session == null) {
+            return null;
+        }
+        return session.getResultsCopy();
+    }
+
+    void setCurrentTimeSupplier(Supplier<Long> currentTimeSupplier) {
+        this.currentTimeSupplier = Objects.requireNonNull(currentTimeSupplier);
+    }
+
+    private static class SearchSession {
+        private final List<Map<String, String>> results;
+        private final long createdAt;
+
+        private SearchSession(List<Map<String, String>> results, long createdAt) {
+            this.results = results;
+            this.createdAt = createdAt;
+        }
+
+        private boolean isExpired(long now) {
+            return now - createdAt > SEARCH_TTL_MILLIS;
+        }
+
+        private List<Map<String, String>> getResultsCopy() {
+            List<Map<String, String>> copy = new ArrayList<>();
+            for (Map<String, String> result : results) {
+                copy.add(new HashMap<>(result));
+            }
+            return copy;
+        }
     }
 }
