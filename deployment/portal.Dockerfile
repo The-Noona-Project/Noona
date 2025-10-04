@@ -13,6 +13,9 @@ COPY package*.json ./
 RUN npm install
 
 COPY utilities ./utilities
+WORKDIR /noona/utilities
+RUN npm install --production
+WORKDIR /noona
 USER noona
 
 
