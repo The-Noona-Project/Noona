@@ -112,6 +112,32 @@ test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async
     }
 });
 
+test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
+    const module = await import('../docker/noonaDockers.mjs?test=portal-env');
+    const { default: noonaDockers } = module;
+
+    const portal = noonaDockers['noona-portal'];
+    assert.ok(portal, 'Portal service descriptor should be defined.');
+
+    const expectations = [
+        ['PORTAL_REDIS_NAMESPACE', 'portal:onboarding'],
+        ['PORTAL_TOKEN_TTL', '900'],
+        ['PORTAL_HTTP_TIMEOUT', '10000'],
+    ];
+
+    for (const [key, value] of expectations) {
+        assert.ok(
+            portal.env.includes(`${key}=${value}`),
+            `${key} should be exported with its default of ${value}.`,
+        );
+
+        const field = portal.envConfig.find((entry) => entry.key === key);
+        assert.ok(field, `Portal envConfig should include ${key}.`);
+        assert.equal(field.defaultValue, value, `${key} default should match implicit behavior.`);
+        assert.equal(field.required, false, `${key} should be optional in setup UI.`);
+    }
+});
+
 test('noona-vault descriptor exposes storage connection environment fields', async () => {
     const module = await import('../docker/noonaDockers.mjs?test=storage-env');
     const { default: noonaDockers } = module;
