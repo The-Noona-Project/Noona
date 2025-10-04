@@ -386,8 +386,13 @@ onMounted(() => {
             </v-card-subtitle>
 
             <v-card-text>
-              <div v-if="state.loading" class="d-flex justify-center py-10">
-                <v-progress-circular color="primary" size="64" indeterminate />
+              <div v-if="state.loading" class="setup-loading py-10">
+                <v-progress-linear
+                  color="primary"
+                  height="6"
+                  indeterminate
+                  aria-label="Downloading services"
+                />
               </div>
 
               <v-alert
@@ -622,6 +627,10 @@ onMounted(() => {
 
 .setup-list__divider {
   margin: 4px 0;
+}
+
+.setup-loading {
+  width: 100%;
 }
 
 @media (max-width: 600px) {
