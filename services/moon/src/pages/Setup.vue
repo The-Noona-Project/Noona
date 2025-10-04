@@ -585,22 +585,40 @@ onMounted(() => {
                 </v-alert>
               </div>
 
-              <v-btn
-                color="primary"
-                size="large"
-                class="align-self-stretch"
-                :disabled="!hasSelection || installing"
-                @click="submitSelection"
-              >
-                <template v-if="installing">
-                  <v-progress-circular size="22" width="3" color="white" indeterminate class="mr-3" />
-                  Installing...
-                </template>
-                <template v-else>
-                  Install Selected
-                  <span class="ml-2 font-weight-bold">({{ selectedCount }})</span>
-                </template>
-              </v-btn>
+              <div class="setup-actions__controls">
+                <div
+                  v-if="installing"
+                  class="setup-actions__progress"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <v-progress-linear
+                    class="setup-actions__progress-bar"
+                    color="primary"
+                    height="6"
+                    indeterminate
+                    aria-label="Installing selected services"
+                  />
+                  <span class="setup-actions__progress-text text-body-2 text-medium-emphasis">
+                    Installing selected services…
+                  </span>
+                </div>
+                <v-btn
+                  color="primary"
+                  size="large"
+                  class="setup-actions__button align-self-stretch"
+                  :disabled="!hasSelection || installing"
+                  @click="submitSelection"
+                >
+                  <template v-if="installing">
+                    Installing...
+                  </template>
+                  <template v-else>
+                    Install Selected
+                    <span class="ml-2 font-weight-bold">({{ selectedCount }})</span>
+                  </template>
+                </v-btn>
+              </div>
             </v-card-actions>
           </v-card>
         </v-col>
@@ -631,6 +649,30 @@ onMounted(() => {
 
 .setup-loading {
   width: 100%;
+}
+
+.setup-actions__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-self: stretch;
+  width: 100%;
+}
+
+.setup-actions__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-actions__button {
+  width: 100%;
+}
+
+@media (min-width: 600px) {
+  .setup-actions__controls {
+    max-width: 320px;
+  }
 }
 
 @media (max-width: 600px) {
