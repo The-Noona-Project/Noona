@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────
-# 🦅 Noona Raven - Build Stage (Shadow Jar)
+# 🦅 Noona Raven - Build Stage (Boot Jar)
 # ────────────────────────────────────────────────
 FROM gradle:8-jdk21 AS builder
 
@@ -11,12 +11,9 @@ COPY services/raven /app
 # Ensure gradlew is executable for local development consistency
 RUN chmod +x ./gradlew
 
-# Build the Shadow fat jar using the Gradle distribution provided by the image.
-# On some hosts (notably Windows), the copied gradlew script may retain CRLF
-# line endings and become unusable during the Docker build stage. Invoking the
-# Gradle runtime directly avoids those line-ending issues while still
-# respecting the project configuration.
-RUN gradle --no-daemon shadowJar
+# Build the Spring Boot executable jar using the Gradle distribution provided by the image.
+# Using the wrapper keeps the build aligned with the project's Gradle configuration.
+RUN ./gradlew --no-daemon bootJar
 
 # ────────────────────────────────────────────────
 # 🦅 Noona Raven - Runtime Stage with Chrome installed
@@ -42,8 +39,12 @@ ENV APPDATA=/app/downloads
 RUN mkdir -p "$APPDATA"
 VOLUME ["${APPDATA}"]
 
-# Copy built jar from builder stage
-COPY --from=builder /app/build/libs/*-all.jar app.jar
+# Copy built jars from the builder stage, promote the Boot jar to app.jar, and discard the plain jar.
+COPY --from=builder /app/build/libs/*.jar ./
+RUN set -eux; \
+    BOOT_JAR=$(find . -maxdepth 1 -name '*.jar' ! -name '*-plain.jar' -print -quit); \
+    mv "${BOOT_JAR}" app.jar; \
+    rm -f ./*-plain.jar
 
 # Expose Raven API port
 EXPOSE 8080
