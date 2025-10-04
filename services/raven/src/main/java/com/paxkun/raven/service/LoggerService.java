@@ -19,6 +19,7 @@ public class LoggerService implements InitializingBean {
     private static final int MAX_LOGS = 5;
     private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
     private static final DateTimeFormatter LOG_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final Path CONTAINER_FALLBACK = Path.of("/app", "downloads");
 
     private Path downloadsRoot;
     private Path logsPath;
@@ -26,58 +27,118 @@ public class LoggerService implements InitializingBean {
 
     @Override
     public void afterPropertiesSet() {
-        try {
-            downloadsRoot = initializeDownloadsRoot();
-            logsPath = downloadsRoot.resolve("logs");
+        downloadsRoot = initializeDownloadsRoot();
 
+        if (downloadsRoot == null) {
+            log.warn("⚠️ LoggerService initialized without a writable downloads root. Console output only.");
+            return;
+        }
+
+        logsPath = downloadsRoot.resolve("logs");
+        try {
             if (!Files.exists(logsPath)) {
                 Files.createDirectories(logsPath);
                 log.info("📂 Created logs directory at {}", logsPath.toAbsolutePath());
             } else {
                 log.info("📂 Logs directory already exists at {}", logsPath.toAbsolutePath());
             }
+        } catch (IOException e) {
+            log.warn("⚠️ Failed to create logs directory at {}. LoggerService will operate in console-only mode.", logsPath.toAbsolutePath(), e);
+            logsPath = null;
+            writer = null;
+            return;
+        }
 
+        try {
             rotateLogs();
+        } catch (IOException e) {
+            log.warn("⚠️ Failed to rotate logs at {}. Continuing without rotating existing logs.", logsPath.toAbsolutePath(), e);
+        }
 
-            Path latestLogPath = logsPath.resolve(LATEST_LOG);
+        Path latestLogPath = logsPath.resolve(LATEST_LOG);
+        try {
             writer = Files.newBufferedWriter(latestLogPath, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-
             logSystemEnvironment();
-
             log.info("📝 LoggerService initialized. Logging to {}", latestLogPath.toAbsolutePath());
         } catch (IOException e) {
-            throw new RuntimeException("Failed to initialize LoggerService", e);
+            log.warn("⚠️ Failed to initialize log writer at {}. LoggerService will operate in console-only mode.", latestLogPath.toAbsolutePath(), e);
+            writer = null;
         }
     }
 
-    private Path initializeDownloadsRoot() throws IOException {
+    private Path initializeDownloadsRoot() {
+        Path appDataPath = resolveAppDataDownloadsPath();
+        Path resolved = tryInitialize(appDataPath,
+                "📁 Using APPDATA downloads root at {}",
+                "⚠️ Failed to create APPDATA downloads directory at {}. Falling back to user home.");
+        if (resolved != null) {
+            return resolved;
+        }
+
+        Path userHomePath = resolveUserHomeDownloadsPath();
+        resolved = tryInitialize(userHomePath,
+                "📁 Using fallback downloads root at {}",
+                "⚠️ Failed to create fallback downloads directory at {}. Falling back to container path.");
+        if (resolved != null) {
+            return resolved;
+        }
+
+        Path containerFallback = resolveContainerFallbackPath();
+        resolved = tryInitialize(containerFallback,
+                "📁 Using container downloads root at {}",
+                "⚠️ Failed to create container downloads directory at {}. LoggerService will operate in console-only mode.");
+        if (resolved != null) {
+            return resolved;
+        }
+
+        log.warn("⚠️ Failed to determine a writable downloads root. LoggerService will operate in console-only mode.");
+        return null;
+    }
+
+    private Path tryInitialize(Path path, String successMessage, String failureMessage) {
+        if (path == null) {
+            return null;
+        }
+
+        try {
+            Path created = createDirectories(path);
+            log.info(successMessage, created.toAbsolutePath());
+            return created;
+        } catch (IOException e) {
+            log.warn(failureMessage, path.toAbsolutePath(), e);
+            return null;
+        }
+    }
+
+    protected Path createDirectories(Path path) throws IOException {
+        return Files.createDirectories(path);
+    }
+
+    protected Path resolveAppDataDownloadsPath() {
         String appData = System.getenv("APPDATA");
-
         if (appData != null && !appData.isBlank()) {
-            Path appDataPath = Path.of(appData, "Noona", "raven", "downloads");
-            try {
-                Files.createDirectories(appDataPath);
-                log.info("📁 Using APPDATA downloads root at {}", appDataPath.toAbsolutePath());
-                return appDataPath;
-            } catch (IOException e) {
-                log.warn("⚠️ Failed to create APPDATA downloads directory at {}. Falling back to user home.", appDataPath.toAbsolutePath(), e);
-            }
+            return Path.of(appData, "Noona", "raven", "downloads");
         }
+        return null;
+    }
 
+    protected Path resolveUserHomeDownloadsPath() {
         String userHome = System.getProperty("user.home");
-        Path fallbackBase;
         if (userHome != null && !userHome.isBlank()) {
-            fallbackBase = Path.of(userHome, ".noona", "raven", "downloads");
-        } else {
-            fallbackBase = Path.of(".noona", "raven", "downloads");
+            return Path.of(userHome, ".noona", "raven", "downloads");
         }
+        return Path.of(".noona", "raven", "downloads");
+    }
 
-        Files.createDirectories(fallbackBase);
-        log.info("📁 Using fallback downloads root at {}", fallbackBase.toAbsolutePath());
-        return fallbackBase;
+    protected Path resolveContainerFallbackPath() {
+        return CONTAINER_FALLBACK;
     }
 
     private void rotateLogs() throws IOException {
+        if (logsPath == null) {
+            return;
+        }
+
         Path latestLog = logsPath.resolve(LATEST_LOG);
         if (Files.exists(latestLog) && Files.size(latestLog) > 0) {
             String timestamp = LocalDateTime.now().format(FILE_FORMATTER);
@@ -116,14 +177,17 @@ public class LoggerService implements InitializingBean {
     }
 
     private void write(String level, String tag, String message) {
-        try {
-            String logLine = String.format("%s [%s] [%s] %s%n", getTimestamp(), level, tag, message);
-            writer.write(logLine);
-            writer.flush();
-            System.out.print(logLine); // also output to console
-        } catch (IOException e) {
-            log.error("❌ Failed to write to log file", e);
+        String logLine = String.format("%s [%s] [%s] %s%n", getTimestamp(), level, tag, message);
+        if (writer != null) {
+            try {
+                writer.write(logLine);
+                writer.flush();
+            } catch (IOException e) {
+                log.error("❌ Failed to write to log file", e);
+                writer = null;
+            }
         }
+        System.out.print(logLine); // also output to console
     }
 
     public void info(String tag, String message) {
