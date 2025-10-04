@@ -1,15 +1,6 @@
 // services/warden/docker/vaultTokens.mjs
 import crypto from 'node:crypto';
 
-const DEFAULT_TOKENS = {
-    'noona-sage': 'noona-sage-dev-token',
-    'noona-moon': 'noona-moon-dev-token',
-    'noona-oracle': 'noona-oracle-dev-token',
-    'noona-raven': 'noona-raven-dev-token',
-    'noona-portal': 'noona-portal-dev-token',
-    'noona-vault': 'noona-vault-dev-token',
-};
-
 const sanitizeToken = (token) => {
     if (typeof token !== 'string') {
         return '';
@@ -21,9 +12,12 @@ const sanitizeToken = (token) => {
 const normalizeEnvKey = (name) =>
     `${name.replace(/-/g, '_').toUpperCase()}_VAULT_TOKEN`;
 
+const generatedTokenCache = new Map();
+
 export const __testables__ = {
     sanitizeToken,
     normalizeEnvKey,
+    generatedTokenCache,
 };
 
 export function generateVaultToken(name, randomBytes = crypto.randomBytes) {
@@ -37,8 +31,8 @@ export function generateVaultToken(name, randomBytes = crypto.randomBytes) {
 export function buildVaultTokenRegistry(names = [], options = {}) {
     const {
         env = process.env,
-        defaults = DEFAULT_TOKENS,
         generator = (serviceName) => generateVaultToken(serviceName),
+        cache = generatedTokenCache,
     } = options;
 
     const tokensByService = {};
@@ -58,16 +52,21 @@ export function buildVaultTokenRegistry(names = [], options = {}) {
 
         if (envToken) {
             tokensByService[name] = envToken;
+            cache?.set?.(name, envToken);
             continue;
         }
 
-        const defaultToken = sanitizeToken(defaults?.[name]);
-        if (defaultToken) {
-            tokensByService[name] = defaultToken;
+        const cachedToken = sanitizeToken(cache?.get?.(name));
+        if (cachedToken) {
+            tokensByService[name] = cachedToken;
             continue;
         }
 
-        tokensByService[name] = generator(name);
+        const generatedToken = sanitizeToken(generator(name));
+        if (generatedToken) {
+            cache?.set?.(name, generatedToken);
+            tokensByService[name] = generatedToken;
+        }
     }
 
     return tokensByService;
