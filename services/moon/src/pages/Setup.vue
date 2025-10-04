@@ -6,6 +6,11 @@ import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 
 const DEFAULT_INSTALL_ENDPOINT = '/api/services/install';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
+const ALLOWED_SERVICE_NAMES = new Set([
+  'noona-portal',
+  'noona-vault',
+  'noona-raven',
+]);
 
 const state = reactive({
   loading: true,
@@ -236,8 +241,14 @@ const loadServicesFromEndpoint = async (endpoint) => {
 
   const payload = await response.json();
   const services = Array.isArray(payload.services) ? payload.services : [];
-  services.sort((a, b) => a.name.localeCompare(b.name));
-  return services;
+  const filtered = services.filter(
+    (service) =>
+      service &&
+      typeof service.name === 'string' &&
+      ALLOWED_SERVICE_NAMES.has(service.name),
+  );
+  filtered.sort((a, b) => a.name.localeCompare(b.name));
+  return filtered;
 };
 
 const refreshServices = async () => {
