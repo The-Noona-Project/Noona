@@ -9,7 +9,7 @@ import redis from './redis/redisClient.mjs';
 import { log, warn, errMSG } from '../etc/logger.mjs';
 
 const allowedOps = {
-    mongo: ['insert', 'find', 'update'],
+    mongo: ['insert', 'find', 'findMany', 'update'],
     redis: ['set', 'get', 'del'],
 };
 
@@ -52,6 +52,13 @@ export async function handlePacket(packet) {
                     const result = await col.findOne(query);
                     log(`[Vault] 🔍 Queried "${collection}"`);
                     return result ? { status: 'ok', data: result } : { error: 'No document found' };
+                }
+
+                case 'findMany': {
+                    const cursor = col.find(query);
+                    const results = await cursor.toArray();
+                    log(`[Vault] 📚 Queried many from "${collection}" (count=${results.length})`);
+                    return { status: 'ok', data: results };
                 }
 
                 case 'update': {
