@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import Header from '../components/Header.vue';
-import SetupCard from '../components/SetupCard.vue';
+import SetupListItem from '../components/SetupListItem.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 
 const DEFAULT_INSTALL_ENDPOINT = '/api/services/install';
@@ -395,8 +395,9 @@ onMounted(() => {
                     v-for="([category, services], index) in sortedCategoryEntries"
                     :key="category"
                     :class="index > 0 ? 'mt-8' : ''"
+                    class="setup-category"
                   >
-                    <div class="d-flex align-center mb-3">
+                    <div class="setup-category__header">
                       <v-chip color="primary" variant="tonal" class="text-uppercase font-weight-bold">
                         {{ categoryLabel(category) }}
                       </v-chip>
@@ -405,23 +406,20 @@ onMounted(() => {
                       </span>
                     </div>
 
-                    <v-row>
-                      <v-col
-                        v-for="service in services"
-                        :key="service.name"
-                        cols="12"
-                        md="6"
-                        class="d-flex"
-                      >
-                        <SetupCard
+                    <v-list class="setup-list" density="comfortable" lines="three">
+                      <template v-for="(service, serviceIndex) in services" :key="service.name">
+                        <SetupListItem
                           :service="service"
                           :selected="selectedSet.has(service.name)"
                           :disabled="installing"
-                          class="flex-grow-1"
                           @toggle="toggleService"
                         />
-                      </v-col>
-                    </v-row>
+                        <v-divider
+                          v-if="serviceIndex < services.length - 1"
+                          class="setup-list__divider"
+                        />
+                      </template>
+                    </v-list>
                   </div>
                 </div>
                 <v-expand-transition>
@@ -552,3 +550,28 @@ onMounted(() => {
     </v-container>
   </Header>
 </template>
+
+<style scoped>
+.setup-category__header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.setup-list {
+  background: transparent;
+  padding: 0;
+}
+
+.setup-list__divider {
+  margin: 4px 0;
+}
+
+@media (max-width: 600px) {
+  .setup-category__header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}
+</style>
