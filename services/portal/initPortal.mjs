@@ -2,11 +2,12 @@
 
 import { errMSG, log } from '../../utilities/etc/logger.mjs';
 import { safeLoadPortalConfig } from './shared/config.mjs';
-import createDiscordClient from './shared/discordClient.mjs';
 import createKavitaClient from './shared/kavitaClient.mjs';
 import createVaultClient from './shared/vaultClient.mjs';
 import createOnboardingStore from './shared/onboardingStore.mjs';
 import { startPortalServer } from './shared/portalApp.mjs';
+import createDiscordClient from './shared/discordClient.mjs';
+import createPortalSlashCommands from './shared/discordCommands.mjs';
 
 const runtime = {
     config: null,
@@ -21,13 +22,6 @@ const runtime = {
 export const startPortal = async (overrides = {}) => {
     const config = safeLoadPortalConfig(overrides.env ?? {});
     runtime.config = config;
-
-    const discord = createDiscordClient({
-        token: config.discord.token,
-        guildId: config.discord.guildId,
-        defaultRoleId: config.discord.defaultRoleId,
-    });
-    runtime.discord = discord;
 
     const kavita = createKavitaClient({
         baseUrl: config.kavita.baseUrl,
@@ -48,6 +42,23 @@ export const startPortal = async (overrides = {}) => {
         ttlSeconds: config.redis.ttlSeconds,
     });
     runtime.onboardingStore = onboardingStore;
+
+    let discord;
+    const slashCommands = createPortalSlashCommands({
+        getDiscord: () => discord,
+        kavita,
+        vault,
+        onboardingStore,
+    });
+
+    discord = createDiscordClient({
+        token: config.discord.token,
+        guildId: config.discord.guildId,
+        clientId: config.discord.clientId,
+        defaultRoleId: config.discord.defaultRoleId,
+        commands: slashCommands,
+    });
+    runtime.discord = discord;
 
     await discord.login();
 
