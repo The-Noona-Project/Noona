@@ -127,15 +127,37 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Access Token',
                 description: 'Authentication token that allows the portal to access Vault.',
             },
+            {
+                key: 'PORTAL_REDIS_NAMESPACE',
+                label: 'Portal Redis Namespace',
+                description: 'Namespace prefix used for onboarding state stored in Redis.',
+                defaultValue: 'portal:onboarding',
+                required: false,
+            },
+            {
+                key: 'PORTAL_TOKEN_TTL',
+                label: 'Portal Token TTL',
+                description: 'Time-to-live in seconds for onboarding tokens cached in Redis.',
+                defaultValue: '900',
+                required: false,
+            },
+            {
+                key: 'PORTAL_HTTP_TIMEOUT',
+                label: 'Portal HTTP Timeout',
+                description: 'HTTP client timeout in milliseconds for outbound portal requests.',
+                defaultValue: '10000',
+                required: false,
+            },
         ];
 
         portalEnvFields.forEach(field => {
-            env.push(`${field.key}=`);
+            const defaultValue = field.defaultValue ?? '';
+            env.push(`${field.key}=${defaultValue}`);
             envConfig.push(
-                createEnvField(field.key, '', {
+                createEnvField(field.key, defaultValue, {
                     label: field.label,
                     description: field.description,
-                    required: true,
+                    required: field.required !== false,
                 }),
             );
         });
