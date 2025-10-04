@@ -9,7 +9,6 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
-import java.util.Optional;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -21,18 +20,14 @@ public class LoggerService implements InitializingBean {
     private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
     private static final DateTimeFormatter LOG_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    private Path downloadsRoot;
     private Path logsPath;
     private BufferedWriter writer;
 
     @Override
     public void afterPropertiesSet() {
         try {
-            Path downloadsRoot = Path.of(
-                    Optional.ofNullable(System.getenv("APPDATA"))
-                            .orElse("/app/downloads"),
-                    "Noona", "raven", "downloads"
-            );
-
+            downloadsRoot = initializeDownloadsRoot();
             logsPath = downloadsRoot.resolve("logs");
 
             if (!Files.exists(logsPath)) {
@@ -53,6 +48,33 @@ public class LoggerService implements InitializingBean {
         } catch (IOException e) {
             throw new RuntimeException("Failed to initialize LoggerService", e);
         }
+    }
+
+    private Path initializeDownloadsRoot() throws IOException {
+        String appData = System.getenv("APPDATA");
+
+        if (appData != null && !appData.isBlank()) {
+            Path appDataPath = Path.of(appData, "Noona", "raven", "downloads");
+            try {
+                Files.createDirectories(appDataPath);
+                log.info("📁 Using APPDATA downloads root at {}", appDataPath.toAbsolutePath());
+                return appDataPath;
+            } catch (IOException e) {
+                log.warn("⚠️ Failed to create APPDATA downloads directory at {}. Falling back to user home.", appDataPath.toAbsolutePath(), e);
+            }
+        }
+
+        String userHome = System.getProperty("user.home");
+        Path fallbackBase;
+        if (userHome != null && !userHome.isBlank()) {
+            fallbackBase = Path.of(userHome, ".noona", "raven", "downloads");
+        } else {
+            fallbackBase = Path.of(".noona", "raven", "downloads");
+        }
+
+        Files.createDirectories(fallbackBase);
+        log.info("📁 Using fallback downloads root at {}", fallbackBase.toAbsolutePath());
+        return fallbackBase;
     }
 
     private void rotateLogs() throws IOException {
@@ -118,6 +140,10 @@ public class LoggerService implements InitializingBean {
 
     public void debug(String tag, String message) {
         write("DEBUG", tag, message);
+    }
+
+    public Path getDownloadsRoot() {
+        return downloadsRoot;
     }
 
     private void logSystemEnvironment() {
