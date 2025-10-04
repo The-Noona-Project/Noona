@@ -42,8 +42,13 @@ public class DownloadService {
     public SearchTitle searchTitle(String titleName) {
         cleanupExpiredSearches();
 
+        String sanitizedTitle = sanitizeForLog(titleName);
+        logger.debug("DOWNLOAD_SERVICE", "Initiating search for title: " + sanitizedTitle);
         List<Map<String, String>> searchResults = titleScraper.searchManga(titleName);
         String searchId = UUID.randomUUID().toString();
+        logger.debug(
+                "DOWNLOAD_SERVICE",
+                "Generated searchId=" + sanitizeForLog(searchId) + " for title=" + sanitizedTitle);
 
         for (int i = 0; i < searchResults.size(); i++) {
             searchResults.get(i).put("option_number", String.valueOf(i + 1));
@@ -56,24 +61,53 @@ public class DownloadService {
 
         searchSessions.put(searchId, new SearchSession(storedResults, currentTimeSupplier.get()));
 
+        logger.debug(
+                "DOWNLOAD_SERVICE",
+                "Returning " + searchResults.size() + " results for title=" + sanitizedTitle +
+                        " | searchId=" + sanitizeForLog(searchId));
+
         return new SearchTitle(searchId, searchResults);
     }
 
     public String queueDownloadAllChapters(String searchId, int userIndex) {
         List<Map<String, String>> results = getSearchResults(searchId);
+        String sanitizedSearchId = sanitizeForLog(searchId);
+        int resultsSize = results == null ? 0 : results.size();
+        logger.debug(
+                "DOWNLOAD_SERVICE",
+                "Queue request | searchId=" + sanitizedSearchId + " | userIndex=" + userIndex +
+                        " | sessionSize=" + resultsSize);
         if (results == null) {
+            logger.debug(
+                    "DOWNLOAD_SERVICE",
+                    "Search session missing or expired | searchId=" + sanitizedSearchId);
             return "⚠️ Search session expired or not found. Please search again.";
         }
         if (userIndex == 0) {
+            logger.debug(
+                    "DOWNLOAD_SERVICE",
+                    "Processing ALL titles branch | searchId=" + sanitizedSearchId);
             if (results.isEmpty()) {
+                logger.debug(
+                        "DOWNLOAD_SERVICE",
+                        "No titles available to queue | searchId=" + sanitizedSearchId);
                 searchSessions.remove(searchId);
                 return "⚠️ No search results to download.";
             }
 
             StringBuilder queued = new StringBuilder("✅ Queued downloads for: ");
+            List<String> queuedTitles = new ArrayList<>();
             for (Map<String, String> title : results) {
                 String titleName = title.get("title");
+                String sanitizedTitle = sanitizeForLog(titleName);
+                logger.debug(
+                        "DOWNLOAD_SERVICE",
+                        "Evaluating title for queue | searchId=" + sanitizedSearchId +
+                                " | title=" + sanitizedTitle);
                 if (activeDownloads.containsKey(titleName)) {
+                    logger.debug(
+                            "DOWNLOAD_SERVICE",
+                            "Title already downloading | title=" + sanitizedTitle);
                     logger.info("DOWNLOAD", "🔁 Skipping already active download: " + titleName);
                     continue;
                 }
@@ -81,8 +115,16 @@ public class DownloadService {
                 Future<?> future = executor.submit(() -> runDownload(titleName, title));
                 activeDownloads.put(titleName, future);
                 queued.append(titleName).append(", ");
+                queuedTitles.add(sanitizedTitle);
+                logger.debug(
+                        "DOWNLOAD_SERVICE",
+                        "Queued title for download | title=" + sanitizedTitle);
             }
             searchSessions.remove(searchId);
+            logger.debug(
+                    "DOWNLOAD_SERVICE",
+                    "Queued titles summary | searchId=" + sanitizedSearchId +
+                            " | titles=" + String.join(";", queuedTitles));
             return queued.toString();
 
         } else {
@@ -90,17 +132,34 @@ public class DownloadService {
             try {
                 selectedTitle = getSelectedTitle(results, userIndex);
             } catch (IndexOutOfBoundsException e) {
+                logger.debug(
+                        "DOWNLOAD_SERVICE",
+                        "Invalid selection index | searchId=" + sanitizedSearchId +
+                                " | userIndex=" + userIndex);
                 return "⚠️ Invalid selection. Please choose a valid option.";
             }
             String titleName = selectedTitle.get("title");
+            String sanitizedTitle = sanitizeForLog(titleName);
+
+            logger.debug(
+                    "DOWNLOAD_SERVICE",
+                    "Processing SINGLE title branch | searchId=" + sanitizedSearchId +
+                            " | userIndex=" + userIndex + " | title=" + sanitizedTitle);
 
             if (activeDownloads.containsKey(titleName)) {
+                logger.debug(
+                        "DOWNLOAD_SERVICE",
+                        "Active download already in progress | title=" + sanitizedTitle);
                 return "⚠️ Download already in progress for: " + titleName;
             }
 
             Future<?> future = executor.submit(() -> runDownload(titleName, selectedTitle));
             activeDownloads.put(titleName, future);
             searchSessions.remove(searchId);
+            logger.debug(
+                    "DOWNLOAD_SERVICE",
+                    "Queued single title | title=" + sanitizedTitle +
+                            " | searchId=" + sanitizedSearchId);
             return "✅ Download queued for: " + titleName;
         }
     }
@@ -111,9 +170,17 @@ public class DownloadService {
         try {
             String titleUrl = selectedTitle.get("href");
             logger.info("DOWNLOAD", "🚀 Starting download for [" + titleName + "]");
+            logger.debug(
+                    "DOWNLOAD",
+                    "Resolved title URL | title=" + sanitizeForLog(titleName) +
+                            " | url=" + sanitizeForLog(titleUrl));
 
             List<Map<String, String>> chapters = fetchAllChaptersWithRetry(titleUrl);
             if (chapters.isEmpty()) throw new RuntimeException("No chapters found for this title.");
+            logger.debug(
+                    "DOWNLOAD",
+                    "Fetched chapters | title=" + sanitizeForLog(titleName) +
+                            " | count=" + chapters.size());
 
             String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
             Path titleFolder = getDownloadRoot().resolve(cleanTitle);
@@ -123,6 +190,13 @@ public class DownloadService {
                 String chapterTitle = chapter.get("chapter_title");
                 String chapterNumber = extractChapterNumberFull(chapterTitle);
                 String chapterUrl = chapter.get("href");
+
+                logger.debug(
+                        "DOWNLOAD",
+                        "Preparing chapter | title=" + sanitizeForLog(titleName) +
+                                " | chapterNumber=" + sanitizeForLog(chapterNumber) +
+                                " | chapterTitle=" + sanitizeForLog(chapterTitle) +
+                                " | url=" + sanitizeForLog(chapterUrl));
 
                 logger.info("DOWNLOAD", "📥 Downloading Chapter [" + chapterNumber + "]: " + chapterUrl);
 
@@ -152,18 +226,35 @@ public class DownloadService {
             logger.error("DOWNLOAD", "❌ Download failed for [" + titleName + "]: " + e.getMessage(), e);
         } finally {
             activeDownloads.remove(titleName);
+            logger.debug(
+                    "DOWNLOAD",
+                    "Removed active download entry | title=" + sanitizeForLog(titleName));
         }
     }
 
     private List<Map<String, String>> fetchAllChaptersWithRetry(String titleUrl) {
         int attempts = 0;
         while (attempts < 3) {
+            int attemptNumber = attempts + 1;
+            logger.debug(
+                    "SCRAPER",
+                    "Fetching chapters attempt " + attemptNumber + " | url=" + sanitizeForLog(titleUrl));
             try {
-                return titleScraper.getChapters(titleUrl);
+                List<Map<String, String>> chapters = titleScraper.getChapters(titleUrl);
+                logger.debug(
+                        "SCRAPER",
+                        "Fetch successful on attempt " + attemptNumber +
+                                " | url=" + sanitizeForLog(titleUrl) +
+                                " | count=" + chapters.size());
+                return chapters;
             } catch (StaleElementReferenceException e) {
                 attempts++;
                 logger.warn("SCRAPER", "⚠️ Stale element detected, retrying (" + attempts + "/3)");
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+                logger.debug(
+                        "SCRAPER",
+                        "Retry scheduled | nextAttempt=" + (attempts + 1) +
+                                " | url=" + sanitizeForLog(titleUrl));
             }
         }
         throw new RuntimeException("Failed to fetch chapters after multiple retries.");
@@ -269,7 +360,16 @@ public class DownloadService {
         Path titleFolder = getDownloadRoot().resolve(cleanTitle);
 
         try {
+            String sanitizedTitle = sanitizeForLog(title.getTitleName());
+            logger.debug(
+                    "DOWNLOAD",
+                    "Single chapter download requested | title=" + sanitizedTitle +
+                            " | chapterNumber=" + sanitizeForLog(chapterNumber));
             List<Map<String, String>> chapters = titleScraper.getChapters(titleUrl);
+            logger.debug(
+                    "DOWNLOAD",
+                    "Retrieved chapters for single download | title=" + sanitizedTitle +
+                            " | count=" + chapters.size());
             Optional<Map<String, String>> match = chapters.stream()
                     .filter(c -> chapterNumber.equals(extractChapterNumberFull(c.get("chapter_title"))))
                     .findFirst();
@@ -280,6 +380,11 @@ public class DownloadService {
             }
 
             Map<String, String> chapter = match.get();
+            logger.debug(
+                    "DOWNLOAD",
+                    "Matched chapter | title=" + sanitizedTitle +
+                            " | chapterTitle=" + sanitizeForLog(chapter.get("chapter_title")) +
+                            " | url=" + sanitizeForLog(chapter.get("href")));
             List<String> pages = sourceFinder.findSource(chapter.get("href"));
 
             if (pages.isEmpty()) {
@@ -314,7 +419,16 @@ public class DownloadService {
 
     private void cleanupExpiredSearches() {
         long now = currentTimeSupplier.get();
-        searchSessions.entrySet().removeIf(entry -> entry.getValue().isExpired(now));
+        logger.debug("SEARCH", "Running search session cleanup | timestamp=" + now);
+        searchSessions.entrySet().removeIf(entry -> {
+            boolean expired = entry.getValue().isExpired(now);
+            if (expired) {
+                logger.debug(
+                        "SEARCH",
+                        "Removing expired search session | searchId=" + sanitizeForLog(entry.getKey()));
+            }
+            return expired;
+        });
     }
 
     private List<Map<String, String>> getSearchResults(String searchId) {
@@ -328,6 +442,13 @@ public class DownloadService {
 
     void setCurrentTimeSupplier(Supplier<Long> currentTimeSupplier) {
         this.currentTimeSupplier = Objects.requireNonNull(currentTimeSupplier);
+    }
+
+    private String sanitizeForLog(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replaceAll("[\\r\\n]", "").replaceAll("[^-\\p{Alnum}\\s_:]", "").trim();
     }
 
     private static class SearchSession {
