@@ -5,7 +5,6 @@ plugins {
     id 'org.springframework.boot' version '3.5.3'
     id 'io.spring.dependency-management' version '1.1.7'
     id 'org.graalvm.buildtools.native' version '0.10.6'
-    id 'com.gradleup.shadow' version '8.3.6'
 }
 
 group = 'com.paxkun'
@@ -22,7 +21,7 @@ springBoot {
 }
 
 bootJar {
-    enabled = false
+    enabled = true
 }
 
 jar {
@@ -75,14 +74,6 @@ tasks.withType(Test).configureEach {
     useJUnitPlatform()
 }
 
-tasks.named('shadowJar') {
-    archiveClassifier.set('all')
-    mergeServiceFiles()
-    manifest {
-        attributes('Main-Class': springBoot.mainClass)
-    }
-}
-
 tasks.named('build') {
-    dependsOn tasks.named('shadowJar')
+    dependsOn tasks.named('bootJar')
 }
