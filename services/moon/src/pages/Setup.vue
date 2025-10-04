@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import Header from '../components/Header.vue';
 import SetupListItem from '../components/SetupListItem.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
+import { isServiceRequired, mergeRequiredSelections } from '../utils/serviceSelection.js';
 
 const DEFAULT_INSTALL_ENDPOINT = '/api/services/install';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
@@ -10,6 +11,8 @@ const ALLOWED_SERVICE_NAMES = new Set([
   'noona-portal',
   'noona-vault',
   'noona-raven',
+  'noona-redis',
+  'noona-mongo',
 ]);
 
 const state = reactive({
@@ -97,6 +100,11 @@ const toggleService = (name) => {
   if (installing.value) return;
 
   const next = new Set(selectedServices.value);
+  const service = serviceMap.value.get(name);
+  if (isServiceRequired(service)) {
+    return;
+  }
+
   if (next.has(name)) {
     next.delete(name);
   } else {
@@ -265,10 +273,7 @@ const refreshServices = async () => {
         state.services = services;
         syncEnvForms(services);
         installEndpoint.value = deriveInstallEndpoint(endpoint);
-        const validSelections = new Set(
-          services.filter((service) => service.installed !== true).map((service) => service.name),
-        );
-        selectedServices.value = selectedServices.value.filter((name) => validSelections.has(name));
+        selectedServices.value = mergeRequiredSelections(services, selectedServices.value);
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -278,6 +283,7 @@ const refreshServices = async () => {
 
     state.services = [];
     syncEnvForms([]);
+    selectedServices.value = [];
     if (errors.length) {
       state.loadError = errors.join(' | ');
     } else {
