@@ -18,6 +18,7 @@ const props = defineProps<{
   service: ServiceOption;
   selected?: boolean;
   disabled?: boolean;
+  installed?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -36,9 +37,11 @@ const categoryLabel = computed(() => {
 });
 
 const isLocked = computed(() => props.service.required === true);
+const isInstalled = computed(() => props.installed === true);
+const isDisabled = computed(() => props.disabled || isLocked.value || isInstalled.value);
 
 const handleToggle = () => {
-  if (props.disabled || isLocked.value) return;
+  if (isDisabled.value) return;
   emit('toggle', props.service.name);
 };
 
@@ -66,13 +69,14 @@ const descriptionText = computed(() => {
       'setup-list-item--selected': selected,
       'setup-list-item--disabled': disabled,
       'setup-list-item--locked': isLocked,
+      'setup-list-item--installed': isInstalled,
     }"
     role="checkbox"
     :aria-checked="selected"
-    :aria-disabled="disabled || isLocked"
+    :aria-disabled="isDisabled"
     :aria-required="isLocked"
-    :tabindex="disabled ? -1 : 0"
-    :ripple="!disabled && !isLocked"
+    :tabindex="isDisabled ? -1 : 0"
+    :ripple="!isDisabled"
     @click="handleToggle"
     @keydown.enter.prevent="handleToggle"
     @keydown.space.prevent="handleToggle"
@@ -80,7 +84,7 @@ const descriptionText = computed(() => {
     <template #prepend>
       <v-checkbox-btn
         :model-value="selected"
-        :disabled="disabled || isLocked"
+        :disabled="isDisabled"
         color="primary"
         class="setup-list-item__checkbox"
         @click.stop="handleToggle"
@@ -99,6 +103,16 @@ const descriptionText = computed(() => {
           class="setup-list-item__chip text-uppercase font-weight-bold"
         >
           {{ categoryLabel }}
+        </v-chip>
+        <v-chip
+          v-if="isInstalled"
+          color="success"
+          size="x-small"
+          variant="tonal"
+          class="setup-list-item__chip setup-list-item__chip--installed text-uppercase font-weight-bold"
+        >
+          <v-icon icon="mdi-check-circle-outline" size="small" class="mr-1" />
+          Installed
         </v-chip>
         <v-chip
           v-if="isLocked"
@@ -177,6 +191,10 @@ const descriptionText = computed(() => {
   cursor: not-allowed;
 }
 
+.setup-list-item--installed {
+  cursor: not-allowed;
+}
+
 .setup-list-item__checkbox {
   margin-inline-end: 12px;
 }
@@ -202,6 +220,12 @@ const descriptionText = computed(() => {
 }
 
 .setup-list-item__chip--required {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.setup-list-item__chip--installed {
   display: inline-flex;
   align-items: center;
   gap: 4px;
