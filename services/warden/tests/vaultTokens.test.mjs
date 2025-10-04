@@ -111,3 +111,35 @@ test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async
         }
     }
 });
+
+test('noona-vault descriptor exposes storage connection environment fields', async () => {
+    const module = await import('../docker/noonaDockers.mjs?test=storage-env');
+    const { default: noonaDockers } = module;
+
+    const vault = noonaDockers['noona-vault'];
+    assert.ok(vault, 'Vault service descriptor should be defined.');
+
+    const expectedEnv = new Set([
+        'MONGO_URI=mongodb://noona-mongo:27017',
+        'REDIS_HOST=noona-redis',
+        'REDIS_PORT=6379',
+    ]);
+
+    for (const entry of expectedEnv) {
+        assert.ok(
+            vault.env.includes(entry),
+            `Vault env array should include ${entry}.`,
+        );
+    }
+
+    const configByKey = new Map(vault.envConfig.map((field) => [field.key, field]));
+
+    for (const [key, value] of [
+        ['MONGO_URI', 'mongodb://noona-mongo:27017'],
+        ['REDIS_HOST', 'noona-redis'],
+        ['REDIS_PORT', '6379'],
+    ]) {
+        assert.ok(configByKey.has(key), `Vault envConfig should include ${key}.`);
+        assert.equal(configByKey.get(key).defaultValue, value, `${key} default should match implicit behavior.`);
+    }
+});

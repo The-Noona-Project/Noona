@@ -7,6 +7,10 @@ const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
 const DOCKER_WARDEN_URL =
     process.env.WARDEN_DOCKER_URL || process.env.INTERNAL_WARDEN_BASE_URL || 'http://noona-warden:4001';
 
+const DEFAULT_VAULT_MONGO_URI = process.env.MONGO_URI || 'mongodb://noona-mongo:27017';
+const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
+const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
+
 const rawList = [
     'noona-sage',
     'noona-moon',
@@ -139,7 +143,13 @@ const serviceDefs = rawList.map(name => {
 
     if (name === 'noona-vault') {
         const tokenMapString = stringifyTokenMap(tokensByService);
-        env.push(`PORT=3005`, `VAULT_TOKEN_MAP=${tokenMapString}`);
+        env.push(
+            `PORT=3005`,
+            `VAULT_TOKEN_MAP=${tokenMapString}`,
+            `MONGO_URI=${DEFAULT_VAULT_MONGO_URI}`,
+            `REDIS_HOST=${DEFAULT_VAULT_REDIS_HOST}`,
+            `REDIS_PORT=${DEFAULT_VAULT_REDIS_PORT}`,
+        );
         envConfig.push(
             createEnvField('PORT', '3005', {
                 label: 'Vault Port',
@@ -149,6 +159,21 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Token Map',
                 readOnly: true,
                 description: 'Serialized lookup table allowing other services to authenticate with Vault.',
+            }),
+            createEnvField('MONGO_URI', DEFAULT_VAULT_MONGO_URI, {
+                label: 'MongoDB URI',
+                description: 'MongoDB connection URI used by Vault for persistent storage.',
+                warning: 'Defaults to mongodb://noona-mongo:27017 inside the Docker network.',
+            }),
+            createEnvField('REDIS_HOST', DEFAULT_VAULT_REDIS_HOST, {
+                label: 'Redis Host',
+                description: 'Hostname of the Redis instance used for Vault caching.',
+                warning: 'Defaults to noona-redis when running within the Noona stack.',
+            }),
+            createEnvField('REDIS_PORT', DEFAULT_VAULT_REDIS_PORT, {
+                label: 'Redis Port',
+                description: 'Port number used to connect to the configured Redis host.',
+                warning: 'Match the port exposed by your Redis container (defaults to 6379).',
             }),
         );
     }
