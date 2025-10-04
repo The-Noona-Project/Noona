@@ -37,6 +37,11 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /app
 
+# Configure application data directory for downloads and ensure it exists
+ENV APPDATA=/app/downloads
+RUN mkdir -p "$APPDATA"
+VOLUME ["${APPDATA}"]
+
 # Copy built jar from builder stage
 COPY --from=builder /app/build/libs/*-all.jar app.jar
 
