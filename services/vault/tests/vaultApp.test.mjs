@@ -254,3 +254,49 @@ test('GET /v1/vault/health responds with status message', async () => {
         server.close(err => (err ? reject(err) : resolve()))
     );
 });
+
+test('POST /v1/vault/handle returns array payloads from handler', async () => {
+    const packets = [];
+    const mockResult = {
+        status: 'ok',
+        data: [
+            { title: 'Solo Leveling' },
+            { title: 'Omniscient Reader' },
+        ],
+    };
+
+    const { app } = createVaultApp({
+        env: { VAULT_TOKEN_MAP: 'raven:secret' },
+        warn: () => {},
+        log: () => {},
+        debug: () => {},
+        handlePacket: async packet => {
+            packets.push(packet);
+            return mockResult;
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const { port } = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/handle`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret',
+        },
+        body: JSON.stringify({ storageType: 'mongo', operation: 'findMany' }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body, mockResult);
+    assert.deepEqual(packets, [
+        { storageType: 'mongo', operation: 'findMany' },
+    ]);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});

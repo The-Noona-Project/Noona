@@ -1,7 +1,6 @@
 package com.paxkun.raven.service;
 
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -108,15 +108,30 @@ public class VaultService {
 
         Map<String, Object> packet = Map.of(
                 "storageType", "mongo",
-                "operation", "find",
+                "operation", "findMany",
                 "payload", payload
         );
 
-        Object data = sendPacket(packet).get("data");
-        if (data == null) return List.of();
+        Map<String, Object> response = sendPacket(packet);
+        if (response == null) {
+            return List.of();
+        }
 
-        Type listType = new TypeToken<List<Map<String, Object>>>() {}.getType();
-        return gson.fromJson(gson.toJson(data), listType);
+        Object data = response.get("data");
+        if (!(data instanceof List<?> list)) {
+            return List.of();
+        }
+
+        List<Map<String, Object>> documents = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> document = (Map<String, Object>) map;
+                documents.add(document);
+            }
+        }
+
+        return documents;
     }
 
     public void update(String collection, Map<String, Object> query, Map<String, Object> update, boolean upsert) {
