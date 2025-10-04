@@ -34,7 +34,9 @@ public class TitleScraper {
 
     public List<Map<String, String>> searchManga(String titleName) {
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        List<String> appliedArguments = Arrays.asList("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        options.addArguments(appliedArguments);
+        logger.debug("SCRAPER", "ChromeOptions applied: " + appliedArguments);
 
         WebDriver driver = new ChromeDriver(options);
         List<Map<String, String>> results = new ArrayList<>();
@@ -43,11 +45,15 @@ public class TitleScraper {
             String encodedTitle = URLEncoder.encode(titleName, StandardCharsets.UTF_8);
             String searchUrl = "https://weebcentral.com/search/?text=" + encodedTitle +
                     "&sort=Best+Match&order=Ascending&official=Any&anime=Any&adult=Any&display_mode=Full+Display";
+            logger.debug("SCRAPER", "Encoded search URL: " + searchUrl);
 
             driver.get(searchUrl);
 
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
             wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("section#search-results a.line-clamp-1.link.link-hover")));
+
+            List<WebElement> rawResults = driver.findElements(By.cssSelector("section#search-results a.line-clamp-1.link.link-hover"));
+            logger.debug("SCRAPER", "Raw search result elements before parsing: " + rawResults.size());
 
             Document doc = Jsoup.parse(driver.getPageSource());
             Elements mangaResults = doc.select("section#search-results a.line-clamp-1.link.link-hover");
@@ -56,6 +62,7 @@ public class TitleScraper {
 
             int index = 1;
             for (Element manga : mangaResults) {
+                logger.debug("SCRAPER", "Processing search result iteration " + index + " of " + mangaResults.size());
                 Map<String, String> data = new HashMap<>();
                 data.put("index", String.valueOf(index));
                 data.put("title", manga.text());
@@ -92,16 +99,20 @@ public class TitleScraper {
 
     public List<Map<String, String>> getChapters(String titleUrl) {
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        List<String> appliedArguments = Arrays.asList("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        options.addArguments(appliedArguments);
+        logger.debug("SCRAPER", "ChromeOptions applied for chapter scrape: " + appliedArguments);
 
         WebDriver driver = new ChromeDriver(options);
         List<Map<String, String>> chapters = new ArrayList<>();
 
         try {
+            logger.debug("SCRAPER", "Starting chapter scrape for URL: " + titleUrl);
             driver.get(titleUrl);
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
 
             List<WebElement> showAllButtons = driver.findElements(By.xpath("//button[contains(text(), 'Show All Chapters')]"));
+            logger.debug("SCRAPER", "'Show All Chapters' button present: " + !showAllButtons.isEmpty());
             if (!showAllButtons.isEmpty()) {
                 WebElement button = showAllButtons.get(0);
                 logger.info("SCRAPER", "🔄 'Show All Chapters' button found, clicking...");
@@ -110,6 +121,7 @@ public class TitleScraper {
                 // Adaptive wait loop with scroll to ensure all chapters load
                 int lastSize = 0;
                 int sameCount = 0;
+                int iteration = 0;
                 while (sameCount < 3) {
                     List<WebElement> chaptersLoaded = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
                     if (chaptersLoaded.size() == lastSize) {
@@ -121,6 +133,8 @@ public class TitleScraper {
 
                     ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, document.body.scrollHeight);");
                     Thread.sleep(500);
+                    iteration++;
+                    logger.debug("SCRAPER", "Scroll iteration " + iteration + ": lastSize=" + lastSize + ", sameCount=" + sameCount);
                 }
 
                 logger.info("SCRAPER", "🔁 Finished scrolling. Total chapters loaded: " + lastSize);
@@ -129,6 +143,7 @@ public class TitleScraper {
             // Final chapter extraction
             List<WebElement> chapterLinks = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
             logger.info("SCRAPER", "🔍 Found " + chapterLinks.size() + " chapter links for URL: " + titleUrl);
+            logger.debug("SCRAPER", "Chapter extraction complete for URL: " + titleUrl + " with total links: " + chapterLinks.size());
 
             for (int index = 0; index < chapterLinks.size(); index++) {
                 try {
@@ -156,6 +171,7 @@ public class TitleScraper {
             driver.quit();
         }
 
+        logger.debug("SCRAPER", "Completed chapter scrape for URL: " + titleUrl + ". Total chapters collected: " + chapters.size());
         return chapters;
     }
 

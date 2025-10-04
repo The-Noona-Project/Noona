@@ -42,15 +42,19 @@ public class SourceFinder {
      */
     public List<String> findSource(String chapterUrl) {
         List<String> imageUrls = new ArrayList<>();
+        logger.debug("SOURCE", "Incoming chapter URL for source finding: " + chapterUrl);
         String domain = extractDomain(chapterUrl);
+        logger.debug("SOURCE", "Extracted domain: " + domain);
 
         ScraperFunction scraper = scrapers.get(domain);
+        logger.debug("SOURCE", "Scraper function resolved: " + (scraper != null ? "registered handler" : "none"));
         if (scraper != null) {
             logger.info("SOURCE", "🔍 Using scraper for domain: " + domain);
             imageUrls = scraper.scrape(chapterUrl);
         } else {
             logger.warn("SOURCE", "⚠️ No scraper registered for domain: " + domain + ". Attempting default strategy.");
             imageUrls = defaultScrape(chapterUrl);
+            logger.debug("SOURCE", "Default fallback strategy triggered for domain: " + domain);
         }
 
         logger.info("SOURCE", "📄 Total pages scraped: " + imageUrls.size());
@@ -62,16 +66,23 @@ public class SourceFinder {
      */
     private List<String> defaultScrape(String chapterUrl) {
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        List<String> appliedArguments = Arrays.asList("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        options.addArguments(appliedArguments);
+        logger.debug("SOURCE", "Default scrape ChromeOptions applied: " + appliedArguments);
 
         WebDriver driver = new ChromeDriver(options);
+        logger.debug("SOURCE", "Initialized WebDriver for default scrape of: " + chapterUrl);
         List<String> imageUrls = new ArrayList<>();
 
         try {
             driver.get(chapterUrl);
+            logger.debug("SOURCE", "Navigated to chapter URL, applying throttle wait of 2000ms for default scrape.");
             Thread.sleep(2000);
 
-            List<WebElement> images = driver.findElements(By.tagName("img"));
+            By imageSelector = By.tagName("img");
+            logger.debug("SOURCE", "Using selector for default scrape: " + imageSelector);
+            List<WebElement> images = driver.findElements(imageSelector);
+            logger.debug("SOURCE", "Raw image elements before filtering: " + images.size());
             for (WebElement img : images) {
                 String src = img.getAttribute("src");
                 if (src != null && !src.isEmpty()) {
@@ -115,16 +126,21 @@ public class SourceFinder {
      */
     private List<String> genericImageScrape(String chapterUrl, String cssSelector) {
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        List<String> appliedArguments = Arrays.asList("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
+        options.addArguments(appliedArguments);
+        logger.debug("SOURCE", "Generic scrape ChromeOptions applied: " + appliedArguments);
 
         WebDriver driver = new ChromeDriver(options);
+        logger.debug("SOURCE", "Initialized WebDriver for generic scrape of: " + chapterUrl);
         List<String> imageUrls = new ArrayList<>();
 
         try {
             driver.get(chapterUrl);
+            logger.debug("SOURCE", "Navigated to chapter URL, applying throttle wait of 2000ms for generic scrape.");
             Thread.sleep(2000);
 
             List<WebElement> images = driver.findElements(By.cssSelector(cssSelector));
+            logger.debug("SOURCE", "Using selector for generic scrape: " + cssSelector + ", raw elements before filtering: " + images.size());
             if (images.isEmpty()) {
                 logger.warn("SOURCE", "⚠️ No images found with selector: " + cssSelector);
             } else {
