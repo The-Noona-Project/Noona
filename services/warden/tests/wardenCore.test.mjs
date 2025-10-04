@@ -638,7 +638,7 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
     assert.ok(events.includes('ensure'));
     assert.ok(events.includes('attach'));
     assert.ok(events.some(event => event.includes('Minimal mode')));
-    assert.ok(events.includes('start:noona-redis:http://noona-redis:8001/'));
+    assert.ok(!events.includes('start:noona-redis:http://noona-redis:8001/'));
     assert.ok(events.includes('start:noona-sage:http://noona-sage:3004/health'));
     assert.ok(events.includes('start:noona-moon:http://noona-moon:3000/'));
     assert.ok(events.includes('✅ Warden is ready.'));
