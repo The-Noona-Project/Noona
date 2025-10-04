@@ -84,5 +84,5 @@ tasks.named('shadowJar') {
 }
 
 tasks.named('build') {
-    dependsOn tasks.named('shadowJar')4
+    dependsOn tasks.named('shadowJar')
 }
