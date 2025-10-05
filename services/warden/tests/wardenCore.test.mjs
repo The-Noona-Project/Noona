@@ -22,21 +22,25 @@ test('resolveHostServiceUrl falls back to HOST_SERVICE_URL and port', () => {
     assert.equal(warden.resolveHostServiceUrl(service), 'http://host.example:8080');
 });
 
-test('startService pulls, runs, waits, and logs when container is absent', async () => {
-    const calls = [];
+test('startService pulls, runs, waits, and captures history when container is absent', async () => {
+    const pullCalls = [];
+    const runCalls = [];
+    const waitCalls = [];
     const dockerUtils = {
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
         containerExists: async () => false,
-        pullImageIfNeeded: async (image) => {
-            calls.push(['pull', image]);
+        pullImageIfNeeded: async (image, options) => {
+            pullCalls.push({ image, hasProgress: typeof options?.onProgress === 'function' });
+            options?.onProgress?.({ status: 'Downloading', detail: 'layer 1' });
         },
-        runContainerWithLogs: async (service, networkName, trackedContainers, debug) => {
+        runContainerWithLogs: async (service, networkName, trackedContainers, debug, options) => {
             trackedContainers.add(service.name);
-            calls.push(['run', service.name, networkName, debug]);
+            runCalls.push({ service: service.name, networkName, debug, hasLog: typeof options?.onLog === 'function' });
+            options?.onLog?.('line one\nline two', { level: 'info' });
         },
         waitForHealthyStatus: async (name, url) => {
-            calls.push(['wait', name, url]);
+            waitCalls.push({ name, url });
         },
     };
     const logs = [];
@@ -51,13 +55,16 @@ test('startService pulls, runs, waits, and logs when container is absent', async
     const service = { name: 'noona-test', image: 'noona/test:latest', port: 1234 };
     await warden.startService(service, 'http://health.local');
 
-    assert.deepEqual(calls, [
-        ['pull', 'noona/test:latest'],
-        ['run', 'noona-test', 'noona-network', 'true'],
-        ['wait', 'noona-test', 'http://health.local'],
-    ]);
+    assert.deepEqual(pullCalls, [{ image: 'noona/test:latest', hasProgress: true }]);
+    assert.deepEqual(runCalls, [{ service: 'noona-test', networkName: 'noona-network', debug: 'true', hasLog: true }]);
+    assert.deepEqual(waitCalls, [{ name: 'noona-test', url: 'http://health.local' }]);
     assert.ok(warden.trackedContainers.has('noona-test'));
     assert.ok(logs.some(line => line.includes('host_service_url: http://host:1234')));
+
+    const history = warden.getServiceHistory('noona-test');
+    assert.equal(history.summary.status, 'ready');
+    assert.ok(history.entries.some((entry) => entry.type === 'progress' && entry.status === 'Downloading'));
+    assert.ok(history.entries.some((entry) => entry.type === 'log' && entry.message === 'line one'));
 });
 
 test('startService skips pull and run when container already exists', async () => {
@@ -85,6 +92,10 @@ test('startService skips pull and run when container already exists', async () =
 
     assert.ok(logs.some(line => line.includes('already running')));
     assert.ok(logs.some(line => line.includes('host_service_url: http://custom')));
+
+    const history = warden.getServiceHistory('noona-test');
+    assert.equal(history.summary.status, 'ready');
+    assert.ok(history.entries.some((entry) => entry.status === 'running'));
 });
 
 test('listServices returns sorted metadata with host URLs and install state', async () => {
@@ -659,6 +670,109 @@ test('installService inspects alternate docker sockets when primary is missing K
         containerId: 'secondary',
         containerName: 'secondary-kavita',
     });
+});
+
+test('installation progress and service histories track install lifecycle', async () => {
+    const dockerUtils = {
+        ensureNetwork: async () => {},
+        attachSelfToNetwork: async () => {},
+        containerExists: async () => false,
+        pullImageIfNeeded: async (_image, options) => {
+            options?.onProgress?.({ status: 'Pulling', detail: 'layers' });
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            options?.onLog?.('starting container', {});
+        },
+        waitForHealthyStatus: async () => {},
+    };
+
+    const warden = createWarden({
+        dockerUtils,
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis', port: 6379 },
+                'noona-mongo': { name: 'noona-mongo', image: 'mongo', port: 27017 },
+            },
+            core: {
+                'noona-sage': { name: 'noona-sage', image: 'sage', port: 3004, health: 'http://noona-sage:3004/health' },
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const results = await warden.installServices(['noona-sage']);
+    assert.ok(results.filter((entry) => entry.status === 'installed').length >= 3);
+
+    const progress = warden.getInstallationProgress();
+    assert.equal(progress.status, 'complete');
+    const sageProgress = progress.items.find((entry) => entry.name === 'noona-sage');
+    assert.equal(sageProgress?.status, 'installed');
+
+    const installationHistory = warden.getServiceHistory('installation');
+    assert.equal(installationHistory.summary.status, 'complete');
+
+    const limitedHistory = warden.getServiceHistory('noona-sage', { limit: 2 });
+    assert.ok(limitedHistory.entries.length <= 2);
+    const fullHistory = warden.getServiceHistory('noona-sage');
+    assert.ok(fullHistory.entries.length >= limitedHistory.entries.length);
+});
+
+test('testService performs portal health check via custom fetch implementation', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    hostServiceUrl: 'http://portal.local',
+                    health: 'http://portal.local/health',
+                },
+            },
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-portal');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://portal.local/health']);
+
+    const history = warden.getServiceHistory('noona-portal');
+    assert.ok(history.entries.some((entry) => entry.status === 'tested'));
+
+    await assert.rejects(() => warden.testService('noona-sage', {}), /not registered/i);
+});
+
+test('detectKavitaMount logs detection attempts and returns result', async () => {
+    const dockerInstance = {
+        listContainers: async () => [],
+        modem: { socketPath: null },
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services: { addon: {}, core: {} },
+        hostDockerSockets: [],
+    });
+
+    const detection = await warden.detectKavitaMount();
+    assert.equal(detection, null);
+
+    const history = warden.getServiceHistory('noona-raven');
+    assert.ok(history.entries.some((entry) => entry.status === 'detecting'));
+    assert.ok(history.entries.some((entry) => entry.status === 'not-found'));
 });
 
 test('bootFull launches services in super boot order with correct health URLs', async () => {

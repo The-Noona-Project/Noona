@@ -4,11 +4,11 @@ import Header from '../components/Header.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 import { isServiceRequired, mergeRequiredSelections } from '../utils/serviceSelection.js';
 
-const DEFAULT_INSTALL_ENDPOINT = '/api/services/install';
-const INSTALL_PROGRESS_ENDPOINT = '/api/services/install/progress';
-const INSTALL_LOGS_ENDPOINT = '/api/services/install/logs';
-const PORTAL_TEST_ENDPOINT = '/api/services/portal/test';
-const RAVEN_HANDSHAKE_ENDPOINT = '/api/services/raven/handshake';
+const DEFAULT_INSTALL_ENDPOINT = '/api/setup/install';
+const INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress';
+const INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs?limit=200';
+const PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
+const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
 const ALLOWED_SERVICE_NAMES = new Set([
   'noona-portal',
@@ -521,6 +521,36 @@ const fetchInstallProgress = async () => {
   }
 };
 
+const formatLogEntry = (entry) => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const parts = [];
+  if (entry.timestamp) {
+    parts.push(`[${entry.timestamp}]`);
+  }
+
+  if (entry.type && entry.type !== 'log') {
+    parts.push(entry.type);
+  }
+
+  if (entry.status) {
+    parts.push(entry.status);
+  }
+
+  if (entry.message) {
+    parts.push(entry.message);
+  }
+
+  if (entry.detail) {
+    parts.push(`(${entry.detail})`);
+  }
+
+  const line = parts.join(' ').trim();
+  return line || null;
+};
+
 const fetchInstallLogs = async () => {
   try {
     const response = await fetch(INSTALL_LOGS_ENDPOINT);
@@ -528,18 +558,12 @@ const fetchInstallLogs = async () => {
       throw new Error(`Log request failed with status ${response.status}`);
     }
 
-    const contentType = response.headers?.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
-      const payload = await response.json();
-      if (Array.isArray(payload.lines)) {
-        installLogs.value = payload.lines.join('\n');
-      } else {
-        installLogs.value = JSON.stringify(payload, null, 2);
-      }
-    } else {
-      installLogs.value = await response.text();
-    }
-
+    const payload = await response.json().catch(() => ({}));
+    const entries = Array.isArray(payload.entries) ? payload.entries : [];
+    const formatted = entries
+      .map(formatLogEntry)
+      .filter((line) => typeof line === 'string' && line.length > 0);
+    installLogs.value = formatted.join('\n');
     state.progress.logError = '';
   } catch (error) {
     state.progress.logError = error instanceof Error ? error.message : String(error);
@@ -647,9 +671,15 @@ const startPortalTest = async () => {
   portalAction.error = '';
 
   try {
-    const response = await fetch(PORTAL_TEST_ENDPOINT, { method: 'POST' });
+    const response = await fetch(PORTAL_TEST_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    const payload = await response.json().catch(() => ({}));
+
     if (!response.ok) {
-      throw new Error(`Portal test failed with status ${response.status}`);
+      throw new Error(payload?.error || `Portal test failed with status ${response.status}`);
+    }
+
+    if (payload?.success !== true) {
+      throw new Error(payload?.error || 'Portal test did not succeed.');
     }
 
     portalAction.success = true;
@@ -667,9 +697,16 @@ const runRavenHandshake = async () => {
   ravenAction.error = '';
 
   try {
-    const response = await fetch(RAVEN_HANDSHAKE_ENDPOINT, { method: 'POST' });
+    const response = await fetch(RAVEN_DETECT_ENDPOINT, { method: 'POST' });
+    const payload = await response.json().catch(() => ({}));
+
     if (!response.ok) {
-      throw new Error(`Raven handshake failed with status ${response.status}`);
+      throw new Error(payload?.error || `Raven detection failed with status ${response.status}`);
+    }
+
+    const detection = payload?.detection ?? null;
+    if (!detection || !detection.mountPath) {
+      throw new Error('Kavita data mount not detected yet.');
     }
 
     ravenAction.success = true;

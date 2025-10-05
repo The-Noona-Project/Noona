@@ -214,6 +214,44 @@ const createSetupClient = ({
             )
             return { status, results }
         },
+        async getInstallProgress() {
+            const response = await fetchFromWarden('/api/services/install/progress')
+            return await response.json().catch(() => ({ items: [], status: 'idle', percent: null }))
+        },
+        async getServiceLogs(name, options = {}) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            const limit = options?.limit
+            const suffix = limit ? `?limit=${encodeURIComponent(limit)}` : ''
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/logs${suffix}`)
+            return await response.json().catch(() => ({ service: trimmed, entries: [], summary: {} }))
+        },
+        async testService(name, body = {}) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body ?? {}),
+            })
+
+            const payload = await response.json().catch(() => ({}))
+            return { status: response.status ?? 200, result: payload }
+        },
+        async detectRavenMount() {
+            const response = await fetchFromWarden('/api/services/noona-raven/detect', {
+                method: 'POST',
+            })
+
+            const payload = await response.json().catch(() => ({}))
+            return { status: response.status ?? 200, detection: payload?.detection ?? null, error: payload?.error }
+        },
     }
 }
 
@@ -276,6 +314,59 @@ export const createSageApp = ({
 
             logger.error(`[${serviceName}] ❌ Failed to install services: ${error.message}`)
             res.status(502).json({ error: 'Failed to install services.' })
+        }
+    })
+
+    app.get('/api/setup/services/install/progress', async (req, res) => {
+        try {
+            const progress = await setupClient.getInstallProgress()
+            res.json(progress ?? { items: [], status: 'idle', percent: null })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load install progress: ${error.message}`)
+            res.status(502).json({ error: 'Unable to retrieve installation progress.' })
+        }
+    })
+
+    app.get('/api/setup/services/:name/logs', async (req, res) => {
+        const name = req.params?.name
+
+        try {
+            const history = await setupClient.getServiceLogs(name, { limit: req.query?.limit })
+            res.json(history)
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to retrieve service logs.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to load logs for ${name}: ${error.message}`)
+            res.status(status).json({ error: message })
+        }
+    })
+
+    app.post('/api/setup/services/:name/test', async (req, res) => {
+        const name = req.params?.name
+
+        try {
+            const { status, result } = await setupClient.testService(name, req.body ?? {})
+            res.status(status ?? 200).json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Failed to execute service test.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ❌ Failed to test service ${name}: ${error.message}`)
+            res.status(status).json({ error: message })
+        }
+    })
+
+    app.post('/api/setup/services/noona-raven/detect', async (_req, res) => {
+        try {
+            const { status, detection, error } = await setupClient.detectRavenMount()
+            if (status && status >= 400) {
+                res.status(status).json({ error: error ?? 'Unable to detect Kavita data mount.' })
+                return
+            }
+
+            res.json({ detection })
+        } catch (error) {
+            logger.error(`[${serviceName}] ❌ Failed to detect Kavita mount: ${error.message}`)
+            res.status(502).json({ error: 'Unable to detect Kavita data mount.' })
         }
     })
 

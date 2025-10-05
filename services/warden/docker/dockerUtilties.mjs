@@ -41,32 +41,50 @@ export async function containerExists(name) {
 /**
  * Pulls a Docker image if not already present
  */
-export async function pullImageIfNeeded(image) {
-    const images = await docker.listImages();
+export async function pullImageIfNeeded(image, options = {}) {
+    const { dockerInstance = docker, onProgress } = options;
+
+    const images = await dockerInstance.listImages();
     const exists = images.some(i => i.RepoTags?.includes(image));
 
     if (exists) {
         debugMSG(`[dockerUtil] 🐳 Image already present: ${image}`);
+        onProgress?.({
+            id: image,
+            status: 'exists',
+            detail: 'Image already present',
+        });
         return;
     }
 
     log(`Pulling image: ${image}`);
     await new Promise((resolve, reject) => {
-        docker.pull(image, (err, stream) => {
+        dockerInstance.pull(image, (err, stream) => {
             if (err) return reject(err);
-            docker.modem.followProgress(
+            dockerInstance.modem.followProgress(
                 stream,
                 resolve,
                 (event) => {
                     if (event.status) {
                         process.stdout.write(`\r[warden] ${event.status} ${event.progress || ''}  `);
+                        onProgress?.({
+                            id: event.id ?? image,
+                            status: event.status,
+                            detail: event.progress ?? event.progressDetail ?? '',
+                        });
                     }
                 }
             );
         });
     });
 
-    log(`\nPull complete for ${image}`);
+    const completionMessage = `\nPull complete for ${image}`;
+    log(completionMessage);
+    onProgress?.({
+        id: image,
+        status: 'complete',
+        detail: 'Image pulled successfully',
+    });
 }
 
 /**
@@ -81,7 +99,13 @@ export async function pullImageIfNeeded(image) {
  * @param {Set<string>} trackedContainers - Set used to record the started container's service name.
  * @param {string|boolean|undefined} DEBUG - Debug flag that enables log streaming when set to a recognized truthy value.
  */
-export async function runContainerWithLogs(service, networkName, trackedContainers, DEBUG) {
+export async function runContainerWithLogs(
+    service,
+    networkName,
+    trackedContainers,
+    DEBUG,
+    options = {},
+) {
     const binds = service.volumes || [];
 
     // Avoid double-injecting SERVICE_NAME
@@ -115,7 +139,9 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
     trackedContainers.add(service.name);
     await container.start();
 
-    if (shouldStreamLogs) {
+    const { onLog } = options;
+
+    try {
         const logs = await container.logs({
             follow: true,
             stdout: true,
@@ -124,10 +150,30 @@ export async function runContainerWithLogs(service, networkName, trackedContaine
         });
 
         logs.on('data', chunk => {
-            const line = chunk.toString().trim();
-            if (line) process.stdout.write(`[${service.name}] ${line}\n`);
+            const raw = chunk.toString();
+            if (!raw) {
+                return;
+            }
+
+            onLog?.(raw, { service });
+
+            if (shouldStreamLogs) {
+                const line = raw.trim();
+                if (line) {
+                    process.stdout.write(`[${service.name}] ${line}\n`);
+                }
+            }
         });
-    } else {
+
+        logs.on('error', error => {
+            onLog?.(`Log stream error: ${error.message}`, { service, level: 'error' });
+        });
+    } catch (error) {
+        debugMSG(`[dockerUtil] Unable to tail logs for ${service.name}: ${error.message}`);
+        onLog?.(`Failed to stream logs: ${error.message}`, { service, level: 'error' });
+    }
+
+    if (!shouldStreamLogs) {
         debugMSG(`[dockerUtil] Log streaming disabled for ${service.name}`);
     }
 

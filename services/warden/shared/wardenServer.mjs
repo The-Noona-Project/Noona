@@ -75,9 +75,114 @@ export const startWardenServer = ({
         }
 
         const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+        const segments = url.pathname.split('/').filter(Boolean);
 
         if (req.method === 'GET' && url.pathname === '/health') {
             sendJson(res, 200, { status: 'ok' });
+            return;
+        }
+
+        if (
+            req.method === 'GET' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[2] === 'install' &&
+            segments[3] === 'progress'
+        ) {
+            try {
+                const progress = await warden.getInstallationProgress?.();
+                if (!progress) {
+                    sendJson(res, 200, { items: [], status: 'idle', percent: null });
+                    return;
+                }
+
+                sendJson(res, 200, progress);
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to fetch install progress: ${error.message}`);
+                sendJson(res, 500, { error: 'Unable to retrieve installation progress.' });
+            }
+            return;
+        }
+
+        if (
+            req.method === 'GET' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'logs'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            const limitParam = url.searchParams.get('limit');
+
+            try {
+                const history = await warden.getServiceHistory?.(serviceName, { limit: limitParam });
+                if (!history) {
+                    sendJson(res, 200, {
+                        service: serviceName,
+                        entries: [],
+                        summary: { status: 'idle', percent: null, detail: null, updatedAt: null },
+                    });
+                    return;
+                }
+
+                sendJson(res, 200, history);
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to fetch logs for ${serviceName}: ${error.message}`);
+                sendJson(res, 500, { error: `Unable to retrieve logs for ${serviceName}.` });
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'test'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch (error) {
+                sendJson(res, 400, { error: 'Request body must be valid JSON.' });
+                return;
+            }
+
+            try {
+                const result = await warden.testService?.(serviceName, body);
+
+                if (!result) {
+                    sendJson(res, 404, { error: `No test handler registered for ${serviceName}.` });
+                    return;
+                }
+
+                const statusCode = result.supported === false ? 400 : 200;
+                sendJson(res, statusCode, result);
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to test ${serviceName}: ${error.message}`);
+                sendJson(res, 500, { error: `Unable to execute test for ${serviceName}.` });
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[2] === 'noona-raven' &&
+            segments[3] === 'detect'
+        ) {
+            try {
+                const detection = await (warden.detectKavitaMount?.() || warden.detectKavitaDataMount?.());
+                sendJson(res, 200, { detection: detection ?? null });
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to detect Kavita mount: ${error.message}`);
+                sendJson(res, 500, { error: 'Unable to detect Kavita data mount.' });
+            }
             return;
         }
 

@@ -162,7 +162,7 @@ describe('Setup page', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(mockResponse(initialServices))
-      .mockResolvedValueOnce(mockResponse({ items: [], status: 'Installing' }))
+      .mockResolvedValueOnce(mockResponse({ status: 'installing', percent: 0, items: [] }))
       .mockResolvedValueOnce(postResponse)
       .mockResolvedValueOnce(mockResponse(refreshedServices));
 
