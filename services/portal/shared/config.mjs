@@ -55,7 +55,18 @@ const resolveEnv = (overrides = {}) => ({
 const collectMissing = (env) => {
     const missing = [];
 
+    const hasVaultToken =
+        normalizeString(env.VAULT_ACCESS_TOKEN) ||
+        normalizeString(env.VAULT_API_TOKEN);
+
     for (const key of REQUIRED_STRINGS) {
+        if (key === 'VAULT_ACCESS_TOKEN') {
+            if (!hasVaultToken) {
+                missing.push(key);
+            }
+            continue;
+        }
+
         if (!normalizeString(env[key])) {
             missing.push(key);
         }
@@ -96,7 +107,9 @@ export const loadPortalConfig = (overrides = {}) => {
         },
         vault: {
             baseUrl: normalizeUrl(env.VAULT_BASE_URL),
-            token: env.VAULT_ACCESS_TOKEN,
+            token:
+                normalizeString(env.VAULT_ACCESS_TOKEN) ||
+                normalizeString(env.VAULT_API_TOKEN),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',
