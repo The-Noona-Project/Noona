@@ -1303,6 +1303,15 @@ const showInstallResults = computed(() =>
   installResults.value && Array.isArray(installResults.value.results) && installResults.value.results.length > 0,
 );
 
+watch(
+  activeStepIndex,
+  (nextIndex, previousIndex) => {
+    if (nextIndex !== previousIndex) {
+      resetStepState();
+    }
+  },
+);
+
 watch(installing, (value) => {
   if (!value) {
     stopProgressPolling();

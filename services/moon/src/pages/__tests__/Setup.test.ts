@@ -381,6 +381,121 @@ describe('Setup page', () => {
     expect(envForms['noona-portal'].DISCORD_ONBOARDING_CHANNEL_ID).toBe('channel-2');
   });
 
+  it('resets install state and re-enables step actions when switching steps', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockResponse(servicesPayload));
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          state: { services: Array<{ name: string; installed: boolean }> };
+          goToStep: (index: number) => void;
+          installError: string;
+          installResults: null | { status: string; results: Array<Record<string, unknown>> };
+          installSuccessMessageVisible: boolean;
+          showProgressDetails: boolean;
+          installLogs: string;
+          portalAction: {
+            loading: boolean;
+            success: boolean;
+            error: string;
+            completed: boolean;
+          };
+          ravenAction: {
+            loading: boolean;
+            success: boolean;
+            error: string;
+          };
+        };
+      };
+    };
+
+    for (const service of vm.$.setupState.state.services) {
+      if (service.name === 'noona-redis' || service.name === 'noona-mongo') {
+        service.installed = true;
+      }
+    }
+
+    vm.$.setupState.goToStep(1);
+    await wrapper.vm.$nextTick();
+
+    for (const service of vm.$.setupState.state.services) {
+      if (service.name === 'noona-portal' || service.name === 'noona-vault') {
+        service.installed = true;
+      }
+    }
+
+    vm.$.setupState.installError = 'Install failed';
+    vm.$.setupState.installResults = {
+      status: 'failed',
+      results: [{ name: 'noona-portal', status: 'error', error: 'bad' }],
+    };
+    vm.$.setupState.installSuccessMessageVisible = true;
+    vm.$.setupState.showProgressDetails = true;
+    vm.$.setupState.installLogs = 'previous logs';
+
+    vm.$.setupState.portalAction.loading = true;
+    vm.$.setupState.portalAction.success = true;
+    vm.$.setupState.portalAction.error = 'Test failed';
+    vm.$.setupState.portalAction.completed = true;
+
+    vm.$.setupState.ravenAction.loading = true;
+    vm.$.setupState.ravenAction.success = true;
+    vm.$.setupState.ravenAction.error = 'Raven failed';
+
+    await wrapper.vm.$nextTick();
+
+    const portalButtonBefore = wrapper
+      .findAll('button')
+      .find((btn) => btn.text().includes('Portal bot verified'));
+    expect(portalButtonBefore).toBeTruthy();
+    expect(portalButtonBefore?.attributes('disabled')).toBeDefined();
+
+    const nextButtonBefore = wrapper
+      .findAll('button')
+      .find((btn) => btn.text() === 'Next step');
+    expect(nextButtonBefore).toBeTruthy();
+    expect(nextButtonBefore?.attributes('disabled')).toBeUndefined();
+
+    vm.$.setupState.goToStep(0);
+    await wrapper.vm.$nextTick();
+
+    expect(vm.$.setupState.installResults).toBeNull();
+    expect(vm.$.setupState.installError).toBe('');
+    expect(vm.$.setupState.installSuccessMessageVisible).toBe(false);
+    expect(vm.$.setupState.showProgressDetails).toBe(false);
+    expect(vm.$.setupState.installLogs).toBe('');
+
+    expect(vm.$.setupState.portalAction.loading).toBe(false);
+    expect(vm.$.setupState.portalAction.success).toBe(false);
+    expect(vm.$.setupState.portalAction.error).toBe('');
+
+    expect(vm.$.setupState.ravenAction.loading).toBe(false);
+    expect(vm.$.setupState.ravenAction.success).toBe(false);
+    expect(vm.$.setupState.ravenAction.error).toBe('');
+
+    vm.$.setupState.goToStep(1);
+    await wrapper.vm.$nextTick();
+
+    const portalButtonAfter = wrapper
+      .findAll('button')
+      .find((btn) => btn.text().includes('Start & Test Portal Bot'));
+    expect(portalButtonAfter).toBeTruthy();
+    expect(portalButtonAfter?.attributes('disabled')).toBeUndefined();
+
+    const nextButtonAfter = wrapper
+      .findAll('button')
+      .find((btn) => btn.text() === 'Next step');
+    expect(nextButtonAfter).toBeTruthy();
+    expect(nextButtonAfter?.attributes('disabled')).toBeUndefined();
+  });
+
   it('derives Discord endpoints from the active services endpoint', async () => {
     const discordPayload = {
       guild: { id: '123', name: 'Noona Guild' },
