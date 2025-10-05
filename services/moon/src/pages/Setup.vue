@@ -962,14 +962,21 @@ const loadServicesFromEndpoint = async (endpoint) => {
   return filtered;
 };
 
-const refreshServices = async () => {
-  state.loading = true;
+const refreshServices = async (options) => {
+  const keepUi = options?.keepUi === true;
+  const skipPortalReset = options?.skipPortalReset === true;
+
+  if (!keepUi) {
+    state.loading = true;
+  }
   state.loadError = '';
   installEndpoint.value = DEFAULT_INSTALL_ENDPOINT;
   activeServicesEndpoint.value = DEFAULT_SERVICES_ENDPOINT;
   installProgressEndpoint.value = DEFAULT_INSTALL_PROGRESS_ENDPOINT;
   installLogsEndpoint.value = DEFAULT_INSTALL_LOGS_ENDPOINT;
-  resetPortalDiscordState();
+  if (!skipPortalReset) {
+    resetPortalDiscordState();
+  }
 
   const errors = [];
   const previousSelection = new Set(selectedServices.value);
@@ -1015,7 +1022,9 @@ const refreshServices = async () => {
       state.loadError = 'Unable to retrieve installable services.';
     }
   } finally {
-    state.loading = false;
+    if (!keepUi) {
+      state.loading = false;
+    }
   }
 };
 
@@ -1267,6 +1276,9 @@ const installCurrentStep = async () => {
 
   const stepKey = currentStep.value.key;
   const isPortalStep = stepKey === 'portal';
+  const refreshOptions = isPortalStep
+    ? { keepUi: true, skipPortalReset: true }
+    : undefined;
 
   if (!isPortalStep && !installStepServices.value.length) return;
   if (isPortalStep) {
@@ -1337,20 +1349,20 @@ const installCurrentStep = async () => {
         Array.from(new Set([...remaining, ...ALWAYS_SELECTED_SERVICES])),
       );
 
-      await refreshServices();
+      await refreshServices(refreshOptions);
       refreshedServices = true;
 
       if (stepKey === 'raven') {
         installSuccessMessageVisible.value = true;
       }
     } else if (isPortalStep) {
-      await refreshServices();
+      await refreshServices(refreshOptions);
       refreshedServices = true;
     }
 
     if (isPortalStep) {
       if (!refreshedServices) {
-        await refreshServices();
+        await refreshServices(refreshOptions);
         refreshedServices = true;
       }
 
@@ -1567,7 +1579,7 @@ onMounted(() => {
               >
                 Unable to load services: {{ state.loadError }}
                 <template #append>
-                  <v-btn color="error" variant="text" @click="refreshServices">
+                  <v-btn color="error" variant="text" @click="refreshServices()">
                     Retry
                   </v-btn>
                 </template>
