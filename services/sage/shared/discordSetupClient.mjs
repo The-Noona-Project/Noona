@@ -1,5 +1,7 @@
 // services/sage/shared/discordSetupClient.mjs
 
+import { ChannelType } from 'discord.js'
+
 import createDiscordClient from './discordClient.mjs'
 import { SetupValidationError } from './errors.mjs'
 
@@ -10,6 +12,43 @@ const normalizeString = (value) => {
 
     const trimmed = value.trim()
     return trimmed
+}
+
+const resolveChannelType = (value) => {
+    if (typeof value === 'number' && ChannelType[value] !== undefined) {
+        return value
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim()
+        if (!trimmed) {
+            return null
+        }
+
+        const numericValue = Number(trimmed)
+        if (!Number.isNaN(numericValue) && ChannelType[numericValue] !== undefined) {
+            return numericValue
+        }
+
+        const direct = ChannelType[trimmed]
+        if (typeof direct === 'number') {
+            return direct
+        }
+
+        const pascal = trimmed
+            .toLowerCase()
+            .split(/[_\s-]+/)
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join('')
+
+        const resolved = ChannelType[pascal]
+        if (typeof resolved === 'number') {
+            return resolved
+        }
+    }
+
+    return null
 }
 
 const ensureNonEmpty = (value, label) => {
@@ -77,8 +116,11 @@ const isUsableRole = (role) => role?.id && !role.managed
 
 const isUsableChannel = (channel) => Boolean(channel?.id && (channel?.name ?? '').trim())
 
-const withDiscordClient = async ({ token, guildId, logger, serviceName }, handler) => {
-    const discordClient = createDiscordClient({
+const withDiscordClient = async (
+    { token, guildId, logger, serviceName, createClient = createDiscordClient },
+    handler,
+) => {
+    const discordClient = createClient({
         token,
         guildId,
         commands: new Map(),
@@ -98,7 +140,11 @@ const withDiscordClient = async ({ token, guildId, logger, serviceName }, handle
     }
 }
 
-export const createDiscordSetupClient = ({ logger, serviceName = 'noona-sage' } = {}) => {
+export const createDiscordSetupClient = ({
+    logger,
+    serviceName = 'noona-sage',
+    createClient = createDiscordClient,
+} = {}) => {
     const resolveCredentials = (credentials = {}) => ({
         token: ensureNonEmpty(credentials.token, 'Discord bot token'),
         guildId: ensureNonEmpty(credentials.guildId, 'Discord guild id'),
@@ -108,7 +154,7 @@ export const createDiscordSetupClient = ({ logger, serviceName = 'noona-sage' } 
         async fetchResources(credentials = {}) {
             const { token, guildId } = resolveCredentials(credentials)
 
-            return await withDiscordClient({ token, guildId, logger, serviceName }, async (client) => {
+            return await withDiscordClient({ token, guildId, logger, serviceName, createClient }, async (client) => {
                 const guild = await client.fetchGuild()
                 if (!guild) {
                     throw new Error('Discord guild could not be retrieved.')
@@ -155,7 +201,7 @@ export const createDiscordSetupClient = ({ logger, serviceName = 'noona-sage' } 
             const { token, guildId } = resolveCredentials(credentials)
             const name = ensureNonEmpty(credentials.name, 'Role name')
 
-            return await withDiscordClient({ token, guildId, logger, serviceName }, async (client) => {
+            return await withDiscordClient({ token, guildId, logger, serviceName, createClient }, async (client) => {
                 const guild = await client.fetchGuild()
                 if (!guild) {
                     throw new Error('Discord guild could not be retrieved.')
@@ -181,16 +227,16 @@ export const createDiscordSetupClient = ({ logger, serviceName = 'noona-sage' } 
         async createChannel(credentials = {}) {
             const { token, guildId } = resolveCredentials(credentials)
             const name = ensureNonEmpty(credentials.name, 'Channel name')
-            const type = normalizeString(credentials.type) || null
+            const type = resolveChannelType(credentials.type)
 
-            return await withDiscordClient({ token, guildId, logger, serviceName }, async (client) => {
+            return await withDiscordClient({ token, guildId, logger, serviceName, createClient }, async (client) => {
                 const guild = await client.fetchGuild()
                 if (!guild) {
                     throw new Error('Discord guild could not be retrieved.')
                 }
 
                 const createOptions = { name, reason: 'Requested during Noona setup' }
-                if (type) {
+                if (typeof type === 'number') {
                     createOptions.type = type
                 }
 
