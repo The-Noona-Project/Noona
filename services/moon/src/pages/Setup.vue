@@ -238,6 +238,20 @@ const resetPortalActionState = () => {
   portalAction.completed = false;
 };
 
+const PORTAL_INSTALL_FAILURE_KEYWORDS = [
+  'fail',
+  'error',
+  'timeout',
+  'timed out',
+  'timed-out',
+  'unable',
+  'invalid',
+  'missing',
+  'denied',
+  'rejected',
+  'unhealthy',
+];
+
 const getPortalInstallFailureMessage = () => {
   const installMessage =
     typeof installError.value === 'string' && installError.value.trim()
@@ -268,8 +282,14 @@ const getPortalInstallFailureMessage = () => {
       typeof entry?.status === 'string' && entry.status.trim()
         ? entry.status.trim()
         : '';
-    if (status && status !== 'installed') {
-      return `${name} installation ${status}`;
+    if (status) {
+      const normalizedStatus = status.toLowerCase();
+      const hasFailureKeyword = PORTAL_INSTALL_FAILURE_KEYWORDS.some((keyword) =>
+        normalizedStatus.includes(keyword),
+      );
+      if (hasFailureKeyword) {
+        return `${name} installation ${status}`;
+      }
     }
   }
 
