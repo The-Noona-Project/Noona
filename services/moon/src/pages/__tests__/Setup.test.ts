@@ -357,6 +357,96 @@ describe('Setup page', () => {
     expect(logRequests).toContain('/api/setup/services/installation/logs?limit=400');
   });
 
+  it('uses the fallback services endpoints for progress and logs when setup services fail', async () => {
+    const fetchMock = vi.fn<(url: RequestInfo | URL) => Promise<Response>>((url) => {
+      const target = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+
+      if (target.includes('/api/setup/services') && !target.includes('/install')) {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          json: async () => ({ error: 'Bad gateway' }),
+        } as Response);
+      }
+
+      if (target.includes('/api/services?includeInstalled=false') || target.endsWith('/api/services')) {
+        return Promise.resolve(mockResponse(servicesPayload));
+      }
+
+      if (target.includes('/api/services/install/progress')) {
+        return Promise.resolve(
+          mockResponse({ status: 'installing', percent: 0, items: [] }),
+        );
+      }
+
+      if (target.includes('/api/services/installation/logs')) {
+        return Promise.resolve(
+          mockResponse({
+            entries: [
+              {
+                timestamp: '2024-01-01T00:00:00Z',
+                message: 'Installer ready',
+              },
+            ],
+          }),
+        );
+      }
+
+      return Promise.resolve(mockResponse(servicesPayload));
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          fetchInstallProgress: () => Promise<void>;
+          showProgressDetails: boolean;
+        };
+      };
+    };
+
+    await vm.$.setupState.fetchInstallProgress();
+
+    vm.$.setupState.showProgressDetails = true;
+
+    await wrapper.vm.$nextTick();
+    await flushAsync();
+
+    const progressRequests = fetchMock.mock.calls
+      .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
+      .filter((call) => call.includes('/install/progress'));
+
+    expect(progressRequests).toContain('/api/services/install/progress');
+
+    const logRequests = fetchMock.mock.calls
+      .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
+      .filter((call) => call.includes('/installation/logs'));
+
+    expect(logRequests).toContain('/api/services/installation/logs?limit=200');
+
+    const showMoreButton = wrapper.find('[data-test="show-more-logs"]');
+    expect(showMoreButton.exists()).toBe(true);
+
+    await showMoreButton.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const updatedLogRequests = fetchMock.mock.calls
+      .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
+      .filter((call) => call.includes('/installation/logs'));
+
+    expect(updatedLogRequests).toContain('/api/services/installation/logs?limit=400');
+  });
+
   it('shows the success message after completing the Raven install', async () => {
     const initialServices = {
       services: [
