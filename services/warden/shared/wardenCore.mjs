@@ -1465,8 +1465,6 @@ export function createWarden(options = {}) {
         const { path: pathOverride, url: urlOverride, method = 'GET', headers = {}, body: requestBody = null } = options ?? {};
         let targetUrl = null;
 
-        // Ensure the setup wizard's "Start & Test Portal Bot" action uses the host-facing
-        // endpoint when present so manual verification succeeds in host-mode deployments.
         const resolveHealthFromHostBase = (baseUrl) => {
             if (typeof baseUrl !== 'string') {
                 return null;
@@ -1495,7 +1493,10 @@ export function createWarden(options = {}) {
             }
         };
 
+        // Prefer a host-facing health endpoint when available so setup wizard
+        // checks work in host-mode deployments.
         const hostBase = api.resolveHostServiceUrl(descriptor);
+        const hostHealthUrl = hostBase ? resolveHealthFromHostBase(hostBase) : null;
 
         if (typeof urlOverride === 'string' && urlOverride.trim()) {
             targetUrl = urlOverride.trim();
@@ -1511,18 +1512,16 @@ export function createWarden(options = {}) {
             }
         }
 
-        if (!targetUrl && hostBase) {
-            targetUrl = resolveHealthFromHostBase(hostBase);
+        if (!targetUrl && hostHealthUrl) {
+            targetUrl = hostHealthUrl;
         }
 
         if (!targetUrl && typeof descriptor.health === 'string' && descriptor.health.trim()) {
             targetUrl = descriptor.health.trim();
         }
 
-        if (!targetUrl) {
-            if (hostBase) {
-                targetUrl = resolveHealthFromHostBase(hostBase);
-            }
+        if (!targetUrl && hostHealthUrl) {
+            targetUrl = hostHealthUrl;
         }
 
         if (!targetUrl) {
