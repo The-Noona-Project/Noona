@@ -720,7 +720,7 @@ test('installation progress and service histories track install lifecycle', asyn
     assert.ok(fullHistory.entries.length >= limitedHistory.entries.length);
 });
 
-test('testService prefers host health URL when available', async () => {
+test('testService prefers host health URL when resolveHostServiceUrl can produce one', async () => {
     const fetchCalls = [];
     const warden = createWarden({
         services: {
@@ -729,11 +729,12 @@ test('testService prefers host health URL when available', async () => {
                 'noona-portal': {
                     name: 'noona-portal',
                     image: 'portal',
-                    hostServiceUrl: 'http://portal.local',
+                    port: 3003,
                     health: 'http://noona-portal:3003/health',
                 },
             },
         },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
         hostDockerSockets: [],
         fetchImpl: async (url) => {
             fetchCalls.push(url);
@@ -747,7 +748,7 @@ test('testService prefers host health URL when available', async () => {
 
     const result = await warden.testService('noona-portal');
     assert.equal(result.success, true);
-    assert.deepEqual(fetchCalls, ['http://portal.local/health']);
+    assert.deepEqual(fetchCalls, ['http://localhost:3003/health']);
 
     const history = warden.getServiceHistory('noona-portal');
     assert.ok(history.entries.some((entry) => entry.status === 'tested'));
