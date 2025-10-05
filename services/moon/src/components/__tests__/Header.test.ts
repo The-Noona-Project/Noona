@@ -90,4 +90,62 @@ describe('Header navigation', () => {
     await ravenItem!.trigger('click');
     expect(push).toHaveBeenCalledWith('/raven');
   });
+
+  it('shows Setup navigation while installations are pending', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        services: [
+          { name: 'noona-warden', installed: false },
+        ],
+      }),
+    });
+
+    const store = useServiceInstallationStore();
+    await store.refresh();
+
+    const wrapper = mount(Header, {
+      global: {
+        stubs,
+      },
+    });
+
+    const setupItem = wrapper
+      .findAll('.v-list-item')
+      .find((item) => item.text().includes('Setup'));
+
+    expect(setupItem).toBeDefined();
+  });
+
+  it('hides Setup navigation once all installations are complete', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        services: [
+          { name: 'noona-warden', installed: true },
+          { name: 'noona-vault', installed: true },
+          { name: 'noona-portal', installed: true },
+          { name: 'noona-sage', installed: true },
+          { name: 'noona-moon', installed: true },
+          { name: 'noona-raven', installed: true },
+          { name: 'noona-oracle', installed: true },
+        ],
+      }),
+    });
+
+    const store = useServiceInstallationStore();
+    await store.refresh();
+
+    const wrapper = mount(Header, {
+      global: {
+        stubs,
+      },
+    });
+
+    const setupItem = wrapper
+      .findAll('.v-list-item')
+      .find((item) => item.text().includes('Setup'));
+
+    expect(setupItem).toBeUndefined();
+  });
 });

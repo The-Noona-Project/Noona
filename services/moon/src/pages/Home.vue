@@ -61,6 +61,8 @@ onMounted(() => {
   store.ensureLoaded();
 });
 
+const showSetupButton = computed(() => store.hasPendingSetup.value);
+
 const serviceCards = computed(() =>
   servicePages.map((service) => {
     const requiredService = getRequiredServiceForPath(service.path);
@@ -97,7 +99,13 @@ const serviceCards = computed(() =>
             <v-card-subtitle class="mb-6">
               Explore the control surfaces for every service or jump straight into the setup wizard.
             </v-card-subtitle>
-            <v-btn color="primary" size="large" @click="$router.push('/setup')">
+            <v-btn
+                v-if="showSetupButton"
+                color="primary"
+                size="large"
+                data-test="launch-setup"
+                @click="$router.push('/setup')"
+            >
               Launch Setup Wizard
             </v-btn>
           </v-card>
