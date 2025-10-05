@@ -4,12 +4,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 
+import { ChannelType } from 'discord.js'
+
 import {
     SetupValidationError,
     createSageApp,
     normalizeServiceInstallPayload,
     startSage,
 } from '../shared/sageApp.mjs'
+import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -731,4 +734,48 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
     const response = await fetch(`${baseUrl}/api/setup/services/noona-raven/detect`, { method: 'POST' })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data' } })
+})
+
+test('createChannel normalizes channel type when provided as string', async () => {
+    const createCalls = []
+    const clientStub = {
+        async login() {},
+        destroy() {},
+        async fetchGuild() {
+            return {
+                id: 'guild-id',
+                name: 'Test Guild',
+                channels: {
+                    create: async (options) => {
+                        createCalls.push(options)
+                        return {
+                            id: 'channel-id',
+                            name: options.name,
+                            type: ChannelType.GuildText,
+                        }
+                    },
+                },
+            }
+        },
+    }
+
+    const setupClient = createDiscordSetupClient({
+        createClient: () => clientStub,
+        logger: {
+            info() {},
+            error() {},
+        },
+        serviceName: 'test-sage',
+    })
+
+    const channel = await setupClient.createChannel({
+        token: 'token',
+        guildId: 'guild-id',
+        name: 'general',
+        type: 'GUILD_TEXT',
+    })
+
+    assert.equal(createCalls.length, 1)
+    assert.equal(createCalls[0].type, ChannelType.GuildText)
+    assert.equal(channel.type, ChannelType.GuildText)
 })
