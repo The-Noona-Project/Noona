@@ -218,6 +218,88 @@ const portalAction = reactive({
   completed: false,
 });
 
+const PORTAL_STEP_SERVICE_NAMES = new Set(
+  STEP_DEFINITIONS.find((step) => step.key === 'portal')?.services ?? [],
+);
+
+const resetPortalActionState = () => {
+  portalAction.loading = false;
+  portalAction.success = false;
+  portalAction.error = '';
+  portalAction.completed = false;
+};
+
+const getPortalInstallFailureMessage = () => {
+  const installMessage =
+    typeof installError.value === 'string' && installError.value.trim()
+      ? installError.value.trim()
+      : '';
+  if (installMessage) {
+    return installMessage;
+  }
+
+  const results = installResults.value?.results;
+  if (!Array.isArray(results)) {
+    return '';
+  }
+
+  for (const entry of results) {
+    const name = typeof entry?.name === 'string' ? entry.name : '';
+    if (!PORTAL_STEP_SERVICE_NAMES.has(name)) {
+      continue;
+    }
+
+    const resultError =
+      typeof entry?.error === 'string' && entry.error.trim() ? entry.error.trim() : '';
+    if (resultError) {
+      return resultError;
+    }
+
+    const status =
+      typeof entry?.status === 'string' && entry.status.trim()
+        ? entry.status.trim()
+        : '';
+    if (status && status !== 'installed') {
+      return `${name} installation ${status}`;
+    }
+  }
+
+  return '';
+};
+
+const verifyPortalBot = async () => {
+  portalAction.loading = true;
+  portalAction.success = false;
+  portalAction.completed = false;
+  portalAction.error = '';
+
+  try {
+    const response = await fetch(PORTAL_TEST_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error || `Portal test failed with status ${response.status}`);
+    }
+
+    if (payload?.success !== true) {
+      throw new Error(payload?.error || 'Portal test did not succeed.');
+    }
+
+    portalAction.success = true;
+    portalAction.completed = true;
+  } catch (error) {
+    portalAction.success = false;
+    portalAction.completed = false;
+    portalAction.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    portalAction.loading = false;
+  }
+};
+
 const portalDiscordState = reactive({
   verifying: false,
   verified: false,
@@ -347,9 +429,17 @@ const currentStepSelectableServices = computed(() =>
   ),
 );
 
-const canInstallCurrentStep = computed(
-  () => currentStepSelectableServices.value.length > 0 && !installing.value,
-);
+const canInstallCurrentStep = computed(() => {
+  if (installing.value) {
+    return false;
+  }
+
+  if (currentStep.value.key === 'portal') {
+    return !portalAction.loading;
+  }
+
+  return currentStepSelectableServices.value.length > 0;
+});
 
 const isBooleanLikeValue = (value) => {
   if (typeof value === 'boolean') return true;
@@ -1125,16 +1215,29 @@ const installStepServices = computed(() =>
 
 const installCurrentStep = async () => {
   if (installing.value) return;
-  if (!installStepServices.value.length) return;
+
+  const stepKey = currentStep.value.key;
+  const isPortalStep = stepKey === 'portal';
+
+  if (!isPortalStep && !installStepServices.value.length) return;
+  if (isPortalStep) {
+    resetPortalActionState();
+  }
 
   installing.value = true;
   installError.value = '';
   installResults.value = null;
   installSuccessMessageVisible.value = false;
   resetProgressState();
-  scheduleProgressPolling();
 
   const descriptors = currentStepSelectableServices.value;
+  const hasInstallTargets = descriptors.length > 0;
+  if (hasInstallTargets) {
+    scheduleProgressPolling();
+  } else {
+    stopProgressPolling();
+  }
+
   const servicePayload = descriptors.map((service) => {
     const env = buildEnvPayload(service);
     if (!Object.keys(env).length) {
@@ -1144,134 +1247,86 @@ const installCurrentStep = async () => {
     return { name: service.name, env };
   });
 
+  let refreshedServices = false;
+
   try {
-    const response = await fetch(installEndpoint.value || DEFAULT_INSTALL_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ services: servicePayload }),
-    });
+    if (hasInstallTargets) {
+      const response = await fetch(installEndpoint.value || DEFAULT_INSTALL_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: servicePayload }),
+      });
 
-    const responsePayload = await response.json().catch(() => ({}));
-    const results = Array.isArray(responsePayload.results)
-      ? responsePayload.results
-      : [];
-    installResults.value = {
-      status: response.status,
-      results,
-    };
+      const responsePayload = await response.json().catch(() => ({}));
+      const results = Array.isArray(responsePayload.results)
+        ? responsePayload.results
+        : [];
+      installResults.value = {
+        status: response.status,
+        results,
+      };
 
-    if (!response.ok) {
-      installError.value =
-        responsePayload?.error || `Install request failed with status ${response.status}`;
-      return;
+      if (!response.ok) {
+        installError.value =
+          responsePayload?.error || `Install request failed with status ${response.status}`;
+        if (isPortalStep) {
+          portalAction.error =
+            installError.value || 'Portal installation must complete successfully before testing.';
+        }
+        return;
+      }
+
+      const successful = new Set(
+        results
+          .filter((item) => item && item.status === 'installed' && item.name)
+          .map((item) => item.name),
+      );
+
+      const remaining = normalizedSelection.value.filter((name) => !successful.has(name));
+      selectedServices.value = mergeRequiredSelections(
+        state.services,
+        Array.from(new Set([...remaining, ...ALWAYS_SELECTED_SERVICES])),
+      );
+
+      await refreshServices();
+      refreshedServices = true;
+
+      if (stepKey === 'raven') {
+        installSuccessMessageVisible.value = true;
+      }
+    } else if (isPortalStep) {
+      await refreshServices();
+      refreshedServices = true;
     }
 
-    const successful = new Set(
-      results
-        .filter((item) => item && item.status === 'installed' && item.name)
-        .map((item) => item.name),
-    );
+    if (isPortalStep) {
+      if (!refreshedServices) {
+        await refreshServices();
+        refreshedServices = true;
+      }
 
-    const remaining = normalizedSelection.value.filter(
-      (name) => !successful.has(name),
-    );
-    selectedServices.value = mergeRequiredSelections(
-      state.services,
-      Array.from(new Set([...remaining, ...ALWAYS_SELECTED_SERVICES])),
-    );
+      const installFailure = getPortalInstallFailureMessage();
+      if (installFailure) {
+        portalAction.error = installFailure;
+        return;
+      }
 
-    await refreshServices();
+      if (!isStepInstalled('portal')) {
+        portalAction.error = 'Portal installation must complete successfully before testing.';
+        return;
+      }
 
-    if (currentStep.value.key === 'raven') {
-      installSuccessMessageVisible.value = true;
+      await verifyPortalBot();
     }
   } catch (error) {
     installError.value = error instanceof Error ? error.message : String(error);
+    if (isPortalStep) {
+      portalAction.error =
+        installError.value || 'Portal installation must complete successfully before testing.';
+    }
   } finally {
     installing.value = false;
     stopProgressPolling();
-  }
-};
-
-const startPortalTest = async () => {
-  if (portalAction.loading || installing.value) return;
-
-  portalAction.loading = true;
-  portalAction.error = '';
-
-  try {
-    if (!isStepInstalled('portal')) {
-      await installCurrentStep();
-
-      if (!isStepInstalled('portal')) {
-        const portalStepServices = new Set(
-          STEP_DEFINITIONS.find((step) => step.key === 'portal')?.services ?? [],
-        );
-
-        const installResultError = (() => {
-          const results = installResults.value?.results;
-          if (!Array.isArray(results)) {
-            return '';
-          }
-
-          for (const entry of results) {
-            const name = typeof entry?.name === 'string' ? entry.name : '';
-            if (!portalStepServices.has(name)) {
-              continue;
-            }
-
-            const resultError =
-              typeof entry?.error === 'string' && entry.error.trim()
-                ? entry.error
-                : '';
-            if (resultError) {
-              return resultError;
-            }
-
-            const status =
-              typeof entry?.status === 'string' && entry.status.trim()
-                ? entry.status.trim()
-                : '';
-            if (status && status !== 'installed') {
-              return `${name} installation ${status}`;
-            }
-          }
-
-          return '';
-        })();
-
-        const installErrorMessage =
-          (typeof installError.value === 'string' && installError.value.trim()
-            ? installError.value
-            : '') || installResultError;
-
-        portalAction.error =
-          installErrorMessage || 'Portal installation must complete successfully before testing.';
-        return;
-      }
-    }
-
-    const response = await fetch(PORTAL_TEST_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(payload?.error || `Portal test failed with status ${response.status}`);
-    }
-
-    if (payload?.success !== true) {
-      throw new Error(payload?.error || 'Portal test did not succeed.');
-    }
-
-    portalAction.success = true;
-    portalAction.completed = true;
-  } catch (error) {
-    portalAction.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    portalAction.loading = false;
   }
 };
 
@@ -1987,7 +2042,12 @@ onMounted(() => {
                   </v-alert>
 
                   <div class="setup-step__actions mt-6">
-                    <div v-if="installing" class="setup-step__progress" role="status" aria-live="polite">
+                    <div
+                      v-if="installing && installStepServices.length"
+                      class="setup-step__progress"
+                      role="status"
+                      aria-live="polite"
+                    >
                       <v-progress-linear
                         class="setup-step__progress-bar"
                         color="primary"
@@ -2002,24 +2062,37 @@ onMounted(() => {
 
                     <div v-if="currentStep.key === 'portal'" class="setup-step__action mb-4">
                       <v-alert type="info" variant="tonal" border="start" class="mb-2">
-                        Start the Portal bot and verify it responds before continuing to Raven.
+                        Installing this step automatically starts the Portal bot and verifies the
+                        Discord handshake. If everything is already installed, click
+                        <strong>Install Step</strong> to run the verification again.
                       </v-alert>
-                      <v-btn
-                        color="primary"
-                        :loading="portalAction.loading"
-                        :disabled="installing || portalAction.loading || portalAction.success"
-                        @click="startPortalTest"
+                      <v-alert
+                        v-if="portalAction.loading"
+                        type="info"
+                        variant="tonal"
+                        border="start"
+                        class="mb-2"
                       >
-                        <template v-if="portalAction.success">
-                          Portal bot verified
-                        </template>
-                        <template v-else>
-                          Start &amp; Test Portal Bot
-                        </template>
-                      </v-btn>
-                      <div v-if="portalAction.error" class="text-body-2 text-error mt-2">
+                        Verifying Portal bot connection…
+                      </v-alert>
+                      <v-alert
+                        v-else-if="portalAction.success"
+                        type="success"
+                        variant="tonal"
+                        border="start"
+                        class="mb-2"
+                      >
+                        Portal bot verified successfully.
+                      </v-alert>
+                      <v-alert
+                        v-else-if="portalAction.error"
+                        type="error"
+                        variant="tonal"
+                        border="start"
+                        class="mb-2"
+                      >
                         {{ portalAction.error }}
-                      </div>
+                      </v-alert>
                     </div>
 
                     <div v-if="currentStep.key === 'raven'" class="setup-step__action mb-4">
