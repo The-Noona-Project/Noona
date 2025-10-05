@@ -61,6 +61,8 @@ const PORTAL_DISCORD_GUILD_KEY = 'DISCORD_GUILD_ID';
 const PORTAL_ROLE_SUFFIX = '_ROLE_ID';
 const PORTAL_CHANNEL_SUFFIX = '_CHANNEL_ID';
 const PORTAL_REQUIRED_ROLE_PREFIX = 'REQUIRED_ROLE_';
+const DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE =
+  '/api/setup/services/noona-portal/discord';
 const PORTAL_CREDENTIAL_KEYS = new Set([
   PORTAL_DISCORD_TOKEN_KEY,
   PORTAL_DISCORD_GUILD_KEY,
@@ -187,6 +189,27 @@ const installLogs = ref('');
 const showProgressDetails = ref(false);
 const progressLogsLoading = ref(false);
 const activeStepIndex = ref(0);
+
+const portalDiscordEndpointBase = computed(() => {
+  const endpoint = activeServicesEndpoint.value;
+  if (typeof endpoint !== 'string') {
+    return DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE;
+  }
+
+  const trimmed = endpoint.trim();
+  if (!trimmed) {
+    return DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE;
+  }
+
+  const [withoutQuery] = trimmed.split('?');
+  const sanitized = withoutQuery.replace(/\/+$/, '');
+
+  if (!sanitized.endsWith('/setup/services')) {
+    return DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE;
+  }
+
+  return `${sanitized}/noona-portal/discord`;
+});
 
 const portalAction = reactive({
   loading: false,
@@ -556,7 +579,10 @@ const connectPortalDiscord = async () => {
   portalDiscordState.createChannel.error = '';
 
   try {
-    const payload = await validatePortalDiscordConfig({ token, guildId });
+    const payload = await validatePortalDiscordConfig(
+      { token, guildId },
+      portalDiscordEndpointBase.value,
+    );
     const guild = sanitizePortalGuild(payload?.guild);
     const roles = normalizePortalRoles(payload?.roles);
     const channels = normalizePortalChannels(payload?.channels);
@@ -609,11 +635,14 @@ const handleCreatePortalRole = async (fieldKey) => {
   portalDiscordState.createRole.error = '';
 
   try {
-    const role = await createPortalDiscordRole({
-      token: portalDiscordState.lastVerifiedToken,
-      guildId: portalDiscordState.lastVerifiedGuildId,
-      name,
-    });
+    const role = await createPortalDiscordRole(
+      {
+        token: portalDiscordState.lastVerifiedToken,
+        guildId: portalDiscordState.lastVerifiedGuildId,
+        name,
+      },
+      portalDiscordEndpointBase.value,
+    );
 
     const sanitized = sanitizePortalRole(role);
     if (!sanitized) {
@@ -656,12 +685,15 @@ const handleCreatePortalChannel = async (fieldKey) => {
   portalDiscordState.createChannel.error = '';
 
   try {
-    const channel = await createPortalDiscordChannel({
-      token: portalDiscordState.lastVerifiedToken,
-      guildId: portalDiscordState.lastVerifiedGuildId,
-      name,
-      type: portalDiscordState.createChannel.type,
-    });
+    const channel = await createPortalDiscordChannel(
+      {
+        token: portalDiscordState.lastVerifiedToken,
+        guildId: portalDiscordState.lastVerifiedGuildId,
+        name,
+        type: portalDiscordState.createChannel.type,
+      },
+      portalDiscordEndpointBase.value,
+    );
 
     const sanitized = sanitizePortalChannel(channel);
     if (!sanitized) {
