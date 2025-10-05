@@ -1463,7 +1463,22 @@ export function createWarden(options = {}) {
 
         const descriptor = entry.descriptor;
         const { path: pathOverride, url: urlOverride, method = 'GET', headers = {}, body: requestBody = null } = options ?? {};
-        let targetUrl = null;
+        const candidateUrls = [];
+        const seenCandidates = new Set();
+
+        const addCandidate = (candidate) => {
+            if (typeof candidate !== 'string') {
+                return;
+            }
+
+            const trimmedCandidate = candidate.trim();
+            if (!trimmedCandidate || seenCandidates.has(trimmedCandidate)) {
+                return;
+            }
+
+            seenCandidates.add(trimmedCandidate);
+            candidateUrls.push(trimmedCandidate);
+        };
 
         const resolveHealthFromHostBase = (baseUrl) => {
             if (typeof baseUrl !== 'string') {
@@ -1499,32 +1514,26 @@ export function createWarden(options = {}) {
         const hostHealthUrl = hostBase ? resolveHealthFromHostBase(hostBase) : null;
 
         if (typeof urlOverride === 'string' && urlOverride.trim()) {
-            targetUrl = urlOverride.trim();
+            addCandidate(urlOverride);
         }
 
-        if (!targetUrl && typeof pathOverride === 'string' && pathOverride.trim()) {
+        if (!urlOverride && typeof pathOverride === 'string' && pathOverride.trim()) {
             if (hostBase) {
                 try {
-                    targetUrl = new URL(pathOverride, hostBase).toString();
+                    addCandidate(new URL(pathOverride, hostBase).toString());
                 } catch {
-                    targetUrl = `${hostBase.replace(/\/$/, '')}/${pathOverride.replace(/^\//, '')}`;
+                    addCandidate(`${hostBase.replace(/\/$/, '')}/${pathOverride.replace(/^\//, '')}`);
                 }
             }
         }
 
-        if (!targetUrl && hostHealthUrl) {
-            targetUrl = hostHealthUrl;
+        addCandidate(hostHealthUrl);
+
+        if (typeof descriptor.health === 'string' && descriptor.health.trim()) {
+            addCandidate(descriptor.health.trim());
         }
 
-        if (!targetUrl && typeof descriptor.health === 'string' && descriptor.health.trim()) {
-            targetUrl = descriptor.health.trim();
-        }
-
-        if (!targetUrl && hostHealthUrl) {
-            targetUrl = hostHealthUrl;
-        }
-
-        if (!targetUrl) {
+        if (!candidateUrls.length) {
             const errorMessage = 'Portal health endpoint is not defined.';
             appendHistoryEntry(trimmedName, {
                 type: 'error',
@@ -1542,85 +1551,96 @@ export function createWarden(options = {}) {
             };
         }
 
-        appendHistoryEntry(trimmedName, {
-            type: 'status',
-            status: 'testing',
-            message: `Testing service via ${targetUrl}`,
-            detail: targetUrl,
-        });
+        const attemptErrors = [];
 
-        const start = Date.now();
-
-        try {
-            const response = await fetchImpl(targetUrl, {
-                method,
-                headers,
-                body: requestBody,
+        for (const targetUrl of candidateUrls) {
+            appendHistoryEntry(trimmedName, {
+                type: 'status',
+                status: 'testing',
+                message: `Testing service via ${targetUrl}`,
+                detail: targetUrl,
             });
 
-            const duration = Date.now() - start;
-            const rawBody = await response.text();
-            let parsedBody = rawBody;
+            const start = Date.now();
 
             try {
-                parsedBody = rawBody ? JSON.parse(rawBody) : null;
-            } catch {
-                // Keep rawBody as-is when not valid JSON.
-            }
+                const response = await fetchImpl(targetUrl, {
+                    method,
+                    headers,
+                    body: requestBody,
+                });
 
-            if (!response.ok) {
-                const errorMessage = `Service responded with status ${response.status}`;
+                const duration = Date.now() - start;
+                const rawBody = await response.text();
+                let parsedBody = rawBody;
+
+                try {
+                    parsedBody = rawBody ? JSON.parse(rawBody) : null;
+                } catch {
+                    // Keep rawBody as-is when not valid JSON.
+                }
+
+                if (!response.ok) {
+                    const errorMessage = `Service responded with status ${response.status}`;
+                    appendHistoryEntry(trimmedName, {
+                        type: 'error',
+                        status: 'error',
+                        message: errorMessage,
+                        detail: typeof parsedBody === 'string' ? parsedBody : JSON.stringify(parsedBody),
+                        error: errorMessage,
+                    });
+
+                    return {
+                        service: trimmedName,
+                        success: false,
+                        supported: true,
+                        status: response.status,
+                        duration,
+                        error: errorMessage,
+                        body: parsedBody,
+                    };
+                }
+
                 appendHistoryEntry(trimmedName, {
-                    type: 'error',
-                    status: 'error',
-                    message: errorMessage,
-                    detail: typeof parsedBody === 'string' ? parsedBody : JSON.stringify(parsedBody),
-                    error: errorMessage,
+                    type: 'status',
+                    status: 'tested',
+                    message: 'Portal health check succeeded',
+                    detail: targetUrl,
                 });
 
                 return {
                     service: trimmedName,
-                    success: false,
+                    success: true,
                     supported: true,
                     status: response.status,
                     duration,
-                    error: errorMessage,
                     body: parsedBody,
                 };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                attemptErrors.push({ url: targetUrl, message });
+
+                appendHistoryEntry(trimmedName, {
+                    type: 'error',
+                    status: 'error',
+                    message: 'Portal test failed',
+                    detail: message,
+                    error: message,
+                });
             }
-
-            appendHistoryEntry(trimmedName, {
-                type: 'status',
-                status: 'tested',
-                message: 'Portal health check succeeded',
-                detail: targetUrl,
-            });
-
-            return {
-                service: trimmedName,
-                success: true,
-                supported: true,
-                status: response.status,
-                duration,
-                body: parsedBody,
-            };
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            appendHistoryEntry(trimmedName, {
-                type: 'error',
-                status: 'error',
-                message: 'Portal test failed',
-                detail: message,
-                error: message,
-            });
-
-            return {
-                service: trimmedName,
-                success: false,
-                supported: true,
-                error: message,
-            };
         }
+
+        const formattedErrors = attemptErrors.map(({ url, message }) => `${url} (${message})`);
+        const aggregatedMessage = attemptErrors.length
+            ? `Portal test failed for all candidates: ${formattedErrors.join('; ')}`
+            : 'Portal test failed for all candidates.';
+
+        return {
+            service: trimmedName,
+            success: false,
+            supported: true,
+            error: aggregatedMessage,
+        };
     };
 
     api.bootMinimal = async function bootMinimal() {
