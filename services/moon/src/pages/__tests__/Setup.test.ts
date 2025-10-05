@@ -103,6 +103,9 @@ const servicesPayload = {
   ],
 };
 
+const cloneServicesPayload = () =>
+  JSON.parse(JSON.stringify(servicesPayload)) as typeof servicesPayload;
+
 const PORTAL_TOKEN_KEY = 'DISCORD_BOT_TOKEN';
 const PORTAL_GUILD_KEY = 'DISCORD_GUILD_ID';
 
@@ -216,6 +219,89 @@ describe('Setup page', () => {
 
     const successAlert = wrapper.find('[data-test="portal-success"]');
     expect(successAlert.exists()).toBe(true);
+  });
+
+  it('renders required role fields as role dropdowns after Discord validation', async () => {
+    const discordPayload = {
+      guild: { id: '123', name: 'Noona Guild' },
+      roles: [
+        { id: '456', name: 'Reader', position: 1 },
+        { id: '789', name: 'Writer', position: 2 },
+      ],
+      channels: [],
+    };
+
+    const requiredRoleServices = cloneServicesPayload();
+    const portalService = requiredRoleServices.services.find(
+      (service) => service.name === 'noona-portal',
+    );
+    if (portalService) {
+      portalService.envConfig = [
+        ...portalService.envConfig,
+        { key: 'REQUIRED_ROLE_DING', label: 'Required Role Ding' },
+      ];
+    }
+
+    const fetchMock = vi.fn<(url: RequestInfo | URL) => Promise<Response>>((url) => {
+      const target = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+      if (target.includes('/discord/validate')) {
+        return Promise.resolve(mockResponse(discordPayload));
+      }
+      return Promise.resolve(mockResponse(requiredRoleServices));
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+          expandedCards: string[];
+          envForms: Record<string, Record<string, string>>;
+          portalDiscordState: { verified: boolean };
+          connectPortalDiscord: () => Promise<void>;
+          getPortalSelectItems: (field: { key: string }) => Array<{ value: string }>;
+        };
+      };
+    };
+
+    vm.$.setupState.activeStepIndex = 1;
+    vm.$.setupState.expandedCards = ['noona-portal'];
+    await wrapper.vm.$nextTick();
+
+    const requiredRoleSelectBefore = wrapper.find(
+      'select[data-test="portal-resource-REQUIRED_ROLE_DING"]',
+    );
+    expect(requiredRoleSelectBefore.exists()).toBe(true);
+    expect(requiredRoleSelectBefore.attributes('disabled')).toBeDefined();
+
+    const envForms = vm.$.setupState.envForms;
+    envForms['noona-portal'][PORTAL_TOKEN_KEY] = 'token-value';
+    envForms['noona-portal'][PORTAL_GUILD_KEY] = 'guild-value';
+    await wrapper.vm.$nextTick();
+
+    await vm.$.setupState.connectPortalDiscord();
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    expect(vm.$.setupState.portalDiscordState.verified).toBe(true);
+
+    const requiredRoleSelectAfter = wrapper.find(
+      'select[data-test="portal-resource-REQUIRED_ROLE_DING"]',
+    );
+    expect(requiredRoleSelectAfter.attributes('disabled')).toBeUndefined();
+
+    const selectItems = vm.$.setupState.getPortalSelectItems({ key: 'REQUIRED_ROLE_DING' });
+    expect(selectItems).toEqual(
+      expect.arrayContaining([expect.objectContaining({ value: '456' })]),
+    );
   });
 
   it('persists new Discord resources created from the setup flow', async () => {

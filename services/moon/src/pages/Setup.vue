@@ -59,6 +59,7 @@ const PORTAL_DISCORD_TOKEN_KEY = 'DISCORD_BOT_TOKEN';
 const PORTAL_DISCORD_GUILD_KEY = 'DISCORD_GUILD_ID';
 const PORTAL_ROLE_SUFFIX = '_ROLE_ID';
 const PORTAL_CHANNEL_SUFFIX = '_CHANNEL_ID';
+const PORTAL_REQUIRED_ROLE_PREFIX = 'REQUIRED_ROLE_';
 const PORTAL_CREDENTIAL_KEYS = new Set([
   PORTAL_DISCORD_TOKEN_KEY,
   PORTAL_DISCORD_GUILD_KEY,
@@ -466,15 +467,19 @@ const getServiceEnvFields = (service) => {
   );
 };
 
+const isPortalRoleFieldKey = (key) =>
+  typeof key === 'string' &&
+  (key.endsWith(PORTAL_ROLE_SUFFIX) || key.startsWith(PORTAL_REQUIRED_ROLE_PREFIX));
+
+const isPortalChannelFieldKey = (key) =>
+  typeof key === 'string' && key.endsWith(PORTAL_CHANNEL_SUFFIX);
+
 const isPortalResourceField = (field) => {
   if (!field || typeof field.key !== 'string') {
     return false;
   }
 
-  return (
-    field.key.endsWith(PORTAL_ROLE_SUFFIX) ||
-    field.key.endsWith(PORTAL_CHANNEL_SUFFIX)
-  );
+  return isPortalRoleFieldKey(field.key) || isPortalChannelFieldKey(field.key);
 };
 
 const shouldRenderPortalResourceSelect = (service, field) =>
@@ -485,11 +490,11 @@ const getPortalSelectItems = (field) => {
     return [];
   }
 
-  if (field.key.endsWith(PORTAL_ROLE_SUFFIX)) {
+  if (isPortalRoleFieldKey(field.key)) {
     return portalRoleOptions.value;
   }
 
-  if (field.key.endsWith(PORTAL_CHANNEL_SUFFIX)) {
+  if (isPortalChannelFieldKey(field.key)) {
     return portalChannelOptions.value;
   }
 
