@@ -1,6 +1,6 @@
 // services/sage/shared/discordSetupClient.mjs
 
-import createDiscordClient from '../../portal/shared/discordClient.mjs'
+import createDiscordClient from './discordClient.mjs'
 import { SetupValidationError } from './errors.mjs'
 
 const normalizeString = (value) => {
