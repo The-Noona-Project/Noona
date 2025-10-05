@@ -457,11 +457,9 @@ describe('Setup page', () => {
 
     await wrapper.vm.$nextTick();
 
-    const portalButtonBefore = wrapper
-      .findAll('button')
-      .find((btn) => btn.text().includes('Portal bot verified'));
-    expect(portalButtonBefore).toBeTruthy();
-    expect(portalButtonBefore?.attributes('disabled')).toBeDefined();
+    const installButtonBefore = wrapper.find('button.setup-step__install');
+    expect(installButtonBefore.exists()).toBe(true);
+    expect(installButtonBefore.attributes('disabled')).toBeDefined();
 
     const nextButtonBefore = wrapper
       .findAll('button')
@@ -489,11 +487,10 @@ describe('Setup page', () => {
     vm.$.setupState.goToStep(1);
     await wrapper.vm.$nextTick();
 
-    const portalButtonAfter = wrapper
-      .findAll('button')
-      .find((btn) => btn.text().includes('Start & Test Portal Bot'));
-    expect(portalButtonAfter).toBeTruthy();
-    expect(portalButtonAfter?.attributes('disabled')).toBeUndefined();
+    const installButtonAfter = wrapper.find('button.setup-step__install');
+    expect(installButtonAfter.exists()).toBe(true);
+    expect(installButtonAfter.attributes('disabled')).toBeUndefined();
+    expect(wrapper.text()).toContain('Installing this step automatically starts the Portal bot');
 
     const nextButtonAfter = wrapper
       .findAll('button')
@@ -885,11 +882,10 @@ describe('Setup page', () => {
     expect(setupState.ravenAction.success).toBe(false);
     expect(setupState.ravenAction.error).toBe('');
 
-    const portalButton = wrapper
-      .findAll('button')
-      .find((button) => button.text().includes('Start & Test Portal Bot'));
-    expect(portalButton).toBeDefined();
-    expect(portalButton?.attributes('disabled')).toBeUndefined();
+    const installButton = wrapper.find('button.setup-step__install');
+    expect(installButton.exists()).toBe(true);
+    expect(installButton.attributes('disabled')).toBeUndefined();
+    expect(wrapper.text()).toContain('Installing this step automatically starts the Portal bot');
 
     setupState.goToStep(0);
     await wrapper.vm.$nextTick();
@@ -966,13 +962,11 @@ describe('Setup page', () => {
 
     await wrapper.vm.$nextTick();
 
-    const portalButton = wrapper
-      .findAll('button')
-      .find((btn) => btn.text().includes('Start & Test Portal Bot'));
+    const installButton = wrapper.find('button.setup-step__install');
 
-    expect(portalButton).toBeTruthy();
+    expect(installButton.exists()).toBe(true);
 
-    await portalButton?.trigger('click');
+    await installButton.trigger('click');
 
     await flushAsync();
     await wrapper.vm.$nextTick();
@@ -1054,13 +1048,11 @@ describe('Setup page', () => {
 
     await wrapper.vm.$nextTick();
 
-    const portalButton = wrapper
-      .findAll('button')
-      .find((btn) => btn.text().includes('Start & Test Portal Bot'));
+    const installButton = wrapper.find('button.setup-step__install');
 
-    expect(portalButton).toBeTruthy();
+    expect(installButton.exists()).toBe(true);
 
-    await portalButton?.trigger('click');
+    await installButton.trigger('click');
 
     await flushAsync();
     await wrapper.vm.$nextTick();
