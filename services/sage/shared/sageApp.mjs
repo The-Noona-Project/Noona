@@ -4,13 +4,8 @@ import express from 'express'
 import cors from 'cors'
 
 import { debugMSG, errMSG, log } from '../../../utilities/etc/logger.mjs'
-
-export class SetupValidationError extends Error {
-    constructor(message) {
-        super(message)
-        this.name = 'SetupValidationError'
-    }
-}
+import { SetupValidationError } from './errors.mjs'
+import { createDiscordSetupClient } from './discordSetupClient.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
@@ -259,6 +254,7 @@ export const createSageApp = ({
     serviceName = defaultServiceName(),
     logger: loggerOverrides,
     setupClient: setupClientOverride,
+    discordSetupClient: discordSetupClientOverride,
     setup: setupOptions = {},
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
@@ -271,6 +267,12 @@ export const createSageApp = ({
             logger,
             serviceName,
             env: setupOptions.env ?? process.env,
+        })
+    const discordSetupClient =
+        discordSetupClientOverride ||
+        createDiscordSetupClient({
+            logger,
+            serviceName,
         })
     const app = express()
 
@@ -355,6 +357,54 @@ export const createSageApp = ({
         }
     })
 
+    app.post('/api/setup/services/noona-portal/discord/validate', async (req, res) => {
+        try {
+            const { token, guildId } = req.body ?? {}
+            const payload = await discordSetupClient.fetchResources({ token, guildId })
+            res.json(payload)
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ❌ Discord validation failed: ${error.message}`)
+            res.status(502).json({ error: 'Unable to verify Discord configuration.' })
+        }
+    })
+
+    app.post('/api/setup/services/noona-portal/discord/roles', async (req, res) => {
+        try {
+            const { token, guildId, name } = req.body ?? {}
+            const role = await discordSetupClient.createRole({ token, guildId, name })
+            res.status(201).json({ role })
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ❌ Failed to create Discord role: ${error.message}`)
+            res.status(502).json({ error: 'Unable to create Discord role.' })
+        }
+    })
+
+    app.post('/api/setup/services/noona-portal/discord/channels', async (req, res) => {
+        try {
+            const { token, guildId, name, type } = req.body ?? {}
+            const channel = await discordSetupClient.createChannel({ token, guildId, name, type })
+            res.status(201).json({ channel })
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ❌ Failed to create Discord channel: ${error.message}`)
+            res.status(502).json({ error: 'Unable to create Discord channel.' })
+        }
+    })
+
     app.post('/api/setup/services/noona-raven/detect', async (_req, res) => {
         try {
             const { status, detection, error } = await setupClient.detectRavenMount()
@@ -378,10 +428,17 @@ export const startSage = ({
     serviceName = defaultServiceName(),
     logger: loggerOverrides,
     setupClient,
+    discordSetupClient,
     setup,
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
-    const app = createSageApp({ serviceName, logger, setupClient, setup })
+    const app = createSageApp({
+        serviceName,
+        logger,
+        setupClient,
+        discordSetupClient,
+        setup,
+    })
     const server = app.listen(port, () => {
         logger.info(`[${serviceName}] 🧠 Sage is live on port ${port}`)
     })

@@ -3,6 +3,11 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import Header from '../components/Header.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 import { isServiceRequired, mergeRequiredSelections } from '../utils/serviceSelection.js';
+import {
+  createPortalDiscordChannel,
+  createPortalDiscordRole,
+  validatePortalDiscordConfig,
+} from '../utils/portalDiscordSetup.js';
 
 const DEFAULT_INSTALL_ENDPOINT = '/api/setup/install';
 const INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress';
@@ -48,6 +53,103 @@ const SERVICE_DEPENDENCIES = {
 };
 
 const ALWAYS_SELECTED_SERVICES = new Set(['noona-redis', 'noona-mongo']);
+const PORTAL_SERVICE_NAME = 'noona-portal';
+const PORTAL_DISCORD_TOKEN_KEY = 'DISCORD_BOT_TOKEN';
+const PORTAL_DISCORD_GUILD_KEY = 'DISCORD_GUILD_ID';
+const PORTAL_ROLE_SUFFIX = '_ROLE_ID';
+const PORTAL_CHANNEL_SUFFIX = '_CHANNEL_ID';
+const PORTAL_CREDENTIAL_KEYS = new Set([
+  PORTAL_DISCORD_TOKEN_KEY,
+  PORTAL_DISCORD_GUILD_KEY,
+]);
+
+const sanitizePortalRole = (role) => {
+  if (!role || !role.id) {
+    return null;
+  }
+
+  const name = typeof role.name === 'string' ? role.name : '';
+  return {
+    id: String(role.id),
+    name,
+    position: typeof role.position === 'number' ? role.position : null,
+    managed: Boolean(role.managed),
+  };
+};
+
+const sanitizePortalChannel = (channel) => {
+  if (!channel || !channel.id) {
+    return null;
+  }
+
+  return {
+    id: String(channel.id),
+    name: typeof channel.name === 'string' ? channel.name : '',
+    type: channel.type ?? null,
+  };
+};
+
+const sanitizePortalGuild = (guild) => {
+  if (!guild) {
+    return null;
+  }
+
+  return {
+    id: guild.id ? String(guild.id) : null,
+    name: typeof guild.name === 'string' ? guild.name : '',
+    description: typeof guild.description === 'string' ? guild.description : '',
+    icon: guild.icon ?? null,
+  };
+};
+
+const sortPortalRoles = (a, b) => {
+  const positionA = typeof a?.position === 'number' ? a.position : 0;
+  const positionB = typeof b?.position === 'number' ? b.position : 0;
+  if (positionA === positionB) {
+    return (a?.name || '').localeCompare(b?.name || '');
+  }
+
+  return positionB - positionA;
+};
+
+const sortPortalChannels = (a, b) => (a?.name || '').localeCompare(b?.name || '');
+
+const normalizePortalRoles = (roles) => {
+  if (!Array.isArray(roles)) {
+    return [];
+  }
+
+  return roles
+    .map(sanitizePortalRole)
+    .filter(Boolean)
+    .sort(sortPortalRoles);
+};
+
+const normalizePortalChannels = (channels) => {
+  if (!Array.isArray(channels)) {
+    return [];
+  }
+
+  return channels
+    .map(sanitizePortalChannel)
+    .filter(Boolean)
+    .sort(sortPortalChannels);
+};
+
+const mergePortalResource = (collection, entry, sortFn) => {
+  if (!entry || !entry.id) {
+    return collection.slice();
+  }
+
+  const filtered = collection.filter((item) => item?.id !== entry.id);
+  filtered.push(entry);
+  if (typeof sortFn === 'function') {
+    filtered.sort(sortFn);
+  }
+
+  return filtered;
+};
+
 const BOOLEAN_OPTIONS = [
   { title: 'True', value: 'true' },
   { title: 'False', value: 'false' },
@@ -82,6 +184,28 @@ const portalAction = reactive({
   loading: false,
   success: false,
   error: '',
+});
+
+const portalDiscordState = reactive({
+  verifying: false,
+  verified: false,
+  error: '',
+  guild: null,
+  roles: [],
+  channels: [],
+  lastVerifiedToken: '',
+  lastVerifiedGuildId: '',
+  createRole: {
+    name: '',
+    loading: false,
+    error: '',
+  },
+  createChannel: {
+    name: '',
+    type: 'GUILD_TEXT',
+    loading: false,
+    error: '',
+  },
 });
 
 const ravenAction = reactive({
@@ -127,6 +251,45 @@ const installedSet = computed(() => {
 });
 
 const currentStep = computed(() => STEP_DEFINITIONS[activeStepIndex.value]);
+
+const portalEnvForm = computed(
+  () => envForms[PORTAL_SERVICE_NAME] ?? {},
+);
+
+const portalService = computed(() => serviceMap.value.get(PORTAL_SERVICE_NAME));
+
+const hasPortalService = computed(() => Boolean(portalService.value));
+
+const portalDiscordReady = computed(() => portalDiscordState.verified);
+
+const canValidatePortalDiscord = computed(() => {
+  if (portalDiscordState.verifying) {
+    return false;
+  }
+
+  const token = portalEnvForm.value[PORTAL_DISCORD_TOKEN_KEY];
+  const guildId = portalEnvForm.value[PORTAL_DISCORD_GUILD_KEY];
+  const normalizedToken = typeof token === 'string' ? token.trim() : '';
+  const normalizedGuildId = typeof guildId === 'string' ? guildId.trim() : '';
+
+  return Boolean(normalizedToken && normalizedGuildId);
+});
+
+const portalRoleOptions = computed(() =>
+  portalDiscordState.roles.map((role) => ({
+    title: role.name || role.id,
+    subtitle: role.id,
+    value: role.id,
+  })),
+);
+
+const portalChannelOptions = computed(() =>
+  portalDiscordState.channels.map((channel) => ({
+    title: channel.name || channel.id,
+    subtitle: channel.type ? `${channel.name || channel.id} (${channel.type})` : channel.name || channel.id,
+    value: channel.id,
+  })),
+);
 
 const getStepServices = (stepKey) => {
   const definition = STEP_DEFINITIONS.find((step) => step.key === stepKey);
@@ -280,6 +443,227 @@ const buildEnvPayload = (service) => {
 
 const SERVICE_ENDPOINTS = buildServiceEndpointCandidates();
 
+const getServiceEnvFields = (service) => {
+  if (!service || !Array.isArray(service.envConfig)) {
+    return [];
+  }
+
+  if (service.name !== PORTAL_SERVICE_NAME) {
+    return service.envConfig;
+  }
+
+  return service.envConfig.filter(
+    (field) => !PORTAL_CREDENTIAL_KEYS.has(field?.key),
+  );
+};
+
+const isPortalResourceField = (field) => {
+  if (!field || typeof field.key !== 'string') {
+    return false;
+  }
+
+  return (
+    field.key.endsWith(PORTAL_ROLE_SUFFIX) ||
+    field.key.endsWith(PORTAL_CHANNEL_SUFFIX)
+  );
+};
+
+const shouldRenderPortalResourceSelect = (service, field) =>
+  service?.name === PORTAL_SERVICE_NAME && isPortalResourceField(field);
+
+const getPortalSelectItems = (field) => {
+  if (!isPortalResourceField(field)) {
+    return [];
+  }
+
+  if (field.key.endsWith(PORTAL_ROLE_SUFFIX)) {
+    return portalRoleOptions.value;
+  }
+
+  if (field.key.endsWith(PORTAL_CHANNEL_SUFFIX)) {
+    return portalChannelOptions.value;
+  }
+
+  return [];
+};
+
+const isPortalFieldLocked = (field) => {
+  if (!field || !field.key) {
+    return false;
+  }
+
+  if (PORTAL_CREDENTIAL_KEYS.has(field.key)) {
+    return false;
+  }
+
+  return !portalDiscordReady.value;
+};
+
+const resetPortalDiscordState = () => {
+  portalDiscordState.verifying = false;
+  portalDiscordState.verified = false;
+  portalDiscordState.error = '';
+  portalDiscordState.guild = null;
+  portalDiscordState.roles = [];
+  portalDiscordState.channels = [];
+  portalDiscordState.lastVerifiedToken = '';
+  portalDiscordState.lastVerifiedGuildId = '';
+  portalDiscordState.createRole.name = '';
+  portalDiscordState.createRole.error = '';
+  portalDiscordState.createRole.loading = false;
+  portalDiscordState.createChannel.name = '';
+  portalDiscordState.createChannel.error = '';
+  portalDiscordState.createChannel.loading = false;
+};
+
+const connectPortalDiscord = async () => {
+  if (portalDiscordState.verifying) return;
+
+  const rawToken = portalEnvForm.value[PORTAL_DISCORD_TOKEN_KEY];
+  const rawGuildId = portalEnvForm.value[PORTAL_DISCORD_GUILD_KEY];
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  const guildId = typeof rawGuildId === 'string' ? rawGuildId.trim() : '';
+
+  if (!token || !guildId) {
+    portalDiscordState.error =
+      'Provide both the Discord bot token and guild ID to continue.';
+    portalDiscordState.verified = false;
+    return;
+  }
+
+  portalDiscordState.verifying = true;
+  portalDiscordState.error = '';
+  portalDiscordState.createRole.error = '';
+  portalDiscordState.createChannel.error = '';
+
+  try {
+    const payload = await validatePortalDiscordConfig({ token, guildId });
+    const guild = sanitizePortalGuild(payload?.guild);
+    const roles = normalizePortalRoles(payload?.roles);
+    const channels = normalizePortalChannels(payload?.channels);
+
+    portalDiscordState.guild = guild;
+    portalDiscordState.roles = roles;
+    portalDiscordState.channels = channels;
+    portalDiscordState.verified = true;
+    portalDiscordState.lastVerifiedToken = token;
+    portalDiscordState.lastVerifiedGuildId = guildId;
+
+    if (portalEnvForm.value[PORTAL_DISCORD_TOKEN_KEY] !== token) {
+      portalEnvForm.value[PORTAL_DISCORD_TOKEN_KEY] = token;
+    }
+    if (portalEnvForm.value[PORTAL_DISCORD_GUILD_KEY] !== guildId) {
+      portalEnvForm.value[PORTAL_DISCORD_GUILD_KEY] = guildId;
+    }
+  } catch (error) {
+    portalDiscordState.error =
+      error instanceof Error ? error.message : String(error);
+    portalDiscordState.verified = false;
+    portalDiscordState.guild = null;
+    portalDiscordState.roles = [];
+    portalDiscordState.channels = [];
+    portalDiscordState.lastVerifiedToken = '';
+    portalDiscordState.lastVerifiedGuildId = '';
+  } finally {
+    portalDiscordState.verifying = false;
+  }
+};
+
+const handleCreatePortalRole = async (fieldKey) => {
+  if (portalDiscordState.createRole.loading) {
+    return;
+  }
+
+  if (!portalDiscordReady.value) {
+    portalDiscordState.createRole.error =
+      'Verify the Discord connection before creating a role.';
+    return;
+  }
+
+  const name = portalDiscordState.createRole.name.trim();
+  if (!name) {
+    portalDiscordState.createRole.error = 'Role name is required.';
+    return;
+  }
+
+  portalDiscordState.createRole.loading = true;
+  portalDiscordState.createRole.error = '';
+
+  try {
+    const role = await createPortalDiscordRole({
+      token: portalDiscordState.lastVerifiedToken,
+      guildId: portalDiscordState.lastVerifiedGuildId,
+      name,
+    });
+
+    const sanitized = sanitizePortalRole(role);
+    if (!sanitized) {
+      throw new Error('Role creation did not return a valid role.');
+    }
+
+    portalDiscordState.roles = mergePortalResource(
+      portalDiscordState.roles,
+      sanitized,
+      sortPortalRoles,
+    );
+    portalEnvForm.value[fieldKey] = sanitized.id;
+    portalDiscordState.createRole.name = '';
+  } catch (error) {
+    portalDiscordState.createRole.error =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    portalDiscordState.createRole.loading = false;
+  }
+};
+
+const handleCreatePortalChannel = async (fieldKey) => {
+  if (portalDiscordState.createChannel.loading) {
+    return;
+  }
+
+  if (!portalDiscordReady.value) {
+    portalDiscordState.createChannel.error =
+      'Verify the Discord connection before creating a channel.';
+    return;
+  }
+
+  const name = portalDiscordState.createChannel.name.trim();
+  if (!name) {
+    portalDiscordState.createChannel.error = 'Channel name is required.';
+    return;
+  }
+
+  portalDiscordState.createChannel.loading = true;
+  portalDiscordState.createChannel.error = '';
+
+  try {
+    const channel = await createPortalDiscordChannel({
+      token: portalDiscordState.lastVerifiedToken,
+      guildId: portalDiscordState.lastVerifiedGuildId,
+      name,
+      type: portalDiscordState.createChannel.type,
+    });
+
+    const sanitized = sanitizePortalChannel(channel);
+    if (!sanitized) {
+      throw new Error('Channel creation did not return a valid channel.');
+    }
+
+    portalDiscordState.channels = mergePortalResource(
+      portalDiscordState.channels,
+      sanitized,
+      sortPortalChannels,
+    );
+    portalEnvForm.value[fieldKey] = sanitized.id;
+    portalDiscordState.createChannel.name = '';
+  } catch (error) {
+    portalDiscordState.createChannel.error =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    portalDiscordState.createChannel.loading = false;
+  }
+};
+
 const deriveInstallEndpoint = (servicesEndpoint) => {
   if (typeof servicesEndpoint !== 'string') {
     return DEFAULT_INSTALL_ENDPOINT;
@@ -356,6 +740,7 @@ const refreshServices = async () => {
   state.loading = true;
   state.loadError = '';
   installEndpoint.value = DEFAULT_INSTALL_ENDPOINT;
+  resetPortalDiscordState();
 
   const errors = [];
   const previousSelection = new Set(selectedServices.value);
@@ -794,6 +1179,35 @@ watch(
   { deep: true },
 );
 
+watch(
+  () => [
+    portalEnvForm.value[PORTAL_DISCORD_TOKEN_KEY],
+    portalEnvForm.value[PORTAL_DISCORD_GUILD_KEY],
+  ],
+  ([token, guildId]) => {
+    const normalizedToken = typeof token === 'string' ? token.trim() : '';
+    const normalizedGuildId =
+      typeof guildId === 'string' ? guildId.trim() : '';
+
+    if (
+      portalDiscordState.verified &&
+      (normalizedToken !== portalDiscordState.lastVerifiedToken ||
+        normalizedGuildId !== portalDiscordState.lastVerifiedGuildId)
+    ) {
+      portalDiscordState.verified = false;
+      portalDiscordState.guild = null;
+      portalDiscordState.roles = [];
+      portalDiscordState.channels = [];
+    }
+  },
+);
+
+watch(hasPortalService, (present) => {
+  if (!present) {
+    resetPortalDiscordState();
+  }
+});
+
 onMounted(() => {
   void refreshServices();
 });
@@ -1026,36 +1440,226 @@ onMounted(() => {
                           class="setup-service-card__env pa-4"
                         >
                           <div
-                            v-if="!service.envConfig || service.envConfig.length === 0"
+                            v-if="service.name === PORTAL_SERVICE_NAME"
+                            class="portal-discord__section mb-4"
+                          >
+                            <v-alert
+                              type="info"
+                              variant="tonal"
+                              border="start"
+                              class="mb-4"
+                            >
+                              Connect the Portal Discord bot before configuring guild resources.
+                            </v-alert>
+                            <v-row dense class="portal-discord__credentials">
+                              <v-col cols="12" md="6">
+                                <v-text-field
+                                  v-model="envForms[service.name][PORTAL_DISCORD_TOKEN_KEY]"
+                                  label="Discord Bot Token"
+                                  :disabled="installing || portalDiscordState.verifying"
+                                  data-test="portal-token"
+                                />
+                              </v-col>
+                              <v-col cols="12" md="4">
+                                <v-text-field
+                                  v-model="envForms[service.name][PORTAL_DISCORD_GUILD_KEY]"
+                                  label="Discord Guild ID"
+                                  :disabled="installing || portalDiscordState.verifying"
+                                  data-test="portal-guild"
+                                />
+                              </v-col>
+                              <v-col cols="12" md="2" class="d-flex align-center">
+                                <v-btn
+                                  color="primary"
+                                  block
+                                  :loading="portalDiscordState.verifying"
+                                  :disabled="!canValidatePortalDiscord || installing"
+                                  data-test="portal-connect"
+                                  @click.stop.prevent="connectPortalDiscord"
+                                >
+                                  {{ portalDiscordState.verified ? 'Reconnect' : 'Connect' }}
+                                </v-btn>
+                              </v-col>
+                            </v-row>
+                            <div
+                              v-if="portalDiscordState.error"
+                              class="text-body-2 text-error mt-2"
+                              data-test="portal-error"
+                            >
+                              {{ portalDiscordState.error }}
+                            </div>
+                            <v-alert
+                              v-else-if="portalDiscordState.verified"
+                              type="success"
+                              variant="tonal"
+                              border="start"
+                              class="mt-2"
+                              data-test="portal-success"
+                            >
+                              Connected to
+                              {{ portalDiscordState.guild?.name || 'Discord guild' }}
+                              <span
+                                v-if="portalDiscordState.guild?.id"
+                                class="text-medium-emphasis"
+                              >
+                                ({{ portalDiscordState.guild.id }})
+                              </span>
+                              . Roles and channels are ready below.
+                            </v-alert>
+                          </div>
+                          <div
+                            v-if="getServiceEnvFields(service).length === 0"
                             class="text-body-2 text-medium-emphasis"
                           >
                             This service does not expose configurable environment variables.
                           </div>
                           <v-row v-else dense>
                             <v-col
-                              v-for="field in service.envConfig"
+                              v-for="field in getServiceEnvFields(service)"
                               :key="field.key"
                               cols="12"
                               md="6"
                             >
                               <v-select
-                                v-if="isBooleanField(service.name, field)"
+                                v-if="shouldRenderPortalResourceSelect(service, field)"
+                                v-model="envForms[service.name][field.key]"
+                                :label="field.label || field.key"
+                                :items="getPortalSelectItems(field)"
+                                item-title="title"
+                                item-value="value"
+                                :disabled="
+                                  installing ||
+                                  field.readOnly ||
+                                  isPortalFieldLocked(field)
+                                "
+                                :hint="field.description || field.warning || ''"
+                                :persistent-hint="Boolean(field.description || field.warning)"
+                                :data-test="`portal-resource-${field.key}`"
+                                clearable
+                              />
+                              <v-select
+                                v-else-if="isBooleanField(service.name, field)"
                                 v-model="envForms[service.name][field.key]"
                                 :label="field.label || field.key"
                                 :items="BOOLEAN_OPTIONS"
-                                :disabled="installing || field.readOnly"
+                                :disabled="
+                                  installing ||
+                                  field.readOnly ||
+                                  (service.name === PORTAL_SERVICE_NAME &&
+                                    isPortalFieldLocked(field))
+                                "
                                 :hint="field.description || field.warning || ''"
                                 :persistent-hint="Boolean(field.description || field.warning)"
+                                data-test="boolean-select"
                               />
                               <v-text-field
                                 v-else
                                 v-model="envForms[service.name][field.key]"
-                                :label="field.readOnly ? `${field.label || field.key} (read only)` : field.label || field.key"
+                                :label="
+                                  field.readOnly
+                                    ? `${field.label || field.key} (read only)`
+                                    : field.label || field.key
+                                "
                                 :hint="field.description || field.warning || ''"
                                 :persistent-hint="Boolean(field.description || field.warning)"
                                 :readonly="field.readOnly"
-                                :disabled="installing"
+                                :disabled="
+                                  installing ||
+                                  (service.name === PORTAL_SERVICE_NAME &&
+                                    isPortalFieldLocked(field))
+                                "
+                                :data-test="
+                                  service.name === PORTAL_SERVICE_NAME
+                                    ? `portal-field-${field.key}`
+                                    : undefined
+                                "
                               />
+                              <div
+                                v-if="
+                                  service.name === PORTAL_SERVICE_NAME &&
+                                  field.key.endsWith(PORTAL_ROLE_SUFFIX)
+                                "
+                                class="portal-discord__creator mt-2"
+                              >
+                                <v-row dense>
+                                  <v-col cols="12" md="8">
+                                    <v-text-field
+                                      v-model="portalDiscordState.createRole.name"
+                                      label="Create new role"
+                                      density="compact"
+                                      :disabled="
+                                        installing ||
+                                        !portalDiscordReady ||
+                                        portalDiscordState.createRole.loading
+                                      "
+                                      data-test="portal-create-role-name"
+                                    />
+                                  </v-col>
+                                  <v-col cols="12" md="4" class="d-flex align-center">
+                                    <v-btn
+                                      color="primary"
+                                      variant="text"
+                                      class="portal-discord__create"
+                                      :loading="portalDiscordState.createRole.loading"
+                                      :disabled="installing || !portalDiscordReady"
+                                      data-test="portal-create-role"
+                                      @click.stop.prevent="handleCreatePortalRole(field.key)"
+                                    >
+                                      Create role
+                                    </v-btn>
+                                  </v-col>
+                                </v-row>
+                                <div
+                                  v-if="portalDiscordState.createRole.error"
+                                  class="text-caption text-error mt-1"
+                                  data-test="portal-create-role-error"
+                                >
+                                  {{ portalDiscordState.createRole.error }}
+                                </div>
+                              </div>
+                              <div
+                                v-if="
+                                  service.name === PORTAL_SERVICE_NAME &&
+                                  field.key.endsWith(PORTAL_CHANNEL_SUFFIX)
+                                "
+                                class="portal-discord__creator mt-2"
+                              >
+                                <v-row dense>
+                                  <v-col cols="12" md="8">
+                                    <v-text-field
+                                      v-model="portalDiscordState.createChannel.name"
+                                      label="Create new channel"
+                                      density="compact"
+                                      :disabled="
+                                        installing ||
+                                        !portalDiscordReady ||
+                                        portalDiscordState.createChannel.loading
+                                      "
+                                      data-test="portal-create-channel-name"
+                                    />
+                                  </v-col>
+                                  <v-col cols="12" md="4" class="d-flex align-center">
+                                    <v-btn
+                                      color="primary"
+                                      variant="text"
+                                      class="portal-discord__create"
+                                      :loading="portalDiscordState.createChannel.loading"
+                                      :disabled="installing || !portalDiscordReady"
+                                      data-test="portal-create-channel"
+                                      @click.stop.prevent="handleCreatePortalChannel(field.key)"
+                                    >
+                                      Create channel
+                                    </v-btn>
+                                  </v-col>
+                                </v-row>
+                                <div
+                                  v-if="portalDiscordState.createChannel.error"
+                                  class="text-caption text-error mt-1"
+                                  data-test="portal-create-channel-error"
+                                >
+                                  {{ portalDiscordState.createChannel.error }}
+                                </div>
+                              </div>
                             </v-col>
                           </v-row>
                         </div>
@@ -1319,6 +1923,26 @@ onMounted(() => {
 .setup-service-card__env {
   background: rgba(var(--v-theme-primary), 0.08);
   border-top: 1px solid rgba(var(--v-theme-primary), 0.18);
+}
+
+.portal-discord__section {
+  background: rgba(var(--v-theme-surface), 0.04);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.portal-discord__credentials {
+  gap: 8px;
+}
+
+.portal-discord__creator {
+  background: rgba(var(--v-theme-surface), 0.03);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.portal-discord__create {
+  width: 100%;
 }
 
 .setup-step__actions {
