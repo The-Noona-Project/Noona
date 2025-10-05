@@ -3,6 +3,9 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import Setup from '../Setup.vue';
 
+const PORTAL_TIMEOUT_MESSAGE =
+  'Portal services did not become ready in time. Please try again.';
+
 const createFetchMock = (logEntries, requests) =>
   vi.fn(async (input) => {
     const url = typeof input === 'string' ? input : input?.url || '';
@@ -133,6 +136,8 @@ describe('Setup installer logs', () => {
 
     const serviceResponses = [
       { services: baseServices },
+      { services: baseServices },
+      { services: baseServices },
       { services: installedServices },
       { services: installedServices },
     ];
@@ -237,10 +242,11 @@ describe('Setup installer logs', () => {
       const resetSpy = vi.spyOn(wrapper.vm, 'resetPortalDiscordState');
       resetSpy.mockClear();
 
-      await wrapper.vm.installCurrentStep();
+      const installPromise = wrapper.vm.installCurrentStep();
       await flushPromises();
       await nextTick();
       vi.runAllTimers();
+      await installPromise;
       await flushPromises();
       await nextTick();
 
@@ -256,6 +262,145 @@ describe('Setup installer logs', () => {
         { id: 'channel-id', name: 'Channel Name' },
       ]);
       expect(resetSpy).not.toHaveBeenCalled();
+
+      const serviceRequests = global.fetch.mock.calls.filter(([input]) =>
+        typeof input === 'string' ? input.includes('/api/setup/services') : input?.url?.includes('/api/setup/services'),
+      );
+      expect(serviceRequests.length).toBeGreaterThanOrEqual(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a timeout when portal services never become ready', async () => {
+    vi.useFakeTimers();
+
+    const createServiceEntry = (overrides = {}) => ({
+      name: 'noona-portal',
+      installed: false,
+      required: true,
+      envConfig: [
+        { key: 'DISCORD_BOT_TOKEN', defaultValue: '' },
+        { key: 'DISCORD_GUILD_ID', defaultValue: '' },
+      ],
+      ...overrides,
+    });
+
+    const baseServices = [
+      createServiceEntry(),
+      { name: 'noona-vault', installed: false, required: true },
+      { name: 'noona-redis', installed: true, required: true },
+      { name: 'noona-mongo', installed: true, required: true },
+    ];
+
+    const serviceResponses = Array.from({ length: 10 }, () => ({ services: baseServices }));
+
+    global.fetch = vi.fn(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      const method = init?.method || (typeof input === 'object' ? input?.method : undefined);
+
+      if (url.includes('/install/progress')) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              status: 'complete',
+              percent: 100,
+              items: [],
+            }),
+        };
+      }
+
+      if (url.includes('/installation/logs')) {
+        return {
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ entries: [] }),
+        };
+      }
+
+      if (url.includes('/noona-portal/test')) {
+        return {
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ success: true }),
+        };
+      }
+
+      if (url.includes('/setup/install') && method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              results: [
+                { name: 'noona-portal', status: 'installed' },
+                { name: 'noona-vault', status: 'installed' },
+              ],
+            }),
+        };
+      }
+
+      if (url.includes('/api/setup/services')) {
+        const response = serviceResponses.shift() || { services: baseServices };
+        return {
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(response),
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      };
+    });
+
+    const wrapper = mount(Setup, {
+      global: {
+        stubs: {
+          Header: {
+            template: '<div><slot /></div>',
+          },
+        },
+        config: {
+          compilerOptions: {
+            isCustomElement: (tag) => tag.startsWith('v-'),
+          },
+        },
+      },
+    });
+
+    try {
+      await flushPromises();
+      await nextTick();
+
+      wrapper.vm.activeStepIndex = 1;
+      await nextTick();
+
+      const portalEnv = wrapper.vm.portalEnvForm;
+      portalEnv.DISCORD_BOT_TOKEN = 'token-value';
+      portalEnv.DISCORD_GUILD_ID = 'guild-value';
+
+      const installPromise = wrapper.vm.installCurrentStep();
+      await flushPromises();
+      await nextTick();
+
+      vi.advanceTimersByTime(60000);
+      await installPromise;
+      await flushPromises();
+      await nextTick();
+
+      expect(wrapper.vm.portalAction.error).toBe(PORTAL_TIMEOUT_MESSAGE);
+      expect(
+        global.fetch.mock.calls.some(([input]) =>
+          typeof input === 'string'
+            ? input.includes('/noona-portal/test')
+            : input?.url?.includes('/noona-portal/test'),
+        ),
+      ).toBe(false);
     } finally {
       vi.useRealTimers();
     }
