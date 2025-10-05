@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SERVICE_NAVIGATION_CONFIG,
@@ -10,7 +10,7 @@ const push = vi.fn();
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push }),
-  useRoute: () => ({ name: 'Test Route', path: '/raven' }),
+  useRoute: () => ({ name: 'Home', path: '/' }),
 }));
 
 vi.mock('vuetify', () => ({
@@ -22,7 +22,7 @@ vi.mock('vuetify', () => ({
   }),
 }));
 
-const Header = (await import('../Header.vue')).default;
+const Home = (await import('../Home.vue')).default;
 
 const stubs = {
   'v-app': { template: '<div><slot /></div>' },
@@ -46,9 +46,18 @@ const stubs = {
   'v-img': { template: '<img />' },
   'v-toolbar-title': { template: '<div><slot /></div>' },
   'v-main': { template: '<main><slot /></main>' },
+  'v-container': { template: '<div class="v-container"><slot /></div>' },
+  'v-row': { template: '<div class="v-row"><slot /></div>' },
+  'v-col': { template: '<div class="v-col"><slot /></div>' },
+  'v-card': { template: '<section><slot /></section>' },
+  'v-card-title': { template: '<h2><slot /></h2>' },
+  'v-card-subtitle': { template: '<h3><slot /></h3>' },
+  'v-btn': { template: '<button class="v-btn" type="button"><slot /></button>' },
+  'v-icon': { template: '<i><slot /></i>' },
+  'v-card-actions': { template: '<footer><slot /></footer>' },
 };
 
-describe('Header navigation', () => {
+describe('Home page setup call-to-action', () => {
   beforeEach(() => {
     __resetServiceInstallationStore();
     push.mockClear();
@@ -66,59 +75,32 @@ describe('Header navigation', () => {
     delete (global as any).fetch;
   });
 
-  it('renders a Raven navigation item that navigates when clicked', async () => {
+  it('shows the Launch Setup Wizard button while installations are pending', async () => {
     (global as any).fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        services: [{ name: 'noona-raven', installed: true }],
-      }),
+      json: async () => ({ services: [] }),
     });
 
     const store = useServiceInstallationStore();
     await store.refresh();
 
-    const wrapper = mount(Header, {
+    const wrapper = mount(Home, {
       global: {
         stubs,
+        config: {
+          globalProperties: {
+            $router: { push },
+          },
+        },
       },
     });
 
-    const ravenItem = wrapper
-      .findAll('.v-list-item')
-      .find((item) => item.text().includes('Raven'));
+    await flushPromises();
 
-    expect(ravenItem).toBeDefined();
-    await ravenItem!.trigger('click');
-    expect(push).toHaveBeenCalledWith('/raven');
+    expect(wrapper.text()).toContain('Launch Setup Wizard');
   });
 
-  it('includes the Setup navigation item while installations are pending', async () => {
-    (global as any).fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        services: [{ name: 'noona-warden', installed: false }],
-      }),
-    });
-
-    const store = useServiceInstallationStore();
-    await store.refresh();
-
-    const wrapper = mount(Header, {
-      global: {
-        stubs,
-      },
-    });
-
-    await wrapper.vm.$nextTick();
-
-    const setupItem = wrapper
-      .findAll('.v-list-item')
-      .find((item) => item.text().includes('Setup'));
-
-    expect(setupItem).toBeDefined();
-  });
-
-  it('hides the Setup navigation item when all services are installed', async () => {
+  it('hides the Launch Setup Wizard button once all services are installed', async () => {
     const services = SERVICE_NAVIGATION_CONFIG
       .map((item) => item.requiredService)
       .filter((service): service is string => Boolean(service))
@@ -126,26 +108,25 @@ describe('Header navigation', () => {
 
     (global as any).fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        services,
-      }),
+      json: async () => ({ services }),
     });
 
     const store = useServiceInstallationStore();
     await store.refresh();
 
-    const wrapper = mount(Header, {
+    const wrapper = mount(Home, {
       global: {
         stubs,
+        config: {
+          globalProperties: {
+            $router: { push },
+          },
+        },
       },
     });
 
-    await wrapper.vm.$nextTick();
+    await flushPromises();
 
-    const setupItem = wrapper
-      .findAll('.v-list-item')
-      .find((item) => item.text().includes('Setup'));
-
-    expect(setupItem).toBeUndefined();
+    expect(wrapper.text()).not.toContain('Launch Setup Wizard');
   });
 });

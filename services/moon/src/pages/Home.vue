@@ -1,5 +1,8 @@
 <script setup>
 import Header from '../components/Header.vue';
+import {useServiceInstallationStore} from '../utils/serviceInstallationStore.js';
+
+const { hasPendingSetup } = useServiceInstallationStore();
 
 const servicePages = [
   {
@@ -65,7 +68,12 @@ const servicePages = [
             <v-card-subtitle class="mb-6">
               Explore the control surfaces for every service or jump straight into the setup wizard.
             </v-card-subtitle>
-            <v-btn color="primary" size="large" @click="$router.push('/setup')">
+            <v-btn
+                v-if="hasPendingSetup"
+                color="primary"
+                size="large"
+                @click="$router.push('/setup')"
+            >
               Launch Setup Wizard
             </v-btn>
           </v-card>
