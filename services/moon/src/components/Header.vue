@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import {onMounted, ref, watch} from 'vue';
 import {useRoute, useRouter} from 'vue-router';
 import {useTheme} from 'vuetify';
@@ -7,6 +7,18 @@ const drawer = ref(true); // Sidebar open/closed
 const theme = useTheme();
 const router = useRouter();
 const route = useRoute();
+
+const navigationItems = [
+  {title: 'Home', icon: 'mdi-home', path: '/', description: 'Overview of the Moon control center.'},
+  {title: 'Setup', icon: 'mdi-cog-play', path: '/setup', description: 'Guide for configuring your deployment.'},
+  {title: 'Warden', icon: 'mdi-shield-crown', path: '/warden', description: 'Orchestrator for the entire stack.'},
+  {title: 'Vault', icon: 'mdi-safe-square', path: '/vault', description: 'Authentication and data access gateway.'},
+  {title: 'Portal', icon: 'mdi-transit-connection-variant', path: '/portal', description: 'External integrations hub.'},
+  {title: 'Sage', icon: 'mdi-chart-box-outline', path: '/sage', description: 'Monitoring and logging backbone.'},
+  {title: 'Moon Service', icon: 'mdi-moon-waning-crescent', path: '/moon-service', description: 'Web-based control center features.'},
+  {title: 'Raven', icon: 'mdi-crow', path: '/raven', description: 'Custom Java-based scraper/downloader.'},
+  {title: 'Oracle', icon: 'mdi-crystal-ball', path: '/oracle', description: 'AI assistant layer for insights.'},
+];
 
 // Collapse sidebar after navigation (especially for mobile)
 const navigate = (path) => {
@@ -52,11 +64,18 @@ watch(drawer, (val) => {
         <v-list-item prepend-icon="mdi-theme-light-dark" @click="toggleDark">
           <v-list-item-title>Toggle Dark Mode</v-list-item-title>
         </v-list-item>
-        <v-list-item prepend-icon="mdi-cog" @click="navigate('/setup')">
-          <v-list-item-title>Go to Setup</v-list-item-title>
-        </v-list-item>
-        <v-list-item prepend-icon="mdi-crow" @click="navigate('/raven')">
-          <v-list-item-title>Go to Raven</v-list-item-title>
+        <v-divider class="my-4"/>
+        <v-list-subheader>Explore Services</v-list-subheader>
+        <v-list-item
+            v-for="item in navigationItems"
+            :key="item.path"
+            :prepend-icon="item.icon"
+            :active="route.path === item.path"
+            rounded
+            @click="navigate(item.path)"
+        >
+          <v-list-item-title>{{ item.title }}</v-list-item-title>
+          <v-list-item-subtitle>{{ item.description }}</v-list-item-subtitle>
         </v-list-item>
       </v-list>
     </v-navigation-drawer>
