@@ -248,6 +248,10 @@ const serviceDefs = rawList.map(name => {
             return 'http://noona-raven:8080/v1/library/health';
         }
 
+        if (name === 'noona-portal') {
+            return 'http://noona-portal:3003/health';
+        }
+
         return `http://${name}:${portMap[name]}/`;
     })();
 
