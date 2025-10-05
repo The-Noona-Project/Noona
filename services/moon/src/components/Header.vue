@@ -2,23 +2,14 @@
 import {onMounted, ref, watch} from 'vue';
 import {useRoute, useRouter} from 'vue-router';
 import {useTheme} from 'vuetify';
+import {useServiceInstallationStore} from '../utils/serviceInstallationStore.js';
 
 const drawer = ref(true); // Sidebar open/closed
 const theme = useTheme();
 const router = useRouter();
 const route = useRoute();
 
-const navigationItems = [
-  {title: 'Home', icon: 'mdi-home', path: '/', description: 'Overview of the Moon control center.'},
-  {title: 'Setup', icon: 'mdi-cog-play', path: '/setup', description: 'Guide for configuring your deployment.'},
-  {title: 'Warden', icon: 'mdi-shield-crown', path: '/warden', description: 'Orchestrator for the entire stack.'},
-  {title: 'Vault', icon: 'mdi-safe-square', path: '/vault', description: 'Authentication and data access gateway.'},
-  {title: 'Portal', icon: 'mdi-transit-connection-variant', path: '/portal', description: 'External integrations hub.'},
-  {title: 'Sage', icon: 'mdi-chart-box-outline', path: '/sage', description: 'Monitoring and logging backbone.'},
-  {title: 'Moon Service', icon: 'mdi-moon-waning-crescent', path: '/moon-service', description: 'Web-based control center features.'},
-  {title: 'Raven', icon: 'mdi-crow', path: '/raven', description: 'Custom Java-based scraper/downloader.'},
-  {title: 'Oracle', icon: 'mdi-crystal-ball', path: '/oracle', description: 'AI assistant layer for insights.'},
-];
+const {navigationItems, ensureLoaded} = useServiceInstallationStore();
 
 // Collapse sidebar after navigation (especially for mobile)
 const navigate = (path) => {
@@ -36,6 +27,8 @@ const toggleDark = () => {
 
 // Load persisted theme
 onMounted(() => {
+  ensureLoaded().catch(() => {});
+
   const saved = localStorage.getItem('noona-theme');
   if (saved) theme.global.name.value = saved;
 
