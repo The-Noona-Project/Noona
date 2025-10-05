@@ -491,6 +491,8 @@ describe('Setup page', () => {
     expect(installButtonAfter.exists()).toBe(true);
     expect(installButtonAfter.attributes('disabled')).toBeUndefined();
     expect(wrapper.text()).toContain('Installing this step automatically starts the Portal bot');
+    expect(wrapper.text()).not.toContain('Portal bot verified successfully.');
+    expect(wrapper.text()).not.toContain('Portal install failed');
 
     const nextButtonAfter = wrapper
       .findAll('button')
@@ -809,7 +811,7 @@ describe('Setup page', () => {
     const stepButtons = wrapper.findAll('.setup-stepper__item');
     await stepButtons[2].trigger('click');
 
-    const installButton = wrapper.find('.setup-step__install');
+    const installButton = wrapper.find('button.setup-step__install');
     await installButton.trigger('click');
 
     await flushAsync();
@@ -878,6 +880,8 @@ describe('Setup page', () => {
     expect(setupState.portalAction.loading).toBe(false);
     expect(setupState.portalAction.success).toBe(false);
     expect(setupState.portalAction.error).toBe('');
+    expect(wrapper.text()).not.toContain('Portal bot verified successfully.');
+    expect(wrapper.text()).not.toContain('Portal install failed');
     expect(setupState.ravenAction.loading).toBe(false);
     expect(setupState.ravenAction.success).toBe(false);
     expect(setupState.ravenAction.error).toBe('');
@@ -988,6 +992,7 @@ describe('Setup page', () => {
 
     expect(vm.$.setupState.portalAction.success).toBe(true);
     expect(vm.$.setupState.portalAction.error).toBe('');
+    expect(wrapper.text()).toContain('Portal bot verified successfully.');
   });
 
   it('surfaces portal install failures before running the test', async () => {
@@ -1072,5 +1077,6 @@ describe('Setup page', () => {
     expect(vm.$.setupState.portalAction.success).toBe(false);
     expect(vm.$.setupState.portalAction.error).toBe('Portal install failed');
     expect(wrapper.text()).toContain('Portal install failed');
+    expect(wrapper.text()).not.toContain('Portal bot verified successfully.');
   });
 });
