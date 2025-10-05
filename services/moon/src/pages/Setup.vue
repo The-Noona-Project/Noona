@@ -15,7 +15,7 @@ const DEFAULT_INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress'
 const DEFAULT_INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs';
 const INSTALL_LOG_DISPLAY_COUNT = 3;
 const DEFAULT_INSTALL_LOG_LIMIT = INSTALL_LOG_DISPLAY_COUNT;
-const PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
+const DEFAULT_PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
 const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
 const ALLOWED_SERVICE_NAMES = new Set([
@@ -212,6 +212,10 @@ const portalDiscordEndpointBase = computed(() => {
   return `${sanitized}/noona-portal/discord`;
 });
 
+const portalTestEndpoint = computed(() =>
+  deriveServiceTestEndpoint(activeServicesEndpoint.value, PORTAL_SERVICE_NAME),
+);
+
 const portalAction = reactive({
   loading: false,
   success: false,
@@ -275,7 +279,7 @@ const verifyPortalBot = async () => {
   portalAction.error = '';
 
   try {
-    const response = await fetch(PORTAL_TEST_ENDPOINT, {
+    const response = await fetch(portalTestEndpoint.value, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -806,6 +810,49 @@ const handleCreatePortalChannel = async (fieldKey) => {
   } finally {
     portalDiscordState.createChannel.loading = false;
   }
+};
+
+const deriveServiceTestEndpoint = (servicesEndpoint, serviceName) => {
+  const normalizedName =
+    typeof serviceName === 'string' ? serviceName.trim() : '';
+  const fallbackName = normalizedName || (typeof serviceName === 'string' ? serviceName : '');
+  const fallbackBase = DEFAULT_SERVICES_ENDPOINT.replace(/\/+$/, '');
+  const fallback = fallbackName
+    ? `${fallbackBase}/${fallbackName}/test`
+    : `${fallbackBase}/test`;
+  const portalFallback =
+    fallbackName === PORTAL_SERVICE_NAME
+      ? DEFAULT_PORTAL_TEST_ENDPOINT
+      : fallback;
+
+  if (!normalizedName) {
+    return portalFallback;
+  }
+
+  if (typeof servicesEndpoint !== 'string') {
+    return portalFallback;
+  }
+
+  const trimmed = servicesEndpoint.trim();
+  if (!trimmed) {
+    return portalFallback;
+  }
+
+  const [withoutQuery] = trimmed.split('?');
+  const sanitized = withoutQuery.replace(/\/+$/, '');
+
+  if (!sanitized || !sanitized.endsWith('/services')) {
+    return portalFallback;
+  }
+
+  const ensureLeadingSlash = (value) =>
+    value.startsWith('/') ? value : `/${value}`;
+  const isAbsolute = ABSOLUTE_URL_REGEX.test(sanitized);
+  const candidate = `${sanitized}/${normalizedName}/test`;
+
+  const normalizedCandidate = isAbsolute ? candidate : ensureLeadingSlash(candidate);
+
+  return normalizedCandidate || portalFallback;
 };
 
 const deriveServiceEndpoints = (servicesEndpoint) => {
