@@ -1465,19 +1465,54 @@ export function createWarden(options = {}) {
         const { path: pathOverride, url: urlOverride, method = 'GET', headers = {}, body: requestBody = null } = options ?? {};
         let targetUrl = null;
 
+        // Ensure the setup wizard's "Start & Test Portal Bot" action uses the host-facing
+        // endpoint when present so manual verification succeeds in host-mode deployments.
+        const resolveHealthFromHostBase = (baseUrl) => {
+            if (typeof baseUrl !== 'string') {
+                return null;
+            }
+
+            const trimmed = baseUrl.trim();
+            if (!trimmed) {
+                return null;
+            }
+
+            if (/\/health\/?$/i.test(trimmed)) {
+                return trimmed;
+            }
+
+            try {
+                const parsed = new URL(trimmed);
+                const pathName = parsed.pathname ?? '';
+                if (!pathName || pathName === '/' || pathName === '//') {
+                    parsed.pathname = '/health';
+                } else {
+                    parsed.pathname = `${pathName.replace(/\/$/, '')}/health`;
+                }
+                return parsed.toString();
+            } catch {
+                return `${trimmed.replace(/\/$/, '')}/health`;
+            }
+        };
+
+        const hostBase = api.resolveHostServiceUrl(descriptor);
+
         if (typeof urlOverride === 'string' && urlOverride.trim()) {
             targetUrl = urlOverride.trim();
         }
 
         if (!targetUrl && typeof pathOverride === 'string' && pathOverride.trim()) {
-            const base = api.resolveHostServiceUrl(descriptor);
-            if (base) {
+            if (hostBase) {
                 try {
-                    targetUrl = new URL(pathOverride, base).toString();
+                    targetUrl = new URL(pathOverride, hostBase).toString();
                 } catch {
-                    targetUrl = `${base.replace(/\/$/, '')}/${pathOverride.replace(/^\//, '')}`;
+                    targetUrl = `${hostBase.replace(/\/$/, '')}/${pathOverride.replace(/^\//, '')}`;
                 }
             }
+        }
+
+        if (!targetUrl && hostBase) {
+            targetUrl = resolveHealthFromHostBase(hostBase);
         }
 
         if (!targetUrl && typeof descriptor.health === 'string' && descriptor.health.trim()) {
@@ -1485,9 +1520,8 @@ export function createWarden(options = {}) {
         }
 
         if (!targetUrl) {
-            const base = api.resolveHostServiceUrl(descriptor);
-            if (base) {
-                targetUrl = `${base.replace(/\/$/, '')}/health`;
+            if (hostBase) {
+                targetUrl = resolveHealthFromHostBase(hostBase);
             }
         }
 

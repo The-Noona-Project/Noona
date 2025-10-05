@@ -720,7 +720,7 @@ test('installation progress and service histories track install lifecycle', asyn
     assert.ok(fullHistory.entries.length >= limitedHistory.entries.length);
 });
 
-test('testService performs portal health check via custom fetch implementation', async () => {
+test('testService prefers host health URL when available', async () => {
     const fetchCalls = [];
     const warden = createWarden({
         services: {
@@ -730,7 +730,7 @@ test('testService performs portal health check via custom fetch implementation',
                     name: 'noona-portal',
                     image: 'portal',
                     hostServiceUrl: 'http://portal.local',
-                    health: 'http://portal.local/health',
+                    health: 'http://noona-portal:3003/health',
                 },
             },
         },
@@ -753,6 +753,35 @@ test('testService performs portal health check via custom fetch implementation',
     assert.ok(history.entries.some((entry) => entry.status === 'tested'));
 
     await assert.rejects(() => warden.testService('noona-sage', {}), /not registered/i);
+});
+
+test('testService falls back to container health URL when host is unavailable', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    health: 'http://noona-portal:3003/health',
+                },
+            },
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-portal');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://noona-portal:3003/health']);
 });
 
 test('detectKavitaMount logs detection attempts and returns result', async () => {
