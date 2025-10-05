@@ -5,7 +5,7 @@ const push = vi.fn();
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push }),
-  useRoute: () => ({ name: 'Test Route' }),
+  useRoute: () => ({ name: 'Test Route', path: '/raven' }),
 }));
 
 vi.mock('vuetify', () => ({
@@ -23,6 +23,7 @@ const stubs = {
   'v-app': { template: '<div><slot /></div>' },
   'v-navigation-drawer': { template: '<aside><slot /></aside>' },
   'v-list': { template: '<div><slot /></div>' },
+  'v-list-subheader': { template: '<div><slot /></div>' },
   'v-list-item': {
     props: ['prependIcon'],
     emits: ['click'],
@@ -30,6 +31,7 @@ const stubs = {
       '<button class="v-list-item" type="button" @click="$emit(\'click\')"><slot /></button>',
   },
   'v-list-item-title': { template: '<span><slot /></span>' },
+  'v-list-item-subtitle': { template: '<small><slot /></small>' },
   'v-divider': { template: '<hr />' },
   'v-app-bar': { template: '<header><slot /></header>' },
   'v-app-bar-nav-icon': {
@@ -66,7 +68,7 @@ describe('Header navigation', () => {
 
     const ravenItem = wrapper
       .findAll('.v-list-item')
-      .find((item) => item.text().includes('Go to Raven'));
+      .find((item) => item.text().includes('Raven'));
 
     expect(ravenItem).toBeDefined();
     await ravenItem!.trigger('click');
