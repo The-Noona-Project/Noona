@@ -138,6 +138,18 @@ const serviceDefs = rawList.map(name => {
                 description: 'Identifier of the Discord server that the portal should connect to.',
             },
             {
+                key: 'DISCORD_GUILD_ROLE_ID',
+                label: 'Discord Guild Role ID',
+                description: 'Role identifier assigned to new members after onboarding.',
+                required: false,
+            },
+            {
+                key: 'DISCORD_DEFAULT_ROLE_ID',
+                label: 'Discord Default Role ID',
+                description: 'Fallback role identifier to grant onboarded members when a guild role is not specified.',
+                required: false,
+            },
+            {
                 key: 'KAVITA_BASE_URL',
                 label: 'Kavita Base URL',
                 description: 'Base URL of the Kavita instance providing library content.',
@@ -177,6 +189,36 @@ const serviceDefs = rawList.map(name => {
                 label: 'Portal HTTP Timeout',
                 description: 'HTTP client timeout in milliseconds for outbound portal requests.',
                 defaultValue: '10000',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_GUILD_ID',
+                label: 'Required Discord Guild ID',
+                description: 'Restricts slash command usage to interactions originating from this guild ID.',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_ROLE_DING',
+                label: 'Required Role for /ding',
+                description: 'Discord role ID required to execute the /ding command.',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_ROLE_JOIN',
+                label: 'Required Role for /join',
+                description: 'Discord role ID required to execute the /join command.',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_ROLE_SCAN',
+                label: 'Required Role for /scan',
+                description: 'Discord role ID required to execute the /scan command.',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_ROLE_SEARCH',
+                label: 'Required Role for /search',
+                description: 'Discord role ID required to execute the /search command.',
                 required: false,
             },
         ];

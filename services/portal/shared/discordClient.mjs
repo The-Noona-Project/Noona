@@ -7,6 +7,7 @@ import {
     Partials,
 } from 'discord.js';
 import { errMSG, log } from '../../../utilities/etc/logger.mjs';
+import createRoleManager from './roleManager.mjs';
 
 const DEFAULT_INTENTS = [
     GatewayIntentBits.Guilds,
@@ -62,6 +63,8 @@ export const createDiscordClient = ({
     const client = typeof clientFactory === 'function'
         ? clientFactory({ intents, partials })
         : new Client({ intents, partials });
+
+    const roleManager = createRoleManager();
 
     let readyResolve;
     let readyReject;
@@ -158,6 +161,31 @@ export const createDiscordClient = ({
         }
 
         try {
+            const access = roleManager.checkAccess(interaction, interaction.commandName);
+            if (!access.allowed) {
+                const actor = interaction?.user?.tag
+                    ?? interaction?.user?.id
+                    ?? interaction?.member?.user?.tag
+                    ?? interaction?.member?.user?.id
+                    ?? 'unknown user';
+
+                log(`[Portal/Discord] Denied /${interaction.commandName} for ${actor} (${access.reason ?? 'unknown reason'}).`);
+
+                const deniedPayload = { content: access.message ?? 'You do not have permission to use this command.', ephemeral: true };
+
+                try {
+                    if (interaction.deferred || interaction.replied) {
+                        await interaction.editReply?.(deniedPayload);
+                    } else {
+                        await interaction.reply?.(deniedPayload);
+                    }
+                } catch (responseError) {
+                    errMSG(`[Portal/Discord] Failed to send permission denial: ${responseError.message}`);
+                }
+
+                return;
+            }
+
             await handler.execute(interaction);
         } catch (error) {
             errMSG(`[Portal/Discord] Handler for /${interaction.commandName} failed: ${error.message}`);
