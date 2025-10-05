@@ -151,6 +151,20 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
     }
 });
 
+test('noona-portal health check points to /health endpoint', async () => {
+    const module = await import('../docker/noonaDockers.mjs?test=portal-health');
+    const { default: noonaDockers } = module;
+
+    const portal = noonaDockers['noona-portal'];
+    assert.ok(portal, 'Portal service descriptor should be defined.');
+
+    assert.equal(
+        portal.health,
+        'http://noona-portal:3003/health',
+        'Portal health check should target the /health endpoint.',
+    );
+});
+
 test('noona-raven descriptor provides default Vault URL configuration', async () => {
     const module = await import('../docker/noonaDockers.mjs?test=raven-env');
     const { default: noonaDockers } = module;
