@@ -334,3 +334,152 @@ test('setupClient.installServices normalizes payload before forwarding to Warden
         { name: 'noona-moon', env: { DEBUG: 'false' } },
     ])
 })
+
+test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getInstallProgress() {
+                return { status: 'installing', percent: 25, items: [{ name: 'noona-sage', status: 'installing' }] }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/install/progress`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        status: 'installing',
+        percent: 25,
+        items: [{ name: 'noona-sage', status: 'installing' }],
+    })
+})
+
+test('GET /api/setup/services/:name/logs proxies history and honours limit', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getServiceLogs(name, options) {
+                calls.push([name, options])
+                return {
+                    service: name,
+                    entries: [{ type: 'status', status: 'ready', message: 'Ready' }],
+                    summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
+                }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-sage/logs?limit=5`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        service: 'noona-sage',
+        entries: [{ type: 'status', status: 'ready', message: 'Ready' }],
+        summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
+    })
+    assert.deepEqual(calls, [['noona-sage', { limit: '5' }]])
+})
+
+test('POST /api/setup/services/:name/test proxies to setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async testService(name, body) {
+                calls.push([name, body])
+                return { status: 200, result: { service: name, success: true } }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-portal/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'GET' }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { service: 'noona-portal', success: true })
+    assert.deepEqual(calls, [['noona-portal', { method: 'GET' }]])
+})
+
+test('POST /api/setup/services/:name/test surfaces validation errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async testService() {
+                throw new SetupValidationError('Unsupported service')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-sage/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+    })
+
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unsupported service')
+})
+
+test('POST /api/setup/services/noona-raven/detect proxies detection result', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async detectRavenMount() {
+                return { status: 200, detection: { mountPath: '/data' } }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-raven/detect`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { detection: { mountPath: '/data' } })
+})

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import Docker from 'dockerode';
+import fetch from 'node-fetch';
 import addonDockers from '../docker/addonDockers.mjs';
 import noonaDockers from '../docker/noonaDockers.mjs';
 import {
@@ -246,6 +247,8 @@ export function createWarden(options = {}) {
         dockerSocketDetector = defaultDockerSocketDetector,
         dockerFactory: dockerFactoryOption,
         fs: fsOption,
+        logLimit: logLimitOption,
+        fetchImpl = fetch,
     } = options;
 
     const services = normalizeServices(servicesOption);
@@ -280,6 +283,335 @@ export function createWarden(options = {}) {
         : dockerSocketDetector({ env, fs: fsModule }))
         .map(normalizeSocketPath)
         .filter(Boolean)));
+
+    const resolvedLogLimit = (() => {
+        if (typeof logLimitOption === 'number' && Number.isFinite(logLimitOption) && logLimitOption > 0) {
+            return Math.floor(logLimitOption);
+        }
+
+        const parsed = Number.parseInt(logLimitOption, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return parsed;
+        }
+
+        return 500;
+    })();
+
+    const LOG_ENTRY_LIMIT = resolvedLogLimit;
+    const INSTALLATION_SERVICE = 'installation';
+
+    const serviceHistories = new Map();
+    const installationOrder = [];
+    const installationStatuses = new Map();
+
+    const parsePositiveLimit = (candidate) => {
+        if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) {
+            return Math.floor(candidate);
+        }
+
+        if (typeof candidate === 'string') {
+            const parsed = Number.parseInt(candidate, 10);
+            if (Number.isFinite(parsed) && parsed > 0) {
+                return parsed;
+            }
+        }
+
+        return null;
+    };
+
+    const ensureHistory = (name) => {
+        if (!name) {
+            return {
+                service: null,
+                entries: [],
+                summary: {
+                    status: 'idle',
+                    percent: null,
+                    detail: null,
+                    updatedAt: null,
+                },
+            };
+        }
+
+        if (!serviceHistories.has(name)) {
+            serviceHistories.set(name, {
+                service: name,
+                entries: [],
+                summary: {
+                    status: 'idle',
+                    percent: null,
+                    detail: null,
+                    updatedAt: null,
+                },
+            });
+        }
+
+        return serviceHistories.get(name);
+    };
+
+    ensureHistory(INSTALLATION_SERVICE);
+
+    const refreshInstallationSummary = () => {
+        const summary = (() => {
+            const items = installationOrder
+                .map((name) => installationStatuses.get(name))
+                .filter(Boolean)
+                .map((entry) => ({ ...entry }));
+
+            const total = items.length;
+            const completed = items.filter((item) => item.status === 'installed').length;
+            const hasError = items.some((item) => item.status === 'error');
+
+            const percent = total > 0 ? Math.round((completed / total) * 100) : null;
+            const status = hasError
+                ? 'error'
+                : completed === total && total > 0
+                    ? 'complete'
+                    : total > 0
+                        ? 'installing'
+                        : 'idle';
+
+            return { items, percent, status };
+        })();
+
+        const history = ensureHistory(INSTALLATION_SERVICE);
+        history.summary = {
+            status: summary.status,
+            percent: summary.percent,
+            detail: history.summary?.detail ?? null,
+            updatedAt: new Date().toISOString(),
+        };
+
+        return summary;
+    };
+
+    const resetInstallationTracking = (names = []) => {
+        installationOrder.length = 0;
+        installationStatuses.clear();
+
+        for (const name of names) {
+            if (!name || installationOrder.includes(name)) {
+                continue;
+            }
+
+            installationOrder.push(name);
+            installationStatuses.set(name, {
+                name,
+                label: name,
+                status: 'pending',
+                detail: null,
+                updatedAt: null,
+            });
+        }
+
+        if (names.length > 0) {
+            const message = `Preparing installation for: ${names.join(', ')}`;
+            appendHistoryEntry(
+                INSTALLATION_SERVICE,
+                {
+                    type: 'status',
+                    status: 'pending',
+                    message,
+                    detail: null,
+                    clearError: true,
+                },
+                { mirrorToInstallation: false },
+            );
+        }
+
+        refreshInstallationSummary();
+    };
+
+    const updateInstallationStatus = (name, status, extra = {}) => {
+        if (!name) {
+            return;
+        }
+
+        if (!installationStatuses.has(name)) {
+            installationOrder.push(name);
+        }
+
+        const previous = installationStatuses.get(name) || {
+            name,
+            label: name,
+            status: 'pending',
+            detail: null,
+            updatedAt: null,
+        };
+
+        installationStatuses.set(name, {
+            ...previous,
+            ...extra,
+            name,
+            status,
+            updatedAt: new Date().toISOString(),
+        });
+
+        refreshInstallationSummary();
+    };
+
+    const mapStatusForInstallation = (status) => {
+        if (!status || typeof status !== 'string') {
+            return null;
+        }
+
+        const normalized = status.trim().toLowerCase();
+
+        if (['installed', 'ready', 'healthy', 'running', 'complete', 'completed'].includes(normalized)) {
+            return 'installed';
+        }
+
+        if (['error', 'failed', 'failure'].includes(normalized)) {
+            return 'error';
+        }
+
+        if (['pending', 'installing', 'pulling', 'starting', 'exists', 'health-check', 'waiting'].includes(normalized)) {
+            return 'installing';
+        }
+
+        return null;
+    };
+
+    const appendHistoryEntry = (name, entry = {}, { mirrorToInstallation = true } = {}) => {
+        if (!name) {
+            return;
+        }
+
+        const history = ensureHistory(name);
+        const timestamp = entry.timestamp ?? new Date().toISOString();
+        const normalized = {
+            type: entry.type ?? 'log',
+            message: entry.message != null ? String(entry.message) : '',
+            status: entry.status ?? null,
+            detail: entry.detail ?? null,
+            stream: entry.stream ?? null,
+            level: entry.level ?? null,
+            timestamp,
+        };
+
+        if (entry.error) {
+            normalized.error = entry.error;
+        }
+
+        if (entry.percent != null) {
+            normalized.percent = entry.percent;
+        }
+
+        history.entries.push(normalized);
+        if (history.entries.length > LOG_ENTRY_LIMIT) {
+            history.entries.splice(0, history.entries.length - LOG_ENTRY_LIMIT);
+        }
+
+        const summary = history.summary ?? {
+            status: 'idle',
+            percent: null,
+            detail: null,
+            updatedAt: null,
+        };
+
+        if (['status', 'progress', 'error'].includes(normalized.type) && normalized.status) {
+            summary.status = normalized.status;
+        }
+
+        if (normalized.type === 'error' && normalized.error) {
+            summary.error = normalized.error;
+        } else if (normalized.type === 'status' && entry.clearError) {
+            delete summary.error;
+        }
+
+        if (normalized.detail) {
+            summary.detail = normalized.detail;
+        }
+
+        if (entry.percent != null) {
+            summary.percent = entry.percent;
+        }
+
+        summary.updatedAt = timestamp;
+        history.summary = summary;
+
+        if (
+            mirrorToInstallation &&
+            name !== INSTALLATION_SERVICE &&
+            ['status', 'progress', 'error'].includes(normalized.type)
+        ) {
+            appendHistoryEntry(
+                INSTALLATION_SERVICE,
+                {
+                    ...entry,
+                    type: normalized.type,
+                    status: normalized.status,
+                    detail: normalized.detail,
+                    error: normalized.error,
+                    message: `[${name}] ${normalized.message || normalized.status || ''}`.trim(),
+                },
+                { mirrorToInstallation: false },
+            );
+        }
+
+        if (name !== INSTALLATION_SERVICE) {
+            const mappedStatus = mapStatusForInstallation(normalized.status);
+            if (mappedStatus) {
+                const detail = normalized.detail || normalized.message || null;
+                const previous = installationStatuses.get(name);
+
+                if (
+                    !previous ||
+                    previous.status !== 'error' ||
+                    mappedStatus === 'error'
+                ) {
+                    if (!(previous?.status === 'installed' && mappedStatus === 'installing')) {
+                        updateInstallationStatus(name, mappedStatus, {
+                            label: name,
+                            detail,
+                        });
+                    }
+                }
+            }
+        }
+    };
+
+    const recordContainerOutput = (serviceName, raw, context = {}) => {
+        if (!serviceName || !raw) {
+            return;
+        }
+
+        const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const parts = normalized.split('\n');
+
+        for (const part of parts) {
+            const trimmed = part.replace(/\u0000/g, '').trim();
+            if (!trimmed) {
+                continue;
+            }
+
+            appendHistoryEntry(
+                serviceName,
+                {
+                    type: 'log',
+                    message: trimmed,
+                    stream: context.level === 'error' ? 'stderr' : 'stdout',
+                    level: context.level ?? 'info',
+                },
+                { mirrorToInstallation: false },
+            );
+        }
+    };
+
+    const getInstallationProgressSnapshot = () => {
+        const summary = refreshInstallationSummary();
+        return {
+            items: summary.items.map((entry) => ({
+                name: entry.name,
+                label: entry.label ?? entry.name,
+                status: entry.status,
+                detail: entry.detail ?? null,
+                updatedAt: entry.updatedAt ?? null,
+            })),
+            percent: summary.percent,
+            status: summary.status,
+        };
+    };
 
     async function detectKavitaDataMount() {
         try {
@@ -438,25 +770,140 @@ export function createWarden(options = {}) {
             throw new Error('Service descriptor is required.');
         }
 
+        const serviceName = service.name;
+        if (!serviceName) {
+            throw new Error('Service descriptor must include a name.');
+        }
+
+        appendHistoryEntry(serviceName, {
+            type: 'status',
+            status: 'pending',
+            message: 'Preparing to start service',
+            detail: null,
+        });
+
         const hostServiceUrl = api.resolveHostServiceUrl(service);
-        const alreadyRunning = await dockerUtils.containerExists(service.name);
+        let alreadyRunning = false;
+
+        try {
+            alreadyRunning = await dockerUtils.containerExists(serviceName);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            appendHistoryEntry(serviceName, {
+                type: 'error',
+                status: 'error',
+                message: 'Failed to verify existing container state',
+                detail: message,
+                error: message,
+            });
+            throw error;
+        }
 
         if (!alreadyRunning) {
-            await dockerUtils.pullImageIfNeeded(service.image);
-            await dockerUtils.runContainerWithLogs(service, networkName, trackedContainers, DEBUG);
+            appendHistoryEntry(serviceName, {
+                type: 'status',
+                status: 'pulling',
+                message: `Checking Docker image ${service.image}`,
+                detail: service.image,
+            });
+
+            await dockerUtils.pullImageIfNeeded(service.image, {
+                onProgress: (event = {}) => {
+                    const status = event.status || 'progress';
+                    const detail = event.detail ? String(event.detail).trim() : '';
+                    const messageParts = [status, detail].filter(Boolean);
+
+                    appendHistoryEntry(serviceName, {
+                        type: 'progress',
+                        status,
+                        message: messageParts.join(' - '),
+                        detail: detail || null,
+                    });
+                },
+            });
+
+            appendHistoryEntry(serviceName, {
+                type: 'status',
+                status: 'starting',
+                message: 'Starting container',
+                detail: null,
+            });
+
+            await dockerUtils.runContainerWithLogs(
+                service,
+                networkName,
+                trackedContainers,
+                DEBUG,
+                {
+                    onLog: (raw, context = {}) => {
+                        recordContainerOutput(serviceName, raw, context);
+                    },
+                },
+            );
+
+            appendHistoryEntry(serviceName, {
+                type: 'status',
+                status: 'started',
+                message: 'Container start initiated',
+                detail: null,
+            });
         } else {
-            logger.log(`${service.name} already running.`);
+            logger.log(`${serviceName} already running.`);
+            appendHistoryEntry(serviceName, {
+                type: 'status',
+                status: 'running',
+                message: 'Container already running',
+                detail: 'Container already running',
+                clearError: true,
+            });
         }
 
         if (healthUrl) {
-            await dockerUtils.waitForHealthyStatus(service.name, healthUrl);
+            appendHistoryEntry(serviceName, {
+                type: 'status',
+                status: 'health-check',
+                message: `Waiting for health check: ${healthUrl}`,
+                detail: healthUrl,
+            });
+
+            try {
+                await dockerUtils.waitForHealthyStatus(serviceName, healthUrl);
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'healthy',
+                    message: 'Health check passed',
+                    detail: healthUrl,
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                appendHistoryEntry(serviceName, {
+                    type: 'error',
+                    status: 'error',
+                    message: 'Health check failed',
+                    detail: message,
+                    error: message,
+                });
+                throw error;
+            }
         }
 
+        const readyMessage = hostServiceUrl
+            ? `[${serviceName}] ✅ Ready (host_service_url: ${hostServiceUrl})`
+            : `[${serviceName}] ✅ Ready.`;
+
         if (hostServiceUrl) {
-            logger.log(`[${service.name}] ✅ Ready (host_service_url: ${hostServiceUrl})`);
+            logger.log(readyMessage);
         } else {
-            logger.log(`[${service.name}] ✅ Ready.`);
+            logger.log(readyMessage);
         }
+
+        appendHistoryEntry(serviceName, {
+            type: 'status',
+            status: 'ready',
+            message: 'Service ready',
+            detail: hostServiceUrl ? `host_service_url: ${hostServiceUrl}` : null,
+            clearError: true,
+        });
     };
 
     api.listServices = async function listServices(options = {}) {
@@ -657,6 +1104,13 @@ export function createWarden(options = {}) {
         };
 
         if (descriptor.name === 'noona-raven') {
+            appendHistoryEntry(descriptor.name, {
+                type: 'status',
+                status: 'detecting',
+                message: 'Detecting Kavita data mount',
+                detail: null,
+            });
+
             kavitaDetection = await detectKavitaDataMount();
             kavitaDataMount = kavitaDetection?.mountPath ?? null;
 
@@ -670,6 +1124,13 @@ export function createWarden(options = {}) {
                     env: envWithKavita,
                     volumes,
                 };
+
+                appendHistoryEntry(descriptor.name, {
+                    type: 'status',
+                    status: 'installed',
+                    message: `Using detected Kavita mount at ${kavitaDataMount}`,
+                    detail: kavitaDataMount,
+                });
             } else {
                 const trimValue = (value) => (typeof value === 'string' ? value.trim() : '');
                 const manualAppData = trimValue(normalizedOverrides?.APPDATA);
@@ -693,12 +1154,40 @@ export function createWarden(options = {}) {
                     normalizedOverrides.KAVITA_DATA_MOUNT = containerPath;
                     kavitaDataMount = hostPath;
                 }
+
+                appendHistoryEntry(descriptor.name, {
+                    type: 'status',
+                    status: kavitaDataMount ? 'configured' : 'installing',
+                    message: kavitaDataMount
+                        ? `Configured Kavita mount from overrides at ${kavitaDataMount}`
+                        : 'No automatic Kavita mount detected',
+                    detail: kavitaDataMount ?? null,
+                });
             }
         }
 
         serviceDescriptor = applyEnvOverrides(serviceDescriptor, normalizedOverrides);
 
-        await api.startService(serviceDescriptor, healthUrl);
+        appendHistoryEntry(descriptor.name, {
+            type: 'status',
+            status: 'installing',
+            message: 'Starting installation',
+            detail: null,
+        });
+
+        try {
+            await api.startService(serviceDescriptor, healthUrl);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            appendHistoryEntry(descriptor.name, {
+                type: 'error',
+                status: 'error',
+                message: 'Installation failed',
+                detail: message,
+                error: message,
+            });
+            throw error;
+        }
 
         const result = {
             name: descriptor.name,
@@ -713,6 +1202,14 @@ export function createWarden(options = {}) {
         if (descriptor.name === 'noona-raven') {
             result.kavitaDataMount = kavitaDataMount;
             result.kavitaDetection = kavitaDetection;
+            appendHistoryEntry(descriptor.name, {
+                type: 'status',
+                status: 'installed',
+                message: kavitaDetection
+                    ? `Kavita data mount detected at ${kavitaDetection.mountPath}`
+                    : 'Kavita data mount not detected automatically',
+                detail: kavitaDetection?.mountPath ?? null,
+            });
         }
 
         return result;
@@ -731,6 +1228,21 @@ export function createWarden(options = {}) {
 
         const { prioritized, overridesByName } = buildInstallationList([trimmedName]);
         const order = resolveInstallOrder(prioritized);
+        resetInstallationTracking(order);
+
+        if (order.length > 0) {
+            appendHistoryEntry(
+                INSTALLATION_SERVICE,
+                {
+                    type: 'status',
+                    status: 'installing',
+                    message: `Installing ${order.join(', ')}`,
+                    detail: null,
+                    clearError: true,
+                },
+                { mirrorToInstallation: false },
+            );
+        }
         const attempted = new Set();
         let targetResult = null;
 
@@ -748,6 +1260,19 @@ export function createWarden(options = {}) {
             }
         }
 
+        appendHistoryEntry(
+            INSTALLATION_SERVICE,
+            {
+                type: 'status',
+                status: targetResult ? 'complete' : 'error',
+                message: targetResult
+                    ? `Installation complete for ${trimmedName}`
+                    : `Installation failed for ${trimmedName}`,
+                detail: targetResult?.status === 'installed' ? 'installed' : null,
+            },
+            { mirrorToInstallation: false },
+        );
+
         if (!targetResult) {
             throw new Error(`Service ${trimmedName} is not registered with Warden.`);
         }
@@ -763,15 +1288,43 @@ export function createWarden(options = {}) {
         try {
             order = resolveInstallOrder(prioritized);
         } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            appendHistoryEntry(
+                INSTALLATION_SERVICE,
+                {
+                    type: 'error',
+                    status: 'error',
+                    message: 'Failed to resolve installation order',
+                    detail: message,
+                    error: message,
+                },
+                { mirrorToInstallation: false },
+            );
             return [
                 ...results,
                 ...invalidEntries,
                 {
                     name: 'installation',
                     status: 'error',
-                    error: error.message,
+                    error: message,
                 },
             ];
+        }
+
+        resetInstallationTracking(order);
+
+        if (order.length > 0) {
+            appendHistoryEntry(
+                INSTALLATION_SERVICE,
+                {
+                    type: 'status',
+                    status: 'installing',
+                    message: `Installing ${order.join(', ')}`,
+                    detail: null,
+                    clearError: true,
+                },
+                { mirrorToInstallation: false },
+            );
         }
 
         const attempted = new Set();
@@ -796,7 +1349,245 @@ export function createWarden(options = {}) {
             }
         }
 
+        const hasErrors = results.some((entry) => entry.status === 'error');
+        appendHistoryEntry(
+            INSTALLATION_SERVICE,
+            {
+                type: 'status',
+                status: hasErrors ? 'error' : 'complete',
+                message: hasErrors
+                    ? 'Installation finished with errors'
+                    : 'Installation complete',
+                detail: hasErrors ? 'One or more services failed to install' : null,
+            },
+            { mirrorToInstallation: false },
+        );
+
         return [...results, ...invalidEntries];
+    };
+
+    api.getInstallationProgress = function getInstallationProgress() {
+        return getInstallationProgressSnapshot();
+    };
+
+    api.getServiceHistory = function getServiceHistory(name, options = {}) {
+        const serviceName = typeof name === 'string' ? name.trim() : '';
+
+        if (!serviceName) {
+            return {
+                service: name ?? null,
+                entries: [],
+                summary: {
+                    status: 'idle',
+                    percent: null,
+                    detail: null,
+                    updatedAt: null,
+                },
+            };
+        }
+
+        const history = ensureHistory(serviceName);
+        const limit = parsePositiveLimit(options.limit);
+        const sliceSource = limit
+            ? history.entries.slice(-limit)
+            : history.entries.slice();
+        const entries = sliceSource.map((entry) => ({ ...entry }));
+        const summary = history.summary
+            ? { ...history.summary }
+            : {
+                status: 'idle',
+                percent: null,
+                detail: null,
+                updatedAt: null,
+            };
+
+        return {
+            service: serviceName,
+            entries,
+            summary,
+        };
+    };
+
+    api.detectKavitaMount = async function detectKavitaMount() {
+        appendHistoryEntry('noona-raven', {
+            type: 'status',
+            status: 'detecting',
+            message: 'Detecting Kavita data mount',
+            detail: null,
+        });
+
+        const detection = await detectKavitaDataMount();
+
+        if (detection?.mountPath) {
+            appendHistoryEntry('noona-raven', {
+                type: 'status',
+                status: 'detected',
+                message: `Kavita data mount detected at ${detection.mountPath}`,
+                detail: detection.mountPath,
+            });
+        } else {
+            appendHistoryEntry('noona-raven', {
+                type: 'status',
+                status: 'not-found',
+                message: 'Kavita data mount not detected automatically',
+                detail: null,
+            });
+        }
+
+        return detection;
+    };
+
+    api.testService = async function testService(name, options = {}) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const entry = serviceCatalog.get(trimmedName);
+        if (!entry) {
+            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+        }
+
+        if (trimmedName !== 'noona-portal') {
+            return {
+                service: trimmedName,
+                success: false,
+                supported: false,
+                error: `Test action not supported for ${trimmedName}.`,
+            };
+        }
+
+        const descriptor = entry.descriptor;
+        const { path: pathOverride, url: urlOverride, method = 'GET', headers = {}, body: requestBody = null } = options ?? {};
+        let targetUrl = null;
+
+        if (typeof urlOverride === 'string' && urlOverride.trim()) {
+            targetUrl = urlOverride.trim();
+        }
+
+        if (!targetUrl && typeof pathOverride === 'string' && pathOverride.trim()) {
+            const base = api.resolveHostServiceUrl(descriptor);
+            if (base) {
+                try {
+                    targetUrl = new URL(pathOverride, base).toString();
+                } catch {
+                    targetUrl = `${base.replace(/\/$/, '')}/${pathOverride.replace(/^\//, '')}`;
+                }
+            }
+        }
+
+        if (!targetUrl && typeof descriptor.health === 'string' && descriptor.health.trim()) {
+            targetUrl = descriptor.health.trim();
+        }
+
+        if (!targetUrl) {
+            const base = api.resolveHostServiceUrl(descriptor);
+            if (base) {
+                targetUrl = `${base.replace(/\/$/, '')}/health`;
+            }
+        }
+
+        if (!targetUrl) {
+            const errorMessage = 'Portal health endpoint is not defined.';
+            appendHistoryEntry(trimmedName, {
+                type: 'error',
+                status: 'error',
+                message: errorMessage,
+                detail: errorMessage,
+                error: errorMessage,
+            });
+
+            return {
+                service: trimmedName,
+                success: false,
+                supported: true,
+                error: errorMessage,
+            };
+        }
+
+        appendHistoryEntry(trimmedName, {
+            type: 'status',
+            status: 'testing',
+            message: `Testing service via ${targetUrl}`,
+            detail: targetUrl,
+        });
+
+        const start = Date.now();
+
+        try {
+            const response = await fetchImpl(targetUrl, {
+                method,
+                headers,
+                body: requestBody,
+            });
+
+            const duration = Date.now() - start;
+            const rawBody = await response.text();
+            let parsedBody = rawBody;
+
+            try {
+                parsedBody = rawBody ? JSON.parse(rawBody) : null;
+            } catch {
+                // Keep rawBody as-is when not valid JSON.
+            }
+
+            if (!response.ok) {
+                const errorMessage = `Service responded with status ${response.status}`;
+                appendHistoryEntry(trimmedName, {
+                    type: 'error',
+                    status: 'error',
+                    message: errorMessage,
+                    detail: typeof parsedBody === 'string' ? parsedBody : JSON.stringify(parsedBody),
+                    error: errorMessage,
+                });
+
+                return {
+                    service: trimmedName,
+                    success: false,
+                    supported: true,
+                    status: response.status,
+                    duration,
+                    error: errorMessage,
+                    body: parsedBody,
+                };
+            }
+
+            appendHistoryEntry(trimmedName, {
+                type: 'status',
+                status: 'tested',
+                message: 'Portal health check succeeded',
+                detail: targetUrl,
+            });
+
+            return {
+                service: trimmedName,
+                success: true,
+                supported: true,
+                status: response.status,
+                duration,
+                body: parsedBody,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            appendHistoryEntry(trimmedName, {
+                type: 'error',
+                status: 'error',
+                message: 'Portal test failed',
+                detail: message,
+                error: message,
+            });
+
+            return {
+                service: trimmedName,
+                success: false,
+                supported: true,
+                error: message,
+            };
+        }
     };
 
     api.bootMinimal = async function bootMinimal() {

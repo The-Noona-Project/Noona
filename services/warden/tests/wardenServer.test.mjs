@@ -152,3 +152,120 @@ test('POST /api/services/install validates payload', async (t) => {
     const payload = await response.json();
     assert.ok(payload.error.includes('non-empty'));
 });
+
+test('GET /api/services/install/progress forwards to warden summary', async (t) => {
+    const warden = {
+        async getInstallationProgress() {
+            return { status: 'installing', percent: 50, items: [{ name: 'noona-sage', status: 'installing' }] };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const { server, baseUrl } = await listen({ warden });
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/install/progress`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        status: 'installing',
+        percent: 50,
+        items: [{ name: 'noona-sage', status: 'installing' }],
+    });
+});
+
+test('GET /api/services/:name/logs returns history from warden', async (t) => {
+    const warden = {
+        async getServiceHistory(name, options) {
+            return {
+                service: name,
+                entries: [{ type: 'status', status: 'ready', message: 'Service ready' }],
+                summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
+                limit: options?.limit ?? null,
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const { server, baseUrl } = await listen({ warden });
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/noona-sage/logs?limit=10`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'noona-sage',
+        entries: [{ type: 'status', status: 'ready', message: 'Service ready' }],
+        summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
+        limit: '10',
+    });
+});
+
+test('POST /api/services/:name/test delegates to warden testService', async (t) => {
+    const calls = [];
+    const warden = {
+        async testService(name, body) {
+            calls.push([name, body]);
+            return { service: name, success: true, supported: true };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const { server, baseUrl } = await listen({ warden });
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/noona-portal/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'GET' }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { service: 'noona-portal', success: true, supported: true });
+    assert.deepEqual(calls, [['noona-portal', { method: 'GET' }]]);
+});
+
+test('POST /api/services/:name/test returns error when unsupported', async (t) => {
+    const warden = {
+        async testService() {
+            return { service: 'noona-sage', success: false, supported: false, error: 'Unsupported' };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const { server, baseUrl } = await listen({ warden });
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/noona-sage/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+        service: 'noona-sage',
+        success: false,
+        supported: false,
+        error: 'Unsupported',
+    });
+});
+
+test('POST /api/services/noona-raven/detect returns detection payload', async (t) => {
+    const warden = {
+        async detectKavitaMount() {
+            return { mountPath: '/data/path' };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const { server, baseUrl } = await listen({ warden });
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/noona-raven/detect`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { detection: { mountPath: '/data/path' } });
+});
