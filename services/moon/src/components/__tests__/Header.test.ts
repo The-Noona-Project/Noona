@@ -1,5 +1,9 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  __resetServiceInstallationStore,
+  useServiceInstallationStore,
+} from '../../utils/serviceInstallationStore.js';
 
 const push = vi.fn();
 
@@ -45,6 +49,7 @@ const stubs = {
 
 describe('Header navigation', () => {
   beforeEach(() => {
+    __resetServiceInstallationStore();
     push.mockClear();
     const storage = {
       getItem: vi.fn(),
@@ -57,9 +62,20 @@ describe('Header navigation', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    delete (global as any).fetch;
   });
 
   it('renders a Raven navigation item that navigates when clicked', async () => {
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        services: [{ name: 'noona-raven', installed: true }],
+      }),
+    });
+
+    const store = useServiceInstallationStore();
+    await store.refresh();
+
     const wrapper = mount(Header, {
       global: {
         stubs,

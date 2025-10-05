@@ -1,4 +1,4 @@
-import {describe, expect, it} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {mount} from '@vue/test-utils';
 import Warden from '../Warden.vue';
 import Vault from '../Vault.vue';
@@ -6,6 +6,11 @@ import Portal from '../Portal.vue';
 import Sage from '../Sage.vue';
 import MoonService from '../MoonService.vue';
 import Oracle from '../Oracle.vue';
+import router from '../../router';
+import {
+  __resetServiceInstallationStore,
+  useServiceInstallationStore,
+} from '../../utils/serviceInstallationStore.js';
 
 const mountWithLayout = (component: any) =>
   mount(component, {
@@ -59,5 +64,65 @@ describe('Service summary pages', () => {
     expect(wrapper.text()).toContain(
       'AI assistant layer powered by LangChain, LocalAI/AnythingLLM for conversational insights and recommendations.',
     );
+  });
+});
+
+describe('Service navigation gating', () => {
+  beforeEach(async () => {
+    __resetServiceInstallationStore();
+    (global as any).fetch = vi.fn();
+    await router.replace('/');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (global as any).fetch;
+  });
+
+  it('hides navigation entries for uninstalled services', async () => {
+    const store = useServiceInstallationStore();
+    (global as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        services: [
+          {name: 'noona-portal', installed: true},
+          {name: 'noona-warden', installed: false},
+        ],
+      }),
+    });
+
+    await store.refresh();
+
+    const titles = store.navigationItems.value.map((item) => item.title);
+    expect(titles).toContain('Portal');
+    expect(titles).not.toContain('Warden');
+  });
+
+  it('redirects to setup when navigating to an uninstalled service', async () => {
+    const store = useServiceInstallationStore();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          services: [{name: 'noona-warden', installed: false}],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          services: [{name: 'noona-warden', installed: true}],
+        }),
+      });
+
+    (global as any).fetch = fetchMock;
+
+    await router.replace('/setup');
+    await router.push('/warden');
+    expect(router.currentRoute.value.fullPath).toBe('/setup');
+
+    await store.refresh();
+    await router.push('/warden');
+    expect(router.currentRoute.value.fullPath).toBe('/warden');
   });
 });
