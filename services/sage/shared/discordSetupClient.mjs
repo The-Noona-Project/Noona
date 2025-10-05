@@ -1,6 +1,6 @@
 // services/sage/shared/discordSetupClient.mjs
 
-import { ChannelType } from 'discord.js'
+import { ChannelType, GatewayIntentBits } from 'discord.js'
 
 import createDiscordClient from './discordClient.mjs'
 import { SetupValidationError } from './errors.mjs'
@@ -116,6 +116,9 @@ const isUsableRole = (role) => role?.id && !role.managed
 
 const isUsableChannel = (channel) => Boolean(channel?.id && (channel?.name ?? '').trim())
 
+const SETUP_CLIENT_INTENTS = Object.freeze([GatewayIntentBits.Guilds])
+const SETUP_CLIENT_PARTIALS = Object.freeze([])
+
 const withDiscordClient = async (
     { token, guildId, logger, serviceName, createClient = createDiscordClient },
     handler,
@@ -124,6 +127,8 @@ const withDiscordClient = async (
         token,
         guildId,
         commands: new Map(),
+        intents: SETUP_CLIENT_INTENTS,
+        partials: SETUP_CLIENT_PARTIALS,
     })
 
     try {

@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 
-import { ChannelType } from 'discord.js'
+import { ChannelType, GatewayIntentBits } from 'discord.js'
 
 import {
     SetupValidationError,
@@ -169,6 +169,51 @@ test('GET /api/setup/services proxies to setup client', async (t) => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { services: [{ name: 'noona-moon' }] })
     assert.deepEqual(calls, ['list'])
+})
+
+test('createDiscordSetupClient uses limited intents during validation', async () => {
+    const createdOptions = []
+    const loginCalls = []
+    const destroyCalls = []
+
+    const guildStub = {
+        id: 'guild-123',
+        name: 'Guild Name',
+        description: null,
+        icon: null,
+        roles: { async fetch() { return [] } },
+        channels: { async fetch() { return [] } },
+    }
+
+    const setupClient = createDiscordSetupClient({
+        serviceName: 'test-sage',
+        logger: {
+            error: () => {},
+            info: () => {},
+        },
+        createClient(options) {
+            createdOptions.push(options)
+            return {
+                async login() {
+                    loginCalls.push(true)
+                },
+                destroy() {
+                    destroyCalls.push(true)
+                },
+                async fetchGuild() {
+                    return guildStub
+                },
+            }
+        },
+    })
+
+    await setupClient.fetchResources({ token: 'token', guildId: 'guild-123' })
+
+    assert.equal(createdOptions.length, 1)
+    assert.equal(loginCalls.length, 1)
+    assert.equal(destroyCalls.length, 1)
+    assert.deepEqual(createdOptions[0].intents, [GatewayIntentBits.Guilds])
+    assert.deepEqual(createdOptions[0].partials, [])
 })
 
 test('GET /api/setup/services requests installable set from Warden by default', async (t) => {
