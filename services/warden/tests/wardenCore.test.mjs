@@ -765,13 +765,19 @@ test('testService falls back to container health URL when host is unavailable', 
                 'noona-portal': {
                     name: 'noona-portal',
                     image: 'portal',
+                    port: 3003,
                     health: 'http://noona-portal:3003/health',
                 },
             },
         },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
         hostDockerSockets: [],
         fetchImpl: async (url) => {
             fetchCalls.push(url);
+            if (fetchCalls.length === 1) {
+                throw new Error('ECONNREFUSED host');
+            }
+
             return {
                 ok: true,
                 status: 200,
@@ -782,7 +788,43 @@ test('testService falls back to container health URL when host is unavailable', 
 
     const result = await warden.testService('noona-portal');
     assert.equal(result.success, true);
-    assert.deepEqual(fetchCalls, ['http://noona-portal:3003/health']);
+    assert.deepEqual(fetchCalls, [
+        'http://localhost:3003/health',
+        'http://noona-portal:3003/health',
+    ]);
+});
+
+test('testService aggregates errors when all health candidates fail', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    health: 'http://noona-portal:3003/health',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            throw new Error(`Failed to reach ${url}`);
+        },
+    });
+
+    const result = await warden.testService('noona-portal');
+    assert.equal(result.success, false);
+    assert.match(result.error, /Portal test failed for all candidates:/);
+    assert.match(result.error, /http:\/\/localhost:3003\/health \(Failed to reach http:\/\/localhost:3003\/health\)/);
+    assert.match(result.error, /http:\/\/noona-portal:3003\/health \(Failed to reach http:\/\/noona-portal:3003\/health\)/);
+    assert.deepEqual(fetchCalls, [
+        'http://localhost:3003/health',
+        'http://noona-portal:3003/health',
+    ]);
 });
 
 test('detectKavitaMount logs detection attempts and returns result', async () => {
