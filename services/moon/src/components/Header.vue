@@ -55,6 +55,9 @@ watch(drawer, (val) => {
         <v-list-item prepend-icon="mdi-cog" @click="navigate('/setup')">
           <v-list-item-title>Go to Setup</v-list-item-title>
         </v-list-item>
+        <v-list-item prepend-icon="mdi-crow" @click="navigate('/raven')">
+          <v-list-item-title>Go to Raven</v-list-item-title>
+        </v-list-item>
       </v-list>
     </v-navigation-drawer>
 
