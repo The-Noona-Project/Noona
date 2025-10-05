@@ -178,6 +178,7 @@ const installResults = ref(null);
 const installSuccessMessageVisible = ref(false);
 const installLogs = ref('');
 const showProgressDetails = ref(false);
+const progressLogsLoading = ref(false);
 const activeStepIndex = ref(0);
 
 const portalAction = reactive({
@@ -215,6 +216,7 @@ const ravenAction = reactive({
 });
 
 let progressPollHandle = null;
+let logsRequestActive = false;
 
 const installableServices = computed(() =>
   state.services.filter((service) => service.installed !== true),
@@ -936,9 +938,26 @@ const formatLogEntry = (entry) => {
   return line || null;
 };
 
-const fetchInstallLogs = async () => {
+const fetchInstallLogs = async ({ silent = false } = {}) => {
+  if (logsRequestActive) {
+    return;
+  }
+
+  if (!silent) {
+    progressLogsLoading.value = true;
+  }
+
+  logsRequestActive = true;
+
   try {
     const response = await fetch(INSTALL_LOGS_ENDPOINT);
+
+    if (response.status === 404 || response.status === 204) {
+      installLogs.value = '';
+      state.progress.logError = '';
+      return;
+    }
+
     if (!response.ok) {
       throw new Error(`Log request failed with status ${response.status}`);
     }
@@ -952,8 +971,15 @@ const fetchInstallLogs = async () => {
     state.progress.logError = '';
   } catch (error) {
     state.progress.logError = error instanceof Error ? error.message : String(error);
+  } finally {
+    logsRequestActive = false;
+    if (!silent) {
+      progressLogsLoading.value = false;
+    }
   }
 };
+
+const refreshInstallLogs = () => fetchInstallLogs();
 
 const stopProgressPolling = () => {
   if (progressPollHandle != null) {
@@ -967,6 +993,11 @@ const scheduleProgressPolling = () => {
 
   const run = async () => {
     await fetchInstallProgress();
+
+    if (showProgressDetails.value) {
+      await fetchInstallLogs({ silent: true });
+    }
+
     if (installing.value) {
       progressPollHandle = setTimeout(run, 2000);
     }
@@ -1158,12 +1189,18 @@ const showInstallResults = computed(() =>
 watch(installing, (value) => {
   if (!value) {
     stopProgressPolling();
+    if (showProgressDetails.value) {
+      void fetchInstallLogs();
+    }
   }
 });
 
 watch(showProgressDetails, (value) => {
   if (value) {
     void fetchInstallLogs();
+  } else {
+    state.progress.logError = '';
+    progressLogsLoading.value = false;
   }
 });
 
@@ -1300,7 +1337,7 @@ onMounted(() => {
                   class="progress-summary mb-6"
                 >
                   <div class="progress-summary__header">
-                    <div>
+                    <div class="progress-summary__title">
                       <span class="text-subtitle-2 font-weight-medium">
                         {{ state.progress.status || 'Installing services' }}
                       </span>
@@ -1314,22 +1351,41 @@ onMounted(() => {
                     <v-btn
                       variant="text"
                       size="small"
-                      class="text-caption"
+                      color="primary"
+                      class="progress-summary__toggle"
                       @click="showProgressDetails = !showProgressDetails"
                     >
-                      See {{ showProgressDetails ? 'less' : 'more' }}
+                      <v-icon
+                        :icon="showProgressDetails ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                        size="18"
+                        class="mr-1"
+                      />
+                      {{ showProgressDetails ? 'Hide logs' : 'Show details' }}
                     </v-btn>
                   </div>
-                  <ul class="progress-summary__list">
+                  <ul
+                    v-if="state.progress.items.length"
+                    class="progress-summary__list"
+                  >
                     <li
                       v-for="item in state.progress.items"
                       :key="`${item.label}-${item.status}`"
-                      class="text-body-2"
+                      class="progress-summary__item"
                     >
-                      <span class="font-weight-medium">{{ item.label }}</span>
-                      <span class="ml-2 text-medium-emphasis">{{ item.status }}</span>
+                      <span class="progress-summary__label text-body-2 font-weight-medium">
+                        {{ item.label }}
+                      </span>
+                      <span class="progress-summary__status text-body-2 text-medium-emphasis">
+                        {{ item.status }}
+                      </span>
                     </li>
                   </ul>
+                  <div
+                    v-else
+                    class="progress-summary__empty text-body-2 text-medium-emphasis"
+                  >
+                    Progress updates will appear as tasks begin to run.
+                  </div>
                   <div v-if="state.progress.error" class="text-caption text-error">
                     {{ state.progress.error }}
                   </div>
@@ -1337,15 +1393,49 @@ onMounted(() => {
 
                 <v-expand-transition>
                   <div v-if="showProgressDetails" class="progress-logs mb-6">
-                    <pre
-                      v-if="installLogs"
-                      class="progress-logs__body"
-                    >{{ installLogs }}</pre>
-                    <div v-else class="text-body-2 text-medium-emphasis">
-                      Logs will appear once the installer shares updates.
+                    <div class="progress-logs__header">
+                      <span class="text-subtitle-2 font-weight-medium">Installer details</span>
+                      <div class="progress-logs__actions">
+                        <v-btn
+                          icon
+                          variant="text"
+                          size="small"
+                          color="primary"
+                          :loading="progressLogsLoading && Boolean(installLogs)"
+                          :disabled="progressLogsLoading && !installLogs"
+                          @click="refreshInstallLogs"
+                          aria-label="Refresh installer logs"
+                        >
+                          <v-icon icon="mdi-refresh" size="18" />
+                        </v-btn>
+                      </div>
                     </div>
-                    <div v-if="state.progress.logError" class="text-caption text-error mt-2">
-                      {{ state.progress.logError }}
+                    <div class="progress-logs__content">
+                      <div
+                        v-if="progressLogsLoading && !installLogs"
+                        class="progress-logs__loading text-body-2 text-medium-emphasis"
+                      >
+                        <v-progress-circular
+                          indeterminate
+                          size="18"
+                          color="primary"
+                          class="mr-2"
+                        />
+                        Fetching installer updates…
+                      </div>
+                      <pre
+                        v-else-if="installLogs"
+                        class="progress-logs__body"
+                      >{{ installLogs }}</pre>
+                      <div v-else class="progress-logs__empty text-body-2 text-medium-emphasis">
+                        Logs will appear once the installer shares updates.
+                      </div>
+                    </div>
+                    <div
+                      v-if="state.progress.logError"
+                      class="progress-logs__error text-caption text-error mt-3"
+                    >
+                      We couldn't load the installer logs. {{ state.progress.logError }}
                     </div>
                   </div>
                 </v-expand-transition>
@@ -1852,6 +1942,18 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 
+.progress-summary__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.progress-summary__toggle {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .progress-summary__list {
   list-style: none;
   padding: 0;
@@ -1861,6 +1963,30 @@ onMounted(() => {
   gap: 6px;
 }
 
+.progress-summary__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-primary), 0.06);
+}
+
+.progress-summary__label {
+  flex: 1 1 auto;
+}
+
+.progress-summary__status {
+  white-space: nowrap;
+}
+
+.progress-summary__empty {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+
 .progress-logs {
   border: 1px solid rgba(var(--v-theme-primary), 0.18);
   border-radius: 12px;
@@ -1868,11 +1994,47 @@ onMounted(() => {
   background: rgba(var(--v-theme-primary), 0.02);
 }
 
+.progress-logs__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.progress-logs__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.progress-logs__content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.progress-logs__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .progress-logs__body {
   margin: 0;
   white-space: pre-wrap;
   font-family: 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 0.85rem;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+
+.progress-logs__empty {
+  min-height: 24px;
+}
+
+.progress-logs__error {
+  line-height: 1.4;
 }
 
 .setup-step__cards {
