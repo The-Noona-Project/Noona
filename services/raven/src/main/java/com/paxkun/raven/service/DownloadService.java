@@ -1,12 +1,15 @@
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.download.DownloadChapter;
+import com.paxkun.raven.service.download.DownloadProgress;
 import com.paxkun.raven.service.download.SearchTitle;
 import com.paxkun.raven.service.download.SourceFinder;
 import com.paxkun.raven.service.download.TitleScraper;
+import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import org.openqa.selenium.StaleElementReferenceException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -28,12 +31,15 @@ public class DownloadService {
     @Autowired private TitleScraper titleScraper;
     @Autowired private SourceFinder sourceFinder;
     @Autowired private LoggerService logger;
+    @Autowired @Lazy private LibraryService libraryService;
 
     private static final String USER_AGENT = "Mozilla/5.0";
     private static final String REFERER = "https://weebcentral.com";
 
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
+    private final Map<String, DownloadProgress> downloadProgress = new ConcurrentHashMap<>();
+    private final Deque<DownloadProgress> progressHistory = new ConcurrentLinkedDeque<>();
     private final Map<String, SearchSession> searchSessions = new ConcurrentHashMap<>();
 
     private static final long SEARCH_TTL_MILLIS = TimeUnit.MINUTES.toMillis(10);
@@ -112,7 +118,9 @@ public class DownloadService {
                     continue;
                 }
 
-                Future<?> future = executor.submit(() -> runDownload(titleName, title));
+                DownloadProgress progress = new DownloadProgress(titleName);
+                downloadProgress.put(titleName, progress);
+                Future<?> future = executor.submit(() -> runDownload(titleName, title, progress));
                 activeDownloads.put(titleName, future);
                 queued.append(titleName).append(", ");
                 queuedTitles.add(sanitizedTitle);
@@ -153,7 +161,9 @@ public class DownloadService {
                 return "⚠️ Download already in progress for: " + titleName;
             }
 
-            Future<?> future = executor.submit(() -> runDownload(titleName, selectedTitle));
+            DownloadProgress progress = new DownloadProgress(titleName);
+            downloadProgress.put(titleName, progress);
+            Future<?> future = executor.submit(() -> runDownload(titleName, selectedTitle, progress));
             activeDownloads.put(titleName, future);
             searchSessions.remove(searchId);
             logger.debug(
@@ -164,7 +174,7 @@ public class DownloadService {
         }
     }
 
-    private void runDownload(String titleName, Map<String, String> selectedTitle) {
+    private void runDownload(String titleName, Map<String, String> selectedTitle, DownloadProgress progress) {
         DownloadChapter result = new DownloadChapter();
 
         try {
@@ -175,8 +185,13 @@ public class DownloadService {
                     "Resolved title URL | title=" + sanitizeForLog(titleName) +
                             " | url=" + sanitizeForLog(titleUrl));
 
+            NewTitle titleRecord = libraryService.resolveOrCreateTitle(titleName, titleUrl);
+
             List<Map<String, String>> chapters = fetchAllChaptersWithRetry(titleUrl);
-            if (chapters.isEmpty()) throw new RuntimeException("No chapters found for this title.");
+            if (chapters.isEmpty()) {
+                progress.markFailed("No chapters found for this title.");
+                throw new RuntimeException("No chapters found for this title.");
+            }
             logger.debug(
                     "DOWNLOAD",
                     "Fetched chapters | title=" + sanitizeForLog(titleName) +
@@ -186,10 +201,14 @@ public class DownloadService {
             Path titleFolder = getDownloadRoot().resolve(cleanTitle);
             Files.createDirectories(titleFolder);
 
+            progress.markStarted(chapters.size());
+
             for (Map<String, String> chapter : chapters) {
                 String chapterTitle = chapter.get("chapter_title");
                 String chapterNumber = extractChapterNumberFull(chapterTitle);
                 String chapterUrl = chapter.get("href");
+
+                progress.chapterStarted(chapterTitle);
 
                 logger.debug(
                         "DOWNLOAD",
@@ -203,6 +222,7 @@ public class DownloadService {
                 List<String> pageUrls = sourceFinder.findSource(chapterUrl);
                 if (pageUrls.isEmpty()) {
                     logger.warn("DOWNLOAD", "⚠️ No pages found for chapter " + chapterNumber + ". Skipping.");
+                    progress.chapterCompleted();
                     continue;
                 }
 
@@ -217,18 +237,34 @@ public class DownloadService {
                 deleteFolder(chapterFolder);
 
                 logger.info("DOWNLOAD", "📦 Saved [" + cbzName + "] with " + pageCount + " pages at " + cbzPath);
+
+                titleRecord.setLastDownloaded(chapterNumber);
+                libraryService.addOrUpdateTitle(titleRecord, new NewChapter(chapterNumber));
+                progress.chapterCompleted();
             }
 
             result.setChapterName(titleName);
             result.setStatus("✅ Download completed.");
+            progress.markCompleted();
 
         } catch (Exception e) {
             logger.error("DOWNLOAD", "❌ Download failed for [" + titleName + "]: " + e.getMessage(), e);
+            progress.markFailed(e.getMessage());
         } finally {
             activeDownloads.remove(titleName);
             logger.debug(
                     "DOWNLOAD",
                     "Removed active download entry | title=" + sanitizeForLog(titleName));
+            finalizeProgress(titleName, progress);
+        }
+    }
+
+    private void finalizeProgress(String titleName, DownloadProgress progress) {
+        DownloadProgress snapshot = progress.copy();
+        downloadProgress.remove(titleName);
+        progressHistory.addFirst(snapshot);
+        while (progressHistory.size() > 10) {
+            progressHistory.removeLast();
         }
     }
 
@@ -289,7 +325,7 @@ public class DownloadService {
         }
     }
 
-    private int saveImagesToFolder(List<String> urls, Path folder) {
+    protected int saveImagesToFolder(List<String> urls, Path folder) {
         int count = 0;
         try {
             Files.createDirectories(folder);
@@ -319,7 +355,7 @@ public class DownloadService {
         return count;
     }
 
-    private void zipFolderAsCbz(Path folder, Path cbzPath) {
+    protected void zipFolderAsCbz(Path folder, Path cbzPath) {
         try (ZipOutputStream zipOut = new ZipOutputStream(Files.newOutputStream(cbzPath))) {
             Files.walk(folder).filter(Files::isRegularFile).forEach(file -> {
                 try (InputStream in = Files.newInputStream(file)) {
@@ -335,7 +371,7 @@ public class DownloadService {
         }
     }
 
-    private void deleteFolder(Path folderPath) {
+    protected void deleteFolder(Path folderPath) {
         try {
             Files.walk(folderPath).sorted(Comparator.reverseOrder()).forEach(path -> {
                 try {
@@ -352,6 +388,24 @@ public class DownloadService {
 
     public List<Map<String, String>> fetchChapters(String titleUrl) {
         return fetchAllChaptersWithRetry(titleUrl);
+    }
+
+    public List<DownloadProgress> getDownloadStatuses() {
+        List<DownloadProgress> statuses = new ArrayList<>();
+        for (DownloadProgress progress : downloadProgress.values()) {
+            statuses.add(progress.copy());
+        }
+        for (DownloadProgress history : progressHistory) {
+            statuses.add(history.copy());
+        }
+        statuses.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+        return statuses;
+    }
+
+    public void clearDownloadStatus(String titleName) {
+        downloadProgress.remove(titleName);
+        progressHistory.removeIf(progress -> progress.getTitle().equals(titleName));
+        logger.debug("DOWNLOAD_SERVICE", "Cleared progress entry for title=" + sanitizeForLog(titleName));
     }
 
     public void downloadSingleChapter(NewTitle title, String chapterNumber) {

@@ -35,20 +35,23 @@ It powers automatic searching, scraping, and downloading of manga chapters into 
        ```
        Chapter {Number} [Pages {Count} {Source} - Noona].cbz
        ```
+     - Updates Raven's library with the latest `lastDownloaded` chapter
    - Adds the title & chapter to the local library
 
 ---
 
 ## 🔗 **API Endpoints**
 
-| Method | Endpoint                                             | Description                                                                       |
-| ------ | ---------------------------------------------------- | --------------------------------------------------------------------------------- |
-| GET    | `/v1/download/health`                                | Health check for the download module.                                             |
+| Method | Endpoint                                             | Description |
+| ------ | ---------------------------------------------------- | ----------- |
+| GET    | `/v1/download/health`                                | Health check for the download module. |
 | GET    | `/v1/download/search/{titleName}`                    | Search WeebCentral for a manga title. Returns options and a generated `searchId`. |
-| GET    | `/v1/download/select/{searchId}/{optionIndex}`       | Download all chapters from a previously searched title.                           |
-| GET    | `/v1/library/health`                                 | Health check for the library module.                                              |
-| GET    | `/v1/library/getall`                                 | Get all titles currently in the library.                                          |
-| GET    | `/v1/library/get/{titleName}`                        | Get details of a specific title by name.                                          |
+| GET    | `/v1/download/select/{searchId}/{optionIndex}`       | Download all chapters from a previously searched title. |
+| GET    | `/v1/download/status`                                | View active downloads plus recent history, including progress metadata. |
+| DELETE | `/v1/download/status/{title}`                        | Clear a progress entry (useful for pruning stale history). |
+| GET    | `/v1/library/health`                                 | Health check for the library module. |
+| GET    | `/v1/library/getall`                                 | Get all titles currently in the library. |
+| GET    | `/v1/library/get/{titleName}`                        | Get details of a specific title by name. |
 
 ---
 
@@ -145,6 +148,7 @@ docker run -p 8080:8080 `
 Visit:
 
 * [http://localhost:8080/v1/download/health](http://localhost:8080/v1/download/health)
+* [http://localhost:8080/v1/download/status](http://localhost:8080/v1/download/status)
 * [http://localhost:8080/v1/library/health](http://localhost:8080/v1/library/health)
 
 You should see:
