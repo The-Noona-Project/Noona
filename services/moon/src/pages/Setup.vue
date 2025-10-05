@@ -215,6 +215,7 @@ const portalAction = reactive({
   loading: false,
   success: false,
   error: '',
+  completed: false,
 });
 
 const portalDiscordState = reactive({
@@ -243,6 +244,7 @@ const ravenAction = reactive({
   loading: false,
   success: false,
   error: '',
+  completed: false,
 });
 
 let progressPollHandle = null;
@@ -787,6 +789,23 @@ const resetProgressState = () => {
   installLogs.value = '';
 };
 
+const resetStepState = () => {
+  installError.value = '';
+  installResults.value = null;
+  installSuccessMessageVisible.value = false;
+  showProgressDetails.value = false;
+  installLogs.value = '';
+  resetProgressState();
+
+  portalAction.loading = false;
+  portalAction.success = false;
+  portalAction.error = '';
+
+  ravenAction.loading = false;
+  ravenAction.success = false;
+  ravenAction.error = '';
+};
+
 const loadServicesFromEndpoint = async (endpoint) => {
   const response = await fetch(endpoint);
   if (!response.ok) {
@@ -1193,6 +1212,7 @@ const startPortalTest = async () => {
     }
 
     portalAction.success = true;
+    portalAction.completed = true;
   } catch (error) {
     portalAction.error = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1220,6 +1240,7 @@ const runRavenHandshake = async () => {
     }
 
     ravenAction.success = true;
+    ravenAction.completed = true;
   } catch (error) {
     ravenAction.error = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1234,8 +1255,8 @@ const isStepInstalled = (stepKey) => {
 };
 
 const isStepActionComplete = (stepKey) => {
-  if (stepKey === 'portal') return portalAction.success;
-  if (stepKey === 'raven') return ravenAction.success;
+  if (stepKey === 'portal') return portalAction.completed;
+  if (stepKey === 'raven') return ravenAction.completed;
   return true;
 };
 
@@ -1254,8 +1275,10 @@ const isStepUnlocked = (stepKey) => {
 
 const goToStep = (index) => {
   if (index < 0 || index >= STEP_DEFINITIONS.length) return;
+  if (index === activeStepIndex.value) return;
   const targetStep = STEP_DEFINITIONS[index];
   if (!isStepUnlocked(targetStep.key)) return;
+  resetStepState();
   activeStepIndex.value = index;
 };
 

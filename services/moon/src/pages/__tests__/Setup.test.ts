@@ -676,7 +676,7 @@ describe('Setup page', () => {
     const vm = wrapper.vm as unknown as {
       $: {
         setupState: {
-          portalAction: { success: boolean };
+          portalAction: { success: boolean; completed: boolean };
           ravenAction: { success: boolean };
           selectedServices: string[];
         };
@@ -684,6 +684,7 @@ describe('Setup page', () => {
     };
 
     vm.$.setupState.portalAction.success = true;
+    vm.$.setupState.portalAction.completed = true;
     vm.$.setupState.selectedServices = ['noona-raven'];
     await wrapper.vm.$nextTick();
 
@@ -700,5 +701,80 @@ describe('Setup page', () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.text()).toContain('Thanks for installing Noona—check out Raven');
+  });
+
+  it('resets install state and action buttons when moving between steps', async () => {
+    const installedPayload = cloneServicesPayload();
+    for (const service of installedPayload.services) {
+      service.installed = true;
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockResponse(installedPayload));
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          goToStep: (index: number) => void;
+          installError: string;
+          installResults: unknown;
+          installSuccessMessageVisible: boolean;
+          showProgressDetails: boolean;
+          installLogs: string;
+          portalAction: { loading: boolean; success: boolean; error: string; completed: boolean };
+          ravenAction: { loading: boolean; success: boolean; error: string; completed: boolean };
+        };
+      };
+    };
+
+    const { setupState } = vm.$;
+
+    setupState.installError = 'previous error';
+    setupState.installResults = { status: 500, results: [{ name: 'noona-portal', status: 'failed' }] };
+    setupState.installSuccessMessageVisible = true;
+    setupState.showProgressDetails = true;
+    setupState.installLogs = 'old logs';
+    setupState.portalAction.loading = true;
+    setupState.portalAction.success = true;
+    setupState.portalAction.error = 'Portal failed previously';
+    setupState.portalAction.completed = true;
+    setupState.ravenAction.loading = true;
+    setupState.ravenAction.success = true;
+    setupState.ravenAction.error = 'Raven failed previously';
+    setupState.ravenAction.completed = true;
+
+    setupState.goToStep(1);
+    await wrapper.vm.$nextTick();
+
+    expect(setupState.installError).toBe('');
+    expect(setupState.installResults).toBeNull();
+    expect(setupState.installSuccessMessageVisible).toBe(false);
+    expect(setupState.showProgressDetails).toBe(false);
+    expect(setupState.installLogs).toBe('');
+    expect(setupState.portalAction.loading).toBe(false);
+    expect(setupState.portalAction.success).toBe(false);
+    expect(setupState.portalAction.error).toBe('');
+    expect(setupState.ravenAction.loading).toBe(false);
+    expect(setupState.ravenAction.success).toBe(false);
+    expect(setupState.ravenAction.error).toBe('');
+
+    const portalButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Start & Test Portal Bot'));
+    expect(portalButton).toBeDefined();
+    expect(portalButton?.attributes('disabled')).toBeUndefined();
+
+    setupState.goToStep(0);
+    await wrapper.vm.$nextTick();
+
+    const nextStepButton = wrapper.find('button.setup-step__next');
+    expect(nextStepButton.exists()).toBe(true);
+    expect(nextStepButton.attributes('disabled')).toBeUndefined();
   });
 });
