@@ -1,5 +1,7 @@
 <script setup>
+import {computed, onMounted} from 'vue';
 import Header from '../components/Header.vue';
+import {getRequiredServiceForPath, useServiceInstallationStore} from '../utils/serviceInstallationStore.js';
 
 const servicePages = [
   {
@@ -52,6 +54,36 @@ const servicePages = [
     icon: 'mdi-crystal-ball',
   },
 ];
+
+const store = useServiceInstallationStore();
+
+onMounted(() => {
+  store.ensureLoaded();
+});
+
+const serviceCards = computed(() =>
+  servicePages.map((service) => {
+    const requiredService = getRequiredServiceForPath(service.path);
+    const installed = store.isServiceInstalled(requiredService);
+    const loading = store.loading.value;
+    const disabled = loading || (!!requiredService && !installed);
+    let tooltip = '';
+
+    if (loading) {
+      tooltip = 'Checking installation status…';
+    } else if (disabled) {
+      tooltip = 'Service installation is still pending.';
+    }
+
+    return {
+      ...service,
+      requiredService,
+      installed,
+      disabled,
+      tooltip,
+    };
+  }),
+);
 </script>
 
 <template>
@@ -74,22 +106,30 @@ const servicePages = [
 
       <v-row class="service-grid" dense>
         <v-col
-            v-for="service in servicePages"
-            :key="service.path"
+            v-for="card in serviceCards"
+            :key="card.path"
             cols="12"
             md="6"
             lg="4"
         >
           <v-card class="h-100 d-flex flex-column justify-space-between" elevation="4">
             <div class="pa-6">
-              <v-icon :icon="service.icon" size="40" class="mb-4 text-primary"/>
-              <h2 class="text-h5 mb-3">{{ service.title }}</h2>
-              <p class="text-body-2 mb-6">{{ service.summary }}</p>
+              <v-icon :icon="card.icon" size="40" class="mb-4 text-primary"/>
+              <h2 class="text-h5 mb-3">{{ card.title }}</h2>
+              <p class="text-body-2 mb-6">{{ card.summary }}</p>
             </div>
             <v-divider/>
             <v-card-actions>
-              <v-btn block color="secondary" variant="text" @click="$router.push(service.path)">
-                View {{ service.title }}
+              <v-btn
+                  block
+                  color="secondary"
+                  variant="text"
+                  :disabled="card.disabled"
+                  :title="card.disabled ? card.tooltip : undefined"
+                  :data-test="`service-link-${card.path}`"
+                  @click="card.disabled ? null : $router.push(card.path)"
+              >
+                View {{ card.title }}
               </v-btn>
             </v-card-actions>
           </v-card>
