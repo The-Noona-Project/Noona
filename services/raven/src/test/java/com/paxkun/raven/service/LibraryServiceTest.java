@@ -12,6 +12,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.lang.reflect.Type;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -104,6 +105,41 @@ class LibraryServiceTest {
         assertEquals("✅ All titles up-to-date.", result);
         verify(downloadService, never()).downloadSingleChapter(any(), anyString());
         verify(vaultService, never()).update(anyString(), anyMap(), anyMap(), anyBoolean());
+    }
+
+    @Test
+    void resolveOrCreateTitleCreatesNewEntryWhenMissing() {
+        when(vaultService.findOne("manga_library", Map.of("title", "Solo Leveling"))).thenReturn(null);
+
+        NewTitle created = libraryService.resolveOrCreateTitle("Solo Leveling", "http://solo");
+
+        assertThat(created.getTitleName()).isEqualTo("Solo Leveling");
+        assertThat(created.getSourceUrl()).isEqualTo("http://solo");
+        assertThat(created.getUuid()).isNotBlank();
+
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", created.getUuid())), mapCaptor.capture(), eq(true));
+        Map<String, Object> update = mapCaptor.getValue();
+        assertThat(update).containsKey("$set");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) update.get("$set");
+        assertThat(set).containsEntry("sourceUrl", "http://solo").containsEntry("lastDownloaded", "0");
+    }
+
+    @Test
+    void resolveOrCreateTitleUpdatesExistingSourceWhenMissing() {
+        Map<String, Object> stored = new HashMap<>();
+        stored.put("title", "Solo Leveling");
+        stored.put("uuid", "existing-uuid");
+        stored.put("sourceUrl", "");
+        stored.put("lastDownloaded", "7");
+        when(vaultService.findOne("manga_library", Map.of("title", "Solo Leveling"))).thenReturn(stored);
+
+        NewTitle resolved = libraryService.resolveOrCreateTitle("Solo Leveling", "http://solo");
+
+        assertThat(resolved.getUuid()).isEqualTo("existing-uuid");
+        assertThat(resolved.getSourceUrl()).isEqualTo("http://solo");
+
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", "existing-uuid")), anyMap(), eq(true));
     }
 
     @Test

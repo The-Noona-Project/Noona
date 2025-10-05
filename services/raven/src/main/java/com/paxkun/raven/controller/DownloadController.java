@@ -2,10 +2,13 @@ package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LoggerService;
+import com.paxkun.raven.service.download.DownloadProgress;
 import com.paxkun.raven.service.download.SearchTitle;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  * DownloadController handles endpoints for searching and downloading manga titles and chapters.
@@ -74,6 +77,35 @@ public class DownloadController {
                         " | optionIndex=" + optionIndex +
                         " | message=" + sanitizeForLog(result));
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Retrieves the current download queue and recently completed jobs.
+     *
+     * @return List of {@link DownloadProgress} entries.
+     */
+    @GetMapping("/status")
+    public ResponseEntity<List<DownloadProgress>> getStatus() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Status request received");
+        List<DownloadProgress> status = downloadService.getDownloadStatuses();
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Returning " + status.size() + " progress entries");
+        return ResponseEntity.ok(status);
+    }
+
+    /**
+     * Clears an existing progress entry, allowing stale history to be removed.
+     *
+     * @param titleName Title whose progress entry should be cleared.
+     * @return Empty response with 204 status.
+     */
+    @DeleteMapping("/status/{titleName}")
+    public ResponseEntity<Void> clearStatus(@PathVariable String titleName) {
+        String sanitizedTitle = sanitizeForLog(titleName);
+        logger.debug("DOWNLOAD_CONTROLLER", "Clearing status for title=" + sanitizedTitle);
+        downloadService.clearDownloadStatus(titleName);
+        return ResponseEntity.noContent().build();
     }
 
     private String sanitizeForLog(String value) {

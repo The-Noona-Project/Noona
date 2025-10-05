@@ -4,6 +4,7 @@ import com.google.gson.reflect.TypeToken;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.lang.reflect.Type;
@@ -20,7 +21,7 @@ import java.util.*;
 public class LibraryService {
 
     private final VaultService vaultService;
-    private final DownloadService downloadService;
+    private final @Lazy DownloadService downloadService;
     private final LoggerService logger;
 
     private static final String COLLECTION = "manga_library";
@@ -57,6 +58,29 @@ public class LibraryService {
                 (String) doc.get("sourceUrl"),
                 (String) doc.getOrDefault("lastDownloaded", "0")
         );
+    }
+
+    public NewTitle resolveOrCreateTitle(String titleName, String sourceUrl) {
+        NewTitle existing = getTitle(titleName);
+        if (existing != null) {
+            boolean needsUpdate = false;
+            if (existing.getUuid() == null || existing.getUuid().isBlank()) {
+                existing.setUuid(UUID.randomUUID().toString());
+                needsUpdate = true;
+            }
+            if (sourceUrl != null && (existing.getSourceUrl() == null || existing.getSourceUrl().isBlank())) {
+                existing.setSourceUrl(sourceUrl);
+                needsUpdate = true;
+            }
+            if (needsUpdate) {
+                addOrUpdateTitle(existing, new NewChapter(Optional.ofNullable(existing.getLastDownloaded()).orElse("0")));
+            }
+            return existing;
+        }
+
+        NewTitle created = new NewTitle(titleName, UUID.randomUUID().toString(), sourceUrl, "0");
+        addOrUpdateTitle(created, new NewChapter("0"));
+        return created;
     }
 
     public String checkForNewChapters() {
