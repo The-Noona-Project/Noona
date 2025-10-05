@@ -64,6 +64,10 @@ const PORTAL_CHANNEL_SUFFIX = '_CHANNEL_ID';
 const PORTAL_REQUIRED_ROLE_PREFIX = 'REQUIRED_ROLE_';
 const DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE =
   '/api/setup/services/noona-portal/discord';
+const PORTAL_SERVICE_POLL_INTERVAL_MS = 2000;
+const PORTAL_SERVICE_POLL_TIMEOUT_MS = 30000;
+const PORTAL_SERVICE_TIMEOUT_MESSAGE =
+  'Portal services did not become ready in time. Please try again.';
 const PORTAL_CREDENTIAL_KEYS = new Set([
   PORTAL_DISCORD_TOKEN_KEY,
   PORTAL_DISCORD_GUILD_KEY,
@@ -424,6 +428,57 @@ const getStepServices = (stepKey) => {
   return definition.services
     .map((name) => serviceMap.value.get(name))
     .filter(Boolean);
+};
+
+const arePortalStepServicesInstalled = () => {
+  const services = getStepServices('portal');
+  if (!services.length) {
+    return true;
+  }
+
+  return services.every((service) => service.installed === true);
+};
+
+const sleep = (duration) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, duration);
+  });
+
+const waitForPortalServicesInstalled = async (options = {}) => {
+  const timeoutMs =
+    typeof options.timeoutMs === 'number' && options.timeoutMs > 0
+      ? options.timeoutMs
+      : PORTAL_SERVICE_POLL_TIMEOUT_MS;
+  const intervalMs =
+    typeof options.intervalMs === 'number' && options.intervalMs > 0
+      ? options.intervalMs
+      : PORTAL_SERVICE_POLL_INTERVAL_MS;
+
+  if (arePortalStepServicesInstalled()) {
+    return true;
+  }
+
+  if (timeoutMs <= 0) {
+    return arePortalStepServicesInstalled();
+  }
+
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await refreshServices({ keepUi: true, skipPortalReset: true, silent: true });
+    if (arePortalStepServicesInstalled()) {
+      return true;
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      break;
+    }
+
+    await sleep(Math.min(intervalMs, remaining));
+  }
+
+  return arePortalStepServicesInstalled();
 };
 
 const currentStepServices = computed(() => getStepServices(currentStep.value.key));
@@ -965,11 +1020,14 @@ const loadServicesFromEndpoint = async (endpoint) => {
 const refreshServices = async (options) => {
   const keepUi = options?.keepUi === true;
   const skipPortalReset = options?.skipPortalReset === true;
+  const silent = options?.silent === true;
 
-  if (!keepUi) {
+  if (!keepUi && !silent) {
     state.loading = true;
   }
-  state.loadError = '';
+  if (!silent) {
+    state.loadError = '';
+  }
   installEndpoint.value = DEFAULT_INSTALL_ENDPOINT;
   activeServicesEndpoint.value = DEFAULT_SERVICES_ENDPOINT;
   installProgressEndpoint.value = DEFAULT_INSTALL_PROGRESS_ENDPOINT;
@@ -1022,7 +1080,7 @@ const refreshServices = async (options) => {
       state.loadError = 'Unable to retrieve installable services.';
     }
   } finally {
-    if (!keepUi) {
+    if (!keepUi && !silent) {
       state.loading = false;
     }
   }
@@ -1369,6 +1427,12 @@ const installCurrentStep = async () => {
       const installFailure = getPortalInstallFailureMessage();
       if (installFailure) {
         portalAction.error = installFailure;
+        return;
+      }
+
+      const portalServicesReady = await waitForPortalServicesInstalled();
+      if (!portalServicesReady) {
+        portalAction.error = PORTAL_SERVICE_TIMEOUT_MESSAGE;
         return;
       }
 
