@@ -110,6 +110,12 @@ const PORTAL_TOKEN_KEY = 'DISCORD_BOT_TOKEN';
 const PORTAL_GUILD_KEY = 'DISCORD_GUILD_ID';
 
 describe('Setup page', () => {
+  beforeEach(() => {
+    for (const service of servicesPayload.services) {
+      service.installed = false;
+    }
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -891,5 +897,188 @@ describe('Setup page', () => {
     const nextStepButton = wrapper.find('button.setup-step__next');
     expect(nextStepButton.exists()).toBe(true);
     expect(nextStepButton.attributes('disabled')).toBeUndefined();
+  });
+
+  it('installs the portal step before running the portal test', async () => {
+    const initialServices = cloneServicesPayload();
+    const refreshedServices = cloneServicesPayload();
+    for (const service of refreshedServices.services) {
+      if (service.name === 'noona-portal' || service.name === 'noona-vault') {
+        service.installed = true;
+      }
+    }
+
+    const serviceResponses = [initialServices, refreshedServices];
+
+    const fetchMock = vi.fn<(url: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async (url, init) => {
+        const target =
+          typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+
+        if (target.includes('/api/setup/services/noona-portal/test')) {
+          return mockResponse({ success: true });
+        }
+
+        if (target.includes('/api/setup/install')) {
+          expect(init?.method).toBe('POST');
+          return mockResponse({
+            results: [
+              { name: 'noona-portal', status: 'installed' },
+              { name: 'noona-vault', status: 'installed' },
+            ],
+          });
+        }
+
+        if (target.includes('/api/setup/services/install/progress')) {
+          return mockResponse({ status: 'installing', percent: 0, items: [] });
+        }
+
+        if (target.includes('/api/setup/services')) {
+          const payload = serviceResponses.shift() ?? refreshedServices;
+          return mockResponse(payload);
+        }
+
+        return mockResponse({});
+      },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+          selectedServices: string[];
+          portalAction: { success: boolean; error: string };
+        };
+      };
+    };
+
+    vm.$.setupState.activeStepIndex = 1;
+    vm.$.setupState.selectedServices = ['noona-portal', 'noona-vault'];
+
+    await wrapper.vm.$nextTick();
+
+    const portalButton = wrapper
+      .findAll('button')
+      .find((btn) => btn.text().includes('Start & Test Portal Bot'));
+
+    expect(portalButton).toBeTruthy();
+
+    await portalButton?.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const calls = fetchMock.mock.calls.map(([arg]) =>
+      typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : '',
+    );
+
+    const installCallIndex = calls.findIndex((call) => call.includes('/api/setup/install'));
+    const testCallIndex = calls.findIndex((call) =>
+      call.includes('/api/setup/services/noona-portal/test'),
+    );
+
+    expect(installCallIndex).toBeGreaterThan(-1);
+    expect(testCallIndex).toBeGreaterThan(-1);
+    expect(installCallIndex).toBeLessThan(testCallIndex);
+
+    expect(vm.$.setupState.portalAction.success).toBe(true);
+    expect(vm.$.setupState.portalAction.error).toBe('');
+  });
+
+  it('surfaces portal install failures before running the test', async () => {
+    const initialServices = cloneServicesPayload();
+
+    const fetchMock = vi.fn<(url: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async (url, init) => {
+        const target =
+          typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+
+        if (target.includes('/api/setup/services/noona-portal/test')) {
+          throw new Error('Portal test should not run when installation fails');
+        }
+
+        if (target.includes('/api/setup/install')) {
+          expect(init?.method).toBe('POST');
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ error: 'Portal install failed' }),
+            headers: { get: () => null },
+          } as Response;
+        }
+
+        if (target.includes('/api/setup/services/install/progress')) {
+          return mockResponse({ status: 'installing', percent: 0, items: [] });
+        }
+
+        if (target.includes('/api/setup/services')) {
+          return mockResponse(initialServices);
+        }
+
+        return mockResponse({});
+      },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+          selectedServices: string[];
+          portalAction: { error: string; success: boolean };
+        };
+      };
+    };
+
+    vm.$.setupState.activeStepIndex = 1;
+    vm.$.setupState.selectedServices = ['noona-portal', 'noona-vault'];
+
+    await wrapper.vm.$nextTick();
+
+    const portalButton = wrapper
+      .findAll('button')
+      .find((btn) => btn.text().includes('Start & Test Portal Bot'));
+
+    expect(portalButton).toBeTruthy();
+
+    await portalButton?.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const calls = fetchMock.mock.calls.map(([arg]) =>
+      typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : '',
+    );
+
+    const testCallIndex = calls.findIndex((call) =>
+      call.includes('/api/setup/services/noona-portal/test'),
+    );
+
+    expect(testCallIndex).toBe(-1);
+    expect(vm.$.setupState.portalAction.success).toBe(false);
+    expect(vm.$.setupState.portalAction.error).toBe('Portal install failed');
+    expect(wrapper.text()).toContain('Portal install failed');
   });
 });

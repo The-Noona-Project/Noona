@@ -1200,7 +1200,62 @@ const startPortalTest = async () => {
   portalAction.error = '';
 
   try {
-    const response = await fetch(PORTAL_TEST_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    if (!isStepInstalled('portal')) {
+      await installCurrentStep();
+
+      if (!isStepInstalled('portal')) {
+        const portalStepServices = new Set(
+          STEP_DEFINITIONS.find((step) => step.key === 'portal')?.services ?? [],
+        );
+
+        const installResultError = (() => {
+          const results = installResults.value?.results;
+          if (!Array.isArray(results)) {
+            return '';
+          }
+
+          for (const entry of results) {
+            const name = typeof entry?.name === 'string' ? entry.name : '';
+            if (!portalStepServices.has(name)) {
+              continue;
+            }
+
+            const resultError =
+              typeof entry?.error === 'string' && entry.error.trim()
+                ? entry.error
+                : '';
+            if (resultError) {
+              return resultError;
+            }
+
+            const status =
+              typeof entry?.status === 'string' && entry.status.trim()
+                ? entry.status.trim()
+                : '';
+            if (status && status !== 'installed') {
+              return `${name} installation ${status}`;
+            }
+          }
+
+          return '';
+        })();
+
+        const installErrorMessage =
+          (typeof installError.value === 'string' && installError.value.trim()
+            ? installError.value
+            : '') || installResultError;
+
+        portalAction.error =
+          installErrorMessage || 'Portal installation must complete successfully before testing.';
+        return;
+      }
+    }
+
+    const response = await fetch(PORTAL_TEST_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const payload = await response.json().catch(() => ({}));
 
     if (!response.ok) {
@@ -1952,7 +2007,7 @@ onMounted(() => {
                       <v-btn
                         color="primary"
                         :loading="portalAction.loading"
-                        :disabled="installing || !isStepInstalled('portal') || portalAction.success"
+                        :disabled="installing || portalAction.loading || portalAction.success"
                         @click="startPortalTest"
                       >
                         <template v-if="portalAction.success">
