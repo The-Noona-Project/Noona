@@ -9,9 +9,10 @@ import {
   validatePortalDiscordConfig,
 } from '../utils/portalDiscordSetup.js';
 
+const DEFAULT_SERVICES_ENDPOINT = '/api/setup/services';
 const DEFAULT_INSTALL_ENDPOINT = '/api/setup/install';
-const INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress';
-const INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs';
+const DEFAULT_INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress';
+const DEFAULT_INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs';
 const DEFAULT_INSTALL_LOG_LIMIT = 200;
 const PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
 const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
@@ -173,6 +174,9 @@ const envForms = reactive({});
 const selectedServices = ref([]);
 const expandedCards = ref([]);
 const installEndpoint = ref(DEFAULT_INSTALL_ENDPOINT);
+const installProgressEndpoint = ref(DEFAULT_INSTALL_PROGRESS_ENDPOINT);
+const installLogsEndpoint = ref(DEFAULT_INSTALL_LOGS_ENDPOINT);
+const activeServicesEndpoint = ref(DEFAULT_SERVICES_ENDPOINT);
 const installing = ref(false);
 const installError = ref('');
 const installResults = ref(null);
@@ -221,9 +225,10 @@ let progressPollHandle = null;
 let logsRequestActive = false;
 let pendingLogsRequestOptions = null;
 
-const installLogsRequestUrl = computed(
-  () => `${INSTALL_LOGS_ENDPOINT}?limit=${installLogLimit.value}`,
-);
+const installLogsRequestUrl = computed(() => {
+  const base = installLogsEndpoint.value || DEFAULT_INSTALL_LOGS_ENDPOINT;
+  return `${base}?limit=${installLogLimit.value}`;
+});
 
 const installableServices = computed(() =>
   state.services.filter((service) => service.installed !== true),
@@ -673,21 +678,28 @@ const handleCreatePortalChannel = async (fieldKey) => {
   }
 };
 
-const deriveInstallEndpoint = (servicesEndpoint) => {
+const deriveServiceEndpoints = (servicesEndpoint) => {
+  const defaults = {
+    services: DEFAULT_SERVICES_ENDPOINT,
+    install: DEFAULT_INSTALL_ENDPOINT,
+    progress: DEFAULT_INSTALL_PROGRESS_ENDPOINT,
+    logs: DEFAULT_INSTALL_LOGS_ENDPOINT,
+  };
+
   if (typeof servicesEndpoint !== 'string') {
-    return DEFAULT_INSTALL_ENDPOINT;
+    return defaults;
   }
 
   const trimmed = servicesEndpoint.trim();
   if (!trimmed) {
-    return DEFAULT_INSTALL_ENDPOINT;
+    return defaults;
   }
 
   const [withoutQuery] = trimmed.split('?');
   const sanitized = withoutQuery.replace(/\/+$/, '');
 
   if (!sanitized) {
-    return DEFAULT_INSTALL_ENDPOINT;
+    return defaults;
   }
 
   const setupSuffix = '/setup/services';
@@ -696,27 +708,37 @@ const deriveInstallEndpoint = (servicesEndpoint) => {
   const ensureLeadingSlash = (value) =>
     value.startsWith('/') ? value : `/${value}`;
 
-  let comparable = sanitized;
-  if (!ABSOLUTE_URL_REGEX.test(comparable)) {
-    comparable = ensureLeadingSlash(comparable);
-  }
+  const isAbsolute = ABSOLUTE_URL_REGEX.test(sanitized);
+  const normalize = (value) => (isAbsolute ? value : ensureLeadingSlash(value));
 
-  let target;
+  let servicesBase = null;
+  let installEndpointCandidate = null;
 
-  if (comparable.endsWith(setupSuffix)) {
-    target = `${comparable.slice(0, -setupSuffix.length)}/setup/install`;
-  } else if (comparable.endsWith(servicesSuffix)) {
-    target = `${comparable}/install`;
+  if (sanitized.endsWith(setupSuffix)) {
+    const root = sanitized.slice(0, -setupSuffix.length);
+    servicesBase = `${root}/setup/services`;
+    installEndpointCandidate = `${root}/setup/install`;
+  } else if (sanitized.endsWith(servicesSuffix)) {
+    const root = sanitized.slice(0, -servicesSuffix.length);
+    servicesBase = `${root}/services`;
+    installEndpointCandidate = `${servicesBase}/install`;
   } else {
-    return DEFAULT_INSTALL_ENDPOINT;
+    return defaults;
   }
 
-  if (ABSOLUTE_URL_REGEX.test(comparable)) {
-    return target;
-  }
+  const progressEndpointCandidate = `${servicesBase}/install/progress`;
+  const logsEndpointCandidate = `${servicesBase}/installation/logs`;
 
-  return ensureLeadingSlash(target);
+  return {
+    services: normalize(servicesBase),
+    install: normalize(installEndpointCandidate),
+    progress: normalize(progressEndpointCandidate),
+    logs: normalize(logsEndpointCandidate),
+  };
 };
+
+const deriveInstallEndpoint = (servicesEndpoint) =>
+  deriveServiceEndpoints(servicesEndpoint).install;
 
 const resetProgressState = () => {
   state.progress.items = [];
@@ -750,6 +772,9 @@ const refreshServices = async () => {
   state.loading = true;
   state.loadError = '';
   installEndpoint.value = DEFAULT_INSTALL_ENDPOINT;
+  activeServicesEndpoint.value = DEFAULT_SERVICES_ENDPOINT;
+  installProgressEndpoint.value = DEFAULT_INSTALL_PROGRESS_ENDPOINT;
+  installLogsEndpoint.value = DEFAULT_INSTALL_LOGS_ENDPOINT;
   resetPortalDiscordState();
 
   const errors = [];
@@ -761,7 +786,11 @@ const refreshServices = async () => {
         const services = await loadServicesFromEndpoint(endpoint);
         state.services = services;
         syncEnvForms(services);
-        installEndpoint.value = deriveInstallEndpoint(endpoint);
+        const derivedEndpoints = deriveServiceEndpoints(endpoint);
+        activeServicesEndpoint.value = derivedEndpoints.services;
+        installEndpoint.value = derivedEndpoints.install;
+        installProgressEndpoint.value = derivedEndpoints.progress;
+        installLogsEndpoint.value = derivedEndpoints.logs;
 
         for (const service of services) {
           if (
@@ -892,7 +921,9 @@ const isBooleanField = (serviceName, field) => {
 
 const fetchInstallProgress = async () => {
   try {
-    const response = await fetch(INSTALL_PROGRESS_ENDPOINT);
+    const response = await fetch(
+      installProgressEndpoint.value || DEFAULT_INSTALL_PROGRESS_ENDPOINT,
+    );
     if (!response.ok) {
       throw new Error(`Progress request failed with status ${response.status}`);
     }
