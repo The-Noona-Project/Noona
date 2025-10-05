@@ -36,6 +36,22 @@ const closeServer = (server) => new Promise((resolve, reject) => {
     })
 })
 
+const createRavenStub = (overrides = {}) => ({
+    async getLibrary() {
+        throw new Error('getLibrary should not be called')
+    },
+    async searchTitle() {
+        throw new Error('searchTitle should not be called')
+    },
+    async queueDownload() {
+        throw new Error('queueDownload should not be called')
+    },
+    async getDownloadStatus() {
+        throw new Error('getDownloadStatus should not be called')
+    },
+    ...overrides,
+})
+
 test('normalizeServiceInstallPayload normalizes entries and trims values', () => {
     const payload = normalizeServiceInstallPayload([
         '  noona-sage  ',
@@ -396,6 +412,239 @@ test('GET /api/setup/services/:name/logs proxies history and honours limit', asy
         summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
     })
     assert.deepEqual(calls, [['noona-sage', { limit: '5' }]])
+})
+
+test('GET /api/raven/library proxies Raven library listings', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getLibrary() {
+                calls.push('library')
+                return [{ title: 'One Piece' }]
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), [{ title: 'One Piece' }])
+    assert.deepEqual(calls, ['library'])
+})
+
+test('GET /api/raven/library surfaces Raven errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getLibrary() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library`)
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Raven library'))
+})
+
+test('POST /api/raven/search forwards trimmed query to Raven client', async (t) => {
+    const queries = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async searchTitle(query) {
+                queries.push(query)
+                return { results: [{ title: 'Naruto' }] }
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '  naruto  ' }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { results: [{ title: 'Naruto' }] })
+    assert.deepEqual(queries, ['naruto'])
+})
+
+test('POST /api/raven/search validates missing query payloads', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async searchTitle() {
+                throw new Error('searchTitle should not be invoked')
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '   ' }),
+    })
+
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Search query is required'))
+})
+
+test('POST /api/raven/search surfaces Raven failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async searchTitle() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'naruto' }),
+    })
+
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to search Raven library'))
+})
+
+test('POST /api/raven/download queues downloads via Raven client', async (t) => {
+    const payloads = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async queueDownload(payload) {
+                payloads.push(payload)
+                return { status: 'queued' }
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ searchId: 'search-123', optionIndex: 2 }),
+    })
+
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), { result: { status: 'queued' } })
+    assert.deepEqual(payloads, [{ searchId: 'search-123', optionIndex: 2 }])
+})
+
+test('POST /api/raven/download rejects invalid payloads', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async queueDownload() {
+                throw new Error('queueDownload should not run')
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const missingId = await fetch(`${baseUrl}/api/raven/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ optionIndex: 1 }),
+    })
+    assert.equal(missingId.status, 400)
+    const missingIdPayload = await missingId.json()
+    assert.ok(missingIdPayload.error.includes('searchId'))
+
+    const missingIndex = await fetch(`${baseUrl}/api/raven/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ searchId: 'search-123' }),
+    })
+    assert.equal(missingIndex.status, 400)
+    const missingIndexPayload = await missingIndex.json()
+    assert.ok(missingIndexPayload.error.includes('optionIndex'))
+})
+
+test('POST /api/raven/download surfaces Raven failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async queueDownload() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ searchId: 'abc', optionIndex: 1 }),
+    })
+
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to queue Raven download'))
+})
+
+test('GET /api/raven/downloads/status proxies Raven status feed', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getDownloadStatus() {
+                return { downloads: [{ id: 'one-piece', state: 'completed' }] }
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/status`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { downloads: [{ id: 'one-piece', state: 'completed' }] })
+})
+
+test('GET /api/raven/downloads/status surfaces Raven failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getDownloadStatus() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/status`)
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to retrieve Raven download status'))
 })
 
 test('POST /api/setup/services/:name/test proxies to setup client', async (t) => {

@@ -6,6 +6,7 @@ import cors from 'cors'
 import { debugMSG, errMSG, log } from '../../../utilities/etc/logger.mjs'
 import { SetupValidationError } from './errors.mjs'
 import { createDiscordSetupClient } from './discordSetupClient.mjs'
+import { createRavenClient } from './ravenClient.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
@@ -255,7 +256,9 @@ export const createSageApp = ({
     logger: loggerOverrides,
     setupClient: setupClientOverride,
     discordSetupClient: discordSetupClientOverride,
+    ravenClient: ravenClientOverride,
     setup: setupOptions = {},
+    raven: ravenOptions = {},
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
     const setupClient =
@@ -273,6 +276,17 @@ export const createSageApp = ({
         createDiscordSetupClient({
             logger,
             serviceName,
+        })
+    const ravenClient =
+        ravenClientOverride ||
+        createRavenClient({
+            serviceName,
+            logger,
+            setupClient,
+            baseUrl: ravenOptions.baseUrl,
+            baseUrls: ravenOptions.baseUrls ?? [],
+            fetchImpl: ravenOptions.fetchImpl ?? ravenOptions.fetch ?? fetch,
+            env: ravenOptions.env ?? process.env,
         })
     const app = express()
 
@@ -405,6 +419,74 @@ export const createSageApp = ({
         }
     })
 
+    app.get('/api/raven/library', async (_req, res) => {
+        try {
+            const library = await ravenClient.getLibrary()
+            res.json(library ?? [])
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven library: ${error.message}`)
+            res.status(502).json({ error: 'Unable to retrieve Raven library.' })
+        }
+    })
+
+    app.post('/api/raven/search', async (req, res) => {
+        const query = typeof req.body?.query === 'string' ? req.body.query.trim() : ''
+
+        if (!query) {
+            res.status(400).json({ error: 'Search query is required.' })
+            return
+        }
+
+        try {
+            const results = await ravenClient.searchTitle(query)
+            res.json(results ?? [])
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to search Raven for "${query}": ${error.message}`)
+            res.status(502).json({ error: 'Unable to search Raven library.' })
+        }
+    })
+
+    app.post('/api/raven/download', async (req, res) => {
+        const searchId = typeof req.body?.searchId === 'string' ? req.body.searchId.trim() : ''
+        const optionIndexRaw = req.body?.optionIndex
+        const optionIndex =
+            typeof optionIndexRaw === 'number'
+                ? optionIndexRaw
+                : typeof optionIndexRaw === 'string' && optionIndexRaw.trim()
+                  ? Number(optionIndexRaw)
+                  : NaN
+
+        if (!searchId) {
+            res.status(400).json({ error: 'searchId is required.' })
+            return
+        }
+
+        if (!Number.isFinite(optionIndex)) {
+            res.status(400).json({ error: 'optionIndex must be provided as a number.' })
+            return
+        }
+
+        try {
+            const result = await ravenClient.queueDownload({ searchId, optionIndex })
+            res.status(202).json({ result })
+        } catch (error) {
+            logger.error(
+                `[${serviceName}] ❌ Failed to queue Raven download for ${searchId}: ${error.message}`,
+            )
+            res.status(502).json({ error: 'Unable to queue Raven download.' })
+        }
+    })
+
+    app.get('/api/raven/downloads/status', async (_req, res) => {
+        try {
+            const status = await ravenClient.getDownloadStatus()
+            res.json(status ?? [])
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven download status: ${error.message}`)
+            res.status(502).json({ error: 'Unable to retrieve Raven download status.' })
+        }
+    })
+
     app.post('/api/setup/services/noona-raven/detect', async (_req, res) => {
         try {
             const { status, detection, error } = await setupClient.detectRavenMount()
@@ -429,7 +511,9 @@ export const startSage = ({
     logger: loggerOverrides,
     setupClient,
     discordSetupClient,
+    ravenClient,
     setup,
+    raven,
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
     const app = createSageApp({
@@ -437,7 +521,9 @@ export const startSage = ({
         logger,
         setupClient,
         discordSetupClient,
+        ravenClient,
         setup,
+        raven,
     })
     const server = app.listen(port, () => {
         logger.info(`[${serviceName}] 🧠 Sage is live on port ${port}`)
@@ -445,3 +531,5 @@ export const startSage = ({
 
     return { app, server }
 }
+
+export { SetupValidationError } from './errors.mjs'
