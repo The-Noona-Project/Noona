@@ -602,10 +602,11 @@ describe('Setup page', () => {
         return Promise.resolve(
           mockResponse({
             entries: [
-              {
-                timestamp: '2024-01-01T00:00:00Z',
-                message: 'Installer ready',
-              },
+              { message: 'Installer started' },
+              { message: 'Preparing dependencies' },
+              { message: 'Downloading assets' },
+              { message: 'Configuring services' },
+              { message: 'Installer ready' },
             ],
           }),
         );
@@ -640,7 +641,19 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    expect(logRequestsAfterOpen).toContain('/api/setup/services/installation/logs?limit=200');
+    expect(logRequestsAfterOpen).toContain('/api/setup/services/installation/logs?limit=3');
+
+    const initialLogs = wrapper
+      .find('.progress-logs__body')
+      .text()
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+
+    expect(initialLogs).toEqual([
+      'Downloading assets',
+      'Configuring services',
+      'Installer ready',
+    ]);
 
     const showMoreButton = wrapper.find('[data-test="show-more-logs"]');
     expect(showMoreButton.exists()).toBe(true);
@@ -654,7 +667,20 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    expect(logRequests).toContain('/api/setup/services/installation/logs?limit=400');
+    const lastLogRequest = logRequests[logRequests.length - 1];
+    expect(lastLogRequest).toBe('/api/setup/services/installation/logs?limit=3');
+
+    const updatedLogs = wrapper
+      .find('.progress-logs__body')
+      .text()
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+
+    expect(updatedLogs).toEqual([
+      'Downloading assets',
+      'Configuring services',
+      'Installer ready',
+    ]);
   });
 
   it('uses the fallback services endpoints for progress and logs when setup services fail', async () => {
@@ -683,10 +709,11 @@ describe('Setup page', () => {
         return Promise.resolve(
           mockResponse({
             entries: [
-              {
-                timestamp: '2024-01-01T00:00:00Z',
-                message: 'Installer ready',
-              },
+              { message: 'Installer started' },
+              { message: 'Preparing dependencies' },
+              { message: 'Downloading assets' },
+              { message: 'Configuring services' },
+              { message: 'Installer ready' },
             ],
           }),
         );
@@ -730,7 +757,19 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    expect(logRequests).toContain('/api/services/installation/logs?limit=200');
+    expect(logRequests).toContain('/api/services/installation/logs?limit=3');
+
+    const initialLogs = wrapper
+      .find('.progress-logs__body')
+      .text()
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+
+    expect(initialLogs).toEqual([
+      'Downloading assets',
+      'Configuring services',
+      'Installer ready',
+    ]);
 
     const showMoreButton = wrapper.find('[data-test="show-more-logs"]');
     expect(showMoreButton.exists()).toBe(true);
@@ -744,7 +783,20 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    expect(updatedLogRequests).toContain('/api/services/installation/logs?limit=400');
+    const lastFallbackLogRequest = updatedLogRequests[updatedLogRequests.length - 1];
+    expect(lastFallbackLogRequest).toBe('/api/services/installation/logs?limit=3');
+
+    const updatedLogs = wrapper
+      .find('.progress-logs__body')
+      .text()
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+
+    expect(updatedLogs).toEqual([
+      'Downloading assets',
+      'Configuring services',
+      'Installer ready',
+    ]);
   });
 
   it('shows the success message after completing the Raven install', async () => {

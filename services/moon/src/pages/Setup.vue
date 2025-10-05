@@ -13,7 +13,8 @@ const DEFAULT_SERVICES_ENDPOINT = '/api/setup/services';
 const DEFAULT_INSTALL_ENDPOINT = '/api/setup/install';
 const DEFAULT_INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress';
 const DEFAULT_INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs';
-const DEFAULT_INSTALL_LOG_LIMIT = 200;
+const INSTALL_LOG_DISPLAY_COUNT = 3;
+const DEFAULT_INSTALL_LOG_LIMIT = INSTALL_LOG_DISPLAY_COUNT;
 const PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
 const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
@@ -1159,7 +1160,8 @@ const fetchInstallLogs = async (options = {}) => {
     const formatted = entries
       .map(formatLogEntry)
       .filter((line) => typeof line === 'string' && line.length > 0);
-    installLogs.value = formatted.join('\n');
+    const latestEntries = formatted.slice(-INSTALL_LOG_DISPLAY_COUNT);
+    installLogs.value = latestEntries.join('\n');
     state.progress.logError = '';
   } catch (error) {
     state.progress.logError = error instanceof Error ? error.message : String(error);
@@ -1180,7 +1182,7 @@ const fetchInstallLogs = async (options = {}) => {
 const refreshInstallLogs = () => fetchInstallLogs();
 
 const showMoreInstallLogs = () => {
-  installLogLimit.value += DEFAULT_INSTALL_LOG_LIMIT;
+  installLogLimit.value = INSTALL_LOG_DISPLAY_COUNT;
   void fetchInstallLogs();
 };
 
