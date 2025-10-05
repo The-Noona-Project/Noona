@@ -86,8 +86,19 @@ const installedServiceNames = computed(() => {
     return installed;
 });
 
+const hasPendingSetup = computed(() =>
+    SERVICE_NAVIGATION_CONFIG.some(
+        (item) =>
+            !!item.requiredService &&
+            !installedServiceNames.value.has(item.requiredService),
+    ),
+);
+
 const navigationItems = computed(() =>
     SERVICE_NAVIGATION_CONFIG.filter((item) => {
+        if (item.path === '/setup') {
+            return hasPendingSetup.value;
+        }
         if (!item.requiredService) {
             return true;
         }
@@ -184,6 +195,7 @@ export function useServiceInstallationStore() {
         loading: computed(() => state.loading),
         error: computed(() => state.error),
         navigationItems,
+        hasPendingSetup,
         ensureLoaded,
         refresh,
         isServiceInstalled,

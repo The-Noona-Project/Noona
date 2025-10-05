@@ -57,6 +57,8 @@ describe('Home page service cards', () => {
     await flushAsync();
     await wrapper.vm.$nextTick();
 
+    expect(wrapper.find('[data-test="launch-setup"]').exists()).toBe(true);
+
     const wardenButton = wrapper.get('[data-test="service-link-/warden"]');
     expect(wardenButton.attributes('disabled')).toBeDefined();
     expect(wardenButton.attributes('title')).toContain('pending');
@@ -87,6 +89,8 @@ describe('Home page service cards', () => {
 
     await flushAsync();
     await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-test="launch-setup"]').exists()).toBe(false);
 
     const wardenButton = wrapper.get('[data-test="service-link-/warden"]');
     expect(wardenButton.attributes('disabled')).toBeUndefined();
