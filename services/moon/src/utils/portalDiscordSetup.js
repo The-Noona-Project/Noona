@@ -1,9 +1,23 @@
-const PORTAL_DISCORD_VALIDATE_ENDPOINT =
-  '/api/setup/services/noona-portal/discord/validate';
-const PORTAL_DISCORD_ROLES_ENDPOINT =
-  '/api/setup/services/noona-portal/discord/roles';
-const PORTAL_DISCORD_CHANNELS_ENDPOINT =
-  '/api/setup/services/noona-portal/discord/channels';
+const DEFAULT_PORTAL_DISCORD_BASE = '/api/setup/services/noona-portal/discord';
+
+const sanitizeBaseUrl = (baseUrl) => {
+  if (typeof baseUrl !== 'string') {
+    return DEFAULT_PORTAL_DISCORD_BASE;
+  }
+
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return DEFAULT_PORTAL_DISCORD_BASE;
+  }
+
+  return trimmed.replace(/\/+$/, '');
+};
+
+const buildPortalDiscordEndpoint = (segment, baseUrl) => {
+  const base = sanitizeBaseUrl(baseUrl);
+  const normalizedSegment = segment.startsWith('/') ? segment : `/${segment}`;
+  return `${base}${normalizedSegment}`;
+};
 
 const parseResponse = async (response, fallbackError) => {
   const payload = await response.json().catch(() => ({}));
@@ -18,12 +32,18 @@ const parseResponse = async (response, fallbackError) => {
   return payload;
 };
 
-export const validatePortalDiscordConfig = async ({ token, guildId }) => {
-  const response = await fetch(PORTAL_DISCORD_VALIDATE_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, guildId }),
-  });
+export const validatePortalDiscordConfig = async (
+  { token, guildId },
+  baseUrl,
+) => {
+  const response = await fetch(
+    buildPortalDiscordEndpoint('/validate', baseUrl),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, guildId }),
+    },
+  );
 
   return await parseResponse(
     response,
@@ -31,12 +51,18 @@ export const validatePortalDiscordConfig = async ({ token, guildId }) => {
   );
 };
 
-export const createPortalDiscordRole = async ({ token, guildId, name }) => {
-  const response = await fetch(PORTAL_DISCORD_ROLES_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, guildId, name }),
-  });
+export const createPortalDiscordRole = async (
+  { token, guildId, name },
+  baseUrl,
+) => {
+  const response = await fetch(
+    buildPortalDiscordEndpoint('/roles', baseUrl),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, guildId, name }),
+    },
+  );
 
   const payload = await parseResponse(
     response,
@@ -45,17 +71,18 @@ export const createPortalDiscordRole = async ({ token, guildId, name }) => {
   return payload?.role ?? null;
 };
 
-export const createPortalDiscordChannel = async ({
-  token,
-  guildId,
-  name,
-  type,
-}) => {
-  const response = await fetch(PORTAL_DISCORD_CHANNELS_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, guildId, name, type }),
-  });
+export const createPortalDiscordChannel = async (
+  { token, guildId, name, type },
+  baseUrl,
+) => {
+  const response = await fetch(
+    buildPortalDiscordEndpoint('/channels', baseUrl),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, guildId, name, type }),
+    },
+  );
 
   const payload = await parseResponse(
     response,

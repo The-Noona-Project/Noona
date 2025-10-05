@@ -381,6 +381,100 @@ describe('Setup page', () => {
     expect(envForms['noona-portal'].DISCORD_ONBOARDING_CHANNEL_ID).toBe('channel-2');
   });
 
+  it('derives Discord endpoints from the active services endpoint', async () => {
+    const discordPayload = {
+      guild: { id: '123', name: 'Noona Guild' },
+      roles: [{ id: '456', name: 'Reader', position: 1 }],
+      channels: [{ id: '789', name: 'general', type: 'GUILD_TEXT' }],
+    };
+
+    const fetchMock = vi.fn<(url: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      (url) => {
+        const target =
+          typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+        if (target.includes('/discord/roles')) {
+          return Promise.resolve(
+            mockResponse({ role: { id: 'role-2', name: 'Curator', position: 2 } }),
+          );
+        }
+        if (target.includes('/discord/channels')) {
+          return Promise.resolve(
+            mockResponse({
+              channel: { id: 'channel-2', name: 'welcome', type: 'GUILD_TEXT' },
+            }),
+          );
+        }
+        if (target.includes('/discord/validate')) {
+          return Promise.resolve(mockResponse(discordPayload));
+        }
+        return Promise.resolve(mockResponse(servicesPayload));
+      },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+          expandedCards: string[];
+          envForms: Record<string, Record<string, string>>;
+          portalDiscordState: {
+            verified: boolean;
+            createRole: { name: string };
+            createChannel: { name: string };
+          };
+          activeServicesEndpoint: string;
+          connectPortalDiscord: () => Promise<void>;
+          handleCreatePortalRole: (fieldKey: string) => Promise<void>;
+          handleCreatePortalChannel: (fieldKey: string) => Promise<void>;
+        };
+      };
+    };
+
+    vm.$.setupState.activeStepIndex = 1;
+    vm.$.setupState.expandedCards = ['noona-portal'];
+    vm.$.setupState.activeServicesEndpoint = 'https://sage.example/setup/services';
+
+    const envForms = vm.$.setupState.envForms;
+    envForms['noona-portal'][PORTAL_TOKEN_KEY] = 'token-value';
+    envForms['noona-portal'][PORTAL_GUILD_KEY] = 'guild-value';
+
+    await vm.$.setupState.connectPortalDiscord();
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.portalDiscordState.createRole.name = 'Curator';
+    await vm.$.setupState.handleCreatePortalRole('DISCORD_GUILD_ROLE_ID');
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.portalDiscordState.createChannel.name = 'welcome';
+    await vm.$.setupState.handleCreatePortalChannel('DISCORD_ONBOARDING_CHANNEL_ID');
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://sage.example/setup/services/noona-portal/discord/validate',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://sage.example/setup/services/noona-portal/discord/roles',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://sage.example/setup/services/noona-portal/discord/channels',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('fetches additional installer logs when the show more control is clicked', async () => {
     const fetchMock = vi.fn<(url: RequestInfo | URL) => Promise<Response>>((url) => {
       const target = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
