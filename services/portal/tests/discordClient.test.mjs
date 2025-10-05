@@ -121,3 +121,103 @@ test('interaction handler executes matching slash command', async () => {
     assert.equal(replies[0].ephemeral, true);
     assert.match(replies[0].content, /Dong/i);
 });
+
+test('interaction handler blocks command execution when guild does not match REQUIRED_GUILD_ID', async () => {
+    const previousGuild = process.env.REQUIRED_GUILD_ID;
+    process.env.REQUIRED_GUILD_ID = 'expected-guild';
+
+    try {
+        const fakeClient = new FakeClient();
+        fakeClient.user = { tag: 'TestBot#0001' };
+
+        let executed = false;
+        const commands = new Map([
+            ['ding', { definition: { name: 'ding', description: 'Test ding' }, execute: async () => { executed = true; } }],
+        ]);
+
+        const discord = createDiscordClient({
+            token: 'test-token',
+            guildId: 'guild-123',
+            clientId: 'client-abc',
+            commands,
+            clientFactory: () => fakeClient,
+        });
+
+        const loginPromise = discord.login();
+        await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+        await loginPromise;
+
+        const replies = [];
+        const interaction = {
+            isChatInputCommand: () => true,
+            commandName: 'ding',
+            guildId: 'another-guild',
+            reply: async payload => { replies.push(payload); },
+            member: { roles: { cache: new Map() } },
+            user: { tag: 'Member#0001', id: 'member-001' },
+        };
+
+        await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+        assert.equal(executed, false);
+        assert.equal(replies.length, 1);
+        assert.equal(replies[0].ephemeral, true);
+        assert.match(replies[0].content, /server/i);
+    } finally {
+        if (previousGuild == null) {
+            delete process.env.REQUIRED_GUILD_ID;
+        } else {
+            process.env.REQUIRED_GUILD_ID = previousGuild;
+        }
+    }
+});
+
+test('interaction handler blocks command execution when REQUIRED_ROLE_* is not satisfied', async () => {
+    const previousRole = process.env.REQUIRED_ROLE_DING;
+    process.env.REQUIRED_ROLE_DING = 'role-123';
+
+    try {
+        const fakeClient = new FakeClient();
+        fakeClient.user = { tag: 'TestBot#0001' };
+
+        let executed = false;
+        const commands = new Map([
+            ['ding', { definition: { name: 'ding', description: 'Test ding' }, execute: async () => { executed = true; } }],
+        ]);
+
+        const discord = createDiscordClient({
+            token: 'test-token',
+            guildId: 'guild-123',
+            clientId: 'client-abc',
+            commands,
+            clientFactory: () => fakeClient,
+        });
+
+        const loginPromise = discord.login();
+        await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+        await loginPromise;
+
+        const replies = [];
+        const interaction = {
+            isChatInputCommand: () => true,
+            commandName: 'ding',
+            reply: async payload => { replies.push(payload); },
+            member: { roles: { cache: new Map() } },
+            guildId: 'guild-123',
+            user: { tag: 'Member#0001', id: 'member-001' },
+        };
+
+        await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+        assert.equal(executed, false);
+        assert.equal(replies.length, 1);
+        assert.equal(replies[0].ephemeral, true);
+        assert.match(replies[0].content, /permission/i);
+    } finally {
+        if (previousRole == null) {
+            delete process.env.REQUIRED_ROLE_DING;
+        } else {
+            process.env.REQUIRED_ROLE_DING = previousRole;
+        }
+    }
+});

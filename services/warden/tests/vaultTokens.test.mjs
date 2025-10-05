@@ -129,6 +129,16 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         ['VAULT_BASE_URL', 'http://noona-vault:3005'],
     ];
 
+    const optionalDiscordExpectations = [
+        'DISCORD_GUILD_ROLE_ID',
+        'DISCORD_DEFAULT_ROLE_ID',
+        'REQUIRED_GUILD_ID',
+        'REQUIRED_ROLE_DING',
+        'REQUIRED_ROLE_JOIN',
+        'REQUIRED_ROLE_SCAN',
+        'REQUIRED_ROLE_SEARCH',
+    ];
+
     for (const [key, value] of requiredExpectations) {
         assert.ok(portal.env.includes(`${key}=${value}`), `${key} should be exported with default ${value}.`);
 
@@ -147,6 +157,17 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         const field = portal.envConfig.find((entry) => entry.key === key);
         assert.ok(field, `Portal envConfig should include ${key}.`);
         assert.equal(field.defaultValue, value, `${key} default should match implicit behavior.`);
+        assert.equal(field.required, false, `${key} should be optional in setup UI.`);
+    }
+
+    for (const key of optionalDiscordExpectations) {
+        assert.ok(
+            portal.env.includes(`${key}=`),
+            `${key} should be exported so the setup wizard can collect it.`,
+        );
+
+        const field = portal.envConfig.find((entry) => entry.key === key);
+        assert.ok(field, `Portal envConfig should include ${key}.`);
         assert.equal(field.required, false, `${key} should be optional in setup UI.`);
     }
 });
