@@ -295,6 +295,68 @@ describe('Setup page', () => {
     expect(envForms['noona-portal'].DISCORD_ONBOARDING_CHANNEL_ID).toBe('channel-2');
   });
 
+  it('fetches additional installer logs when the show more control is clicked', async () => {
+    const fetchMock = vi.fn<(url: RequestInfo | URL) => Promise<Response>>((url) => {
+      const target = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+      if (target.includes('/installation/logs')) {
+        return Promise.resolve(
+          mockResponse({
+            entries: [
+              {
+                timestamp: '2024-01-01T00:00:00Z',
+                message: 'Installer ready',
+              },
+            ],
+          }),
+        );
+      }
+
+      return Promise.resolve(mockResponse(servicesPayload));
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          showProgressDetails: boolean;
+        };
+      };
+    };
+
+    vm.$.setupState.showProgressDetails = true;
+
+    await wrapper.vm.$nextTick();
+    await flushAsync();
+
+    const logRequestsAfterOpen = fetchMock.mock.calls
+      .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
+      .filter((call) => call.includes('/installation/logs'));
+
+    expect(logRequestsAfterOpen).toContain('/api/setup/services/installation/logs?limit=200');
+
+    const showMoreButton = wrapper.find('[data-test="show-more-logs"]');
+    expect(showMoreButton.exists()).toBe(true);
+
+    await showMoreButton.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const logRequests = fetchMock.mock.calls
+      .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
+      .filter((call) => call.includes('/installation/logs'));
+
+    expect(logRequests).toContain('/api/setup/services/installation/logs?limit=400');
+  });
+
   it('shows the success message after completing the Raven install', async () => {
     const initialServices = {
       services: [

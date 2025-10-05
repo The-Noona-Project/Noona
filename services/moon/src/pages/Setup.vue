@@ -11,7 +11,8 @@ import {
 
 const DEFAULT_INSTALL_ENDPOINT = '/api/setup/install';
 const INSTALL_PROGRESS_ENDPOINT = '/api/setup/services/install/progress';
-const INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs?limit=200';
+const INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs';
+const DEFAULT_INSTALL_LOG_LIMIT = 200;
 const PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
 const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
@@ -176,6 +177,7 @@ const installing = ref(false);
 const installError = ref('');
 const installResults = ref(null);
 const installSuccessMessageVisible = ref(false);
+const installLogLimit = ref(DEFAULT_INSTALL_LOG_LIMIT);
 const installLogs = ref('');
 const showProgressDetails = ref(false);
 const progressLogsLoading = ref(false);
@@ -217,6 +219,11 @@ const ravenAction = reactive({
 
 let progressPollHandle = null;
 let logsRequestActive = false;
+let pendingLogsRequestOptions = null;
+
+const installLogsRequestUrl = computed(
+  () => `${INSTALL_LOGS_ENDPOINT}?limit=${installLogLimit.value}`,
+);
 
 const installableServices = computed(() =>
   state.services.filter((service) => service.installed !== true),
@@ -717,6 +724,7 @@ const resetProgressState = () => {
   state.progress.status = '';
   state.progress.error = '';
   state.progress.logError = '';
+  installLogLimit.value = DEFAULT_INSTALL_LOG_LIMIT;
   installLogs.value = '';
 };
 
@@ -938,19 +946,26 @@ const formatLogEntry = (entry) => {
   return line || null;
 };
 
-const fetchInstallLogs = async ({ silent = false } = {}) => {
+const fetchInstallLogs = async (options = {}) => {
+  const requestOptions = { silent: false, ...options };
+
   if (logsRequestActive) {
+    if (!requestOptions.silent) {
+      progressLogsLoading.value = true;
+    }
+    pendingLogsRequestOptions = requestOptions;
     return;
   }
 
-  if (!silent) {
+  logsRequestActive = true;
+  pendingLogsRequestOptions = null;
+
+  if (!requestOptions.silent) {
     progressLogsLoading.value = true;
   }
 
-  logsRequestActive = true;
-
   try {
-    const response = await fetch(INSTALL_LOGS_ENDPOINT);
+    const response = await fetch(installLogsRequestUrl.value);
 
     if (response.status === 404 || response.status === 204) {
       installLogs.value = '';
@@ -973,13 +988,24 @@ const fetchInstallLogs = async ({ silent = false } = {}) => {
     state.progress.logError = error instanceof Error ? error.message : String(error);
   } finally {
     logsRequestActive = false;
-    if (!silent) {
+    if (!requestOptions.silent) {
       progressLogsLoading.value = false;
+    }
+
+    if (pendingLogsRequestOptions) {
+      const nextOptions = pendingLogsRequestOptions;
+      pendingLogsRequestOptions = null;
+      void fetchInstallLogs(nextOptions);
     }
   }
 };
 
 const refreshInstallLogs = () => fetchInstallLogs();
+
+const showMoreInstallLogs = () => {
+  installLogLimit.value += DEFAULT_INSTALL_LOG_LIMIT;
+  void fetchInstallLogs();
+};
 
 const stopProgressPolling = () => {
   if (progressPollHandle != null) {
@@ -1396,6 +1422,17 @@ onMounted(() => {
                     <div class="progress-logs__header">
                       <span class="text-subtitle-2 font-weight-medium">Installer details</span>
                       <div class="progress-logs__actions">
+                        <v-btn
+                          variant="text"
+                          size="small"
+                          color="primary"
+                          data-test="show-more-logs"
+                          :disabled="!installLogs || progressLogsLoading"
+                          :loading="progressLogsLoading && Boolean(installLogs)"
+                          @click="showMoreInstallLogs"
+                        >
+                          Show more logs
+                        </v-btn>
                         <v-btn
                           icon
                           variant="text"
