@@ -11,6 +11,11 @@ const routes = [
         name: 'Setup',
         component: () => import('../pages/Setup.vue'), // lazy-loaded
     },
+    {
+        path: '/raven',
+        name: 'Raven',
+        component: () => import('../pages/Raven.vue'),
+    },
 ];
 
 const router = createRouter({
