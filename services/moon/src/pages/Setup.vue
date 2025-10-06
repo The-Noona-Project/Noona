@@ -2199,9 +2199,20 @@ watch(
   },
 );
 
-watch(installing, (value) => {
+watch(installing, (value, previous) => {
   if (!value) {
     stopProgressPolling();
+
+    if (previous) {
+      void (async () => {
+        await fetchInstallProgress();
+        if (showProgressDetails.value) {
+          await fetchInstallLogs();
+        }
+      })();
+      return;
+    }
+
     if (showProgressDetails.value) {
       void fetchInstallLogs();
     }
