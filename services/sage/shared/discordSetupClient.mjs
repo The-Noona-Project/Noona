@@ -119,6 +119,23 @@ const isUsableChannel = (channel) => Boolean(channel?.id && (channel?.name ?? ''
 const SETUP_CLIENT_INTENTS = Object.freeze([GatewayIntentBits.Guilds])
 const SETUP_CLIENT_PARTIALS = Object.freeze([])
 
+const normaliseDiscordLoginError = (error) => {
+    if (!error) {
+        return null
+    }
+
+    const message = typeof error?.message === 'string' ? error.message : ''
+    const code = error?.code ?? null
+
+    if (code === 'TokenInvalid' || /invalid token/i.test(message)) {
+        return new SetupValidationError(
+            'Discord rejected the provided bot token. Please verify the token and try again.',
+        )
+    }
+
+    return null
+}
+
 const withDiscordClient = async (
     { token, guildId, logger, serviceName, createClient = createDiscordClient },
     handler,
@@ -132,7 +149,17 @@ const withDiscordClient = async (
     })
 
     try {
-        await discordClient.login()
+        try {
+            await discordClient.login()
+        } catch (error) {
+            const mappedError = normaliseDiscordLoginError(error)
+            if (mappedError) {
+                throw mappedError
+            }
+
+            throw error
+        }
+
         return await handler(discordClient)
     } finally {
         try {

@@ -216,6 +216,38 @@ test('createDiscordSetupClient uses limited intents during validation', async ()
     assert.deepEqual(createdOptions[0].partials, [])
 })
 
+test('createDiscordSetupClient maps invalid Discord tokens to validation errors', async () => {
+    const destroyCalls = []
+
+    const setupClient = createDiscordSetupClient({
+        serviceName: 'test-sage',
+        logger: { error: () => {}, info: () => {} },
+        createClient() {
+            return {
+                async login() {
+                    const error = new Error('An invalid token was provided.')
+                    error.code = 'TokenInvalid'
+                    throw error
+                },
+                destroy() {
+                    destroyCalls.push(true)
+                },
+            }
+        },
+    })
+
+    await assert.rejects(
+        () => setupClient.fetchResources({ token: 'bad-token', guildId: 'guild-123' }),
+        (error) => {
+            assert.ok(error instanceof SetupValidationError)
+            assert.match(error.message, /Discord rejected the provided bot token/i)
+            return true
+        },
+    )
+
+    assert.equal(destroyCalls.length, 1)
+})
+
 test('GET /api/setup/services requests installable set from Warden by default', async (t) => {
     const fetchCalls = []
     const app = createSageApp({
