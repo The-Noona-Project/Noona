@@ -905,6 +905,10 @@ describe('Setup page', () => {
         return mockResponse({ detection: { mountPath: '/srv/kavita' } });
       }
 
+      if (target === '/api/raven/library') {
+        return mockResponse({ items: [] });
+      }
+
       if (target.includes('/api/setup/services/install/progress')) {
         return mockResponse({ status: 'installing', percent: 0, items: [] });
       }
@@ -998,6 +1002,10 @@ describe('Setup page', () => {
           typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
         if (target === '/api/setup/services/noona-raven/detect') {
           return Promise.resolve(mockResponse({ detection: null }));
+        }
+
+        if (target === '/api/raven/library') {
+          return Promise.resolve(mockResponse({ entries: [] }));
         }
 
         return Promise.resolve(mockResponse(installedPayload));
@@ -1124,7 +1132,7 @@ describe('Setup page', () => {
 
     expect(vm.$.setupState.ravenAction.success).toBe(false);
     expect(vm.$.setupState.ravenAction.completed).toBe(false);
-    expect(vm.$.setupState.ravenAction.message).toContain('Checking Raven configuration');
+    expect(vm.$.setupState.ravenAction.message).toContain('Verifying Raven configuration with Sage');
     expect(vm.$.setupState.ravenAction.error).toContain('Kavita data mount not detected automatically');
 
     expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
