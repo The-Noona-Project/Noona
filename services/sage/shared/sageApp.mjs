@@ -214,6 +214,18 @@ const createSetupClient = ({
             const response = await fetchFromWarden('/api/services/install/progress')
             return await response.json().catch(() => ({ items: [], status: 'idle', percent: null }))
         },
+        async getInstallationLogs(options = {}) {
+            const limit = options?.limit
+            const suffix = limit ? `?limit=${encodeURIComponent(limit)}` : ''
+            const response = await fetchFromWarden(`/api/services/installation/logs${suffix}`)
+            return await response
+                .json()
+                .catch(() => ({
+                    service: 'installation',
+                    entries: [],
+                    summary: { status: 'idle', percent: null, detail: null, updatedAt: null },
+                }))
+        },
         async getServiceLogs(name, options = {}) {
             if (!name || typeof name !== 'string') {
                 throw new SetupValidationError('Service name must be a non-empty string.')
@@ -340,6 +352,25 @@ export const createSageApp = ({
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load install progress: ${error.message}`)
             res.status(502).json({ error: 'Unable to retrieve installation progress.' })
+        }
+    })
+
+    app.get('/api/setup/services/installation/logs', async (req, res) => {
+        try {
+            const history = await setupClient.getInstallationLogs({ limit: req.query?.limit })
+            if (!history) {
+                res.json({
+                    service: 'installation',
+                    entries: [],
+                    summary: { status: 'idle', percent: null, detail: null, updatedAt: null },
+                })
+                return
+            }
+
+            res.json(history)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load installation logs: ${error.message}`)
+            res.status(502).json({ error: 'Unable to retrieve installation logs.' })
         }
     })
 

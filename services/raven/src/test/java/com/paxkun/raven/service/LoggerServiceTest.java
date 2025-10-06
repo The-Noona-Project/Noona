@@ -52,5 +52,28 @@ class LoggerServiceTest {
         assertThat(service.getDownloadsRoot()).isEqualTo(containerFallback);
         assertThat(output).contains("⚠️ Failed to create APPDATA downloads directory");
     }
+
+    @Test
+    void logsKavitaMountAndDownloadsRoot(CapturedOutput output) throws IOException {
+        Path tempRoot = Files.createTempDirectory("logger-service-env");
+
+        LoggerService service = new LoggerService() {
+            @Override
+            protected Path resolveAppDataDownloadsPath() {
+                return tempRoot;
+            }
+
+            @Override
+            protected String resolveKavitaDataMountEnv() {
+                return "/data/kavita";
+            }
+        };
+
+        service.afterPropertiesSet();
+
+        assertThat(output).contains("[SYSTEM] [KAVITA_DATA_MOUNT] /data/kavita");
+        assertThat(output)
+                .contains("[SYSTEM] [DOWNLOADS_ROOT] " + tempRoot.toAbsolutePath());
+    }
 }
 
