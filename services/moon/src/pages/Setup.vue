@@ -8,6 +8,7 @@ import {
   createPortalDiscordRole,
   validatePortalDiscordConfig,
 } from '../utils/portalDiscordSetup.js';
+import { normalizeServiceList, resolveServiceInstalled } from '../utils/serviceStatus.js';
 
 const DEFAULT_SERVICES_ENDPOINT = '/api/setup/services';
 const DEFAULT_INSTALL_ENDPOINT = '/api/setup/install';
@@ -115,6 +116,8 @@ const PORTAL_CREDENTIAL_KEYS = new Set([
   PORTAL_DISCORD_TOKEN_KEY,
   PORTAL_DISCORD_GUILD_KEY,
 ]);
+
+const isServiceInstalled = (service) => resolveServiceInstalled(service);
 
 const sanitizePortalRole = (role) => {
   if (!role || !role.id) {
@@ -413,7 +416,7 @@ const installLogsRequestUrl = computed(() => {
 });
 
 const installableServices = computed(() =>
-  state.services.filter((service) => service.installed !== true),
+  state.services.filter((service) => !isServiceInstalled(service)),
 );
 
 const serviceMap = computed(() => {
@@ -439,7 +442,7 @@ const selectedSet = computed(() => new Set(normalizedSelection.value));
 const installedSet = computed(() => {
   const installed = new Set();
   for (const service of state.services) {
-    if (service?.name && service.installed === true) {
+    if (service?.name && isServiceInstalled(service)) {
       installed.add(service.name);
     }
   }
@@ -501,7 +504,7 @@ const arePortalStepServicesInstalled = () => {
     return true;
   }
 
-  return services.every((service) => service.installed === true);
+  return services.every((service) => isServiceInstalled(service));
 };
 
 const sleep = (duration) =>
@@ -549,8 +552,8 @@ const waitForPortalServicesInstalled = async (options = {}) => {
 const currentStepServices = computed(() => getStepServices(currentStep.value.key));
 
 const currentStepSelectableServices = computed(() =>
-  currentStepServices.value.filter((service) =>
-    selectedSet.value.has(service.name) && service.installed !== true,
+  currentStepServices.value.filter(
+    (service) => selectedSet.value.has(service.name) && !isServiceInstalled(service),
   ),
 );
 
@@ -1098,13 +1101,8 @@ const loadServicesFromEndpoint = async (endpoint) => {
   }
 
   const payload = await response.json();
-  const services = Array.isArray(payload.services) ? payload.services : [];
-  const filtered = services.filter(
-    (service) =>
-      service &&
-      typeof service.name === 'string' &&
-      ALLOWED_SERVICE_NAMES.has(service.name),
-  );
+  const services = normalizeServiceList(payload);
+  const filtered = services.filter((service) => ALLOWED_SERVICE_NAMES.has(service.name));
   filtered.sort((a, b) => a.name.localeCompare(b.name));
   return filtered;
 };
@@ -1144,10 +1142,7 @@ const refreshServices = async (options) => {
         installLogsEndpoint.value = derivedEndpoints.logs;
 
         for (const service of services) {
-          if (
-            ALWAYS_SELECTED_SERVICES.has(service.name) &&
-            service.installed !== true
-          ) {
+          if (ALWAYS_SELECTED_SERVICES.has(service.name) && !isServiceInstalled(service)) {
             previousSelection.add(service.name);
           }
         }
@@ -1197,7 +1192,7 @@ const missingDependencies = (name) => {
 };
 
 const isServiceLocked = (service) =>
-  service.installed === true ||
+  isServiceInstalled(service) ||
   isServiceRequired(service) ||
   ALWAYS_SELECTED_SERVICES.has(service.name);
 
@@ -1235,7 +1230,7 @@ const toggleService = (name) => {
   if (installing.value) return;
 
   const service = serviceMap.value.get(name);
-  if (!service || service.installed === true) {
+  if (!service || isServiceInstalled(service)) {
     return;
   }
 
@@ -1619,7 +1614,7 @@ const runRavenHandshake = async () => {
 const isStepInstalled = (stepKey) => {
   const services = getStepServices(stepKey);
   if (!services.length) return true;
-  return services.every((service) => service.installed === true);
+  return services.every((service) => isServiceInstalled(service));
 };
 
 const isStepActionComplete = (stepKey) => {
@@ -1664,7 +1659,7 @@ const goToNextStep = () => {
 };
 
 const currentStepInstallableCount = computed(
-  () => currentStepServices.value.filter((service) => service.installed !== true).length,
+  () => currentStepServices.value.filter((service) => !isServiceInstalled(service)).length,
 );
 
 const showInstallResults = computed(() =>
@@ -1997,7 +1992,7 @@ onMounted(() => {
                         <div class="setup-service-card__title">
                           <span class="text-subtitle-1 font-weight-medium">{{ service.name }}</span>
                           <v-chip
-                            v-if="service.installed === true"
+                            v-if="isServiceInstalled(service)"
                             color="success"
                             size="x-small"
                             variant="tonal"

@@ -1,3 +1,5 @@
+import { resolveServiceInstalled } from './serviceStatus.js';
+
 export function isServiceRequired(service) {
   return Boolean(service && service.required === true);
 }
@@ -15,7 +17,7 @@ export function mergeRequiredSelections(services = [], previousSelection = []) {
 
   for (const service of services) {
     const name = normalizeName(service);
-    if (!name || service?.installed === true) {
+    if (!name || resolveServiceInstalled(service)) {
       continue;
     }
 

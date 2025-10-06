@@ -1,4 +1,5 @@
 import {computed, reactive} from 'vue';
+import {normalizeServiceList, resolveServiceInstalled} from './serviceStatus.js';
 
 export const SERVICE_NAVIGATION_CONFIG = [
     {
@@ -79,7 +80,7 @@ const servicesList = computed(() => state.services);
 const installedServiceNames = computed(() => {
     const installed = new Set();
     for (const service of state.services) {
-        if (service && typeof service.name === 'string' && service.installed === true) {
+        if (service && typeof service.name === 'string' && resolveServiceInstalled(service)) {
             installed.add(service.name);
         }
     }
@@ -106,57 +107,6 @@ const navigationItems = computed(() =>
     }),
 );
 
-const INSTALLED_STATUS_VALUES = new Set([
-    'installed',
-    'ready',
-    'healthy',
-    'running',
-    'complete',
-    'completed',
-]);
-
-function resolveInstalled(entry) {
-    if (!entry || typeof entry !== 'object') {
-        return false;
-    }
-
-    if (entry.installed === true) {
-        return true;
-    }
-
-    const candidate = entry.installed ?? entry.status;
-    if (typeof candidate === 'string') {
-        const normalized = candidate.trim().toLowerCase();
-        if (INSTALLED_STATUS_VALUES.has(normalized)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function normaliseServices(payload) {
-    if (!payload || typeof payload !== 'object') {
-        return [];
-    }
-
-    const rawServices = Array.isArray(payload.services) ? payload.services : [];
-    const normalised = [];
-
-    for (const entry of rawServices) {
-        if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
-            continue;
-        }
-
-        normalised.push({
-            ...entry,
-            installed: resolveInstalled(entry),
-        });
-    }
-
-    return normalised;
-}
-
 async function fetchServices(force = false) {
     if (state.loading) {
         return loadPromise;
@@ -182,7 +132,7 @@ async function fetchServices(force = false) {
             }
 
             const payload = await response.json();
-            state.services = normaliseServices(payload);
+            state.services = normalizeServiceList(payload);
             return state.services;
         } catch (error) {
             state.services = [];
