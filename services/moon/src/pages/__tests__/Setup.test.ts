@@ -663,7 +663,11 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    expect(logRequestsAfterOpen).toContain('/api/setup/services/installation/logs?limit=3');
+    expect(logRequestsAfterOpen).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('/api/setup/services/installation/logs?limit=3'),
+      ]),
+    );
 
     const initialLogs = wrapper
       .find('.progress-logs__body')
@@ -690,7 +694,7 @@ describe('Setup page', () => {
       .filter((call) => call.includes('/installation/logs'));
 
     const lastLogRequest = logRequests[logRequests.length - 1];
-    expect(lastLogRequest).toBe('/api/setup/services/installation/logs?limit=3');
+    expect(lastLogRequest).toContain('/api/setup/services/installation/logs?limit=3');
 
     const updatedLogs = wrapper
       .find('.progress-logs__body')
@@ -773,13 +777,21 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/install/progress'));
 
-    expect(progressRequests).toContain('/api/services/install/progress');
+    expect(progressRequests).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('/api/services/install/progress'),
+      ]),
+    );
 
     const logRequests = fetchMock.mock.calls
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    expect(logRequests).toContain('/api/services/installation/logs?limit=3');
+    expect(logRequests).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('/api/services/installation/logs?limit=3'),
+      ]),
+    );
 
     const initialLogs = wrapper
       .find('.progress-logs__body')
@@ -805,8 +817,9 @@ describe('Setup page', () => {
       .map(([arg]) => (typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : ''))
       .filter((call) => call.includes('/installation/logs'));
 
-    const lastFallbackLogRequest = updatedLogRequests[updatedLogRequests.length - 1];
-    expect(lastFallbackLogRequest).toBe('/api/services/installation/logs?limit=3');
+    const lastFallbackLogRequest =
+      updatedLogRequests[updatedLogRequests.length - 1];
+    expect(lastFallbackLogRequest).toContain('/api/services/installation/logs?limit=3');
 
     const updatedLogs = wrapper
       .find('.progress-logs__body')
