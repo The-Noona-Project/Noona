@@ -1944,19 +1944,43 @@ const getManualRavenMountOverride = () => {
   };
 };
 
+const RAVEN_LIBRARY_TIMEOUT_MS = 10000;
+
 const verifyRavenThroughSage = async () => {
-  const response = await fetch(RAVEN_LIBRARY_ENDPOINT);
-  const payload = await response.json().catch(() => ({}));
+  const controller = typeof AbortController === 'function' ? new AbortController() : undefined;
+  const timeout = controller ? setTimeout(() => controller.abort(), RAVEN_LIBRARY_TIMEOUT_MS) : undefined;
 
-  if (!response.ok) {
-    const errorMessage =
-      (typeof payload?.error === 'string' && payload.error.trim())
-        ? payload.error
-        : `Raven library request failed with status ${response.status}`;
-    throw new Error(errorMessage);
+  try {
+    const response = await fetch(RAVEN_LIBRARY_ENDPOINT, {
+      signal: controller?.signal,
+      headers: { Accept: 'application/json' },
+    });
+
+    const text = await response.text().catch(() => '');
+    let payload = {};
+
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = {};
+      }
+    }
+
+    if (!response.ok) {
+      const message =
+        typeof payload?.error === 'string' && payload.error.trim()
+          ? payload.error
+          : `Raven library request failed with status ${response.status}`;
+      throw new Error(message);
+    }
+
+    return payload;
+  } finally {
+    if (timeout != null) {
+      clearTimeout(timeout);
+    }
   }
-
-  return payload;
 };
 
 const installServicesDirect = async (services) => {
@@ -2017,7 +2041,7 @@ const runRavenHandshake = async () => {
       throw new Error(dependencyMessage);
     }
 
-    setRavenPhaseState('dependencies', 'success', 'Portal and Vault are ready. Sage can reach them.');
+    setRavenPhaseState('dependencies', 'success', 'Portal and Vault are ready.');
 
     const ravenServiceEntry = ravenService.value;
     if (!ravenServiceEntry) {
@@ -2044,7 +2068,10 @@ const runRavenHandshake = async () => {
 
     setRavenPhaseState('verification', 'running', 'Asking Sage to verify Raven configuration…');
 
-    const response = await fetch(RAVEN_DETECT_ENDPOINT, { method: 'POST' });
+    const response = await fetch(RAVEN_DETECT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
     const payload = await response.json().catch(() => ({}));
 
     if (!response.ok) {
@@ -2070,7 +2097,13 @@ const runRavenHandshake = async () => {
       throw new Error(missingMessage);
     }
 
-    await verifyRavenThroughSage();
+    try {
+      await verifyRavenThroughSage();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRavenPhaseState('verification', 'error', message);
+      throw error;
+    }
 
     const completionMessage = `${verificationSummary} Raven handshake complete—Moon will route Raven traffic through Sage.`;
     setRavenPhaseState('verification', 'success', completionMessage);
@@ -3288,6 +3321,7 @@ defineExpose({
                             :key="entry.key"
                             class="raven-progress__item"
                             :class="`raven-progress__item--${entry.state}`"
+                            :aria-label="`${entry.label}: ${entry.state}`"
                           >
                             <div class="raven-progress__icon" aria-hidden="true">
                               <v-icon

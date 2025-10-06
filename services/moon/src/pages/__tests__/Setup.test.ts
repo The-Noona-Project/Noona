@@ -2,10 +2,27 @@ import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SetupPage from '../Setup.vue';
 
+const toResponseText = (payload: unknown) => {
+  if (payload == null) {
+    return '';
+  }
+
+  if (typeof payload === 'string') {
+    return payload;
+  }
+
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return '';
+  }
+};
+
 const mockResponse = (payload: unknown) => ({
   ok: true,
   status: 200,
   json: async () => payload,
+  text: async () => toResponseText(payload),
   headers: { get: () => null },
 } as Response);
 
@@ -13,6 +30,7 @@ const mockErrorResponse = (status = 500, payload: unknown = { error: 'Request fa
   ok: false,
   status,
   json: async () => payload,
+  text: async () => toResponseText(payload),
   headers: { get: () => null },
 } as Response);
 
@@ -982,6 +1000,20 @@ describe('Setup page', () => {
 
     expect(vm.$.setupState.installSuccessMessageVisible).toBe(true);
     expect(wrapper.text()).toContain('Thanks for installing Noona—check out Raven');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/setup/services/noona-raven/detect',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/raven/library',
+      expect.objectContaining({
+        headers: { Accept: 'application/json' },
+      }),
+    );
   });
 
   it('completes the Raven handshake using manual overrides when detection fails', async () => {
@@ -1063,9 +1095,104 @@ describe('Setup page', () => {
     expect(vm.$.setupState.ravenAction.message).toContain('/srv/kavita');
     expect(vm.$.setupState.ravenAction.message).toContain('→ /downloads');
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
-      method: 'POST',
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/setup/services/noona-raven/detect',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/raven/library',
+      expect.objectContaining({
+        headers: { Accept: 'application/json' },
+      }),
+    );
+  });
+
+  it('surfaces Sage library errors during Raven verification', async () => {
+    const installedPayload = cloneServicesPayload();
+    for (const service of installedPayload.services) {
+      service.installed = true;
+      if (service.name === 'noona-raven') {
+        service.envConfig = [
+          { key: 'APPDATA', label: 'Raven Downloads Root' },
+          { key: 'KAVITA_DATA_MOUNT', label: 'Kavita Data Mount (Host Path)' },
+        ];
+      }
+    }
+
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>((input) => {
+        const target = typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
+
+        if (target === '/api/setup/services/noona-raven/detect') {
+          return Promise.resolve(mockResponse({ detection: { mountPath: '/srv/kavita' } }));
+        }
+
+        if (target === '/api/raven/library') {
+          return Promise.resolve(mockErrorResponse(502, { error: 'Sage unavailable' }));
+        }
+
+        return Promise.resolve(mockResponse(installedPayload));
+      });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
     });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          goToStep: (index: number) => void;
+          activeStepIndex: number;
+          portalAction: { completed: boolean; success: boolean };
+          ravenAction: { success: boolean; completed: boolean; error: string };
+        };
+      };
+    };
+
+    vm.$.setupState.portalAction.completed = true;
+    vm.$.setupState.portalAction.success = true;
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.goToStep(2);
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.portalAction.completed = true;
+    vm.$.setupState.portalAction.success = true;
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.activeStepIndex = 2;
+    await wrapper.vm.$nextTick();
+
+    await wrapper.vm.runRavenHandshake();
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    expect(vm.$.setupState.ravenAction.success).toBe(false);
+    expect(vm.$.setupState.ravenAction.completed).toBe(false);
+    expect(vm.$.setupState.ravenAction.error).toContain('Sage unavailable');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/setup/services/noona-raven/detect',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/raven/library',
+      expect.objectContaining({
+        headers: { Accept: 'application/json' },
+      }),
+    );
   });
 
   it('shows guidance when Raven mount detection fails without manual overrides', async () => {
@@ -1135,9 +1262,13 @@ describe('Setup page', () => {
     expect(vm.$.setupState.ravenAction.message).toContain('Verifying Raven configuration with Sage');
     expect(vm.$.setupState.ravenAction.error).toContain('Kavita data mount not detected automatically');
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
-      method: 'POST',
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/setup/services/noona-raven/detect',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
   });
 
   it('resets install state and action buttons when moving between steps', async () => {
