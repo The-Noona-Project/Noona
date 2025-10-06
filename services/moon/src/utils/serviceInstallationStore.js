@@ -106,6 +106,35 @@ const navigationItems = computed(() =>
     }),
 );
 
+const INSTALLED_STATUS_VALUES = new Set([
+    'installed',
+    'ready',
+    'healthy',
+    'running',
+    'complete',
+    'completed',
+]);
+
+function resolveInstalled(entry) {
+    if (!entry || typeof entry !== 'object') {
+        return false;
+    }
+
+    if (entry.installed === true) {
+        return true;
+    }
+
+    const candidate = entry.installed ?? entry.status;
+    if (typeof candidate === 'string') {
+        const normalized = candidate.trim().toLowerCase();
+        if (INSTALLED_STATUS_VALUES.has(normalized)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function normaliseServices(payload) {
     if (!payload || typeof payload !== 'object') {
         return [];
@@ -121,7 +150,7 @@ function normaliseServices(payload) {
 
         normalised.push({
             ...entry,
-            installed: entry.installed === true,
+            installed: resolveInstalled(entry),
         });
     }
 
