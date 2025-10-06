@@ -88,50 +88,76 @@ const joinBaseAndPath = (base, path) => {
   return `${sanitizedBase}${normalizedPath}`;
 };
 
-const addUnique = (collection, value) => {
-  if (!value) return;
-  if (collection.seen.has(value)) return;
-  collection.seen.add(value);
-  collection.items.push(value);
+const PRIORITIES = {
+  HIGH: 'high',
+  NORMAL: 'normal',
+  LOW: 'low',
 };
 
-const collectEnvCandidates = (collection, baseCandidates) => {
+const createEndpointCollection = () => ({
+  [PRIORITIES.HIGH]: [],
+  [PRIORITIES.NORMAL]: [],
+  [PRIORITIES.LOW]: [],
+  seen: new Set(),
+});
+
+const addEndpointValue = (collection, value, priority) => {
+  if (typeof value !== 'string') return;
+
+  const trimmed = value.trim();
+  if (!trimmed) return;
+  if (collection.seen.has(trimmed)) return;
+
+  collection.seen.add(trimmed);
+  collection[priority].push(trimmed);
+};
+
+const addDirectEndpointCandidate = (collection, candidate, priority) => {
+  const normalized = normalizeEndpoint(candidate);
+  if (normalized) {
+    addEndpointValue(collection, normalized, priority);
+  }
+};
+
+const addBaseEndpointCandidates = (collection, base, priority) => {
+  if (base !== '') {
+    const normalized = normalizeBaseUrl(base);
+    if (!normalized) {
+      return;
+    }
+    base = normalized;
+  }
+
+  for (const path of DEFAULT_SERVICE_PATHS) {
+    addEndpointValue(collection, joinBaseAndPath(base, path), priority);
+  }
+};
+
+const collectEnvCandidates = (collection) => {
   for (const key of ENV_BASE_KEYS) {
     const value = import.meta.env?.[key];
     if (!value) continue;
 
     if (/\/services\b/i.test(value)) {
-      const endpoint = normalizeEndpoint(value);
-      if (endpoint) {
-        addUnique(collection, endpoint);
-      }
+      addDirectEndpointCandidate(collection, value, PRIORITIES.HIGH);
       continue;
     }
 
-    const normalized = normalizeBaseUrl(value);
-    if (normalized) {
-      baseCandidates.add(normalized);
-    }
+    addBaseEndpointCandidates(collection, value, PRIORITIES.HIGH);
   }
 
   for (const key of ENV_ENDPOINT_KEYS) {
     const value = import.meta.env?.[key];
     if (!value) continue;
 
-    const normalized = normalizeEndpoint(value);
-    if (normalized) {
-      addUnique(collection, normalized);
-    }
+    addDirectEndpointCandidate(collection, value, PRIORITIES.HIGH);
   }
 };
 
-const collectWindowCandidates = (baseCandidates) => {
+const collectWindowCandidates = (collection) => {
   if (typeof window === 'undefined') {
     for (const candidate of STATIC_BASE_CANDIDATES) {
-      const normalized = normalizeBaseUrl(candidate);
-      if (normalized) {
-        baseCandidates.add(normalized);
-      }
+      addBaseEndpointCandidates(collection, candidate, PRIORITIES.NORMAL);
     }
     return;
   }
@@ -139,53 +165,44 @@ const collectWindowCandidates = (baseCandidates) => {
   const { origin, protocol, hostname, port } = window.location;
 
   if (origin) {
-    const normalizedOrigin = normalizeBaseUrl(origin);
-    if (normalizedOrigin) {
-      baseCandidates.add(normalizedOrigin);
-    }
+    const priority = port === '3000' || port === '4173' ? PRIORITIES.LOW : PRIORITIES.NORMAL;
+    addBaseEndpointCandidates(collection, origin, priority);
   }
 
   const scheme = protocol === 'https:' ? 'https:' : 'http:';
   const hostnames = new Set([hostname, 'localhost', '127.0.0.1']);
   const preferredPorts = new Set(['3004', '4001']);
 
-  if (port) {
-    if (port === '3000' || port === '4173') {
-      preferredPorts.add('3004');
-      preferredPorts.add('4001');
-    }
+  if (port && port !== '3000' && port !== '4173') {
+    preferredPorts.add(port);
   }
 
   for (const host of hostnames) {
     if (!host) continue;
     for (const preferredPort of preferredPorts) {
-      const normalized = normalizeBaseUrl(`${scheme}//${host}:${preferredPort}`);
-      if (normalized) {
-        baseCandidates.add(normalized);
-      }
+      addBaseEndpointCandidates(
+        collection,
+        `${scheme}//${host}:${preferredPort}`,
+        PRIORITIES.HIGH,
+      );
     }
   }
 
   for (const candidate of STATIC_BASE_CANDIDATES) {
-    const normalized = normalizeBaseUrl(candidate);
-    if (normalized) {
-      baseCandidates.add(normalized);
-    }
+    addBaseEndpointCandidates(collection, candidate, PRIORITIES.NORMAL);
   }
 };
 
 export const buildServiceEndpointCandidates = () => {
-  const collection = { items: [], seen: new Set() };
-  const baseCandidates = new Set(['']);
+  const collection = createEndpointCollection();
 
-  collectEnvCandidates(collection, baseCandidates);
-  collectWindowCandidates(baseCandidates);
+  collectEnvCandidates(collection);
+  collectWindowCandidates(collection);
+  addBaseEndpointCandidates(collection, '', PRIORITIES.LOW);
 
-  for (const base of baseCandidates) {
-    for (const path of DEFAULT_SERVICE_PATHS) {
-      addUnique(collection, joinBaseAndPath(base, path));
-    }
-  }
-
-  return collection.items;
+  return [
+    ...collection[PRIORITIES.HIGH],
+    ...collection[PRIORITIES.NORMAL],
+    ...collection[PRIORITIES.LOW],
+  ];
 };
