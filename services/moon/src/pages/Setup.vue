@@ -49,6 +49,49 @@ const STEP_DEFINITIONS = [
   },
 ];
 
+const STEP_INFO_SECTIONS = {
+  dependencies: [
+    {
+      title: 'Redis & MongoDB',
+      description:
+        'Redis keeps installation tasks responsive while MongoDB stores persistent configuration for the rest of the stack.',
+    },
+    {
+      title: 'Order matters',
+      description:
+        'Install these services before Portal and Vault so authentication and caching are available when the Discord bot comes online.',
+    },
+  ],
+  portal: [
+    {
+      title: 'Portal + Vault pairing',
+      description:
+        'Installing this step automatically starts the Portal bot and verifies the Discord handshake. If everything is already installed, click Install Step to run the verification again.',
+    },
+    {
+      title: 'Re-run verification',
+      description:
+        'Click Install Step at any time to restart the Portal services and trigger the Discord handshake if you need to re-verify access.',
+    },
+  ],
+  raven: [
+    {
+      title: 'Raven handshake',
+      description: 'Trigger the Raven handshake to complete installation.',
+    },
+    {
+      title: 'Why Raven waits',
+      description:
+        'Raven depends on Portal and Vault. Launch it last to stream library insights after authentication is configured.',
+    },
+    {
+      title: 'Kavita detection',
+      description:
+        'If automatic mount discovery fails, provide manual overrides in the Raven environment form before retrying the handshake.',
+    },
+  ],
+};
+
 const SERVICE_DEPENDENCIES = {
   'noona-portal': ['noona-redis', 'noona-mongo'],
   'noona-vault': ['noona-redis', 'noona-mongo'],
@@ -192,6 +235,7 @@ const installSuccessMessageVisible = ref(false);
 const installLogLimit = ref(DEFAULT_INSTALL_LOG_LIMIT);
 const installLogs = ref('');
 const showProgressDetails = ref(false);
+const showStepInfo = ref(false);
 const progressLogsLoading = ref(false);
 const activeStepIndex = ref(0);
 
@@ -508,6 +552,30 @@ const currentStepSelectableServices = computed(() =>
     selectedSet.value.has(service.name) && service.installed !== true,
   ),
 );
+
+const fallbackPortalInstallTargets = computed(() => {
+  if (currentStep.value.key !== 'portal') {
+    return [];
+  }
+
+  if (currentStepSelectableServices.value.length > 0) {
+    return [];
+  }
+
+  const portalService = currentStepServices.value.find(
+    (service) => service?.name === PORTAL_SERVICE_NAME,
+  );
+
+  return portalService ? [portalService] : [];
+});
+
+const currentStepInstallTargets = computed(() => {
+  if (currentStepSelectableServices.value.length > 0) {
+    return currentStepSelectableServices.value;
+  }
+
+  return fallbackPortalInstallTargets.value;
+});
 
 const canInstallCurrentStep = computed(() => {
   if (installing.value) {
@@ -1007,6 +1075,7 @@ const resetStepState = () => {
   installResults.value = null;
   installSuccessMessageVisible.value = false;
   showProgressDetails.value = false;
+  showStepInfo.value = false;
   installLogs.value = '';
   resetProgressState();
 
@@ -1346,7 +1415,7 @@ const scheduleProgressPolling = () => {
 };
 
 const installStepServices = computed(() =>
-  currentStepSelectableServices.value.map((service) => service.name),
+  currentStepInstallTargets.value.map((service) => service.name),
 );
 
 const installCurrentStep = async () => {
@@ -1369,7 +1438,7 @@ const installCurrentStep = async () => {
   installSuccessMessageVisible.value = false;
   resetProgressState();
 
-  const descriptors = currentStepSelectableServices.value;
+  const descriptors = currentStepInstallTargets.value;
   const hasInstallTargets = descriptors.length > 0;
   if (hasInstallTargets) {
     scheduleProgressPolling();
@@ -1558,6 +1627,20 @@ const showInstallResults = computed(() =>
   installResults.value && Array.isArray(installResults.value.results) && installResults.value.results.length > 0,
 );
 
+const currentStepInfoEntries = computed(
+  () => STEP_INFO_SECTIONS[currentStep.value.key] ?? [],
+);
+
+const hasPortalStatusMessage = computed(
+  () =>
+    currentStep.value.key === 'portal' &&
+    (portalAction.loading || portalAction.success || Boolean(portalAction.error)),
+);
+
+const hasStepInfo = computed(
+  () => currentStepInfoEntries.value.length > 0 || hasPortalStatusMessage.value,
+);
+
 watch(
   activeStepIndex,
   (nextIndex, previousIndex) => {
@@ -1584,6 +1667,15 @@ watch(showProgressDetails, (value) => {
     progressLogsLoading.value = false;
   }
 });
+
+watch(
+  () => [portalAction.loading, portalAction.success, portalAction.error],
+  ([loading, success, error]) => {
+    if (currentStep.value.key === 'portal' && (loading || success || error)) {
+      showStepInfo.value = true;
+    }
+  },
+);
 
 watch(
   () => state.services,
@@ -2205,45 +2297,70 @@ onMounted(() => {
                       </span>
                     </div>
 
-                    <div v-if="currentStep.key === 'portal'" class="setup-step__action mb-4">
-                      <v-alert type="info" variant="tonal" border="start" class="mb-2">
-                        Installing this step automatically starts the Portal bot and verifies the
-                        Discord handshake. If everything is already installed, click
-                        <strong>Install Step</strong> to run the verification again.
-                      </v-alert>
-                      <v-alert
-                        v-if="portalAction.loading"
-                        type="info"
-                        variant="tonal"
-                        border="start"
-                        class="mb-2"
+                    <div v-if="hasStepInfo" class="setup-step__info">
+                      <v-btn
+                        variant="text"
+                        size="small"
+                        color="primary"
+                        class="setup-step__info-toggle"
+                        data-test="step-info-toggle"
+                        @click="showStepInfo = !showStepInfo"
                       >
-                        Verifying Portal bot connection…
-                      </v-alert>
-                      <v-alert
-                        v-else-if="portalAction.success"
-                        type="success"
-                        variant="tonal"
-                        border="start"
-                        class="mb-2"
-                      >
-                        Portal bot verified successfully.
-                      </v-alert>
-                      <v-alert
-                        v-else-if="portalAction.error"
-                        type="error"
-                        variant="tonal"
-                        border="start"
-                        class="mb-2"
-                      >
-                        {{ portalAction.error }}
-                      </v-alert>
+                        <v-icon
+                          :icon="showStepInfo ? 'mdi-information-off-outline' : 'mdi-information-outline'"
+                          size="18"
+                          class="mr-2"
+                        />
+                        {{ showStepInfo ? 'Hide info' : 'Show more info' }}
+                      </v-btn>
+                      <v-expand-transition>
+                        <div v-if="showStepInfo" class="setup-step__info-panel">
+                          <v-alert
+                            v-for="(entry, index) in currentStepInfoEntries"
+                            :key="`info-${currentStep.key}-${index}`"
+                            type="info"
+                            variant="tonal"
+                            border="start"
+                            class="mb-2"
+                          >
+                            <p class="font-weight-medium mb-1">{{ entry.title }}</p>
+                            <p class="text-body-2 mb-0">{{ entry.description }}</p>
+                          </v-alert>
+                          <template v-if="currentStep.key === 'portal'">
+                            <v-alert
+                              v-if="portalAction.loading"
+                              type="info"
+                              variant="tonal"
+                              border="start"
+                              class="mb-2"
+                            >
+                              Verifying Portal bot connection…
+                            </v-alert>
+                            <v-alert
+                              v-else-if="portalAction.success"
+                              type="success"
+                              variant="tonal"
+                              border="start"
+                              class="mb-2"
+                              data-test="portal-success"
+                            >
+                              Portal bot verified successfully.
+                            </v-alert>
+                            <v-alert
+                              v-else-if="portalAction.error"
+                              type="error"
+                              variant="tonal"
+                              border="start"
+                              class="mb-2"
+                            >
+                              {{ portalAction.error }}
+                            </v-alert>
+                          </template>
+                        </div>
+                      </v-expand-transition>
                     </div>
 
                     <div v-if="currentStep.key === 'raven'" class="setup-step__action mb-4">
-                      <v-alert type="info" variant="tonal" border="start" class="mb-2">
-                        Trigger the Raven handshake to complete installation.
-                      </v-alert>
                       <v-btn
                         color="primary"
                         :loading="ravenAction.loading"
@@ -2521,6 +2638,23 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.setup-step__info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup-step__info-toggle {
+  align-self: flex-start;
+  padding-left: 0;
+}
+
+.setup-step__info-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .setup-step__buttons {

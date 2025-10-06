@@ -505,7 +505,14 @@ describe('Setup page', () => {
     const installButtonAfter = wrapper.find('button.setup-step__install');
     expect(installButtonAfter.exists()).toBe(true);
     expect(installButtonAfter.attributes('disabled')).toBeUndefined();
-    expect(wrapper.text()).toContain('Installing this step automatically starts the Portal bot');
+    const infoToggle = wrapper.find('[data-test="step-info-toggle"]');
+    expect(infoToggle.exists()).toBe(true);
+    await infoToggle.trigger('click');
+    wrapper.vm.showStepInfo = true;
+    await wrapper.vm.$nextTick();
+    const infoPanel = wrapper.find('.setup-step__info-panel');
+    expect(infoPanel.exists()).toBe(true);
+    expect(infoPanel.text()).toContain('Installing this step automatically starts the Portal bot');
     expect(wrapper.text()).not.toContain('Portal bot verified successfully.');
     expect(wrapper.text()).not.toContain('Portal install failed');
 
@@ -956,7 +963,14 @@ describe('Setup page', () => {
     const installButton = wrapper.find('button.setup-step__install');
     expect(installButton.exists()).toBe(true);
     expect(installButton.attributes('disabled')).toBeUndefined();
-    expect(wrapper.text()).toContain('Installing this step automatically starts the Portal bot');
+    const infoToggle = wrapper.find('[data-test="step-info-toggle"]');
+    expect(infoToggle.exists()).toBe(true);
+    await infoToggle.trigger('click');
+    wrapper.vm.showStepInfo = true;
+    await wrapper.vm.$nextTick();
+    const infoPanel = wrapper.find('.setup-step__info-panel');
+    expect(infoPanel.exists()).toBe(true);
+    expect(infoPanel.text()).toContain('Installing this step automatically starts the Portal bot');
 
     setupState.goToStep(0);
     await wrapper.vm.$nextTick();
@@ -1287,6 +1301,85 @@ describe('Setup page', () => {
     expect(calls).toContain(expectedTestEndpoint);
     expect(vm.$.setupState.portalAction.success).toBe(true);
     expect(vm.$.setupState.portalAction.error).toBe('');
+  });
+
+  it('requests a portal restart when the portal step has no selectable services', async () => {
+    const installedPayload = cloneServicesPayload();
+    for (const service of installedPayload.services) {
+      if (service.name === 'noona-portal' || service.name === 'noona-vault') {
+        service.installed = true;
+      }
+    }
+
+    const fetchMock = vi.fn<(url: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (url, init) => {
+      const target = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+
+      if (target.endsWith('/noona-portal/test')) {
+        return mockResponse({ success: true });
+      }
+
+      if (target.includes('/api/setup/install')) {
+        expect(init?.method).toBe('POST');
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+        const names = Array.isArray(body?.services)
+          ? body.services.map((entry: { name: string }) => entry?.name)
+          : [];
+        expect(names).toContain('noona-portal');
+        return mockResponse({
+          results: [
+            { name: 'noona-portal', status: 'already-installed' },
+            { name: 'noona-vault', status: 'already-installed' },
+          ],
+        });
+      }
+
+      if (target.includes('/api/setup/services/install/progress')) {
+        return mockResponse({ status: 'installing', percent: 0, items: [] });
+      }
+
+      if (target.includes('/api/setup/services')) {
+        return mockResponse(installedPayload);
+      }
+
+      return mockResponse({});
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+        };
+      };
+    };
+
+    vm.$.setupState.activeStepIndex = 1;
+
+    await wrapper.vm.$nextTick();
+
+    const installButton = wrapper.find('button.setup-step__install');
+    expect(installButton.exists()).toBe(true);
+
+    await installButton.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const calls = fetchMock.mock.calls.map(([arg]) =>
+      typeof arg === 'string' ? arg : arg instanceof URL ? arg.toString() : '',
+    );
+
+    expect(calls.some((call) => call.includes('/api/setup/install'))).toBe(true);
   });
 
   it('surfaces portal install failures before running the test', async () => {
