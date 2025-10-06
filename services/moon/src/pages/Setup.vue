@@ -2182,6 +2182,13 @@ const hasStepInfo = computed(
   () => currentStepInfoEntries.value.length > 0 || hasPortalStatusMessage.value,
 );
 
+const refreshProgressAfterInstall = async () => {
+  await fetchInstallProgress();
+  if (showProgressDetails.value) {
+    await fetchInstallLogs();
+  }
+};
+
 const portalOverviewMessage = computed(() => {
   if (!portalAction.success) {
     return '';
@@ -2204,12 +2211,7 @@ watch(installing, (value, previous) => {
     stopProgressPolling();
 
     if (previous) {
-      void (async () => {
-        await fetchInstallProgress();
-        if (showProgressDetails.value) {
-          await fetchInstallLogs();
-        }
-      })();
+      void refreshProgressAfterInstall();
       return;
     }
 
