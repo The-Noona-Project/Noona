@@ -897,6 +897,150 @@ describe('Setup page', () => {
     expect(wrapper.text()).toContain('Thanks for installing Noona—check out Raven');
   });
 
+  it('completes the Raven handshake using manual overrides when detection fails', async () => {
+    const installedPayload = cloneServicesPayload();
+    for (const service of installedPayload.services) {
+      service.installed = true;
+      if (service.name === 'noona-raven') {
+        service.envConfig = [
+          { key: 'APPDATA', label: 'Raven Downloads Root' },
+          { key: 'KAVITA_DATA_MOUNT', label: 'Kavita Data Mount (Host Path)' },
+        ];
+      }
+    }
+
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>((input, init) => {
+        const target =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
+        if (target === '/api/setup/services/noona-raven/detect') {
+          return Promise.resolve(mockResponse({ detection: null }));
+        }
+
+        return Promise.resolve(mockResponse(installedPayload));
+      });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+          portalAction: { completed: boolean; success: boolean };
+          ravenAction: { success: boolean; completed: boolean; error: string; message: string };
+          envForms: Record<string, Record<string, string>>;
+        };
+      };
+    };
+
+    vm.$.setupState.portalAction.completed = true;
+    vm.$.setupState.portalAction.success = true;
+    vm.$.setupState.activeStepIndex = 2;
+    await wrapper.vm.$nextTick();
+
+    const envForms = vm.$.setupState.envForms;
+    envForms['noona-raven'].KAVITA_DATA_MOUNT = '/srv/kavita';
+    envForms['noona-raven'].APPDATA = '/downloads';
+
+    await wrapper.vm.$nextTick();
+
+    const handshakeButton = wrapper
+      .findAll('button')
+      .find((node) => node.text().includes('Run Raven Check'));
+    expect(handshakeButton).toBeDefined();
+
+    await handshakeButton!.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    expect(vm.$.setupState.ravenAction.success).toBe(true);
+    expect(vm.$.setupState.ravenAction.completed).toBe(true);
+    expect(vm.$.setupState.ravenAction.error).toBe('');
+    expect(vm.$.setupState.ravenAction.message).toContain('/srv/kavita');
+    expect(vm.$.setupState.ravenAction.message).toContain('→ /downloads');
+    expect(wrapper.text()).toContain('Using manual Kavita data mount /srv/kavita');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
+      method: 'POST',
+    });
+  });
+
+  it('shows guidance when Raven mount detection fails without manual overrides', async () => {
+    const installedPayload = cloneServicesPayload();
+    for (const service of installedPayload.services) {
+      service.installed = true;
+      if (service.name === 'noona-raven') {
+        service.envConfig = [
+          { key: 'APPDATA', label: 'Raven Downloads Root' },
+          { key: 'KAVITA_DATA_MOUNT', label: 'Kavita Data Mount (Host Path)' },
+        ];
+      }
+    }
+
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>((input, init) => {
+        const target =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
+        if (target === '/api/setup/services/noona-raven/detect') {
+          return Promise.resolve(mockResponse({ detection: null }));
+        }
+
+        return Promise.resolve(mockResponse(installedPayload));
+      });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+          portalAction: { completed: boolean; success: boolean };
+          ravenAction: { success: boolean; completed: boolean; error: string; message: string };
+        };
+      };
+    };
+
+    vm.$.setupState.portalAction.completed = true;
+    vm.$.setupState.portalAction.success = true;
+    vm.$.setupState.activeStepIndex = 2;
+    await wrapper.vm.$nextTick();
+
+    const handshakeButton = wrapper
+      .findAll('button')
+      .find((node) => node.text().includes('Run Raven Check'));
+    expect(handshakeButton).toBeDefined();
+
+    await handshakeButton!.trigger('click');
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    expect(vm.$.setupState.ravenAction.success).toBe(false);
+    expect(vm.$.setupState.ravenAction.completed).toBe(false);
+    expect(vm.$.setupState.ravenAction.message).toBe('');
+    expect(vm.$.setupState.ravenAction.error).toContain('Kavita data mount not detected automatically');
+    expect(wrapper.text()).toContain('Kavita data mount not detected automatically');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
+      method: 'POST',
+    });
+  });
+
   it('resets install state and action buttons when moving between steps', async () => {
     const installedPayload = cloneServicesPayload();
     for (const service of installedPayload.services) {
@@ -959,6 +1103,8 @@ describe('Setup page', () => {
     expect(setupState.ravenAction.loading).toBe(false);
     expect(setupState.ravenAction.success).toBe(false);
     expect(setupState.ravenAction.error).toBe('');
+    expect(setupState.ravenAction.completed).toBe(false);
+    expect(setupState.ravenAction.message).toBe('');
 
     const installButton = wrapper.find('button.setup-step__install');
     expect(installButton.exists()).toBe(true);

@@ -400,6 +400,7 @@ const ravenAction = reactive({
   success: false,
   error: '',
   completed: false,
+  message: '',
 });
 
 let progressPollHandle = null;
@@ -1086,6 +1087,8 @@ const resetStepState = () => {
   ravenAction.loading = false;
   ravenAction.success = false;
   ravenAction.error = '';
+  ravenAction.completed = false;
+  ravenAction.message = '';
 };
 
 const loadServicesFromEndpoint = async (endpoint) => {
@@ -1544,11 +1547,36 @@ const installCurrentStep = async () => {
   }
 };
 
+const getManualRavenMountOverride = () => {
+  const values = envForms?.['noona-raven'];
+  if (!values) {
+    return null;
+  }
+
+  const hostPath =
+    typeof values.KAVITA_DATA_MOUNT === 'string' ? values.KAVITA_DATA_MOUNT.trim() : '';
+  const downloadsRoot = typeof values.APPDATA === 'string' ? values.APPDATA.trim() : '';
+
+  if (!hostPath) {
+    return null;
+  }
+
+  return {
+    hostPath,
+    downloadsRoot,
+  };
+};
+
 const runRavenHandshake = async () => {
   if (ravenAction.loading || installing.value) return;
 
   ravenAction.loading = true;
   ravenAction.error = '';
+  ravenAction.message = '';
+  ravenAction.success = false;
+  ravenAction.completed = false;
+
+  const manualOverride = getManualRavenMountOverride();
 
   try {
     const response = await fetch(RAVEN_DETECT_ENDPOINT, { method: 'POST' });
@@ -1559,14 +1587,30 @@ const runRavenHandshake = async () => {
     }
 
     const detection = payload?.detection ?? null;
-    if (!detection || !detection.mountPath) {
-      throw new Error('Kavita data mount not detected yet.');
+    if (detection?.mountPath) {
+      ravenAction.message = `Kavita data mount detected at ${detection.mountPath}.`;
+      ravenAction.success = true;
+      ravenAction.completed = true;
+      return;
     }
 
-    ravenAction.success = true;
-    ravenAction.completed = true;
+    if (manualOverride) {
+      const suffix = manualOverride.downloadsRoot
+        ? ` → ${manualOverride.downloadsRoot}`
+        : '';
+      ravenAction.message = `Using manual Kavita data mount ${manualOverride.hostPath}${suffix}.`;
+      ravenAction.success = true;
+      ravenAction.completed = true;
+      return;
+    }
+
+    throw new Error(
+      'Kavita data mount not detected automatically. Start your Kavita container or provide the host path in the Raven environment settings before retrying.',
+    );
   } catch (error) {
     ravenAction.error = error instanceof Error ? error.message : String(error);
+    ravenAction.success = false;
+    ravenAction.completed = false;
   } finally {
     ravenAction.loading = false;
   }
@@ -2374,12 +2418,18 @@ onMounted(() => {
                           Run Raven Check
                         </template>
                       </v-btn>
-                      <div v-if="ravenAction.error" class="text-body-2 text-error mt-2">
-                        {{ ravenAction.error }}
-                      </div>
+                    <div v-if="ravenAction.error" class="text-body-2 text-error mt-2">
+                      {{ ravenAction.error }}
                     </div>
+                    <div
+                      v-else-if="ravenAction.message"
+                      class="text-body-2 text-medium-emphasis mt-2"
+                    >
+                      {{ ravenAction.message }}
+                    </div>
+                  </div>
 
-                    <div class="setup-step__buttons">
+                  <div class="setup-step__buttons">
                       <v-btn
                         color="primary"
                         class="setup-step__install"
