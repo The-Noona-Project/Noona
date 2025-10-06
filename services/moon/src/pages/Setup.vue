@@ -756,6 +756,8 @@ const getStepServices = (stepKey) => {
     .filter(Boolean);
 };
 
+const hasPortalStepServices = computed(() => getStepServices('portal').length > 0);
+
 const arePortalStepServicesInstalled = () => {
   const services = getStepServices('portal');
   if (!services.length) {
@@ -2036,7 +2038,12 @@ const isStepInstalled = (stepKey) => {
 };
 
 const isStepActionComplete = (stepKey) => {
-  if (stepKey === 'portal') return portalAction.completed;
+  if (stepKey === 'portal') {
+    if (!hasPortalStepServices.value) {
+      return true;
+    }
+    return portalAction.completed;
+  }
   if (stepKey === 'raven') return ravenAction.completed;
   return true;
 };

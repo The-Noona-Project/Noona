@@ -171,6 +171,37 @@ describe('Setup page', () => {
     expect(selects.length).toBeGreaterThan(0);
   });
 
+  it('keeps the portal step unlocked when services fail to load', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockResponse({ services: [] }));
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const vm = wrapper.vm as unknown as {
+      $: {
+        setupState: {
+          activeStepIndex: number;
+        };
+      };
+    };
+
+    vm.$.setupState.activeStepIndex = 1;
+
+    await wrapper.vm.$nextTick();
+
+    const stepperItems = wrapper.findAll('.setup-stepper__item');
+    expect(stepperItems.length).toBeGreaterThan(1);
+    expect(stepperItems[1].classes()).toContain('setup-stepper__item--complete');
+
+    const nextButton = wrapper.find('button.setup-step__next');
+    expect(nextButton.exists()).toBe(true);
+    expect(nextButton.attributes('disabled')).toBeUndefined();
+  });
+
   it('requires Discord validation before unlocking portal resources', async () => {
     const discordPayload = {
       guild: { id: '123', name: 'Noona Guild' },
