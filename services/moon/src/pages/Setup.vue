@@ -17,6 +17,12 @@ const DEFAULT_INSTALL_LOGS_ENDPOINT = '/api/setup/services/installation/logs';
 const INSTALL_LOG_DISPLAY_COUNT = 3;
 const DEFAULT_INSTALL_LOG_LIMIT = INSTALL_LOG_DISPLAY_COUNT;
 const DEFAULT_PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
+const PORTAL_HEALTH_ENDPOINT_CANDIDATES = [
+  'http://localhost:3002/health',
+  'http://127.0.0.1:3002/health',
+  'http://host.docker.internal:3002/health',
+];
+const PORTAL_HEALTH_CHECK_TIMEOUT_MS = 5000;
 const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
 const RAVEN_SERVICE_NAME = 'noona-raven';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
@@ -227,6 +233,16 @@ const state = reactive({
   },
 });
 
+const portalHealthFallbackState = reactive({
+  checking: false,
+  installed: false,
+  lastError: '',
+  lastEndpoint: '',
+  lastCheckedAt: 0,
+});
+
+let portalHealthCheckToken = 0;
+
 const envForms = reactive({});
 const selectedServices = ref([]);
 const expandedCards = ref([]);
@@ -418,10 +434,6 @@ const installLogsRequestUrl = computed(() => {
   return `${base}?limit=${installLogLimit.value}`;
 });
 
-const installableServices = computed(() =>
-  state.services.filter((service) => !isServiceInstalled(service)),
-);
-
 const serviceMap = computed(() => {
   const map = new Map();
   for (const service of state.services) {
@@ -431,6 +443,17 @@ const serviceMap = computed(() => {
   }
   return map;
 });
+
+const portalService = computed(() => serviceMap.value.get(PORTAL_SERVICE_NAME));
+
+const portalServiceInstalled = computed(() => {
+  const service = portalService.value;
+  return service ? isServiceInstalled(service) : false;
+});
+
+const installableServices = computed(() =>
+  state.services.filter((service) => !isServiceInstalled(service)),
+);
 
 const installableNameSet = computed(
   () => new Set(installableServices.value.map((service) => service.name)),
@@ -442,6 +465,10 @@ const normalizedSelection = computed(() =>
 
 const selectedSet = computed(() => new Set(normalizedSelection.value));
 
+const portalDetectedViaFallback = computed(
+  () => portalHealthFallbackState.installed && !portalServiceInstalled.value,
+);
+
 const installedSet = computed(() => {
   const installed = new Set();
   for (const service of state.services) {
@@ -449,6 +476,11 @@ const installedSet = computed(() => {
       installed.add(service.name);
     }
   }
+
+  if (portalDetectedViaFallback.value) {
+    installed.add(PORTAL_SERVICE_NAME);
+  }
+
   return installed;
 });
 
@@ -458,9 +490,139 @@ const portalEnvForm = computed(
   () => envForms[PORTAL_SERVICE_NAME] ?? {},
 );
 
-const portalService = computed(() => serviceMap.value.get(PORTAL_SERVICE_NAME));
-
 const hasPortalService = computed(() => Boolean(portalService.value));
+
+const serviceStatusSignature = computed(() =>
+  state.services
+    .map((service) => {
+      const name = service?.name ?? '';
+      const installed = isServiceInstalled(service) ? '1' : '0';
+      return `${name}:${installed}`;
+    })
+    .join('|'),
+);
+
+const shouldCheckPortalFallback = computed(
+  () => !state.loading && !portalServiceInstalled.value,
+);
+
+const resetPortalFallbackState = () => {
+  portalHealthCheckToken += 1;
+  portalHealthFallbackState.checking = false;
+  portalHealthFallbackState.installed = false;
+  portalHealthFallbackState.lastError = '';
+  portalHealthFallbackState.lastEndpoint = '';
+  portalHealthFallbackState.lastCheckedAt = 0;
+};
+
+const runPortalHealthRequest = async (endpoint, mode = 'cors') => {
+  const controller =
+    typeof AbortController === 'function' ? new AbortController() : null;
+  let timeoutHandle = null;
+
+  try {
+    if (controller) {
+      timeoutHandle = setTimeout(
+        () => controller.abort(),
+        PORTAL_HEALTH_CHECK_TIMEOUT_MS,
+      );
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      mode,
+      signal: controller?.signal ?? undefined,
+    });
+
+    return response;
+  } finally {
+    if (timeoutHandle != null) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
+
+const checkPortalHealthFallback = async () => {
+  if (!shouldCheckPortalFallback.value) {
+    resetPortalFallbackState();
+    return false;
+  }
+
+  if (portalHealthFallbackState.checking) {
+    return portalHealthFallbackState.installed;
+  }
+
+  if (typeof window === 'undefined' || typeof fetch !== 'function') {
+    resetPortalFallbackState();
+    return false;
+  }
+
+  const token = ++portalHealthCheckToken;
+  portalHealthFallbackState.checking = true;
+  portalHealthFallbackState.lastError = '';
+  portalHealthFallbackState.lastEndpoint = '';
+
+  let detected = false;
+  let lastError = '';
+
+  for (const endpoint of PORTAL_HEALTH_ENDPOINT_CANDIDATES) {
+    for (const mode of ['cors', 'no-cors']) {
+      try {
+        const response = await runPortalHealthRequest(endpoint, mode);
+
+        if (token !== portalHealthCheckToken) {
+          return portalHealthFallbackState.installed;
+        }
+
+        portalHealthFallbackState.lastEndpoint = endpoint;
+
+        const healthy = response.ok || response.type === 'opaque';
+        if (healthy) {
+          detected = true;
+          break;
+        }
+
+        lastError =
+          response.type === 'opaque'
+            ? 'Received opaque response.'
+            : `HTTP ${response.status}`;
+      } catch (error) {
+        if (token !== portalHealthCheckToken) {
+          return portalHealthFallbackState.installed;
+        }
+
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    if (detected) {
+      break;
+    }
+  }
+
+  if (token !== portalHealthCheckToken) {
+    return portalHealthFallbackState.installed;
+  }
+
+  portalHealthFallbackState.installed = detected;
+  portalHealthFallbackState.lastError = detected ? '' : lastError;
+  portalHealthFallbackState.checking = false;
+  portalHealthFallbackState.lastCheckedAt = Date.now();
+
+  return portalHealthFallbackState.installed;
+};
+
+watch(
+  [shouldCheckPortalFallback, serviceStatusSignature],
+  ([shouldCheck]) => {
+    if (shouldCheck) {
+      void checkPortalHealthFallback();
+    } else {
+      resetPortalFallbackState();
+    }
+  },
+  { immediate: true },
+);
 
 const getServiceLabel = (name) => {
   const service = serviceMap.value.get(name);
@@ -479,11 +641,17 @@ const ravenDisplayName = computed(() => getServiceLabel(RAVEN_SERVICE_NAME) || '
 
 const ravenDependencies = computed(() => {
   const dependencies = SERVICE_DEPENDENCIES[RAVEN_SERVICE_NAME] ?? [];
-  return dependencies.map((dependency) => ({
-    name: dependency,
-    label: getServiceLabel(dependency),
-    installed: installedSet.value.has(dependency),
-  }));
+  return dependencies.map((dependency) => {
+    const detectedViaFallback =
+      dependency === PORTAL_SERVICE_NAME && portalDetectedViaFallback.value;
+
+    return {
+      name: dependency,
+      label: getServiceLabel(dependency),
+      installed: installedSet.value.has(dependency),
+      detectedViaFallback,
+    };
+  });
 });
 
 const ravenMissingDependencies = computed(() =>
@@ -502,12 +670,22 @@ const isRavenInstalled = computed(() => {
 });
 
 const ravenStatusEntries = computed(() => {
-  const entries = ravenDependencies.value.map((dependency) => ({
-    key: dependency.name,
-    label: dependency.label,
-    ready: dependency.installed,
-    description: dependency.installed ? 'Ready' : 'Install this service first.',
-  }));
+  const entries = ravenDependencies.value.map((dependency) => {
+    let description = 'Install this service first.';
+
+    if (dependency.installed) {
+      description = dependency.detectedViaFallback
+        ? 'Detected via Portal health check.'
+        : 'Ready';
+    }
+
+    return {
+      key: dependency.name,
+      label: dependency.label,
+      ready: dependency.installed,
+      description,
+    };
+  });
 
   const ravenServiceEntry = ravenService.value;
   let ravenDescription = '';
