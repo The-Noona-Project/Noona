@@ -18,6 +18,7 @@ const INSTALL_LOG_DISPLAY_COUNT = 3;
 const DEFAULT_INSTALL_LOG_LIMIT = INSTALL_LOG_DISPLAY_COUNT;
 const DEFAULT_PORTAL_TEST_ENDPOINT = '/api/setup/services/noona-portal/test';
 const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
+const RAVEN_SERVICE_NAME = 'noona-raven';
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
 const ALLOWED_SERVICE_NAMES = new Set([
   'noona-portal',
@@ -110,6 +111,8 @@ const DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE =
   '/api/setup/services/noona-portal/discord';
 const PORTAL_SERVICE_POLL_INTERVAL_MS = 2000;
 const PORTAL_SERVICE_POLL_TIMEOUT_MS = 30000;
+const RAVEN_SERVICE_POLL_INTERVAL_MS = 2000;
+const RAVEN_SERVICE_POLL_TIMEOUT_MS = 120000;
 const PORTAL_SERVICE_TIMEOUT_MESSAGE =
   'Portal services did not become ready in time. Please try again.';
 const PORTAL_CREDENTIAL_KEYS = new Set([
@@ -459,6 +462,81 @@ const portalService = computed(() => serviceMap.value.get(PORTAL_SERVICE_NAME));
 
 const hasPortalService = computed(() => Boolean(portalService.value));
 
+const getServiceLabel = (name) => {
+  const service = serviceMap.value.get(name);
+  if (service?.displayName) {
+    return service.displayName;
+  }
+  if (service?.name) {
+    return service.name;
+  }
+  return name;
+};
+
+const ravenService = computed(() => serviceMap.value.get(RAVEN_SERVICE_NAME));
+
+const ravenDisplayName = computed(() => getServiceLabel(RAVEN_SERVICE_NAME) || 'Raven');
+
+const ravenDependencies = computed(() => {
+  const dependencies = SERVICE_DEPENDENCIES[RAVEN_SERVICE_NAME] ?? [];
+  return dependencies.map((dependency) => ({
+    name: dependency,
+    label: getServiceLabel(dependency),
+    installed: installedSet.value.has(dependency),
+  }));
+});
+
+const ravenMissingDependencies = computed(() =>
+  ravenDependencies.value.filter((dependency) => !dependency.installed),
+);
+
+const ravenMissingDependencyLabels = computed(() =>
+  ravenMissingDependencies.value.map((dependency) => dependency.label),
+);
+
+const ravenDependenciesReady = computed(() => ravenMissingDependencies.value.length === 0);
+
+const isRavenInstalled = computed(() => {
+  const service = ravenService.value;
+  return service ? isServiceInstalled(service) : false;
+});
+
+const ravenStatusEntries = computed(() => {
+  const entries = ravenDependencies.value.map((dependency) => ({
+    key: dependency.name,
+    label: dependency.label,
+    ready: dependency.installed,
+    description: dependency.installed ? 'Ready' : 'Install this service first.',
+  }));
+
+  const ravenServiceEntry = ravenService.value;
+  let ravenDescription = '';
+  let ravenReady = false;
+
+  if (!ravenServiceEntry) {
+    ravenDescription = 'Service definition unavailable.';
+  } else if (isRavenInstalled.value) {
+    ravenDescription = 'Installed and ready.';
+    ravenReady = true;
+  } else {
+    ravenDescription = 'Pending installation.';
+  }
+
+  entries.push({
+    key: RAVEN_SERVICE_NAME,
+    label: ravenDisplayName.value,
+    ready: ravenReady,
+    description: ravenDescription,
+    isRaven: true,
+  });
+
+  return entries;
+});
+
+const ravenActionButtonLabel = computed(() =>
+  isRavenInstalled.value ? 'Verify Raven' : 'Install & Verify Raven',
+);
+
 const portalDiscordReady = computed(() => portalDiscordState.verified);
 
 const canValidatePortalDiscord = computed(() => {
@@ -549,6 +627,48 @@ const waitForPortalServicesInstalled = async (options = {}) => {
   return arePortalStepServicesInstalled();
 };
 
+const waitForServiceInstalled = async (serviceName, options = {}) => {
+  const timeoutMs =
+    typeof options.timeoutMs === 'number' && options.timeoutMs > 0
+      ? options.timeoutMs
+      : RAVEN_SERVICE_POLL_TIMEOUT_MS;
+  const intervalMs =
+    typeof options.intervalMs === 'number' && options.intervalMs > 0
+      ? options.intervalMs
+      : RAVEN_SERVICE_POLL_INTERVAL_MS;
+
+  const isInstalled = () => {
+    const service = serviceMap.value.get(serviceName);
+    return service ? isServiceInstalled(service) : false;
+  };
+
+  if (isInstalled()) {
+    return true;
+  }
+
+  if (timeoutMs <= 0) {
+    return isInstalled();
+  }
+
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
+    if (isInstalled()) {
+      return true;
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      break;
+    }
+
+    await sleep(Math.min(intervalMs, remaining));
+  }
+
+  return isInstalled();
+};
+
 const currentStepServices = computed(() => getStepServices(currentStep.value.key));
 
 const currentStepSelectableServices = computed(() =>
@@ -573,12 +693,45 @@ const fallbackPortalInstallTargets = computed(() => {
   return portalService ? [portalService] : [];
 });
 
+const fallbackRavenInstallTargets = computed(() => {
+  if (currentStep.value.key !== 'raven') {
+    return [];
+  }
+
+  if (currentStepSelectableServices.value.length > 0) {
+    return [];
+  }
+
+  const ravenDependenciesBlocking = missingDependencies(RAVEN_SERVICE_NAME);
+  if (ravenDependenciesBlocking.length > 0) {
+    return [];
+  }
+
+  const ravenServiceEntry = currentStepServices.value.find(
+    (service) => service?.name === RAVEN_SERVICE_NAME,
+  );
+
+  if (!ravenServiceEntry || isServiceInstalled(ravenServiceEntry)) {
+    return [];
+  }
+
+  return [ravenServiceEntry];
+});
+
 const currentStepInstallTargets = computed(() => {
   if (currentStepSelectableServices.value.length > 0) {
     return currentStepSelectableServices.value;
   }
 
-  return fallbackPortalInstallTargets.value;
+  if (fallbackPortalInstallTargets.value.length > 0) {
+    return fallbackPortalInstallTargets.value;
+  }
+
+  if (fallbackRavenInstallTargets.value.length > 0) {
+    return fallbackRavenInstallTargets.value;
+  }
+
+  return [];
 });
 
 const canInstallCurrentStep = computed(() => {
@@ -590,7 +743,15 @@ const canInstallCurrentStep = computed(() => {
     return !portalAction.loading;
   }
 
-  return currentStepSelectableServices.value.length > 0;
+  if (currentStepSelectableServices.value.length > 0) {
+    return true;
+  }
+
+  if (currentStep.value.key === 'raven') {
+    return fallbackRavenInstallTargets.value.length > 0;
+  }
+
+  return false;
 });
 
 const isBooleanLikeValue = (value) => {
@@ -1562,6 +1723,34 @@ const getManualRavenMountOverride = () => {
   };
 };
 
+const installServicesDirect = async (services) => {
+  if (!Array.isArray(services) || services.length === 0) {
+    return [];
+  }
+
+  const servicePayload = services.map((service) => {
+    const env = buildEnvPayload(service);
+    if (!env || !Object.keys(env).length) {
+      return { name: service.name };
+    }
+    return { name: service.name, env };
+  });
+
+  const response = await fetch(installEndpoint.value || DEFAULT_INSTALL_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ services: servicePayload }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(payload?.error || `Install request failed with status ${response.status}`);
+  }
+
+  return Array.isArray(payload?.results) ? payload.results : [];
+};
+
 const runRavenHandshake = async () => {
   if (ravenAction.loading || installing.value) return;
 
@@ -1574,6 +1763,28 @@ const runRavenHandshake = async () => {
   const manualOverride = getManualRavenMountOverride();
 
   try {
+    if (!ravenDependenciesReady.value) {
+      const dependencies = ravenMissingDependencyLabels.value.join(' & ') || 'required services';
+      throw new Error(`Install ${dependencies} before running Raven.`);
+    }
+
+    const ravenServiceEntry = ravenService.value;
+    if (!ravenServiceEntry) {
+      throw new Error('Raven service is unavailable. Refresh the page and try again.');
+    }
+
+    if (!isRavenInstalled.value) {
+      ravenAction.message = 'Installing Raven…';
+      await installServicesDirect([ravenServiceEntry]);
+      const installed = await waitForServiceInstalled(RAVEN_SERVICE_NAME);
+      if (!installed) {
+        throw new Error('Raven did not become ready in time. Check the installation logs and retry.');
+      }
+      ravenAction.message = 'Raven installed. Checking configuration…';
+    } else {
+      ravenAction.message = 'Checking Raven configuration…';
+    }
+
     const response = await fetch(RAVEN_DETECT_ENDPOINT, { method: 'POST' });
     const payload = await response.json().catch(() => ({}));
 
@@ -1586,6 +1797,7 @@ const runRavenHandshake = async () => {
       ravenAction.message = `Kavita data mount detected at ${detection.mountPath}.`;
       ravenAction.success = true;
       ravenAction.completed = true;
+      await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
       return;
     }
 
@@ -1596,6 +1808,7 @@ const runRavenHandshake = async () => {
       ravenAction.message = `Using manual Kavita data mount ${manualOverride.hostPath}${suffix}.`;
       ravenAction.success = true;
       ravenAction.completed = true;
+      await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
       return;
     }
 
@@ -1609,6 +1822,17 @@ const runRavenHandshake = async () => {
   } finally {
     ravenAction.loading = false;
   }
+};
+
+const refreshRavenStatus = async () => {
+  if (installing.value || ravenAction.loading) {
+    return;
+  }
+
+  ravenAction.error = '';
+  ravenAction.message = '';
+
+  await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
 };
 
 const isStepInstalled = (stepKey) => {
@@ -2400,29 +2624,82 @@ onMounted(() => {
                     </div>
 
                     <div v-if="currentStep.key === 'raven'" class="setup-step__action mb-4">
-                      <v-btn
-                        color="primary"
-                        :loading="ravenAction.loading"
-                        :disabled="installing || !isStepInstalled('raven') || ravenAction.success"
-                        @click="runRavenHandshake"
+                      <v-alert
+                        v-if="!ravenDependenciesReady"
+                        type="warning"
+                        variant="tonal"
+                        border="start"
+                        class="mb-4"
                       >
-                        <template v-if="ravenAction.success">
-                          Raven handshake complete
-                        </template>
-                        <template v-else>
-                          Run Raven Check
-                        </template>
-                      </v-btn>
-                    <div v-if="ravenAction.error" class="text-body-2 text-error mt-2">
-                      {{ ravenAction.error }}
+                        Raven requires
+                        <span class="font-weight-medium">
+                          {{ ravenMissingDependencyLabels.join(' & ') }}
+                        </span>
+                        before it can be installed. Install the missing services and try again.
+                      </v-alert>
+
+                      <div class="raven-handshake">
+                        <div class="raven-handshake__status-grid">
+                          <div
+                            v-for="entry in ravenStatusEntries"
+                            :key="entry.key"
+                            class="raven-handshake__status"
+                            :class="{
+                              'raven-handshake__status--ready': entry.ready,
+                              'raven-handshake__status--raven': entry.isRaven,
+                            }"
+                          >
+                            <v-icon
+                              :icon="entry.ready ? 'mdi-check-circle-outline' : 'mdi-progress-clock'"
+                              :color="entry.ready ? 'success' : 'warning'"
+                              size="24"
+                              class="raven-handshake__status-icon"
+                            />
+                            <div class="raven-handshake__status-body">
+                              <p class="raven-handshake__status-title">{{ entry.label }}</p>
+                              <p class="raven-handshake__status-description">
+                                {{ entry.description }}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="raven-handshake__actions">
+                          <v-btn
+                            color="primary"
+                            class="raven-handshake__primary"
+                            :loading="ravenAction.loading"
+                            :disabled="installing || !ravenDependenciesReady"
+                            @click="runRavenHandshake"
+                          >
+                            <template v-if="ravenAction.loading">
+                              Working…
+                            </template>
+                            <template v-else>
+                              {{ ravenActionButtonLabel }}
+                            </template>
+                          </v-btn>
+                          <v-btn
+                            variant="text"
+                            class="raven-handshake__refresh"
+                            :disabled="installing || ravenAction.loading"
+                            @click="refreshRavenStatus"
+                          >
+                            Refresh status
+                          </v-btn>
+                        </div>
+
+                        <div v-if="ravenAction.error" class="text-body-2 text-error mt-3">
+                          {{ ravenAction.error }}
+                        </div>
+                        <div
+                          v-else-if="ravenAction.message"
+                          class="text-body-2 text-medium-emphasis mt-3"
+                        >
+                          {{ ravenAction.message }}
+                        </div>
+                      </div>
                     </div>
-                    <div
-                      v-else-if="ravenAction.message"
-                      class="text-body-2 text-medium-emphasis mt-2"
-                    >
-                      {{ ravenAction.message }}
-                    </div>
-                  </div>
 
                   <div class="setup-step__buttons">
                       <v-btn
@@ -2599,6 +2876,69 @@ onMounted(() => {
   padding: 12px;
   border-radius: 8px;
   background: rgba(var(--v-theme-primary), 0.04);
+}
+
+.raven-handshake {
+  border: 1px solid rgba(var(--v-theme-primary), 0.14);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(var(--v-theme-primary), 0.03);
+}
+
+.raven-handshake__status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.raven-handshake__status {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.1);
+  background: rgba(var(--v-theme-primary), 0.05);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.raven-handshake__status--ready {
+  border-color: rgba(var(--v-theme-success), 0.28);
+  background: rgba(var(--v-theme-success), 0.08);
+}
+
+.raven-handshake__status--raven {
+  border-style: dashed;
+}
+
+.raven-handshake__status-icon {
+  margin-top: 2px;
+}
+
+.raven-handshake__status-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.raven-handshake__status-description {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+
+.raven-handshake__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.raven-handshake__primary {
+  min-width: 210px;
+}
+
+.raven-handshake__refresh {
+  text-transform: none;
 }
 
 .progress-logs__empty {

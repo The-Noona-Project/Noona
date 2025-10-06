@@ -953,7 +953,7 @@ describe('Setup page', () => {
 
     const handshakeButton = wrapper
       .findAll('button')
-      .find((node) => node.text().includes('Run Raven Check'));
+      .find((node) => node.text().includes('Verify Raven'));
     expect(handshakeButton).toBeDefined();
 
     await handshakeButton!.trigger('click');
@@ -1022,7 +1022,7 @@ describe('Setup page', () => {
 
     const handshakeButton = wrapper
       .findAll('button')
-      .find((node) => node.text().includes('Run Raven Check'));
+      .find((node) => node.text().includes('Verify Raven'));
     expect(handshakeButton).toBeDefined();
 
     await handshakeButton!.trigger('click');
@@ -1032,7 +1032,7 @@ describe('Setup page', () => {
 
     expect(vm.$.setupState.ravenAction.success).toBe(false);
     expect(vm.$.setupState.ravenAction.completed).toBe(false);
-    expect(vm.$.setupState.ravenAction.message).toBe('');
+    expect(vm.$.setupState.ravenAction.message).toContain('Checking Raven configuration');
     expect(vm.$.setupState.ravenAction.error).toContain('Kavita data mount not detected automatically');
     expect(wrapper.text()).toContain('Kavita data mount not detected automatically');
 
