@@ -1040,6 +1040,12 @@ describe('Setup page', () => {
           return Promise.resolve(mockResponse({ entries: [] }));
         }
 
+        if (target.includes('/api/setup/install')) {
+          return Promise.resolve(
+            mockResponse({ results: [{ name: 'noona-raven', status: 'updated' }] }),
+          );
+        }
+
         return Promise.resolve(mockResponse(installedPayload));
       });
 
@@ -1108,6 +1114,23 @@ describe('Setup page', () => {
         headers: { Accept: 'application/json' },
       }),
     );
+
+    const installCall = fetchMock.mock.calls.find(([target]) => {
+      if (typeof target === 'string') {
+        return target.includes('/api/setup/install');
+      }
+      if (target instanceof URL) {
+        return target.toString().includes('/api/setup/install');
+      }
+      return false;
+    });
+    expect(installCall).toBeDefined();
+    const installInit = installCall?.[1] as RequestInit | undefined;
+    expect(installInit?.method).toBe('POST');
+    expect(typeof installInit?.body).toBe('string');
+    const parsedBody = installInit?.body ? JSON.parse(installInit.body as string) : null;
+    expect(parsedBody?.services?.[0]?.env?.KAVITA_DATA_MOUNT).toBe('/srv/kavita');
+    expect(parsedBody?.services?.[0]?.env?.APPDATA).toBe('/downloads');
   });
 
   it('surfaces Sage library errors during Raven verification', async () => {

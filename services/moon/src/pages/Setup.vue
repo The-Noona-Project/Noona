@@ -2049,9 +2049,8 @@ const runRavenHandshake = async () => {
       throw new Error('Raven service is unavailable. Refresh the page and try again.');
     }
 
-    setRavenPhaseState('installation', 'running', 'Requesting Raven installation via Sage…');
-
     if (!isRavenInstalled.value) {
+      setRavenPhaseState('installation', 'running', 'Requesting Raven installation via Sage…');
       ravenAction.message = 'Installing Raven via Sage…';
       await installServicesDirect([ravenServiceEntry]);
       const installed = await waitForServiceInstalled(RAVEN_SERVICE_NAME);
@@ -2061,6 +2060,18 @@ const runRavenHandshake = async () => {
       }
       setRavenPhaseState('installation', 'success', 'Raven installed successfully.');
       ravenAction.message = 'Raven installed. Verifying configuration…';
+    } else if (manualOverride) {
+      setRavenPhaseState('installation', 'running', 'Applying Raven overrides via Sage…');
+      ravenAction.message = 'Updating Raven configuration via Sage…';
+      try {
+        await installServicesDirect([ravenServiceEntry]);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setRavenPhaseState('installation', 'error', message);
+        throw error;
+      }
+      setRavenPhaseState('installation', 'success', 'Raven configuration updated.');
+      ravenAction.message = 'Raven configuration updated. Verifying with Sage…';
     } else {
       setRavenPhaseState('installation', 'success', 'Raven is already installed.');
       ravenAction.message = 'Verifying Raven configuration with Sage…';
