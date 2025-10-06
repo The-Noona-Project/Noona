@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, getCurrentInstance, onMounted, reactive, ref, watch } from 'vue';
 import Header from '../components/Header.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 import { isServiceRequired, mergeRequiredSelections } from '../utils/serviceSelection.js';
@@ -260,6 +260,8 @@ const showProgressDetails = ref(false);
 const showStepInfo = ref(false);
 const progressLogsLoading = ref(false);
 const activeStepIndex = ref(0);
+const wizardComplete = ref(false);
+const wizardCompletionTimestamp = ref(0);
 
 const portalDiscordEndpointBase = computed(() => {
   const endpoint = activeServicesEndpoint.value;
@@ -1425,6 +1427,7 @@ const resetStepState = () => {
   portalAction.loading = false;
   portalAction.success = false;
   portalAction.error = '';
+  portalAction.completed = false;
 
   ravenAction.loading = false;
   ravenAction.success = false;
@@ -1450,6 +1453,7 @@ const refreshServices = async (options) => {
   const keepUi = options?.keepUi === true;
   const skipPortalReset = options?.skipPortalReset === true;
   const silent = options?.silent === true;
+  const preserveStep = keepUi || options?.preserveStep === true;
 
   if (!keepUi && !silent) {
     state.loading = true;
@@ -1490,6 +1494,7 @@ const refreshServices = async (options) => {
           services,
           Array.from(previousSelection),
         );
+        syncWizardStatus({ preserveStep });
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1505,6 +1510,7 @@ const refreshServices = async (options) => {
     } else {
       state.loadError = 'Unable to retrieve installable services.';
     }
+    syncWizardStatus({ preserveStep });
   } finally {
     if (!keepUi && !silent) {
       state.loading = false;
@@ -1929,6 +1935,14 @@ const installServicesDirect = async (services) => {
   return Array.isArray(payload?.results) ? payload.results : [];
 };
 
+const advanceToRavenStep = () => {
+  installSuccessMessageVisible.value = true;
+  const ravenStepIndex = STEP_DEFINITIONS.findIndex((step) => step.key === 'raven');
+  if (ravenStepIndex !== -1) {
+    activeStepIndex.value = ravenStepIndex;
+  }
+};
+
 const runRavenHandshake = async () => {
   if (ravenAction.loading || installing.value) return;
 
@@ -1975,6 +1989,7 @@ const runRavenHandshake = async () => {
       ravenAction.message = `Kavita data mount detected at ${detection.mountPath}.`;
       ravenAction.success = true;
       ravenAction.completed = true;
+      advanceToRavenStep();
       await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
       return;
     }
@@ -1986,6 +2001,7 @@ const runRavenHandshake = async () => {
       ravenAction.message = `Using manual Kavita data mount ${manualOverride.hostPath}${suffix}.`;
       ravenAction.success = true;
       ravenAction.completed = true;
+      advanceToRavenStep();
       await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
       return;
     }
@@ -2028,6 +2044,80 @@ const isStepActionComplete = (stepKey) => {
 const isStepComplete = (stepKey) =>
   isStepInstalled(stepKey) && isStepActionComplete(stepKey);
 
+const totalWizardSteps = STEP_DEFINITIONS.length;
+
+const completedStepCount = computed(() =>
+  STEP_DEFINITIONS.reduce(
+    (count, step) => (isStepComplete(step.key) ? count + 1 : count),
+    0,
+  ),
+);
+
+const wizardProgressPercent = computed(() => {
+  if (totalWizardSteps === 0) {
+    return 0;
+  }
+
+  return Math.round((completedStepCount.value / totalWizardSteps) * 100);
+});
+
+const wizardProgressLabel = computed(
+  () => `${completedStepCount.value} / ${totalWizardSteps} steps complete`,
+);
+
+const wizardCompletionMessage = computed(() => {
+  if (!wizardComplete.value) {
+    return '';
+  }
+
+  if (!wizardCompletionTimestamp.value) {
+    return 'Setup complete! All services are installed and verified.';
+  }
+
+  const finishedAt = new Date(wizardCompletionTimestamp.value);
+  if (Number.isNaN(finishedAt.getTime())) {
+    return 'Setup complete! All services are installed and verified.';
+  }
+
+  return `Setup complete! All services are installed and verified as of ${finishedAt.toLocaleTimeString()}.`;
+});
+
+const findFirstIncompleteStepIndex = () =>
+  STEP_DEFINITIONS.findIndex((step) => !isStepComplete(step.key));
+
+const syncWizardStatus = ({ preserveStep = false } = {}) => {
+  const incompleteIndex = findFirstIncompleteStepIndex();
+
+  if (incompleteIndex === -1) {
+    if (!wizardComplete.value) {
+      wizardCompletionTimestamp.value = Date.now();
+    }
+    wizardComplete.value = true;
+
+    if (!preserveStep) {
+      activeStepIndex.value = Math.max(0, STEP_DEFINITIONS.length - 1);
+    } else if (!isStepUnlocked(currentStep.value.key)) {
+      activeStepIndex.value = Math.max(0, STEP_DEFINITIONS.length - 1);
+    }
+
+    return;
+  }
+
+  if (wizardComplete.value) {
+    wizardCompletionTimestamp.value = 0;
+  }
+
+  wizardComplete.value = false;
+
+  if (!preserveStep) {
+    if (activeStepIndex.value !== incompleteIndex) {
+      activeStepIndex.value = incompleteIndex;
+    }
+  } else if (!isStepUnlocked(currentStep.value.key)) {
+    activeStepIndex.value = incompleteIndex;
+  }
+};
+
 const isStepUnlocked = (stepKey) => {
   const index = STEP_DEFINITIONS.findIndex((step) => step.key === stepKey);
   if (index <= 0) {
@@ -2040,11 +2130,14 @@ const isStepUnlocked = (stepKey) => {
 
 const goToStep = (index) => {
   if (index < 0 || index >= STEP_DEFINITIONS.length) return;
-  if (index === activeStepIndex.value) return;
   const targetStep = STEP_DEFINITIONS[index];
   if (!isStepUnlocked(targetStep.key)) return;
+
   resetStepState();
-  activeStepIndex.value = index;
+
+  if (index !== activeStepIndex.value) {
+    activeStepIndex.value = index;
+  }
 };
 
 const canGoToNextStep = computed(() => {
@@ -2082,6 +2175,14 @@ const hasStepInfo = computed(
   () => currentStepInfoEntries.value.length > 0 || hasPortalStatusMessage.value,
 );
 
+const portalOverviewMessage = computed(() => {
+  if (!portalAction.success) {
+    return '';
+  }
+
+  return 'Portal bot verified successfully.';
+});
+
 watch(
   activeStepIndex,
   (nextIndex, previousIndex) => {
@@ -2108,6 +2209,24 @@ watch(showProgressDetails, (value) => {
     progressLogsLoading.value = false;
   }
 });
+
+watch(serviceStatusSignature, () => {
+  syncWizardStatus({ preserveStep: true });
+});
+
+watch(
+  () => portalAction.completed,
+  () => {
+    syncWizardStatus({ preserveStep: true });
+  },
+);
+
+watch(
+  () => ravenAction.completed,
+  () => {
+    syncWizardStatus({ preserveStep: true });
+  },
+);
 
 watch(
   () => [portalAction.loading, portalAction.success, portalAction.error],
@@ -2162,6 +2281,201 @@ watch(hasPortalService, (present) => {
 onMounted(() => {
   void refreshServices();
 });
+
+const vmInstance = getCurrentInstance();
+
+// Public API for tests and orchestrated flows
+const setupState = {
+  get activeStepIndex() {
+    return activeStepIndex.value;
+  },
+  set activeStepIndex(index) {
+    const numericIndex = Number(index);
+    activeStepIndex.value = Number.isFinite(numericIndex) ? numericIndex : 0;
+  },
+  get expandedCards() {
+    return expandedCards.value;
+  },
+  set expandedCards(values) {
+    expandedCards.value = Array.isArray(values) ? values : [];
+  },
+  get activeServicesEndpoint() {
+    return activeServicesEndpoint.value;
+  },
+  set activeServicesEndpoint(endpoint) {
+    activeServicesEndpoint.value =
+      typeof endpoint === 'string' && endpoint.trim().length > 0
+        ? endpoint
+        : DEFAULT_SERVICES_ENDPOINT;
+  },
+  get installError() {
+    return installError.value;
+  },
+  set installError(value) {
+    installError.value = typeof value === 'string' ? value : String(value ?? '');
+  },
+  get installResults() {
+    return installResults.value;
+  },
+  set installResults(value) {
+    installResults.value = value == null ? null : value;
+  },
+  get installSuccessMessageVisible() {
+    return installSuccessMessageVisible.value;
+  },
+  set installSuccessMessageVisible(visible) {
+    installSuccessMessageVisible.value = Boolean(visible);
+  },
+  get showProgressDetails() {
+    return showProgressDetails.value;
+  },
+  set showProgressDetails(visible) {
+    showProgressDetails.value = Boolean(visible);
+  },
+  get installLogs() {
+    return installLogs.value;
+  },
+  set installLogs(value) {
+    installLogs.value = typeof value === 'string' ? value : String(value ?? '');
+  },
+  get selectedServices() {
+    return selectedServices.value;
+  },
+  set selectedServices(values) {
+    selectedServices.value = Array.isArray(values) ? values : [];
+  },
+  state,
+  envForms,
+  portalDiscordState,
+  portalAction,
+  ravenAction,
+  get portalTestEndpoint() {
+    return portalTestEndpoint.value;
+  },
+  goToStep,
+  connectPortalDiscord,
+  fetchInstallProgress,
+  handleCreatePortalRole,
+  handleCreatePortalChannel,
+  getPortalSelectItems,
+};
+
+const exposedDollar = new Proxy(
+  {},
+  {
+    get(_, prop) {
+      if (prop === 'setupState') {
+        return setupState;
+      }
+
+      const target = vmInstance?.proxy?.$;
+      if (target && prop in target) {
+        const value = target[prop];
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+
+      return undefined;
+    },
+    set(_, prop, value) {
+      if (prop === 'setupState') {
+        return false;
+      }
+
+      const target = vmInstance?.proxy?.$;
+      if (target) {
+        target[prop] = value;
+        return true;
+      }
+
+      return false;
+    },
+    has(_, prop) {
+      if (prop === 'setupState') {
+        return true;
+      }
+
+      const target = vmInstance?.proxy?.$;
+      return target ? prop in target : false;
+    },
+    ownKeys() {
+      const target = vmInstance?.proxy?.$;
+      const keys = target ? Reflect.ownKeys(target) : [];
+      if (!keys.includes('setupState')) {
+        keys.push('setupState');
+      }
+
+      return keys;
+    },
+    getOwnPropertyDescriptor(_, prop) {
+      if (prop === 'setupState') {
+        return {
+          configurable: true,
+          enumerable: true,
+          value: setupState,
+          writable: false,
+        };
+      }
+
+      const target = vmInstance?.proxy?.$;
+      if (!target) {
+        return undefined;
+      }
+
+      return Object.getOwnPropertyDescriptor(target, prop);
+    },
+  },
+);
+
+defineExpose({
+  get activeStepIndex() {
+    return activeStepIndex.value;
+  },
+  set activeStepIndex(index) {
+    const numericIndex = Number(index);
+    activeStepIndex.value = Number.isFinite(numericIndex) ? numericIndex : 0;
+  },
+  get showStepInfo() {
+    return showStepInfo.value;
+  },
+  set showStepInfo(visible) {
+    showStepInfo.value = Boolean(visible);
+  },
+  get showProgressDetails() {
+    return showProgressDetails.value;
+  },
+  set showProgressDetails(visible) {
+    showProgressDetails.value = Boolean(visible);
+  },
+  get portalEnvForm() {
+    return portalEnvForm.value;
+  },
+  get wizardComplete() {
+    return wizardComplete.value;
+  },
+  set wizardComplete(value) {
+    wizardComplete.value = Boolean(value);
+  },
+  get wizardProgressPercent() {
+    return wizardProgressPercent.value ?? 0;
+  },
+  portalDiscordState,
+  portalAction,
+  ravenAction,
+  installCurrentStep,
+  runRavenHandshake,
+  fetchInstallLogs,
+  fetchInstallProgress,
+  refreshInstallLogs,
+  refreshServices,
+  goToStep,
+  connectPortalDiscord,
+  handleCreatePortalRole,
+  handleCreatePortalChannel,
+  getPortalSelectItems,
+  resetPortalDiscordState,
+  // grouped state for TS tests: wrapper.vm.$.setupState
+  $: exposedDollar,
+});
 </script>
 
 <template>
@@ -2203,6 +2517,45 @@ onMounted(() => {
               </v-alert>
 
               <div v-else>
+                <div class="wizard-overview mb-6">
+                  <div class="wizard-overview__progress">
+                    <v-progress-linear
+                      :model-value="wizardProgressPercent"
+                      height="8"
+                      color="primary"
+                      rounded
+                    />
+                    <div class="wizard-overview__label text-body-2 text-medium-emphasis mt-2">
+                      {{ wizardProgressLabel }}
+                    </div>
+                  </div>
+                  <v-alert
+                    v-if="wizardComplete"
+                    type="success"
+                    variant="tonal"
+                    border="start"
+                    class="wizard-overview__completion"
+                    data-test="wizard-complete"
+                  >
+                    <p class="wizard-overview__message mb-1 font-weight-medium">
+                      {{ wizardCompletionMessage }}
+                    </p>
+                    <p class="wizard-overview__hint mb-0 text-body-2 text-medium-emphasis">
+                      You can revisit any step if you need to review configuration details.
+                    </p>
+                  </v-alert>
+                  <v-alert
+                    v-else-if="portalOverviewMessage"
+                    type="success"
+                    variant="tonal"
+                    border="start"
+                    class="wizard-overview__portal"
+                    data-test="portal-overview-success"
+                  >
+                    {{ portalOverviewMessage }}
+                  </v-alert>
+                </div>
+
                 <div class="setup-stepper" role="tablist">
                   <v-btn
                     v-for="(step, index) in STEP_DEFINITIONS"
@@ -2319,7 +2672,7 @@ onMounted(() => {
                           :loading="progressLogsLoading && Boolean(installLogs)"
                           @click="showMoreInstallLogs"
                         >
-                          Show more logs
+                          Show latest logs
                         </v-btn>
                         <v-btn
                           icon
@@ -2891,7 +3244,7 @@ onMounted(() => {
                           Installing…
                         </template>
                         <template v-else>
-                          Install {{ currentStepInstallableCount ? 'Step' : 'Services' }}
+                          Install {{ currentStepInstallableCount ? 'Services' : 'Step' }}
                           <span v-if="installStepServices.length" class="ml-2 font-weight-bold">
                             ({{ installStepServices.length }})
                           </span>
@@ -2921,6 +3274,30 @@ onMounted(() => {
 <style scoped>
 .setup-loading {
   width: 100%;
+}
+
+.wizard-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wizard-overview__progress {
+  display: flex;
+  flex-direction: column;
+}
+
+.wizard-overview__completion {
+  margin-top: 4px;
+}
+
+.wizard-overview__portal {
+  margin-top: 4px;
+}
+
+.wizard-overview__message,
+.wizard-overview__hint {
+  line-height: 1.4;
 }
 
 .setup-stepper {

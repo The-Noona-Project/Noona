@@ -427,6 +427,72 @@ test('GET /api/setup/services/install/progress proxies progress summary', async 
     })
 })
 
+test('GET /api/setup/services/installation/logs proxies installation history', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getInstallProgress() {
+                return { items: [], status: 'idle', percent: null }
+            },
+            async getInstallationLogs(options) {
+                calls.push(options)
+                return {
+                    service: 'installation',
+                    entries: [{ message: 'Starting installation' }],
+                    summary: { status: 'installing', percent: 10, detail: null, updatedAt: 'now' },
+                }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/installation/logs?limit=5`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        service: 'installation',
+        entries: [{ message: 'Starting installation' }],
+        summary: { status: 'installing', percent: 10, detail: null, updatedAt: 'now' },
+    })
+    assert.deepEqual(calls, [{ limit: '5' }])
+})
+
+test('GET /api/setup/services/installation/logs surfaces setup errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getInstallProgress() {
+                return { items: [], status: 'idle', percent: null }
+            },
+            async getInstallationLogs() {
+                throw new Error('boom')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/installation/logs`)
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('installation logs'))
+})
+
 test('GET /api/setup/services/:name/logs proxies history and honours limit', async (t) => {
     const calls = []
     const app = createSageApp({

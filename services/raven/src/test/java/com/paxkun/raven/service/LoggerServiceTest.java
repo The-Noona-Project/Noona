@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,6 +52,69 @@ class LoggerServiceTest {
 
         assertThat(service.getDownloadsRoot()).isEqualTo(containerFallback);
         assertThat(output).contains("⚠️ Failed to create APPDATA downloads directory");
+    }
+
+    @Test
+    void logsKavitaMountAndDownloadsRoot(CapturedOutput output) throws IOException {
+        Path tempRoot = Files.createTempDirectory("logger-service-env");
+        try {
+            LoggerService service = new LoggerService() {
+                @Override
+                protected Path resolveAppDataDownloadsPath() {
+                    return tempRoot;
+                }
+
+                @Override
+                protected String resolveKavitaDataMountEnv() {
+                    return "/data/kavita";
+                }
+            };
+
+            service.afterPropertiesSet();
+
+            assertThat(output).contains("[SYSTEM] [KAVITA_DATA_MOUNT] /data/kavita");
+            assertThat(output)
+                    .contains("[SYSTEM] [DOWNLOADS_ROOT] " + tempRoot.toAbsolutePath());
+        } finally {
+            deleteRecursively(tempRoot);
+        }
+    }
+
+    @Test
+    void logsKavitaMountNotSetWhenBlank(CapturedOutput output) throws IOException {
+        Path tempRoot = Files.createTempDirectory("logger-service-env");
+        try {
+            LoggerService service = new LoggerService() {
+                @Override
+                protected Path resolveAppDataDownloadsPath() {
+                    return tempRoot;
+                }
+
+                @Override
+                protected String resolveKavitaDataMountEnv() {
+                    return null;
+                }
+            };
+
+            service.afterPropertiesSet();
+
+            assertThat(output).contains("[SYSTEM] [KAVITA_DATA_MOUNT] (not set)");
+        } finally {
+            deleteRecursively(tempRoot);
+        }
+    }
+
+    private static void deleteRecursively(Path root) {
+        try (var paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                        } catch (IOException ignored) {
+                        }
+                    });
+        } catch (IOException ignored) {
+        }
     }
 }
 

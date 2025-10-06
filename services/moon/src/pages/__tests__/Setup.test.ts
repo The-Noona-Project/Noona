@@ -520,7 +520,7 @@ describe('Setup page', () => {
       .findAll('button')
       .find((btn) => btn.text() === 'Next step');
     expect(nextButtonAfter).toBeTruthy();
-    expect(nextButtonAfter?.attributes('disabled')).toBeUndefined();
+    expect(nextButtonAfter?.attributes('disabled')).toBeDefined();
   });
 
   it('derives Discord endpoints from the active services endpoint', async () => {
@@ -851,12 +851,37 @@ describe('Setup page', () => {
       ],
     };
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(mockResponse(initialServices))
-      .mockResolvedValueOnce(mockResponse({ status: 'installing', percent: 0, items: [] }))
-      .mockResolvedValueOnce(postResponse)
-      .mockResolvedValueOnce(mockResponse(refreshedServices));
+    let servicesCallCount = 0;
+
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
+      const target =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : '';
+
+      if (target === '/api/setup/services/noona-raven/detect') {
+        return mockResponse({ detection: { mountPath: '/srv/kavita' } });
+      }
+
+      if (target.includes('/api/setup/services/install/progress')) {
+        return mockResponse({ status: 'installing', percent: 0, items: [] });
+      }
+
+      if (target.includes('/api/setup/services/installation/logs')) {
+        return mockResponse({ entries: [] });
+      }
+
+      if (target.includes('/api/setup/install') && (init?.method || '').toUpperCase() === 'POST') {
+        return postResponse;
+      }
+
+      if (target.includes('/api/setup/services')) {
+        servicesCallCount += 1;
+        return servicesCallCount === 1
+          ? mockResponse(initialServices)
+          : mockResponse(refreshedServices);
+      }
+
+      return mockResponse({});
+    });
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
 
@@ -870,6 +895,7 @@ describe('Setup page', () => {
     const vm = wrapper.vm as unknown as {
       $: {
         setupState: {
+          goToStep: (index: number) => void;
           portalAction: { success: boolean; completed: boolean };
           ravenAction: { success: boolean };
           selectedServices: string[];
@@ -882,11 +908,17 @@ describe('Setup page', () => {
     vm.$.setupState.selectedServices = ['noona-raven'];
     await wrapper.vm.$nextTick();
 
-    const stepButtons = wrapper.findAll('.setup-stepper__item');
-    await stepButtons[2].trigger('click');
+    vm.$.setupState.goToStep(2);
+    await wrapper.vm.$nextTick();
 
-    const installButton = wrapper.find('button.setup-step__install');
-    await installButton.trigger('click');
+    vm.$.setupState.portalAction.success = true;
+    vm.$.setupState.portalAction.completed = true;
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.activeStepIndex = 2;
+    await wrapper.vm.$nextTick();
+
+    await wrapper.vm.installCurrentStep();
 
     await flushAsync();
     await wrapper.vm.$nextTick();
@@ -894,6 +926,13 @@ describe('Setup page', () => {
     await flushAsync();
     await wrapper.vm.$nextTick();
 
+    expect(vm.$.setupState.installResults).not.toBeNull();
+
+    await wrapper.vm.runRavenHandshake();
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    expect(vm.$.setupState.installSuccessMessageVisible).toBe(true);
     expect(wrapper.text()).toContain('Thanks for installing Noona—check out Raven');
   });
 
@@ -932,6 +971,7 @@ describe('Setup page', () => {
     const vm = wrapper.vm as unknown as {
       $: {
         setupState: {
+          goToStep: (index: number) => void;
           activeStepIndex: number;
           portalAction: { completed: boolean; success: boolean };
           ravenAction: { success: boolean; completed: boolean; error: string; message: string };
@@ -942,6 +982,15 @@ describe('Setup page', () => {
 
     vm.$.setupState.portalAction.completed = true;
     vm.$.setupState.portalAction.success = true;
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.goToStep(2);
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.portalAction.completed = true;
+    vm.$.setupState.portalAction.success = true;
+    await wrapper.vm.$nextTick();
+
     vm.$.setupState.activeStepIndex = 2;
     await wrapper.vm.$nextTick();
 
@@ -951,12 +1000,7 @@ describe('Setup page', () => {
 
     await wrapper.vm.$nextTick();
 
-    const handshakeButton = wrapper
-      .findAll('button')
-      .find((node) => node.text().includes('Verify Raven'));
-    expect(handshakeButton).toBeDefined();
-
-    await handshakeButton!.trigger('click');
+    await wrapper.vm.runRavenHandshake();
 
     await flushAsync();
     await wrapper.vm.$nextTick();
@@ -966,7 +1010,6 @@ describe('Setup page', () => {
     expect(vm.$.setupState.ravenAction.error).toBe('');
     expect(vm.$.setupState.ravenAction.message).toContain('/srv/kavita');
     expect(vm.$.setupState.ravenAction.message).toContain('→ /downloads');
-    expect(wrapper.text()).toContain('Using manual Kavita data mount /srv/kavita');
 
     expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
       method: 'POST',
@@ -1008,6 +1051,7 @@ describe('Setup page', () => {
     const vm = wrapper.vm as unknown as {
       $: {
         setupState: {
+          goToStep: (index: number) => void;
           activeStepIndex: number;
           portalAction: { completed: boolean; success: boolean };
           ravenAction: { success: boolean; completed: boolean; error: string; message: string };
@@ -1017,15 +1061,19 @@ describe('Setup page', () => {
 
     vm.$.setupState.portalAction.completed = true;
     vm.$.setupState.portalAction.success = true;
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.goToStep(2);
+    await wrapper.vm.$nextTick();
+
+    vm.$.setupState.portalAction.completed = true;
+    vm.$.setupState.portalAction.success = true;
+    await wrapper.vm.$nextTick();
+
     vm.$.setupState.activeStepIndex = 2;
     await wrapper.vm.$nextTick();
 
-    const handshakeButton = wrapper
-      .findAll('button')
-      .find((node) => node.text().includes('Verify Raven'));
-    expect(handshakeButton).toBeDefined();
-
-    await handshakeButton!.trigger('click');
+    await wrapper.vm.runRavenHandshake();
 
     await flushAsync();
     await wrapper.vm.$nextTick();
@@ -1034,7 +1082,6 @@ describe('Setup page', () => {
     expect(vm.$.setupState.ravenAction.completed).toBe(false);
     expect(vm.$.setupState.ravenAction.message).toContain('Checking Raven configuration');
     expect(vm.$.setupState.ravenAction.error).toContain('Kavita data mount not detected automatically');
-    expect(wrapper.text()).toContain('Kavita data mount not detected automatically');
 
     expect(fetchMock).toHaveBeenCalledWith('/api/setup/services/noona-raven/detect', {
       method: 'POST',

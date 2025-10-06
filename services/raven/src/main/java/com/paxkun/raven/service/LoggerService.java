@@ -212,7 +212,15 @@ public class LoggerService implements InitializingBean {
 
     private void logSystemEnvironment() {
         write("SYSTEM", "APPDATA", System.getenv("APPDATA"));
+        String kavitaMount = resolveKavitaDataMountEnv();
+        write("SYSTEM", "KAVITA_DATA_MOUNT", kavitaMount != null && !kavitaMount.isBlank() ? kavitaMount : "(not set)");
+        Path root = getDownloadsRoot();
+        write("SYSTEM", "DOWNLOADS_ROOT", root != null ? root.toAbsolutePath().toString() : "(unavailable)");
         write("SYSTEM", "USER", System.getProperty("user.name"));
         write("SYSTEM", "OS", System.getProperty("os.name") + " " + System.getProperty("os.version"));
+    }
+
+    protected String resolveKavitaDataMountEnv() {
+        return System.getenv("KAVITA_DATA_MOUNT");
     }
 }

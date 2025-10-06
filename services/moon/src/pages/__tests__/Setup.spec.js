@@ -405,4 +405,100 @@ describe('Setup installer logs', () => {
       vi.useRealTimers();
     }
   });
+
+  it('marks the wizard complete when every step finishes successfully', async () => {
+    const services = [
+      { name: 'noona-redis', installed: true, required: true },
+      { name: 'noona-mongo', installed: true, required: true },
+      { name: 'noona-portal', installed: true, required: true },
+      { name: 'noona-vault', installed: true, required: true },
+      { name: 'noona-raven', installed: true, required: true },
+    ];
+
+    global.fetch = vi.fn(async (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      const method = init?.method || (typeof input === 'object' ? input?.method : undefined);
+
+      if (url.includes('/api/setup/services')) {
+        return {
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ services }),
+        };
+      }
+
+      if (url.includes('/installation/logs')) {
+        return {
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ entries: [] }),
+        };
+      }
+
+      if (url.includes('/install/progress')) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              status: 'complete',
+              percent: 100,
+              items: [],
+            }),
+        };
+      }
+
+      if (url.includes('/setup/install') && method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ results: [] }),
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      };
+    });
+
+    const wrapper = mount(Setup, {
+      global: {
+        stubs: {
+          Header: { template: '<div><slot /></div>' },
+        },
+        config: {
+          compilerOptions: {
+            isCustomElement: (tag) => tag.startsWith('v-'),
+          },
+        },
+      },
+    });
+
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.vm.wizardComplete).toBe(false);
+    expect(wrapper.vm.wizardProgressPercent).toBeLessThan(100);
+
+    wrapper.vm.portalAction.completed = true;
+    wrapper.vm.portalAction.success = true;
+    await nextTick();
+    await flushPromises();
+
+    expect(wrapper.vm.wizardComplete).toBe(false);
+    expect(wrapper.vm.activeStepIndex).toBeGreaterThanOrEqual(1);
+
+    wrapper.vm.ravenAction.completed = true;
+    wrapper.vm.ravenAction.success = true;
+    await nextTick();
+    await flushPromises();
+
+    expect(wrapper.vm.wizardComplete).toBe(true);
+    expect(wrapper.vm.wizardProgressPercent).toBe(100);
+    const completionAlert = wrapper.find('[data-test="wizard-complete"]');
+    expect(completionAlert.exists()).toBe(true);
+    expect(completionAlert.text()).toContain('Setup complete');
+  });
 });
