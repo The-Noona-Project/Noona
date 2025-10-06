@@ -1935,6 +1935,14 @@ const installServicesDirect = async (services) => {
   return Array.isArray(payload?.results) ? payload.results : [];
 };
 
+const advanceToRavenStep = () => {
+  installSuccessMessageVisible.value = true;
+  const ravenStepIndex = STEP_DEFINITIONS.findIndex((step) => step.key === 'raven');
+  if (ravenStepIndex !== -1) {
+    activeStepIndex.value = ravenStepIndex;
+  }
+};
+
 const runRavenHandshake = async () => {
   if (ravenAction.loading || installing.value) return;
 
@@ -1981,11 +1989,7 @@ const runRavenHandshake = async () => {
       ravenAction.message = `Kavita data mount detected at ${detection.mountPath}.`;
       ravenAction.success = true;
       ravenAction.completed = true;
-      installSuccessMessageVisible.value = true;
-      const ravenStepIndex = STEP_DEFINITIONS.findIndex((step) => step.key === 'raven');
-      if (ravenStepIndex !== -1) {
-        activeStepIndex.value = ravenStepIndex;
-      }
+      advanceToRavenStep();
       await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
       return;
     }
@@ -1997,11 +2001,7 @@ const runRavenHandshake = async () => {
       ravenAction.message = `Using manual Kavita data mount ${manualOverride.hostPath}${suffix}.`;
       ravenAction.success = true;
       ravenAction.completed = true;
-      installSuccessMessageVisible.value = true;
-      const ravenStepIndex = STEP_DEFINITIONS.findIndex((step) => step.key === 'raven');
-      if (ravenStepIndex !== -1) {
-        activeStepIndex.value = ravenStepIndex;
-      }
+      advanceToRavenStep();
       await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
       return;
     }

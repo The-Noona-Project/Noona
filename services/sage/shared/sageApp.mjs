@@ -358,15 +358,6 @@ export const createSageApp = ({
     app.get('/api/setup/services/installation/logs', async (req, res) => {
         try {
             const history = await setupClient.getInstallationLogs({ limit: req.query?.limit })
-            if (!history) {
-                res.json({
-                    service: 'installation',
-                    entries: [],
-                    summary: { status: 'idle', percent: null, detail: null, updatedAt: null },
-                })
-                return
-            }
-
             res.json(history)
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load installation logs: ${error.message}`)
