@@ -5,6 +5,15 @@ import { debugMSG, log, warn } from '../../../utilities/etc/logger.mjs';
 
 const docker = new Docker();
 
+const escapeRegExp = (value) => String(value ?? '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+
+const buildNameMatcher = (target) => {
+    const escaped = escapeRegExp(target);
+    // Matches exact container names as well as common docker-compose naming patterns:
+    //   project_service_1, project-service-1, etc.
+    return new RegExp(`(^|[._-])${escaped}([._-]\\d+)?$`, 'i');
+};
+
 /**
  * Ensures the Docker network exists (idempotent)
  */
@@ -33,9 +42,33 @@ export async function attachSelfToNetwork(dockerInstance, networkName) {
 /**
  * Checks whether a container by name exists (running or stopped)
  */
-export async function containerExists(name) {
-    const list = await docker.listContainers({ all: true });
-    return list.some(c => c.Names.includes(`/${name}`));
+export async function containerExists(name, options = {}) {
+    if (!name) {
+        return false;
+    }
+
+    const { dockerInstance = docker } = options;
+    const list = await dockerInstance.listContainers({ all: true });
+    const target = name.toLowerCase();
+    const matcher = buildNameMatcher(target);
+
+    const matches = (rawName = '') => {
+        if (!rawName) {
+            return false;
+        }
+
+        const normalized = rawName.replace(/^\//, '').toLowerCase();
+        if (normalized === target) {
+            return true;
+        }
+
+        return matcher.test(normalized);
+    };
+
+    return list.some((container = {}) => {
+        const names = Array.isArray(container.Names) ? container.Names : [];
+        return names.some(matches);
+    });
 }
 
 /**
