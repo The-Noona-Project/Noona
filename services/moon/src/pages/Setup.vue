@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, getCurrentInstance, onMounted, reactive, ref, watch } from 'vue';
 import Header from '../components/Header.vue';
 import { buildServiceEndpointCandidates } from '../utils/serviceEndpoints.js';
 import { isServiceRequired, mergeRequiredSelections } from '../utils/serviceSelection.js';
@@ -2281,6 +2281,201 @@ watch(hasPortalService, (present) => {
 onMounted(() => {
   void refreshServices();
 });
+
+const vmInstance = getCurrentInstance();
+
+// Public API for tests and orchestrated flows
+const setupState = {
+  get activeStepIndex() {
+    return activeStepIndex.value;
+  },
+  set activeStepIndex(index) {
+    const numericIndex = Number(index);
+    activeStepIndex.value = Number.isFinite(numericIndex) ? numericIndex : 0;
+  },
+  get expandedCards() {
+    return expandedCards.value;
+  },
+  set expandedCards(values) {
+    expandedCards.value = Array.isArray(values) ? values : [];
+  },
+  get activeServicesEndpoint() {
+    return activeServicesEndpoint.value;
+  },
+  set activeServicesEndpoint(endpoint) {
+    activeServicesEndpoint.value =
+      typeof endpoint === 'string' && endpoint.trim().length > 0
+        ? endpoint
+        : DEFAULT_SERVICES_ENDPOINT;
+  },
+  get installError() {
+    return installError.value;
+  },
+  set installError(value) {
+    installError.value = typeof value === 'string' ? value : String(value ?? '');
+  },
+  get installResults() {
+    return installResults.value;
+  },
+  set installResults(value) {
+    installResults.value = value == null ? null : value;
+  },
+  get installSuccessMessageVisible() {
+    return installSuccessMessageVisible.value;
+  },
+  set installSuccessMessageVisible(visible) {
+    installSuccessMessageVisible.value = Boolean(visible);
+  },
+  get showProgressDetails() {
+    return showProgressDetails.value;
+  },
+  set showProgressDetails(visible) {
+    showProgressDetails.value = Boolean(visible);
+  },
+  get installLogs() {
+    return installLogs.value;
+  },
+  set installLogs(value) {
+    installLogs.value = typeof value === 'string' ? value : String(value ?? '');
+  },
+  get selectedServices() {
+    return selectedServices.value;
+  },
+  set selectedServices(values) {
+    selectedServices.value = Array.isArray(values) ? values : [];
+  },
+  state,
+  envForms,
+  portalDiscordState,
+  portalAction,
+  ravenAction,
+  get portalTestEndpoint() {
+    return portalTestEndpoint.value;
+  },
+  goToStep,
+  connectPortalDiscord,
+  fetchInstallProgress,
+  handleCreatePortalRole,
+  handleCreatePortalChannel,
+  getPortalSelectItems,
+};
+
+const exposedDollar = new Proxy(
+  {},
+  {
+    get(_, prop) {
+      if (prop === 'setupState') {
+        return setupState;
+      }
+
+      const target = vmInstance?.proxy?.$;
+      if (target && prop in target) {
+        const value = target[prop];
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+
+      return undefined;
+    },
+    set(_, prop, value) {
+      if (prop === 'setupState') {
+        return false;
+      }
+
+      const target = vmInstance?.proxy?.$;
+      if (target) {
+        target[prop] = value;
+        return true;
+      }
+
+      return false;
+    },
+    has(_, prop) {
+      if (prop === 'setupState') {
+        return true;
+      }
+
+      const target = vmInstance?.proxy?.$;
+      return target ? prop in target : false;
+    },
+    ownKeys() {
+      const target = vmInstance?.proxy?.$;
+      const keys = target ? Reflect.ownKeys(target) : [];
+      if (!keys.includes('setupState')) {
+        keys.push('setupState');
+      }
+
+      return keys;
+    },
+    getOwnPropertyDescriptor(_, prop) {
+      if (prop === 'setupState') {
+        return {
+          configurable: true,
+          enumerable: true,
+          value: setupState,
+          writable: false,
+        };
+      }
+
+      const target = vmInstance?.proxy?.$;
+      if (!target) {
+        return undefined;
+      }
+
+      return Object.getOwnPropertyDescriptor(target, prop);
+    },
+  },
+);
+
+defineExpose({
+  get activeStepIndex() {
+    return activeStepIndex.value;
+  },
+  set activeStepIndex(index) {
+    const numericIndex = Number(index);
+    activeStepIndex.value = Number.isFinite(numericIndex) ? numericIndex : 0;
+  },
+  get showStepInfo() {
+    return showStepInfo.value;
+  },
+  set showStepInfo(visible) {
+    showStepInfo.value = Boolean(visible);
+  },
+  get showProgressDetails() {
+    return showProgressDetails.value;
+  },
+  set showProgressDetails(visible) {
+    showProgressDetails.value = Boolean(visible);
+  },
+  get portalEnvForm() {
+    return portalEnvForm.value;
+  },
+  get wizardComplete() {
+    return wizardComplete.value;
+  },
+  set wizardComplete(value) {
+    wizardComplete.value = Boolean(value);
+  },
+  get wizardProgressPercent() {
+    return wizardProgressPercent.value ?? 0;
+  },
+  portalDiscordState,
+  portalAction,
+  ravenAction,
+  installCurrentStep,
+  runRavenHandshake,
+  fetchInstallLogs,
+  fetchInstallProgress,
+  refreshInstallLogs,
+  refreshServices,
+  goToStep,
+  connectPortalDiscord,
+  handleCreatePortalRole,
+  handleCreatePortalChannel,
+  getPortalSelectItems,
+  resetPortalDiscordState,
+  // grouped state for TS tests: wrapper.vm.$.setupState
+  $: exposedDollar,
+});
 </script>
 
 <template>
@@ -2477,7 +2672,7 @@ onMounted(() => {
                           :loading="progressLogsLoading && Boolean(installLogs)"
                           @click="showMoreInstallLogs"
                         >
-                          Show more logs
+                          Show latest logs
                         </v-btn>
                         <v-btn
                           icon
@@ -3049,7 +3244,7 @@ onMounted(() => {
                           Installing…
                         </template>
                         <template v-else>
-                          Install {{ currentStepInstallableCount ? 'Step' : 'Services' }}
+                          Install {{ currentStepInstallableCount ? 'Services' : 'Step' }}
                           <span v-if="installStepServices.length" class="ml-2 font-weight-bold">
                             ({{ installStepServices.length }})
                           </span>
