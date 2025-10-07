@@ -189,6 +189,21 @@ describe('Setup page', () => {
     expect(selects.length).toBeGreaterThan(0);
   });
 
+  it('suggests starting Sage when the setup API is unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockErrorResponse(404));
+
+    const wrapper = mount(SetupPage, {
+      global: { stubs },
+    });
+
+    await flushAsync();
+    await wrapper.vm.$nextTick();
+
+    const renderedText = wrapper.text();
+    expect(renderedText).toContain('Moon could not reach the setup API.');
+    expect(renderedText).toContain('Start the Sage backend');
+  });
+
   it('keeps the portal step unlocked when services fail to load', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockResponse({ services: [] }));
 
