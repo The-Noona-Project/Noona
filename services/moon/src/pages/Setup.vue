@@ -117,6 +117,28 @@ const PORTAL_CREDENTIAL_KEYS = new Set([
   PORTAL_DISCORD_GUILD_KEY,
 ]);
 
+const SERVICE_DISCOVERY_ERROR_CODES = {
+  HTTP_ERROR: 'HTTP_ERROR',
+  NETWORK: 'NETWORK_ERROR',
+  NOT_FOUND: 'NOT_FOUND',
+  TIMEOUT: 'TIMEOUT',
+  UNKNOWN: 'UNKNOWN',
+};
+
+class ServiceDiscoveryError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = 'ServiceDiscoveryError';
+    this.code = options.code || SERVICE_DISCOVERY_ERROR_CODES.UNKNOWN;
+    this.endpoint = options.endpoint || '';
+    this.status =
+      typeof options.status === 'number' ? options.status : undefined;
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
 const isServiceInstalled = (service) => resolveServiceInstalled(service);
 
 const sanitizePortalRole = (role) => {
@@ -1327,17 +1349,114 @@ const resetStepState = () => {
   portalAction.completed = false;
 };
 
-const loadServicesFromEndpoint = async (endpoint) => {
-  const response = await fetch(endpoint);
-  if (!response.ok) {
-    throw new Error(`[${endpoint}] Request failed with status ${response.status}`);
+const describeServiceDiscoveryError = (error) => {
+  if (!(error instanceof ServiceDiscoveryError)) {
+    return '';
   }
 
-  const payload = await response.json();
-  const services = normalizeServiceList(payload);
-  const filtered = services.filter((service) => ALLOWED_SERVICE_NAMES.has(service.name));
-  filtered.sort((a, b) => a.name.localeCompare(b.name));
-  return filtered;
+  const endpoint = error.endpoint || DEFAULT_SERVICES_ENDPOINT;
+
+  switch (error.code) {
+    case SERVICE_DISCOVERY_ERROR_CODES.NOT_FOUND:
+      return `${endpoint} responded with 404`;
+    case SERVICE_DISCOVERY_ERROR_CODES.HTTP_ERROR:
+      return `${endpoint} responded with HTTP ${error.status ?? 'error'}`;
+    case SERVICE_DISCOVERY_ERROR_CODES.TIMEOUT:
+      return `${endpoint} timed out`;
+    case SERVICE_DISCOVERY_ERROR_CODES.NETWORK:
+      return `${endpoint} was unreachable`;
+    default:
+      return error.message || `${endpoint} could not be reached`;
+  }
+};
+
+const formatServiceDiscoveryErrors = (errors) => {
+  if (!Array.isArray(errors) || !errors.length) {
+    return 'Unable to retrieve installable services.';
+  }
+
+  const details = [];
+  const seen = new Set();
+
+  for (const error of errors) {
+    const detail = describeServiceDiscoveryError(error);
+    if (detail && !seen.has(detail)) {
+      seen.add(detail);
+      details.push(detail);
+    }
+  }
+
+  const shouldSuggestSage = errors.some((error) =>
+    [
+      SERVICE_DISCOVERY_ERROR_CODES.NOT_FOUND,
+      SERVICE_DISCOVERY_ERROR_CODES.NETWORK,
+      SERVICE_DISCOVERY_ERROR_CODES.TIMEOUT,
+    ].includes(error.code),
+  );
+
+  const suggestions = [];
+
+  if (shouldSuggestSage) {
+    suggestions.push(
+      'Start the Sage backend (cd services/sage && npm start) so the setup API is available on port 3004.',
+    );
+  }
+
+  const detailMessage = details.length ? `Details: ${details.join(' | ')}` : '';
+
+  return [
+    'Moon could not reach the setup API.',
+    ...suggestions,
+    detailMessage,
+  ]
+    .filter(Boolean)
+    .join(' ');
+};
+
+const loadServicesFromEndpoint = async (endpoint) => {
+  try {
+    const response = await fetch(endpoint);
+    if (!response.ok) {
+      throw new ServiceDiscoveryError(
+        `[${endpoint}] Request failed with status ${response.status}`,
+        {
+          code:
+            response.status === 404
+              ? SERVICE_DISCOVERY_ERROR_CODES.NOT_FOUND
+              : SERVICE_DISCOVERY_ERROR_CODES.HTTP_ERROR,
+          endpoint,
+          status: response.status,
+        },
+      );
+    }
+
+    const payload = await response.json();
+    const services = normalizeServiceList(payload);
+    const filtered = services.filter((service) =>
+      ALLOWED_SERVICE_NAMES.has(service.name),
+    );
+    filtered.sort((a, b) => a.name.localeCompare(b.name));
+    return filtered;
+  } catch (error) {
+    if (error instanceof ServiceDiscoveryError) {
+      throw error;
+    }
+
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : 'Request failed.';
+    const code =
+      error && typeof error === 'object' && error.name === 'AbortError'
+        ? SERVICE_DISCOVERY_ERROR_CODES.TIMEOUT
+        : SERVICE_DISCOVERY_ERROR_CODES.NETWORK;
+
+    throw new ServiceDiscoveryError(`[${endpoint}] ${message}`, {
+      code,
+      endpoint,
+      cause: error,
+    });
+  }
 };
 
 const refreshServices = async (options) => {
@@ -1388,8 +1507,16 @@ const refreshServices = async (options) => {
         syncWizardStatus({ preserveStep });
         return;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(message);
+        const normalizedError =
+          error instanceof ServiceDiscoveryError
+            ? error
+            : new ServiceDiscoveryError(
+                error instanceof Error ? error.message : String(error),
+                {
+                  endpoint,
+                },
+              );
+        errors.push(normalizedError);
       }
     }
 
@@ -1397,7 +1524,7 @@ const refreshServices = async (options) => {
     syncEnvForms([]);
     selectedServices.value = [];
     if (errors.length) {
-      state.loadError = errors.join(' | ');
+      state.loadError = formatServiceDiscoveryErrors(errors);
     } else {
       state.loadError = 'Unable to retrieve installable services.';
     }

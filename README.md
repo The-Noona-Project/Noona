@@ -78,3 +78,4 @@ Thanks for checking out Noona. This project is growing quickly, and I hope it be
 
 - Run `npm install` at the repository root (if you haven't already) to set up the shared tooling dependencies.
 - Execute `npm run docs` to regenerate `docs/docs.json`, which now aggregates both the JSDoc output from the Node.js services and parsed Javadoc comments from the Raven (Java) service.
+- Review [docs/moon-troubleshooting.md](docs/moon-troubleshooting.md) if the Moon UI shows 404 or `ERR_CONNECTION_REFUSED` errors while running locally.
