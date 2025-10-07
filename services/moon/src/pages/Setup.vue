@@ -23,26 +23,7 @@ const PORTAL_HEALTH_ENDPOINT_CANDIDATES = [
   'http://host.docker.internal:3002/health',
 ];
 const PORTAL_HEALTH_CHECK_TIMEOUT_MS = 5000;
-const RAVEN_DETECT_ENDPOINT = '/api/setup/services/noona-raven/detect';
-const RAVEN_LIBRARY_ENDPOINT = '/api/raven/library';
 const RAVEN_SERVICE_NAME = 'noona-raven';
-const RAVEN_PHASE_DEFINITIONS = [
-  {
-    key: 'dependencies',
-    label: 'Validate dependencies',
-    description: 'Portal and Vault must be running before Raven can launch.',
-  },
-  {
-    key: 'installation',
-    label: 'Install Raven',
-    description: 'Sage coordinates with Warden to start Raven when needed.',
-  },
-  {
-    key: 'verification',
-    label: 'Verify with Sage',
-    description: 'Sage checks Raven connectivity and Kavita mount detection.',
-  },
-];
 const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
 const ALLOWED_SERVICE_NAMES = new Set([
   'noona-portal',
@@ -71,7 +52,6 @@ const STEP_DEFINITIONS = [
     label: 'Launch Raven',
     summary: 'Finish setup by enabling Raven insights.',
     services: ['noona-raven'],
-    actionKey: 'ravenHandshake',
   },
 ];
 
@@ -102,18 +82,13 @@ const STEP_INFO_SECTIONS = {
   ],
   raven: [
     {
-      title: 'Raven handshake',
-      description: 'Trigger the Raven handshake to complete installation.',
+      title: 'Launch Raven',
+      description: 'Install Raven to enable library insights once Portal and Vault are ready.',
     },
     {
-      title: 'Why Raven waits',
+      title: 'Environment settings',
       description:
-        'Raven depends on Portal and Vault. Launch it last to stream library insights after authentication is configured.',
-    },
-    {
-      title: 'Kavita detection',
-      description:
-        'If automatic mount discovery fails, provide manual overrides in the Raven environment form before retrying the handshake.',
+        'Provide optional mount overrides or configuration before installing if your setup requires custom paths.',
     },
   ],
 };
@@ -135,8 +110,6 @@ const DEFAULT_PORTAL_DISCORD_ENDPOINT_BASE =
   '/api/setup/services/noona-portal/discord';
 const PORTAL_SERVICE_POLL_INTERVAL_MS = 2000;
 const PORTAL_SERVICE_POLL_TIMEOUT_MS = 30000;
-const RAVEN_SERVICE_POLL_INTERVAL_MS = 2000;
-const RAVEN_SERVICE_POLL_TIMEOUT_MS = 120000;
 const PORTAL_SERVICE_TIMEOUT_MESSAGE =
   'Portal services did not become ready in time. Please try again.';
 const PORTAL_CREDENTIAL_KEYS = new Set([
@@ -437,38 +410,6 @@ const portalDiscordState = reactive({
   },
 });
 
-const ravenAction = reactive({
-  loading: false,
-  success: false,
-  error: '',
-  completed: false,
-  message: '',
-});
-
-const ravenPhaseState = reactive(
-  Object.fromEntries(
-    RAVEN_PHASE_DEFINITIONS.map((phase) => [phase.key, { state: 'idle', message: '' }]),
-  ),
-);
-
-const resetRavenPhaseState = () => {
-  for (const phase of RAVEN_PHASE_DEFINITIONS) {
-    const entry = ravenPhaseState[phase.key];
-    if (entry) {
-      entry.state = 'idle';
-      entry.message = '';
-    }
-  }
-};
-
-const setRavenPhaseState = (key, state, message = '') => {
-  if (!Object.prototype.hasOwnProperty.call(ravenPhaseState, key)) {
-    return;
-  }
-
-  ravenPhaseState[key].state = state;
-  ravenPhaseState[key].message = message;
-};
 
 let progressPollHandle = null;
 let logsRequestActive = false;
@@ -682,8 +623,6 @@ const getServiceLabel = (name) => {
 
 const ravenService = computed(() => serviceMap.value.get(RAVEN_SERVICE_NAME));
 
-const ravenDisplayName = computed(() => getServiceLabel(RAVEN_SERVICE_NAME) || 'Raven');
-
 const ravenDependencies = computed(() => {
   const dependencies = SERVICE_DEPENDENCIES[RAVEN_SERVICE_NAME] ?? [];
   return dependencies.map((dependency) => {
@@ -712,43 +651,6 @@ const ravenDependenciesReady = computed(() => ravenMissingDependencies.value.len
 const isRavenInstalled = computed(() => {
   const service = ravenService.value;
   return service ? isServiceInstalled(service) : false;
-});
-
-const ravenPhaseEntries = computed(() =>
-  RAVEN_PHASE_DEFINITIONS.map((phase) => {
-    const stateEntry = ravenPhaseState[phase.key] ?? { state: 'idle', message: '' };
-    let message = stateEntry.message || phase.description;
-
-    if (phase.key === 'dependencies' && (!stateEntry.message || stateEntry.state === 'idle')) {
-      message = ravenDependenciesReady.value
-        ? 'Portal and Vault are ready for Raven.'
-        : `Install ${ravenMissingDependencyLabels.value.join(' & ') || 'required services'} before running the handshake.`;
-    }
-
-    if (phase.key === 'installation' && (!stateEntry.message || stateEntry.state === 'idle')) {
-      message = isRavenInstalled.value
-        ? `${ravenDisplayName.value} is already installed.`
-        : `${ravenDisplayName.value} will be installed when you run the handshake.`;
-    }
-
-    if (phase.key === 'verification' && (!stateEntry.message || stateEntry.state === 'idle')) {
-      message = 'Sage will verify Raven connectivity and Kavita detection.';
-    }
-
-    return {
-      key: phase.key,
-      label: phase.label,
-      state: stateEntry.state || 'idle',
-      message,
-    };
-  }),
-);
-
-const ravenActionButtonLabel = computed(() => {
-  if (ravenAction.success) {
-    return 'Re-run Raven handshake';
-  }
-  return isRavenInstalled.value ? 'Verify Raven with Sage' : 'Install Raven with Sage';
 });
 
 const portalDiscordReady = computed(() => portalDiscordState.verified);
@@ -843,47 +745,6 @@ const waitForPortalServicesInstalled = async (options = {}) => {
   return arePortalStepServicesInstalled();
 };
 
-const waitForServiceInstalled = async (serviceName, options = {}) => {
-  const timeoutMs =
-    typeof options.timeoutMs === 'number' && options.timeoutMs > 0
-      ? options.timeoutMs
-      : RAVEN_SERVICE_POLL_TIMEOUT_MS;
-  const intervalMs =
-    typeof options.intervalMs === 'number' && options.intervalMs > 0
-      ? options.intervalMs
-      : RAVEN_SERVICE_POLL_INTERVAL_MS;
-
-  const isInstalled = () => {
-    const service = serviceMap.value.get(serviceName);
-    return service ? isServiceInstalled(service) : false;
-  };
-
-  if (isInstalled()) {
-    return true;
-  }
-
-  if (timeoutMs <= 0) {
-    return isInstalled();
-  }
-
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
-    if (isInstalled()) {
-      return true;
-    }
-
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      break;
-    }
-
-    await sleep(Math.min(intervalMs, remaining));
-  }
-
-  return isInstalled();
-};
 
 const currentStepServices = computed(() => getStepServices(currentStep.value.key));
 
@@ -1464,13 +1325,6 @@ const resetStepState = () => {
   portalAction.success = false;
   portalAction.error = '';
   portalAction.completed = false;
-
-  ravenAction.loading = false;
-  ravenAction.success = false;
-  ravenAction.error = '';
-  ravenAction.completed = false;
-  ravenAction.message = '';
-  resetRavenPhaseState();
 };
 
 const loadServicesFromEndpoint = async (endpoint) => {
@@ -1924,230 +1778,7 @@ const installCurrentStep = async () => {
   }
 };
 
-const getManualRavenMountOverride = () => {
-  const values = envForms?.['noona-raven'];
-  if (!values) {
-    return null;
-  }
-
-  const hostPath =
-    typeof values.KAVITA_DATA_MOUNT === 'string' ? values.KAVITA_DATA_MOUNT.trim() : '';
-  const downloadsRoot = typeof values.APPDATA === 'string' ? values.APPDATA.trim() : '';
-
-  if (!hostPath) {
-    return null;
-  }
-
-  return {
-    hostPath,
-    downloadsRoot,
-  };
-};
-
-const RAVEN_LIBRARY_TIMEOUT_MS = 10000;
-
-const verifyRavenThroughSage = async () => {
-  const controller = typeof AbortController === 'function' ? new AbortController() : undefined;
-  const timeout = controller ? setTimeout(() => controller.abort(), RAVEN_LIBRARY_TIMEOUT_MS) : undefined;
-
-  try {
-    const response = await fetch(RAVEN_LIBRARY_ENDPOINT, {
-      signal: controller?.signal,
-      headers: { Accept: 'application/json' },
-    });
-
-    const text = await response.text().catch(() => '');
-    let payload = {};
-
-    if (text) {
-      try {
-        payload = JSON.parse(text);
-      } catch {
-        payload = {};
-      }
-    }
-
-    if (!response.ok) {
-      const message =
-        typeof payload?.error === 'string' && payload.error.trim()
-          ? payload.error
-          : `Raven library request failed with status ${response.status}`;
-      throw new Error(message);
-    }
-
-    return payload;
-  } finally {
-    if (timeout != null) {
-      clearTimeout(timeout);
-    }
-  }
-};
-
-const installServicesDirect = async (services) => {
-  if (!Array.isArray(services) || services.length === 0) {
-    return [];
-  }
-
-  const servicePayload = services.map((service) => {
-    const env = buildEnvPayload(service);
-    if (!env || !Object.keys(env).length) {
-      return { name: service.name };
-    }
-    return { name: service.name, env };
-  });
-
-  const response = await fetch(installEndpoint.value || DEFAULT_INSTALL_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ services: servicePayload }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(payload?.error || `Install request failed with status ${response.status}`);
-  }
-
-  return Array.isArray(payload?.results) ? payload.results : [];
-};
-
-const advanceToRavenStep = () => {
-  installSuccessMessageVisible.value = true;
-  const ravenStepIndex = STEP_DEFINITIONS.findIndex((step) => step.key === 'raven');
-  if (ravenStepIndex !== -1) {
-    activeStepIndex.value = ravenStepIndex;
-  }
-};
-
-const runRavenHandshake = async () => {
-  if (ravenAction.loading || installing.value) return;
-
-  ravenAction.loading = true;
-  ravenAction.error = '';
-  ravenAction.message = '';
-  ravenAction.success = false;
-  ravenAction.completed = false;
-  resetRavenPhaseState();
-
-  const manualOverride = getManualRavenMountOverride();
-
-  try {
-    setRavenPhaseState('dependencies', 'running', 'Confirming Portal and Vault availability…');
-
-    if (!ravenDependenciesReady.value) {
-      const dependencies = ravenMissingDependencyLabels.value.join(' & ') || 'required services';
-      const dependencyMessage = `Install ${dependencies} before running Raven.`;
-      setRavenPhaseState('dependencies', 'error', dependencyMessage);
-      throw new Error(dependencyMessage);
-    }
-
-    setRavenPhaseState('dependencies', 'success', 'Portal and Vault are ready.');
-
-    const ravenServiceEntry = ravenService.value;
-    if (!ravenServiceEntry) {
-      setRavenPhaseState('installation', 'error', 'Raven service definition unavailable.');
-      throw new Error('Raven service is unavailable. Refresh the page and try again.');
-    }
-
-    if (!isRavenInstalled.value) {
-      setRavenPhaseState('installation', 'running', 'Requesting Raven installation via Sage…');
-      ravenAction.message = 'Installing Raven via Sage…';
-      await installServicesDirect([ravenServiceEntry]);
-      const installed = await waitForServiceInstalled(RAVEN_SERVICE_NAME);
-      if (!installed) {
-        setRavenPhaseState('installation', 'error', 'Raven did not become ready in time.');
-        throw new Error('Raven did not become ready in time. Check the installation logs and retry.');
-      }
-      setRavenPhaseState('installation', 'success', 'Raven installed successfully.');
-      ravenAction.message = 'Raven installed. Verifying configuration…';
-    } else if (manualOverride) {
-      setRavenPhaseState('installation', 'running', 'Applying Raven overrides via Sage…');
-      ravenAction.message = 'Updating Raven configuration via Sage…';
-      try {
-        await installServicesDirect([ravenServiceEntry]);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setRavenPhaseState('installation', 'error', message);
-        throw error;
-      }
-      setRavenPhaseState('installation', 'success', 'Raven configuration updated.');
-      ravenAction.message = 'Raven configuration updated. Verifying with Sage…';
-    } else {
-      setRavenPhaseState('installation', 'success', 'Raven is already installed.');
-      ravenAction.message = 'Verifying Raven configuration with Sage…';
-    }
-
-    setRavenPhaseState('verification', 'running', 'Asking Sage to verify Raven configuration…');
-
-    const response = await fetch(RAVEN_DETECT_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      const errorMessage = payload?.error || `Raven detection failed with status ${response.status}`;
-      setRavenPhaseState('verification', 'error', errorMessage);
-      throw new Error(errorMessage);
-    }
-
-    const detection = payload?.detection ?? null;
-    let verificationSummary = '';
-
-    if (detection?.mountPath) {
-      verificationSummary = `Sage detected the Kavita data mount at ${detection.mountPath}.`;
-    } else if (manualOverride) {
-      const suffix = manualOverride.downloadsRoot
-        ? ` → ${manualOverride.downloadsRoot}`
-        : '';
-      verificationSummary = `Using manual Kavita data mount ${manualOverride.hostPath}${suffix}.`;
-    } else {
-      const missingMessage =
-        'Kavita data mount not detected automatically. Start your Kavita container or provide the host path in the Raven environment settings before retrying.';
-      setRavenPhaseState('verification', 'error', missingMessage);
-      throw new Error(missingMessage);
-    }
-
-    try {
-      await verifyRavenThroughSage();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setRavenPhaseState('verification', 'error', message);
-      throw error;
-    }
-
-    const completionMessage = `${verificationSummary} Raven handshake complete—Moon will route Raven traffic through Sage.`;
-    setRavenPhaseState('verification', 'success', completionMessage);
-    ravenAction.message = completionMessage;
-    ravenAction.success = true;
-    ravenAction.completed = true;
-
-    advanceToRavenStep();
-    await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!ravenPhaseEntries.value.some((entry) => entry.state === 'error')) {
-      setRavenPhaseState('verification', 'error', message);
-    }
-    ravenAction.error = message;
-    ravenAction.success = false;
-    ravenAction.completed = false;
-  } finally {
-    ravenAction.loading = false;
-  }
-};
-
-const refreshRavenStatus = async () => {
-  if (installing.value || ravenAction.loading) {
-    return;
-  }
-
-  ravenAction.error = '';
-  ravenAction.message = '';
-  resetRavenPhaseState();
-
-  await refreshServices({ keepUi: true, silent: true, skipPortalReset: true });
-};
+// Raven installation is handled entirely through the standard install flow.
 
 const isStepInstalled = (stepKey) => {
   const services = getStepServices(stepKey);
@@ -2162,7 +1793,7 @@ const isStepActionComplete = (stepKey) => {
     }
     return portalAction.completed;
   }
-  if (stepKey === 'raven') return ravenAction.completed;
+  if (stepKey === 'raven') return true;
   return true;
 };
 
@@ -2360,13 +1991,6 @@ watch(
 );
 
 watch(
-  () => ravenAction.completed,
-  () => {
-    syncWizardStatus({ preserveStep: true });
-  },
-);
-
-watch(
   () => [portalAction.loading, portalAction.success, portalAction.error],
   ([loading, success, error]) => {
     if (currentStep.value.key === 'portal' && (loading || success || error)) {
@@ -2486,7 +2110,6 @@ const setupState = {
   envForms,
   portalDiscordState,
   portalAction,
-  ravenAction,
   get portalTestEndpoint() {
     return portalTestEndpoint.value;
   },
@@ -2598,9 +2221,7 @@ defineExpose({
   },
   portalDiscordState,
   portalAction,
-  ravenAction,
   installCurrentStep,
-  runRavenHandshake,
   fetchInstallLogs,
   fetchInstallProgress,
   refreshInstallLogs,
@@ -3292,117 +2913,18 @@ defineExpose({
                       </v-expand-transition>
                     </div>
 
-                    <div v-if="currentStep.key === 'raven'" class="setup-step__action mb-4">
-                      <v-alert
-                        v-if="!ravenDependenciesReady"
-                        type="warning"
-                        variant="tonal"
-                        border="start"
-                        class="mb-4"
-                      >
+                    <!-- Step 3: Simplified Raven launch section (no handshake/verification UI) -->
+                    <div
+                      v-if="currentStep.key === 'raven' && !ravenDependenciesReady"
+                      class="setup-step__action mb-4"
+                    >
+                      <v-alert type="warning" variant="tonal" border="start" class="mb-4">
                         Raven requires
                         <span class="font-weight-medium">
                           {{ ravenMissingDependencyLabels.join(' & ') }}
                         </span>
-                        before it can be installed. Install the missing services and try again.
+                        before it can be launched. Please install the missing services first.
                       </v-alert>
-
-                      <div class="raven-handshake">
-                        <div class="raven-handshake__header">
-                          <h3 class="raven-handshake__title">Connect Raven with Sage</h3>
-                          <p class="raven-handshake__subtitle">
-                            Moon relays all Raven traffic through Sage. Run the handshake so Sage can validate Portal, Vault,
-                            and Raven before enabling insights.
-                          </p>
-                        </div>
-
-                        <v-alert
-                          type="info"
-                          variant="tonal"
-                          border="start"
-                          class="raven-handshake__hint mb-4"
-                        >
-                          Sage coordinates Raven installs and verification. Manual overrides from the Raven environment form
-                          are applied automatically.
-                        </v-alert>
-
-                        <div class="raven-progress" role="status" aria-live="polite">
-                          <div
-                            v-for="entry in ravenPhaseEntries"
-                            :key="entry.key"
-                            class="raven-progress__item"
-                            :class="`raven-progress__item--${entry.state}`"
-                            :aria-label="`${entry.label}: ${entry.state}`"
-                          >
-                            <div class="raven-progress__icon" aria-hidden="true">
-                              <v-icon
-                                v-if="entry.state === 'success'"
-                                icon="mdi-check-circle-outline"
-                                color="success"
-                                size="22"
-                              />
-                              <v-icon
-                                v-else-if="entry.state === 'error'"
-                                icon="mdi-alert-circle-outline"
-                                color="error"
-                                size="22"
-                              />
-                              <v-progress-circular
-                                v-else-if="entry.state === 'running'"
-                                :size="20"
-                                :width="3"
-                                color="primary"
-                                indeterminate
-                              />
-                              <v-icon
-                                v-else
-                                icon="mdi-progress-clock"
-                                size="22"
-                                class="text-medium-emphasis"
-                              />
-                            </div>
-                            <div class="raven-progress__body">
-                              <p class="raven-progress__label">{{ entry.label }}</p>
-                              <p class="raven-progress__message">{{ entry.message }}</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div class="raven-handshake__actions">
-                          <v-btn
-                            color="primary"
-                            class="raven-handshake__primary"
-                            :loading="ravenAction.loading"
-                            :disabled="installing || !ravenDependenciesReady"
-                            @click="runRavenHandshake"
-                          >
-                            <template v-if="ravenAction.loading">
-                              Contacting Sage…
-                            </template>
-                            <template v-else>
-                              {{ ravenActionButtonLabel }}
-                            </template>
-                          </v-btn>
-                          <v-btn
-                            variant="text"
-                            class="raven-handshake__refresh"
-                            :disabled="installing || ravenAction.loading"
-                            @click="refreshRavenStatus"
-                          >
-                            Refresh status
-                          </v-btn>
-                        </div>
-
-                        <div v-if="ravenAction.error" class="text-body-2 text-error mt-3">
-                          {{ ravenAction.error }}
-                        </div>
-                        <div
-                          v-else-if="ravenAction.message"
-                          class="text-body-2 text-medium-emphasis mt-3"
-                        >
-                          {{ ravenAction.message }}
-                        </div>
-                      </div>
                     </div>
 
                   <div class="setup-step__buttons">
@@ -3604,114 +3126,6 @@ defineExpose({
   padding: 12px;
   border-radius: 8px;
   background: rgba(var(--v-theme-primary), 0.04);
-}
-
-.raven-handshake {
-  border: 1px solid rgba(var(--v-theme-primary), 0.14);
-  border-radius: 12px;
-  padding: 20px;
-  background: rgba(var(--v-theme-primary), 0.03);
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.raven-handshake__header {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.raven-handshake__title {
-  margin: 0;
-  font-weight: 600;
-  font-size: 1.125rem;
-}
-
-.raven-handshake__subtitle {
-  margin: 0;
-  font-size: 0.95rem;
-  color: rgba(var(--v-theme-on-surface), 0.72);
-  line-height: 1.45;
-}
-
-.raven-handshake__hint {
-  margin-top: -4px;
-}
-
-.raven-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.raven-progress__item {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.08);
-  background: rgba(var(--v-theme-primary), 0.03);
-  transition: border-color 0.2s ease, background-color 0.2s ease;
-}
-
-.raven-progress__item--running {
-  border-color: rgba(var(--v-theme-primary), 0.32);
-  background: rgba(var(--v-theme-primary), 0.08);
-}
-
-.raven-progress__item--success {
-  border-color: rgba(var(--v-theme-success), 0.35);
-  background: rgba(var(--v-theme-success), 0.08);
-}
-
-.raven-progress__item--error {
-  border-color: rgba(var(--v-theme-error), 0.4);
-  background: rgba(var(--v-theme-error), 0.08);
-}
-
-.raven-progress__icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-}
-
-.raven-progress__body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.raven-progress__label {
-  margin: 0;
-  font-weight: 600;
-}
-
-.raven-progress__message {
-  margin: 0;
-  font-size: 0.85rem;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  line-height: 1.4;
-}
-
-.raven-handshake__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 4px;
-}
-
-.raven-handshake__primary {
-  min-width: 220px;
-}
-
-.raven-handshake__refresh {
-  text-transform: none;
 }
 
 .progress-logs__empty {
