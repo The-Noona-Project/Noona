@@ -8,7 +8,7 @@ import OraclePage from './pages/Oracle.jsx';
 import PortalPage from './pages/Portal.jsx';
 import RavenPage from './pages/Raven.jsx';
 import SagePage from './pages/Sage.jsx';
-import SetupPage from './pages/Setup.jsx';
+import SetupPage from './pages/Setup.tsx';
 import VaultPage from './pages/Vault.jsx';
 import WardenPage from './pages/Warden.jsx';
 import { useServiceInstallation } from './state/serviceInstallationContext.tsx';

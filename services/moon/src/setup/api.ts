@@ -1,0 +1,184 @@
+import { validatePortalDiscordConfig as legacyValidate, createPortalDiscordRole as legacyCreateRole, createPortalDiscordChannel as legacyCreateChannel } from '../utils/portalDiscordSetup.js';
+
+export interface FetchJsonOptions extends RequestInit {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+const DEFAULT_TIMEOUT = 15000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  { timeoutMs = DEFAULT_TIMEOUT, signal, ...init }: FetchJsonOptions = {},
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  const abortListener = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', abortListener);
+    }
+  }
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+    if (signal) {
+      signal.removeEventListener?.('abort', abortListener as EventListener);
+    }
+  }
+}
+
+async function parseJson<T>(response: Response, fallbackError: string): Promise<T> {
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    const message =
+      typeof payload?.error === 'string' && payload.error.trim()
+        ? payload.error.trim()
+        : fallbackError;
+    throw new Error(message);
+  }
+
+  return payload as T;
+}
+
+export interface ServiceInstallRequestEntry {
+  name: string;
+  env?: Record<string, string>;
+}
+
+export interface ServiceInstallResponse {
+  results: Array<Record<string, unknown>>;
+}
+
+export interface InstallProgressItem {
+  name?: string;
+  status?: string;
+  percent?: number | null;
+  [key: string]: unknown;
+}
+
+export interface InstallProgressSummary {
+  status: string;
+  percent: number | null;
+  items: InstallProgressItem[];
+}
+
+export interface InstallLogsResponse {
+  service?: string;
+  entries: Array<Record<string, unknown>>;
+  summary?: Record<string, unknown> | null;
+}
+
+export async function fetchInstallableServices(options?: FetchJsonOptions) {
+  const response = await fetchWithTimeout('/api/setup/services', {
+    ...options,
+    headers: {
+      accept: 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+  return await parseJson<{ services?: unknown }>(
+    response,
+    'Unable to retrieve installable services.',
+  );
+}
+
+export async function installServices(
+  services: ServiceInstallRequestEntry[],
+  options?: FetchJsonOptions,
+): Promise<ServiceInstallResponse> {
+  const response = await fetchWithTimeout('/api/setup/install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
+    body: JSON.stringify({ services }),
+    ...options,
+  });
+  return await parseJson<ServiceInstallResponse>(response, 'Failed to install services.');
+}
+
+export async function fetchInstallProgress(options?: FetchJsonOptions): Promise<InstallProgressSummary> {
+  const response = await fetchWithTimeout('/api/setup/services/install/progress', options);
+  const payload = await parseJson<Record<string, unknown>>(response, 'Unable to retrieve installation progress.');
+  const items = Array.isArray(payload.items) ? (payload.items as InstallProgressItem[]) : [];
+  return {
+    status: typeof payload.status === 'string' ? payload.status : 'idle',
+    percent: typeof payload.percent === 'number' ? payload.percent : null,
+    items,
+  } satisfies InstallProgressSummary;
+}
+
+export async function fetchInstallationLogs(
+  limit: number,
+  options?: FetchJsonOptions,
+): Promise<InstallLogsResponse> {
+  const response = await fetchWithTimeout(
+    `/api/setup/services/installation/logs?limit=${encodeURIComponent(String(limit))}`,
+    options,
+  );
+  return await parseJson<InstallLogsResponse>(response, 'Unable to retrieve installation logs.');
+}
+
+export async function fetchServiceLogs(
+  name: string,
+  limit: number,
+  options?: FetchJsonOptions,
+): Promise<InstallLogsResponse> {
+  const response = await fetchWithTimeout(
+    `/api/setup/services/${encodeURIComponent(name)}/logs?limit=${encodeURIComponent(String(limit))}`,
+    options,
+  );
+  return await parseJson<InstallLogsResponse>(response, 'Unable to retrieve service logs.');
+}
+
+export interface PortalDiscordValidationPayload {
+  guild?: Record<string, unknown> | null;
+  channels?: Array<Record<string, unknown>> | null;
+  roles?: Array<Record<string, unknown>> | null;
+}
+
+export interface PortalDiscordCredentials {
+  token: string;
+  guildId: string;
+}
+
+export async function validatePortalDiscordConfig(
+  credentials: PortalDiscordCredentials,
+  baseUrl?: string,
+) {
+  return await legacyValidate(credentials, baseUrl);
+}
+
+export async function createPortalDiscordRole(
+  payload: PortalDiscordCredentials & { name: string },
+  baseUrl?: string,
+) {
+  return await legacyCreateRole(payload, baseUrl);
+}
+
+export async function createPortalDiscordChannel(
+  payload: PortalDiscordCredentials & { name: string; type: string },
+  baseUrl?: string,
+) {
+  return await legacyCreateChannel(payload, baseUrl);
+}
+
+export async function detectRavenMount(options?: FetchJsonOptions) {
+  const response = await fetchWithTimeout('/api/setup/services/noona-raven/detect', {
+    method: 'POST',
+    ...options,
+  });
+  return await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to detect Kavita data mount.',
+  );
+}
