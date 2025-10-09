@@ -1,4 +1,4 @@
-import { resolveServiceInstalled } from './serviceStatus.js';
+import { resolveServiceInstalled } from './serviceStatus.ts';
 
 export function isServiceRequired(service) {
   return Boolean(service && service.required === true);
