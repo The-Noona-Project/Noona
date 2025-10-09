@@ -25,6 +25,16 @@ import EnvironmentEditor from '../setup/components/EnvironmentEditor.tsx';
 import DiscordSetupForm from '../setup/components/DiscordSetupForm.tsx';
 import InstallerLogPanel from '../setup/components/InstallerLogPanel.tsx';
 import { useSetupSteps } from '../setup/useSetupSteps.ts';
+import { useWizardState } from '../setup/useWizardState.ts';
+import type { WizardStepStatus } from '../setup/api.ts';
+
+const WIZARD_STATUS_COLORS: Record<WizardStepStatus, string> = {
+  pending: 'gray',
+  'in-progress': 'blue',
+  complete: 'green',
+  error: 'red',
+  skipped: 'gray',
+};
 
 export default function SetupPage(): JSX.Element {
   const {
@@ -52,11 +62,30 @@ export default function SetupPage(): JSX.Element {
     serviceLogs,
     loadServiceLogs,
   } = useSetupSteps();
+  const { state: wizardState, loading: wizardLoading, error: wizardError, refresh: refreshWizard } =
+    useWizardState();
 
   const selectedServices = React.useMemo(
     () => services.filter((service) => selected.has(service.name)),
     [services, selected],
   );
+
+  const wizardSteps = React.useMemo(() => {
+    if (!wizardState) {
+      return [];
+    }
+
+    return [
+      { key: 'foundation', label: 'Foundation services', state: wizardState.foundation },
+      { key: 'portal', label: 'Portal', state: wizardState.portal },
+      { key: 'raven', label: 'Raven', state: wizardState.raven },
+      { key: 'verification', label: 'Verification', state: wizardState.verification },
+    ];
+  }, [wizardState]);
+
+  const handleRefreshWizard = React.useCallback(async () => {
+    await refreshWizard();
+  }, [refreshWizard]);
 
   const handleNext = React.useCallback(async () => {
     await goNext();
@@ -211,6 +240,63 @@ export default function SetupPage(): JSX.Element {
                     </Text>
                   )}
                 </CardBody>
+              </Card>
+              <Card variant="outline" borderColor="gray.200">
+                <CardHeader borderBottomWidth="1px" borderColor="gray.100">
+                  <Stack spacing={1}>
+                    <Heading size="sm">Wizard status</Heading>
+                    <Text fontSize="sm" color="gray.600">
+                      Track setup milestones across foundation, portal, raven, and verification steps.
+                    </Text>
+                  </Stack>
+                </CardHeader>
+                <CardBody>
+                  {wizardError ? (
+                    <Alert status="error" borderRadius="md" mb={wizardState ? 4 : 0} data-testid="wizard-state-error">
+                      <AlertIcon />
+                      {wizardError}
+                    </Alert>
+                  ) : null}
+                  {wizardLoading && !wizardState ? (
+                    <HStack justify="center" py={4}>
+                      <Spinner size="sm" />
+                    </HStack>
+                  ) : wizardState ? (
+                    <Stack spacing={3} divider={<StackDivider borderColor="gray.100" />}>
+                      {wizardSteps.map((item) => (
+                        <Stack key={item.key} spacing={1} data-testid={`wizard-step-${item.key}`}>
+                          <HStack justify="space-between" align="flex-start">
+                            <Text fontWeight="semibold">{item.label}</Text>
+                            <Badge
+                              colorScheme={WIZARD_STATUS_COLORS[item.state.status] ?? 'gray'}
+                              textTransform="capitalize"
+                            >
+                              {item.state.status}
+                            </Badge>
+                          </HStack>
+                          {item.state.error ? (
+                            <Text fontSize="sm" color="red.500">
+                              {item.state.error}
+                            </Text>
+                          ) : item.state.detail ? (
+                            <Text fontSize="sm" color="gray.600">
+                              {item.state.detail}
+                            </Text>
+                          ) : null}
+                        </Stack>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Text fontSize="sm" color="gray.600">
+                      Wizard progress will appear once an installation run begins.
+                    </Text>
+                  )}
+                </CardBody>
+                <CardFooter borderTopWidth="1px" borderColor="gray.100">
+                  <Button size="sm" onClick={handleRefreshWizard} isLoading={wizardLoading}>
+                    Refresh status
+                  </Button>
+                </CardFooter>
               </Card>
             </Stack>
           </GridItem>

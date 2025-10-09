@@ -7,6 +7,8 @@ import { debugMSG, errMSG, log } from '../../../utilities/etc/logger.mjs'
 import { SetupValidationError } from './errors.mjs'
 import { createDiscordSetupClient } from './discordSetupClient.mjs'
 import { createRavenClient } from './ravenClient.mjs'
+import { createWizardStateClient } from './wizardStateClient.mjs'
+import { resolveWizardStateOperation } from './wizardStateSchema.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
@@ -271,6 +273,8 @@ export const createSageApp = ({
     ravenClient: ravenClientOverride,
     setup: setupOptions = {},
     raven: ravenOptions = {},
+    wizardStateClient: wizardStateClientOverride,
+    wizard: wizardOptions = {},
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
     const setupClient =
@@ -300,6 +304,45 @@ export const createSageApp = ({
             fetchImpl: ravenOptions.fetchImpl ?? ravenOptions.fetch ?? fetch,
             env: ravenOptions.env ?? process.env,
         })
+    let wizardStateClient = wizardStateClientOverride || wizardOptions.client || null
+
+    if (!wizardStateClient) {
+        const wizardEnv = wizardOptions.env ?? process.env
+        const token =
+            wizardOptions.token ??
+            wizardEnv?.VAULT_API_TOKEN ??
+            wizardEnv?.VAULT_ACCESS_TOKEN ??
+            null
+
+        if (token) {
+            const baseCandidates = []
+            if (wizardOptions.baseUrl) {
+                baseCandidates.push(wizardOptions.baseUrl)
+            }
+            if (Array.isArray(wizardOptions.baseUrls)) {
+                baseCandidates.push(...wizardOptions.baseUrls)
+            }
+
+            try {
+                wizardStateClient = createWizardStateClient({
+                    baseUrl: baseCandidates[0],
+                    baseUrls: baseCandidates.slice(1),
+                    token,
+                    fetchImpl: wizardOptions.fetchImpl ?? wizardOptions.fetch ?? fetch,
+                    env: wizardEnv,
+                    logger,
+                    serviceName,
+                    redisKey: wizardOptions.redisKey,
+                    timeoutMs: wizardOptions.timeoutMs,
+                })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.warn?.(`[${serviceName}] ⚠️ Wizard state client unavailable: ${message}`)
+            }
+        } else if (wizardOptions.required) {
+            logger.warn?.(`[${serviceName}] ⚠️ Missing Vault token for wizard state; endpoints will be disabled.`)
+        }
+    }
     const app = express()
 
     app.use(cors())
@@ -376,6 +419,49 @@ export const createSageApp = ({
             const status = error instanceof SetupValidationError ? 400 : 502
             logger.error(`[${serviceName}] ⚠️ Failed to load logs for ${name}: ${error.message}`)
             res.status(status).json({ error: message })
+        }
+    })
+
+    app.get('/api/setup/wizard/state', async (_req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        try {
+            const state = await wizardStateClient.loadState({ fallbackToDefault: true })
+            res.json(state)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load wizard state: ${error.message}`)
+            res.status(502).json({ error: 'Unable to load setup wizard state.' })
+        }
+    })
+
+    app.put('/api/setup/wizard/state', async (req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        try {
+            const operation = resolveWizardStateOperation(req.body ?? {})
+
+            if (operation.type === 'replace') {
+                const state = await wizardStateClient.writeState(operation.state)
+                res.json(state)
+                return
+            }
+
+            const { state } = await wizardStateClient.applyUpdates(operation.updates)
+            res.json(state)
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ❌ Failed to update wizard state: ${error.message}`)
+            res.status(502).json({ error: 'Unable to update setup wizard state.' })
         }
     })
 
@@ -536,6 +622,8 @@ export const startSage = ({
     ravenClient,
     setup,
     raven,
+    wizard,
+    wizardStateClient,
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
     const app = createSageApp({
@@ -546,6 +634,8 @@ export const startSage = ({
         ravenClient,
         setup,
         raven,
+        wizard,
+        wizardStateClient,
     })
     const server = app.listen(port, () => {
         logger.info(`[${serviceName}] 🧠 Sage is live on port ${port}`)

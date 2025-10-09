@@ -12,6 +12,7 @@ import {
     normalizeServiceInstallPayload,
     startSage,
 } from '../shared/sageApp.mjs'
+import { createDefaultWizardState } from '../shared/wizardStateSchema.mjs'
 import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
@@ -169,6 +170,91 @@ test('GET /api/setup/services proxies to setup client', async (t) => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { services: [{ name: 'noona-moon' }] })
     assert.deepEqual(calls, ['list'])
+})
+
+test('GET /api/setup/wizard/state returns state from client', async (t) => {
+    const wizardState = createDefaultWizardState()
+    const calls = []
+    const app = createSageApp({
+        wizardStateClient: {
+            async loadState() {
+                calls.push('load')
+                return wizardState
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/state`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), wizardState)
+    assert.deepEqual(calls, ['load'])
+})
+
+test('PUT /api/setup/wizard/state applies updates through client', async (t) => {
+    const nextState = createDefaultWizardState()
+    nextState.foundation = { ...nextState.foundation, status: 'complete' }
+    const updates = []
+    const app = createSageApp({
+        wizardStateClient: {
+            async applyUpdates(changeSet) {
+                updates.push(changeSet)
+                return { state: nextState, changed: true }
+            },
+            async writeState() {
+                throw new Error('writeState should not be called')
+            },
+            async loadState() {
+                return createDefaultWizardState()
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/state`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: [{ step: 'foundation', status: 'complete' }] }),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.foundation.status, 'complete')
+    assert.equal(updates.length, 1)
+    assert.deepEqual(updates[0], [{ step: 'foundation', status: 'complete' }])
+})
+
+test('PUT /api/setup/wizard/state validates payload', async (t) => {
+    const app = createSageApp({
+        wizardStateClient: {
+            async loadState() {
+                return createDefaultWizardState()
+            },
+            async applyUpdates() {
+                throw new Error('applyUpdates should not be called')
+            },
+            async writeState() {
+                throw new Error('writeState should not be called')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/state`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: [] }),
+    })
+
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.ok(typeof payload?.error === 'string' && payload.error.length > 0)
 })
 
 test('createDiscordSetupClient uses limited intents during validation', async () => {

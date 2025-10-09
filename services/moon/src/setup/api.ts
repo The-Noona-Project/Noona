@@ -79,6 +79,36 @@ export interface InstallLogsResponse {
   summary?: Record<string, unknown> | null;
 }
 
+export type WizardStepStatus = 'pending' | 'in-progress' | 'complete' | 'error' | 'skipped';
+
+export interface WizardStepState {
+  status: WizardStepStatus;
+  detail: string | null;
+  error: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface WizardState {
+  version: number;
+  updatedAt: string | null;
+  foundation: WizardStepState;
+  portal: WizardStepState;
+  raven: WizardStepState;
+  verification: WizardStepState;
+}
+
+export type WizardStepKey = keyof Pick<WizardState, 'foundation' | 'portal' | 'raven' | 'verification'>;
+
+export interface WizardStateUpdate {
+  step: WizardStepKey;
+  status?: WizardStepStatus;
+  detail?: string | null;
+  error?: string | null;
+  completedAt?: string | null;
+  updatedAt?: string | null;
+}
+
 export async function fetchInstallableServices(options?: FetchJsonOptions) {
   const response = await fetchWithTimeout('/api/setup/services', {
     ...options,
@@ -141,6 +171,34 @@ export async function fetchServiceLogs(
     options,
   );
   return await parseJson<InstallLogsResponse>(response, 'Unable to retrieve service logs.');
+}
+
+export async function fetchWizardState(options?: FetchJsonOptions): Promise<WizardState> {
+  const response = await fetchWithTimeout('/api/setup/wizard/state', {
+    ...options,
+    headers: {
+      accept: 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+  return await parseJson<WizardState>(response, 'Unable to load setup wizard state.');
+}
+
+export async function updateWizardState(
+  updates: WizardStateUpdate | WizardStateUpdate[],
+  options?: FetchJsonOptions,
+): Promise<WizardState> {
+  const payload = Array.isArray(updates) ? updates : [updates];
+  const response = await fetchWithTimeout('/api/setup/wizard/state', {
+    ...options,
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify({ updates: payload }),
+  });
+  return await parseJson<WizardState>(response, 'Unable to update setup wizard state.');
 }
 
 export interface PortalDiscordValidationPayload {

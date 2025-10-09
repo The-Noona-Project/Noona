@@ -260,6 +260,123 @@ test('installServices returns per-service results with errors', async () => {
     assert.deepEqual(started, ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage']);
 });
 
+test('installServices publishes wizard state transitions', async () => {
+    const events = [];
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis' },
+                'noona-mongo': { name: 'noona-mongo', image: 'mongo', hostServiceUrl: 'mongodb://localhost:27017' },
+            },
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+                'noona-portal': { name: 'noona-portal', image: 'portal' },
+            },
+        },
+        dockerUtils: {
+            ensureNetwork: async () => {},
+            attachSelfToNetwork: async () => {},
+            containerExists: async () => false,
+            pullImageIfNeeded: async () => {},
+            runContainerWithLogs: async () => {},
+            waitForHealthyStatus: async () => {},
+        },
+        wizardState: {
+            publisher: {
+                async reset(names) {
+                    events.push({ type: 'reset', names });
+                },
+                async trackServiceStatus(name, status) {
+                    events.push({ type: 'track', name, status });
+                },
+                async completeInstall(payload) {
+                    events.push({ type: 'complete', ...payload });
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async () => {};
+
+    const results = await warden.installServices([
+        { name: 'noona-redis' },
+        { name: 'noona-portal' },
+    ]);
+
+    const installed = results.filter((entry) => entry.status === 'installed');
+    assert.deepEqual(
+        installed.map((entry) => entry.name),
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-portal'],
+    );
+    assert.ok(events.some((event) => event.type === 'reset'));
+    const tracked = events.filter((event) => event.type === 'track');
+    assert.ok(tracked.some((event) => event.name === 'noona-redis' && event.status === 'installing'));
+    assert.ok(
+        tracked.some(
+            (event) =>
+                event.name === 'noona-portal' && (event.status === 'installing' || event.status === 'installed'),
+        ),
+    );
+    const completion = events.find((event) => event.type === 'complete');
+    assert.deepEqual(completion, { type: 'complete', hasErrors: false });
+});
+
+test('installServices publishes wizard errors when installs fail', async () => {
+    const events = [];
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis' },
+                'noona-mongo': { name: 'noona-mongo', image: 'mongo', hostServiceUrl: 'mongodb://localhost:27017' },
+            },
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+                'noona-portal': { name: 'noona-portal', image: 'portal' },
+            },
+        },
+        dockerUtils: {
+            ensureNetwork: async () => {},
+            attachSelfToNetwork: async () => {},
+            containerExists: async () => false,
+            pullImageIfNeeded: async () => {},
+            runContainerWithLogs: async () => {},
+            waitForHealthyStatus: async () => {},
+        },
+        wizardState: {
+            publisher: {
+                async reset(names) {
+                    events.push({ type: 'reset', names });
+                },
+                async trackServiceStatus(name, status) {
+                    events.push({ type: 'track', name, status });
+                },
+                async completeInstall(payload) {
+                    events.push({ type: 'complete', ...payload });
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async (service) => {
+        if (service.name === 'noona-portal') {
+            throw new Error('boom');
+        }
+    };
+
+    const results = await warden.installServices([
+        { name: 'noona-redis' },
+        { name: 'noona-portal' },
+    ]);
+
+    assert.ok(results.some((entry) => entry.name === 'noona-portal' && entry.status === 'error'));
+    const completion = events.find((event) => event.type === 'complete');
+    assert.ok(completion && completion.hasErrors === true);
+    const portalEvents = events.filter((event) => event.type === 'track' && event.name === 'noona-portal');
+    assert.ok(portalEvents.some((event) => event.status === 'error'));
+});
+
 test('installServices merges environment overrides before starting services', async () => {
     const warden = createWarden({
         services: {
