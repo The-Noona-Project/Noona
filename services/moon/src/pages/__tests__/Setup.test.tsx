@@ -25,8 +25,7 @@ vi.mock('../../setup/api.ts', () => {
     validatePortalDiscordConfig: vi.fn(async () => ({ guild: { name: 'Test Guild' }, roles: [], channels: [] })),
     createPortalDiscordRole: vi.fn(async () => ({ role: { id: 'role-123' } })),
     createPortalDiscordChannel: vi.fn(async () => ({ channel: { id: 'chan-456' } })),
-    pullRavenContainer: vi.fn(async () => ({})),
-    startRavenContainer: vi.fn(async () => ({})),
+    detectRavenMount: vi.fn(async () => ({ detection: null })),
     fetchServiceHealth: vi.fn(async () => ({ status: 'healthy' })),
   } satisfies Partial<typeof import('../../setup/api.ts')>;
 });
@@ -134,6 +133,60 @@ async function completeFoundation({ getByTestId, getByLabelText }: ReturnType<ty
     expect(api.installServices).toHaveBeenCalled();
     expect(api.fetchServiceHealth).toHaveBeenCalled();
   });
+}
+
+async function completePortal(
+  { getByTestId, findByTestId }: ReturnType<typeof renderWithProviders>,
+  user: ReturnType<typeof userEvent.setup>,
+) {
+  const botFieldGroup = within(getByTestId('discord-token')).getAllByLabelText(/Discord Bot Token/i);
+  const guildFieldGroup = within(getByTestId('discord-guild')).getAllByLabelText(/Discord Guild ID/i);
+
+  for (const field of botFieldGroup) {
+    fireEvent.change(field, { target: { value: 'portal-token' } });
+  }
+
+  for (const field of guildFieldGroup) {
+    fireEvent.change(field, { target: { value: 'guild-789' } });
+  }
+
+  const validateButton = await findByTestId('discord-validate');
+  let resolvePortalInstall: ((value: { results: Array<Record<string, unknown>> }) => void) | null = null;
+  vi.mocked(api.installServices).mockImplementationOnce(() => {
+    return new Promise((resolve) => {
+      resolvePortalInstall = resolve;
+    });
+  });
+
+  await user.click(validateButton);
+  await waitFor(() => expect(api.validatePortalDiscordConfig).toHaveBeenCalled());
+  expect(resolvePortalInstall).not.toBeNull();
+
+  const completionTimestamp = new Date().toISOString();
+  currentWizardState = {
+    ...currentWizardState,
+    portal: {
+      ...currentWizardState.portal,
+      status: 'complete',
+      detail: JSON.stringify({
+        overrides: {
+          'noona-portal': {
+            DISCORD_BOT_TOKEN: 'portal-token',
+            DISCORD_GUILD_ID: 'guild-789',
+          },
+        },
+        discord: { validatedAt: completionTimestamp },
+        installTriggeredAt: completionTimestamp,
+      }),
+      error: null,
+      updatedAt: completionTimestamp,
+      completedAt: completionTimestamp,
+    },
+  };
+
+  resolvePortalInstall?.({ results: [] });
+
+  await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
 }
 
 describe('SetupPage', () => {
@@ -385,7 +438,15 @@ describe('SetupPage', () => {
 
     await user.click(getByTestId('setup-next'));
 
-    await waitFor(() => expect(api.pullRavenContainer).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('raven-configuration')).toBeInTheDocument());
+
+    await user.click(getByTestId('setup-next'));
+
+    await waitFor(() =>
+      expect(api.installServices).toHaveBeenCalledWith([
+        expect.objectContaining({ name: 'noona-raven' }),
+      ]),
+    );
   });
 
   it('surfaces portal installation errors and locks the step', async () => {
@@ -437,5 +498,86 @@ describe('SetupPage', () => {
     expect(getByTestId('setup-next')).toBeDisabled();
 
     expect(api.installServices).toHaveBeenCalled();
+  });
+
+  it('detects Raven mount and records wizard detail', async () => {
+    const user = userEvent.setup();
+    const renderResult = renderWithProviders(<SetupPage />, { services: baseServices });
+    const { getByTestId, queryByTestId } = renderResult;
+
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
+
+    await completeFoundation(renderResult, user);
+    await waitFor(() => expect(queryByTestId('foundation-panel')).not.toBeInTheDocument());
+
+    await completePortal(renderResult, user);
+
+    await user.click(getByTestId('setup-next'));
+
+    await waitFor(() => expect(screen.getByTestId('raven-configuration')).toBeInTheDocument());
+
+    vi.mocked(api.detectRavenMount).mockResolvedValueOnce({
+      detection: { mountPath: '/library' },
+    });
+
+    const detectButton = await screen.findByTestId('raven-detect');
+    await user.click(detectButton);
+
+    await waitFor(() => expect(api.detectRavenMount).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByTestId('raven-detection-status')).toHaveTextContent(/library/),
+    );
+
+    const ravenUpdates = vi
+      .mocked(api.updateWizardState)
+      .mock.calls.flatMap((call) => (Array.isArray(call[0]) ? call[0] : [call[0]]))
+      .filter((update) => update?.step === 'raven');
+
+    expect(
+      ravenUpdates.some(
+        (update) => typeof update?.detail === 'string' && update.detail.includes('/library'),
+      ),
+    ).toBe(true);
+  });
+
+  it('performs Raven health check and surfaces status', async () => {
+    const user = userEvent.setup();
+    const renderResult = renderWithProviders(<SetupPage />, { services: baseServices });
+    const { getByTestId, queryByTestId } = renderResult;
+
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
+
+    await completeFoundation(renderResult, user);
+    await waitFor(() => expect(queryByTestId('foundation-panel')).not.toBeInTheDocument());
+
+    await completePortal(renderResult, user);
+
+    await user.click(getByTestId('setup-next'));
+
+    await waitFor(() => expect(screen.getByTestId('raven-configuration')).toBeInTheDocument());
+
+    vi.mocked(api.fetchServiceHealth).mockResolvedValueOnce({
+      status: 'healthy',
+      detail: 'Raven is healthy',
+    });
+
+    const healthButton = await screen.findByTestId('raven-health-check');
+    await user.click(healthButton);
+
+    await waitFor(() => expect(api.fetchServiceHealth).toHaveBeenCalledWith('noona-raven'));
+    await waitFor(() =>
+      expect(screen.getByTestId('raven-health-status')).toHaveTextContent(/raven is healthy/i),
+    );
+
+    const ravenUpdates = vi
+      .mocked(api.updateWizardState)
+      .mock.calls.flatMap((call) => (Array.isArray(call[0]) ? call[0] : [call[0]]))
+      .filter((update) => update?.step === 'raven');
+
+    expect(
+      ravenUpdates.some(
+        (update) => typeof update?.detail === 'string' && update.detail.includes('Raven is healthy'),
+      ),
+    ).toBe(true);
   });
 });

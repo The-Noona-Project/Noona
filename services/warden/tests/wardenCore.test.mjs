@@ -964,6 +964,98 @@ test('detectKavitaMount logs detection attempts and returns result', async () =>
     assert.ok(history.entries.some((entry) => entry.status === 'not-found'));
 });
 
+test('getServiceHealth returns Raven health and records wizard detail', async () => {
+    const wizardCalls = [];
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    health: 'http://noona-raven:8080/ready',
+                },
+            },
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'healthy', message: 'Raven is good' }),
+            };
+        },
+        wizardState: {
+            publisher: {
+                async recordRavenDetail(...args) {
+                    wizardCalls.push(args);
+                },
+            },
+        },
+    });
+
+    const result = await warden.getServiceHealth('noona-raven');
+    assert.deepEqual(fetchCalls, ['http://noona-raven:8080/ready']);
+    assert.deepEqual(result, {
+        status: 'healthy',
+        detail: 'Raven is good',
+        url: 'http://noona-raven:8080/ready',
+    });
+
+    assert.equal(wizardCalls.length, 1);
+    const [detail, options] = wizardCalls[0];
+    assert.equal(detail.health.status, 'healthy');
+    assert.equal(detail.health.message, 'Raven is good');
+    assert.ok(detail.health.updatedAt);
+    assert.equal(options.status, 'in-progress');
+    assert.equal(options.error, null);
+});
+
+test('getServiceHealth aggregates failures and records Raven error', async () => {
+    const wizardCalls = [];
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    port: 8080,
+                    health: 'http://noona-raven:8080/ready',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            throw new Error(`failed:${url}`);
+        },
+        wizardState: {
+            publisher: {
+                async recordRavenDetail(...args) {
+                    wizardCalls.push(args);
+                },
+            },
+        },
+    });
+
+    await assert.rejects(() => warden.getServiceHealth('noona-raven'), /failed:http:\/\/noona-raven:8080\/ready/);
+    assert.deepEqual(fetchCalls, [
+        'http://localhost:8080/health',
+        'http://noona-raven:8080/ready',
+    ]);
+
+    assert.equal(wizardCalls.length, 1);
+    const [detail, options] = wizardCalls[0];
+    assert.equal(detail.health.status, 'error');
+    assert.match(detail.health.message, /failed:http:\/\/noona-raven:8080\/ready/);
+    assert.equal(options.status, 'error');
+});
+
 test('bootFull launches services in super boot order with correct health URLs', async () => {
     const dockerUtils = {
         ensureNetwork: async () => {},

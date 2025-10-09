@@ -19,8 +19,7 @@ import {
   type InstallProgressSummary,
   type PortalDiscordValidationPayload,
   type ServiceInstallRequestEntry,
-  pullRavenContainer,
-  startRavenContainer,
+  detectRavenMount,
   validatePortalDiscordConfig,
 } from './api.ts';
 import { useWizardState } from './useWizardState.ts';
@@ -133,6 +132,46 @@ export interface FoundationState {
   running: boolean;
   completed: boolean;
   error: string | null;
+}
+
+export type RavenDetectionStatus =
+  | 'idle'
+  | 'detecting'
+  | 'detected'
+  | 'not-found'
+  | 'error';
+
+export interface RavenDetectionState {
+  status: RavenDetectionStatus;
+  message: string | null;
+  mountPath: string | null;
+  updatedAt: string | null;
+}
+
+export interface RavenHealthState {
+  checking: boolean;
+  status: string | null;
+  message: string | null;
+  updatedAt: string | null;
+}
+
+export type RavenLaunchStatus = 'idle' | 'launching' | 'launched' | 'error';
+
+export interface RavenLaunchState {
+  status: RavenLaunchStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export interface RavenStepState {
+  detection: RavenDetectionState;
+  health: RavenHealthState;
+  launch: RavenLaunchState;
+  error: string;
+  wizardStatus: WizardStepStatus;
+  wizardDetail: string | null;
+  wizardError: string | null;
 }
 
 const FOUNDATION_PROGRESS_STEPS: Array<Pick<FoundationProgressItem, 'key' | 'label'>> = [
@@ -300,6 +339,151 @@ function parsePortalDetail(detail: string | null): PortalDetailPayload | null {
   }
 }
 
+interface RavenDetailPayload {
+  overrides?: Record<string, Record<string, string>>;
+  detection?: {
+    status?: string | null;
+    message?: string | null;
+    mountPath?: string | null;
+    updatedAt?: string | null;
+  } | null;
+  launch?: {
+    status?: string | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    error?: string | null;
+  } | null;
+  health?: {
+    status?: string | null;
+    message?: string | null;
+    checkedAt?: string | null;
+  } | null;
+  message?: string | null;
+}
+
+function parseRavenDetail(detail: string | null): RavenDetailPayload | null {
+  if (!detail || typeof detail !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(detail);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    const overridesRaw = payload.overrides;
+    const overrides: Record<string, Record<string, string>> | undefined =
+      overridesRaw && typeof overridesRaw === 'object'
+        ? Object.fromEntries(
+            Object.entries(overridesRaw as Record<string, unknown>).map(([service, env]) => {
+              if (!env || typeof env !== 'object') {
+                return [service, {}];
+              }
+
+              const normalizedEnv: Record<string, string> = {};
+              for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+                if (typeof key !== 'string') {
+                  continue;
+                }
+                if (typeof value === 'string') {
+                  normalizedEnv[key] = value;
+                } else if (value == null) {
+                  normalizedEnv[key] = '';
+                }
+              }
+
+              return [service, normalizedEnv];
+            }),
+          )
+        : undefined;
+
+    const detectionRaw = payload.detection;
+    let detection: RavenDetailPayload['detection'] = null;
+    if (detectionRaw && typeof detectionRaw === 'object') {
+      const candidate = detectionRaw as Record<string, unknown>;
+      detection = {
+        status:
+          typeof candidate.status === 'string' && candidate.status.trim()
+            ? candidate.status.trim()
+            : null,
+        message:
+          typeof candidate.message === 'string' && candidate.message.trim()
+            ? candidate.message.trim()
+            : null,
+        mountPath:
+          typeof candidate.mountPath === 'string' && candidate.mountPath.trim()
+            ? candidate.mountPath.trim()
+            : null,
+        updatedAt:
+          typeof candidate.updatedAt === 'string' && candidate.updatedAt.trim()
+            ? candidate.updatedAt.trim()
+            : null,
+      };
+    }
+
+    const launchRaw = payload.launch;
+    let launch: RavenDetailPayload['launch'] = null;
+    if (launchRaw && typeof launchRaw === 'object') {
+      const candidate = launchRaw as Record<string, unknown>;
+      launch = {
+        status:
+          typeof candidate.status === 'string' && candidate.status.trim()
+            ? candidate.status.trim()
+            : null,
+        startedAt:
+          typeof candidate.startedAt === 'string' && candidate.startedAt.trim()
+            ? candidate.startedAt.trim()
+            : null,
+        completedAt:
+          typeof candidate.completedAt === 'string' && candidate.completedAt.trim()
+            ? candidate.completedAt.trim()
+            : null,
+        error:
+          typeof candidate.error === 'string' && candidate.error.trim()
+            ? candidate.error.trim()
+            : null,
+      };
+    }
+
+    const healthRaw = payload.health;
+    let health: RavenDetailPayload['health'] = null;
+    if (healthRaw && typeof healthRaw === 'object') {
+      const candidate = healthRaw as Record<string, unknown>;
+      health = {
+        status:
+          typeof candidate.status === 'string' && candidate.status.trim()
+            ? candidate.status.trim()
+            : null,
+        message:
+          typeof candidate.message === 'string' && candidate.message.trim()
+            ? candidate.message.trim()
+            : null,
+        checkedAt:
+          typeof candidate.checkedAt === 'string' && candidate.checkedAt.trim()
+            ? candidate.checkedAt.trim()
+            : null,
+      };
+    }
+
+    const message =
+      typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
+        : null;
+
+    return {
+      overrides,
+      detection,
+      launch,
+      health,
+      message,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function deriveFoundationStateFromWizard(
   detail: FoundationDetailPayload | null,
   stepState: WizardState['foundation'] | undefined,
@@ -351,10 +535,14 @@ export interface UseSetupStepsResult {
   foundationSections: EnvSection[];
   foundationState: FoundationState;
   envSections: EnvSection[];
+  ravenSections: EnvSection[];
   updateEnvValue: (serviceName: string, key: string, value: string) => void;
   environmentError: string;
   portalError: string;
   envErrors: Map<string, string[]>;
+  raven: RavenStepState;
+  detectRaven: () => Promise<void>;
+  checkRavenHealth: () => Promise<void>;
   discord: DiscordState;
   install: InstallState;
   loadInstallationLogs: (limit?: number) => Promise<void>;
@@ -580,6 +768,14 @@ function collectPortalOverrides(
   };
 }
 
+function collectRavenOverrides(
+  overrides: Map<string, Record<string, string>>,
+): Record<string, Record<string, string>> {
+  return {
+    [RAVEN_SERVICE_NAME]: getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME),
+  };
+}
+
 function buildInstallPayload(
   selected: Set<string>,
   overrides: Map<string, Record<string, string>>,
@@ -615,6 +811,11 @@ export function useSetupSteps(): UseSetupStepsResult {
     [wizardState],
   );
   const portalStatus = wizardState?.portal?.status ?? 'pending';
+  const ravenDetail = useMemo(
+    () => (wizardState ? parseRavenDetail(wizardState.raven?.detail ?? null) : null),
+    [wizardState],
+  );
+  const ravenStatus = wizardState?.raven?.status ?? 'pending';
   const [overrides, setOverrides] = useState<Map<string, Record<string, string>>>(() =>
     initializeEnvOverrides(services),
   );
@@ -623,6 +824,25 @@ export function useSetupSteps(): UseSetupStepsResult {
   const [portalError, setPortalError] = useState('');
   const [portalInstalling, setPortalInstalling] = useState(false);
   const [portalInstallTriggeredAt, setPortalInstallTriggeredAt] = useState<string | null>(null);
+  const [ravenDetection, setRavenDetection] = useState<RavenDetectionState>({
+    status: 'idle',
+    message: null,
+    mountPath: null,
+    updatedAt: null,
+  });
+  const [ravenHealth, setRavenHealth] = useState<RavenHealthState>({
+    checking: false,
+    status: null,
+    message: null,
+    updatedAt: null,
+  });
+  const [ravenLaunchState, setRavenLaunchState] = useState<RavenLaunchState>({
+    status: 'idle',
+    startedAt: null,
+    completedAt: null,
+    error: null,
+  });
+  const [ravenError, setRavenError] = useState('');
 
   const [discordValidation, setDiscordValidation] = useState<PortalDiscordValidationPayload | null>(null);
   const [discordValidationError, setDiscordValidationError] = useState('');
@@ -672,6 +892,7 @@ export function useSetupSteps(): UseSetupStepsResult {
 
   const pollTimerRef = useRef<number | null>(null);
   const portalPollTimerRef = useRef<number | null>(null);
+  const ravenOverridesSeededRef = useRef(false);
 
   const buildPortalDetail = useCallback(
     (
@@ -731,6 +952,254 @@ export function useSetupSteps(): UseSetupStepsResult {
     },
     [updateWizard],
   );
+
+  const buildRavenDetail = useCallback(
+    (
+      options: {
+        detection?: RavenDetectionState;
+        launch?: RavenLaunchState;
+        health?: RavenHealthState;
+        message?: string | null;
+      } = {},
+    ): RavenDetailPayload => {
+      const detectionState = options.detection ?? ravenDetection;
+      const launchState = options.launch ?? ravenLaunchState;
+      const healthState = options.health ?? ravenHealth;
+
+      const serializeDetection = (state: RavenDetectionState): RavenDetailPayload['detection'] => ({
+        status: state.status,
+        message: state.message,
+        mountPath: state.mountPath,
+        updatedAt: state.updatedAt,
+      });
+
+      const serializeLaunch = (state: RavenLaunchState): RavenDetailPayload['launch'] => ({
+        status: state.status,
+        startedAt: state.startedAt,
+        completedAt: state.completedAt,
+        error: state.error,
+      });
+
+      const serializeHealth = (state: RavenHealthState): RavenDetailPayload['health'] => ({
+        status: state.status,
+        message: state.message,
+        checkedAt: state.updatedAt,
+      });
+
+      const message =
+        options.message ??
+        detectionState.message ??
+        (launchState.status === 'error' ? launchState.error : null) ??
+        healthState.message ??
+        null;
+
+      return {
+        overrides: collectRavenOverrides(overrides),
+        detection: serializeDetection(detectionState),
+        launch: serializeLaunch(launchState),
+        health: serializeHealth(healthState),
+        message,
+      };
+    },
+    [overrides, ravenDetection, ravenLaunchState, ravenHealth],
+  );
+
+  const persistRavenDetail = useCallback(
+    async (detail: RavenDetailPayload, status?: WizardStepStatus, error?: string | null) => {
+      const timestamp = new Date().toISOString();
+      const update: WizardStateUpdate = {
+        step: 'raven',
+        detail: JSON.stringify(detail),
+        updatedAt: timestamp,
+      };
+      if (status) {
+        update.status = status;
+        update.completedAt = status === 'complete' ? timestamp : null;
+      }
+      if (error !== undefined) {
+        update.error = error;
+      }
+      await updateWizard(update);
+    },
+    [updateWizard],
+  );
+
+  const performRavenHealthCheck = useCallback(async () => {
+    setRavenHealth((prev) => ({ ...prev, checking: true }));
+    try {
+      const response = await fetchServiceHealth(RAVEN_SERVICE_NAME);
+      const statusValue =
+        typeof (response as Record<string, unknown>)?.status === 'string'
+          ? ((response as Record<string, unknown>).status as string).trim()
+          : '';
+      const normalizedStatus = statusValue.toLowerCase();
+      const detailField = (response as Record<string, unknown>)?.detail;
+      const timestamp = new Date().toISOString();
+      const message =
+        typeof detailField === 'string' && detailField.trim()
+          ? (detailField as string).trim()
+          : normalizedStatus
+              ? `Raven health status: ${statusValue}`
+              : 'Raven health check completed.';
+      const nextState: RavenHealthState = {
+        checking: false,
+        status: normalizedStatus || null,
+        message,
+        updatedAt: timestamp,
+      };
+      setRavenHealth(nextState);
+      setRavenError('');
+      const detail = buildRavenDetail({ health: nextState, message });
+      await persistRavenDetail(detail);
+      return nextState;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to retrieve Raven health.';
+      const timestamp = new Date().toISOString();
+      const nextState: RavenHealthState = {
+        checking: false,
+        status: 'error',
+        message,
+        updatedAt: timestamp,
+      };
+      setRavenHealth(nextState);
+      setRavenError(message);
+      const detail = buildRavenDetail({ health: nextState, message });
+      await persistRavenDetail(detail, 'error', message);
+      throw error instanceof Error ? error : new Error(message);
+    }
+  }, [buildRavenDetail, persistRavenDetail]);
+
+  const detectRaven = useCallback(async () => {
+    const timestamp = new Date().toISOString();
+    const pendingState: RavenDetectionState = {
+      status: 'detecting',
+      message: 'Detecting Kavita data mount…',
+      mountPath: null,
+      updatedAt: timestamp,
+    };
+    setRavenDetection(pendingState);
+    setRavenError('');
+
+    try {
+      const response = await detectRavenMount();
+      const mountPathRaw = response?.detection?.mountPath;
+      const mountPath = typeof mountPathRaw === 'string' && mountPathRaw.trim() ? mountPathRaw.trim() : null;
+
+      if (mountPath) {
+        const successState: RavenDetectionState = {
+          status: 'detected',
+          message: `Kavita data mount detected at ${mountPath}`,
+          mountPath,
+          updatedAt: new Date().toISOString(),
+        };
+        setRavenDetection(successState);
+        const detail = buildRavenDetail({ detection: successState, message: successState.message });
+        await persistRavenDetail(detail);
+      } else {
+        const notFoundState: RavenDetectionState = {
+          status: 'not-found',
+          message: 'Kavita data mount not detected automatically.',
+          mountPath: null,
+          updatedAt: new Date().toISOString(),
+        };
+        setRavenDetection(notFoundState);
+        const detail = buildRavenDetail({ detection: notFoundState, message: notFoundState.message });
+        await persistRavenDetail(detail);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to detect Kavita data mount.';
+      const failureState: RavenDetectionState = {
+        status: 'error',
+        message,
+        mountPath: null,
+        updatedAt: new Date().toISOString(),
+      };
+      setRavenDetection(failureState);
+      setRavenError(message);
+      const detail = buildRavenDetail({ detection: failureState, message });
+      await persistRavenDetail(detail, 'error', message);
+    }
+  }, [buildRavenDetail, persistRavenDetail]);
+
+  const checkRavenHealth = useCallback(async () => {
+    try {
+      await performRavenHealthCheck();
+    } catch {
+      // Error state handled inside performRavenHealthCheck
+    }
+  }, [performRavenHealthCheck]);
+
+  const launchRaven = useCallback(async () => {
+    const env = getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME);
+    const startedAt = new Date().toISOString();
+    const pendingState: RavenLaunchState = {
+      status: 'launching',
+      startedAt,
+      completedAt: null,
+      error: null,
+    };
+    setRavenLaunchState(pendingState);
+    setRavenError('');
+    const pendingDetail = buildRavenDetail({
+      launch: pendingState,
+      message: 'Requesting Raven installation…',
+    });
+    await persistRavenDetail(pendingDetail, 'in-progress', null);
+
+    try {
+      const payload: ServiceInstallRequestEntry =
+        Object.keys(env).length > 0
+          ? { name: RAVEN_SERVICE_NAME, env }
+          : { name: RAVEN_SERVICE_NAME };
+      const result = await installServices([payload]);
+      const ravenResult = Array.isArray(result?.results)
+        ? (result.results as Array<Record<string, unknown>>).find(
+            (entry) => typeof entry?.name === 'string' && entry.name === RAVEN_SERVICE_NAME,
+          )
+        : undefined;
+
+      const ravenStatus = typeof ravenResult?.status === 'string' ? ravenResult.status.trim().toLowerCase() : 'installed';
+      if (ravenStatus === 'error') {
+        const errorMessage =
+          typeof ravenResult?.error === 'string' && ravenResult.error.trim()
+            ? ravenResult.error.trim()
+            : 'Unable to install Raven service.';
+        throw new Error(errorMessage);
+      }
+      const completedAt = new Date().toISOString();
+      const successState: RavenLaunchState = {
+        status: 'launched',
+        startedAt,
+        completedAt,
+        error: null,
+      };
+      setRavenLaunchState(successState);
+      const detail = buildRavenDetail({
+        launch: successState,
+        message: 'Raven installation requested.',
+      });
+      await persistRavenDetail(detail, 'in-progress', null);
+      await refreshWizard().catch(() => {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to install Raven service.';
+      const failureState: RavenLaunchState = {
+        status: 'error',
+        startedAt,
+        completedAt: null,
+        error: message,
+      };
+      setRavenLaunchState(failureState);
+      setRavenError(message);
+      const detail = buildRavenDetail({ launch: failureState, message });
+      await persistRavenDetail(detail, 'error', message);
+      throw error instanceof Error ? error : new Error(message);
+    }
+  }, [
+    overrides,
+    buildRavenDetail,
+    persistRavenDetail,
+    refreshWizard,
+  ]);
 
   const waitForRedisHealth = useCallback(async () => {
     const maxAttempts = 10;
@@ -839,6 +1308,29 @@ export function useSetupSteps(): UseSetupStepsResult {
   }, [portalDetail]);
 
   useEffect(() => {
+    if (!ravenDetail?.overrides) {
+      return;
+    }
+    if (ravenOverridesSeededRef.current) {
+      return;
+    }
+
+    setOverrides((prev) => {
+      const next = cloneOverrides(prev);
+      for (const [serviceName, env] of Object.entries(ravenDetail.overrides ?? {})) {
+        if (!next.has(serviceName)) {
+          next.set(serviceName, { ...env });
+        } else {
+          next.set(serviceName, { ...next.get(serviceName)!, ...env });
+        }
+      }
+      return next;
+    });
+
+    ravenOverridesSeededRef.current = true;
+  }, [ravenDetail]);
+
+  useEffect(() => {
     if (!portalDetail) {
       setDiscordValidatedAt(null);
       setDiscordRoleCreatedAt(null);
@@ -852,6 +1344,100 @@ export function useSetupSteps(): UseSetupStepsResult {
     setDiscordChannelCreatedAt(portalDetail.discord?.channelCreatedAt ?? null);
     setPortalInstallTriggeredAt(portalDetail.installTriggeredAt ?? null);
   }, [portalDetail]);
+
+  useEffect(() => {
+    if (ravenDetection.status === 'detecting') {
+      return;
+    }
+
+    const detail = ravenDetail?.detection;
+    if (!detail) {
+      if (ravenDetection.status !== 'idle' || ravenDetection.message || ravenDetection.mountPath) {
+        setRavenDetection({ status: 'idle', message: null, mountPath: null, updatedAt: null });
+      }
+      return;
+    }
+
+    const normalizedStatus = detail.status && ['idle', 'detecting', 'detected', 'not-found', 'error'].includes(detail.status)
+      ? (detail.status as RavenDetectionStatus)
+      : ravenDetection.status;
+
+    setRavenDetection({
+      status: normalizedStatus,
+      message: detail.message ?? null,
+      mountPath: detail.mountPath ?? null,
+      updatedAt: detail.updatedAt ?? null,
+    });
+  }, [ravenDetail?.detection, ravenDetection.status, ravenDetection.message, ravenDetection.mountPath]);
+
+  useEffect(() => {
+    if (ravenLaunchState.status === 'launching') {
+      return;
+    }
+
+    const detail = ravenDetail?.launch;
+    if (!detail) {
+      if (ravenLaunchState.status !== 'idle') {
+        setRavenLaunchState({ status: 'idle', startedAt: null, completedAt: null, error: null });
+      }
+      return;
+    }
+
+    const normalized = typeof detail.status === 'string' ? detail.status.trim().toLowerCase() : '';
+    let status: RavenLaunchStatus = 'idle';
+    if (normalized === 'launching' || normalized === 'starting') {
+      status = 'launching';
+    } else if (normalized === 'error' || normalized === 'failed') {
+      status = 'error';
+    } else if (['launched', 'complete', 'completed', 'installed', 'running'].includes(normalized)) {
+      status = 'launched';
+    }
+
+    setRavenLaunchState({
+      status,
+      startedAt: detail.startedAt ?? null,
+      completedAt: detail.completedAt ?? null,
+      error: detail.error ?? null,
+    });
+  }, [ravenDetail?.launch, ravenLaunchState.status]);
+
+  useEffect(() => {
+    if (ravenHealth.checking) {
+      return;
+    }
+
+    const detail = ravenDetail?.health;
+    if (!detail) {
+      if (ravenHealth.status || ravenHealth.message) {
+        setRavenHealth({ checking: false, status: null, message: null, updatedAt: null });
+      }
+      return;
+    }
+
+    setRavenHealth({
+      checking: false,
+      status: detail.status ?? null,
+      message: detail.message ?? null,
+      updatedAt: detail.checkedAt ?? null,
+    });
+  }, [ravenDetail?.health, ravenHealth.checking, ravenHealth.status, ravenHealth.message]);
+
+  useEffect(() => {
+    if (ravenLaunchState.status === 'launching') {
+      return;
+    }
+
+    const launchError =
+      typeof ravenDetail?.launch?.error === 'string' && ravenDetail.launch.error.trim()
+        ? ravenDetail.launch.error.trim()
+        : null;
+    const wizardErrorMessage =
+      typeof wizardState?.raven?.error === 'string' && wizardState.raven.error.trim()
+        ? wizardState.raven.error.trim()
+        : null;
+    const message = wizardErrorMessage ?? launchError ?? '';
+    setRavenError(message);
+  }, [ravenDetail?.launch?.error, wizardState?.raven?.error, ravenLaunchState.status]);
 
   useEffect(() => {
     const message =
@@ -902,6 +1488,7 @@ export function useSetupSteps(): UseSetupStepsResult {
     if (!selected.has(RAVEN_SERVICE_NAME)) {
       setEnvironmentError('');
       setPreparingEnvironment(false);
+      setRavenError('');
     }
   }, [selected]);
 
@@ -966,6 +1553,11 @@ export function useSetupSteps(): UseSetupStepsResult {
     [allEnvSections],
   );
 
+  const ravenSections = useMemo(
+    () => allEnvSections.filter((section) => section.service.name === RAVEN_SERVICE_NAME),
+    [allEnvSections],
+  );
+
   const foundationEnvErrors = useMemo(() => {
     const errors = new Map<string, string[]>();
     for (const section of foundationSections) {
@@ -992,6 +1584,19 @@ export function useSetupSteps(): UseSetupStepsResult {
     return errors;
   }, [envSections]);
 
+  const ravenEnvErrors = useMemo(() => {
+    const errors = new Map<string, string[]>();
+    for (const section of ravenSections) {
+      const messages = section.fields
+        .filter((field) => field.error)
+        .map((field) => field.error as string);
+      if (messages.length > 0) {
+        errors.set(section.service.name, messages);
+      }
+    }
+    return errors;
+  }, [ravenSections]);
+
   const portalEnv = useMemo(() => overrides.get(PORTAL_SERVICE_NAME) ?? {}, [overrides]);
 
   useEffect(() => {
@@ -1004,6 +1609,9 @@ export function useSetupSteps(): UseSetupStepsResult {
       setEnvironmentError('');
       if (serviceName === PORTAL_SERVICE_NAME) {
         setPortalError('');
+      }
+      if (serviceName === RAVEN_SERVICE_NAME) {
+        setRavenError('');
       }
       setOverrides((prev) => {
         const next = cloneOverrides(prev);
@@ -1362,36 +1970,54 @@ export function useSetupSteps(): UseSetupStepsResult {
     }
 
     if (currentStepId === 'portal') {
-      if (selected.has(RAVEN_SERVICE_NAME)) {
-        setPreparingEnvironment(true);
-        setEnvironmentError('');
-        setPortalError('');
-        try {
-          const env = getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME);
-          await pullRavenContainer(env);
-          await startRavenContainer(env);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : 'Unable to start Raven service.';
-          setEnvironmentError(message);
-          setPortalError(message);
-          setPreparingEnvironment(false);
-          return;
-        }
-        setPreparingEnvironment(false);
-      }
+      setPreparingEnvironment(false);
+      setEnvironmentError('');
+      setPortalError('');
       advance('raven');
       return;
     }
 
     if (currentStepId === 'raven') {
+      if (
+        ravenLaunchState.status === 'launching' ||
+        ravenDetection.status === 'detecting' ||
+        ravenHealth.checking
+      ) {
+        return;
+      }
+
+      if (ravenEnvErrors.size > 0) {
+        setEnvironmentError('Resolve required environment fields before continuing.');
+        return;
+      }
+
+      setEnvironmentError('');
+      setRavenError('');
+
+      let launchFailed = false;
+
+      if (ravenLaunchState.status !== 'launched') {
+        try {
+          await launchRaven();
+        } catch {
+          launchFailed = true;
+        }
+      }
+
+      if (launchFailed) {
+        return;
+      }
+
+      try {
+        await performRavenHealthCheck();
+      } catch {
+        return;
+      }
+
       if (!install.started) {
         await triggerInstall();
-        return;
       }
-      if (install.installing || !install.completed) {
-        return;
-      }
+
       advance('verification');
       return;
     }
@@ -1409,7 +2035,12 @@ export function useSetupSteps(): UseSetupStepsResult {
     updateWizard,
     refreshWizard,
     waitForRedisHealth,
-    selected,
+    ravenEnvErrors,
+    ravenLaunchState.status,
+    ravenDetection.status,
+    ravenHealth.checking,
+    launchRaven,
+    performRavenHealthCheck,
     install,
     triggerInstall,
   ]);
@@ -1441,13 +2072,12 @@ export function useSetupSteps(): UseSetupStepsResult {
           portalStatus === 'complete'
         );
       case 'raven':
-        if (!install.started) {
-          return true;
-        }
-        if (install.installing) {
-          return false;
-        }
-        return install.completed;
+        return (
+          ravenEnvErrors.size === 0 &&
+          ravenLaunchState.status !== 'launching' &&
+          ravenDetection.status !== 'detecting' &&
+          !ravenHealth.checking
+        );
       case 'verification':
         return true;
       default:
@@ -1458,7 +2088,6 @@ export function useSetupSteps(): UseSetupStepsResult {
     foundationState.running,
     foundationEnvErrors,
     envErrors,
-    preparingEnvironment,
     portalEnv,
     discordValidationError,
     discordValidating,
@@ -1466,13 +2095,25 @@ export function useSetupSteps(): UseSetupStepsResult {
     portalError,
     portalInstalling,
     portalStatus,
-    install,
+    ravenEnvErrors,
+    ravenLaunchState.status,
+    ravenDetection.status,
+    ravenHealth.checking,
   ]);
 
   const selectStep = useCallback(
     (id: SetupStepId) => {
       const index = STEP_DEFINITIONS.findIndex((step) => step.id === id);
       if (index === -1 || id === currentStepId) {
+        return;
+      }
+
+      if (
+        (ravenLaunchState.status === 'launching' ||
+          ravenDetection.status === 'detecting' ||
+          ravenHealth.checking) &&
+        id !== 'raven'
+      ) {
         return;
       }
 
@@ -1506,6 +2147,9 @@ export function useSetupSteps(): UseSetupStepsResult {
       canGoNext,
       install.installing,
       maxVisitedIndex,
+      ravenLaunchState.status,
+      ravenDetection.status,
+      ravenHealth.checking,
     ],
   );
 
@@ -1561,13 +2205,25 @@ export function useSetupSteps(): UseSetupStepsResult {
           error = discordValidationError;
         }
       }
-      if (definition.id === 'raven' && install.error) {
-        status = 'error';
-        error = install.error;
-      }
-      if (definition.id === 'raven' && install.progressError) {
-        status = 'error';
-        error = install.progressError;
+      if (definition.id === 'raven') {
+        if (ravenEnvErrors.size > 0) {
+          if (status === 'current') {
+            error = 'Resolve required environment fields.';
+          } else {
+            status = 'error';
+            error = 'Missing environment values.';
+          }
+        } else if (ravenError) {
+          status = 'error';
+          error = ravenError;
+        } else if (ravenStatus === 'error') {
+          status = 'error';
+          error = wizardState?.raven?.error ?? 'Raven setup reported an error.';
+        } else if (ravenStatus === 'complete') {
+          status = 'complete';
+        } else if (ravenStatus === 'in-progress' && status !== 'complete') {
+          status = 'current';
+        }
       }
       if (definition.id === 'verification' && installationLogs.error) {
         status = 'error';
@@ -1584,13 +2240,60 @@ export function useSetupSteps(): UseSetupStepsResult {
     foundationState.error,
     foundationEnvErrors,
     envErrors,
-    install,
+    ravenEnvErrors,
+    ravenError,
+    ravenStatus,
+    wizardState?.raven?.error,
     installationLogs.error,
     discordValidationError,
     portalError,
   ]);
 
   const currentStep = steps[currentIndex] ?? steps[0];
+
+  const ravenWizardDetailMessage = useMemo(() => {
+    if (ravenDetail?.message && ravenDetail.message.trim()) {
+      return ravenDetail.message.trim();
+    }
+
+    const rawDetail = wizardState?.raven?.detail;
+    if (typeof rawDetail === 'string' && rawDetail.trim()) {
+      try {
+        const parsed = JSON.parse(rawDetail);
+        if (parsed && typeof parsed === 'object') {
+          const candidate = (parsed as Record<string, unknown>).message;
+          if (typeof candidate === 'string' && candidate.trim()) {
+            return candidate.trim();
+          }
+        }
+      } catch {
+        return rawDetail.trim();
+      }
+    }
+
+    return null;
+  }, [ravenDetail?.message, wizardState?.raven?.detail]);
+
+  const raven = useMemo<RavenStepState>(
+    () => ({
+      detection: ravenDetection,
+      health: ravenHealth,
+      launch: ravenLaunchState,
+      error: ravenError,
+      wizardStatus: ravenStatus,
+      wizardDetail: ravenWizardDetailMessage,
+      wizardError: wizardState?.raven?.error ?? null,
+    }),
+    [
+      ravenDetection,
+      ravenHealth,
+      ravenLaunchState,
+      ravenError,
+      ravenStatus,
+      ravenWizardDetailMessage,
+      wizardState?.raven?.error,
+    ],
+  );
 
   const nextLabel = useMemo(() => {
     switch (currentStepId) {
@@ -1606,19 +2309,22 @@ export function useSetupSteps(): UseSetupStepsResult {
         if (portalInstalling || portalStatus === 'in-progress') {
           return 'Waiting for Portal…';
         }
-        if (preparingEnvironment) {
-          return 'Preparing Raven…';
-        }
         if (!discordValidatedAt) {
           return 'Validate Portal';
         }
-        return 'Launch Raven install';
+        return 'Configure Raven';
       case 'raven':
-        if (!install.started) {
-          return 'Start installation';
+        if (ravenLaunchState.status === 'launching') {
+          return 'Launching Raven…';
         }
-        if (install.installing || !install.completed) {
-          return 'Installing…';
+        if (ravenDetection.status === 'detecting') {
+          return 'Detecting…';
+        }
+        if (ravenHealth.checking) {
+          return 'Checking health…';
+        }
+        if (!install.started) {
+          return 'Launch Raven';
         }
         return 'View logs';
       case 'verification':
@@ -1630,11 +2336,13 @@ export function useSetupSteps(): UseSetupStepsResult {
     currentStepId,
     foundationState.running,
     foundationState.completed,
-    install,
-    preparingEnvironment,
     portalInstalling,
     portalStatus,
     discordValidatedAt,
+    install.started,
+    ravenLaunchState.status,
+    ravenDetection.status,
+    ravenHealth.checking,
   ]);
 
   const onValidateDiscord = useCallback(async () => {
@@ -1857,10 +2565,14 @@ export function useSetupSteps(): UseSetupStepsResult {
     foundationSections,
     foundationState,
     envSections,
+    ravenSections,
     updateEnvValue,
     environmentError,
     portalError,
     envErrors,
+    raven,
+    detectRaven,
+    checkRavenHealth,
     discord,
     install,
     loadInstallationLogs,

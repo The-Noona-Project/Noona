@@ -262,6 +262,26 @@ const createSetupClient = ({
             const payload = await response.json().catch(() => ({}))
             return { status: response.status ?? 200, detection: payload?.detection ?? null, error: payload?.error }
         },
+        async getServiceHealth(name) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            if (!trimmed) {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/health`)
+            const payload = await response.json().catch(() => ({}))
+
+            if (!response.ok) {
+                const message = payload?.error || `Unable to retrieve health for ${trimmed}.`
+                throw new Error(message)
+            }
+
+            return payload
+        },
     }
 }
 
@@ -405,6 +425,20 @@ export const createSageApp = ({
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load installation logs: ${error.message}`)
             res.status(502).json({ error: 'Unable to retrieve installation logs.' })
+        }
+    })
+
+    app.get('/api/setup/services/:name/health', async (req, res) => {
+        const name = req.params?.name
+
+        try {
+            const payload = await setupClient.getServiceHealth(name)
+            res.json(payload)
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to retrieve service health.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to load health for ${name}: ${error.message}`)
+            res.status(status).json({ error: message })
         }
     })
 

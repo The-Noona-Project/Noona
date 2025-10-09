@@ -24,6 +24,7 @@ import EnvironmentEditor from '../setup/components/EnvironmentEditor.tsx';
 import DiscordSetupForm from '../setup/components/DiscordSetupForm.tsx';
 import InstallerLogPanel from '../setup/components/InstallerLogPanel.tsx';
 import FoundationPanel from '../setup/components/FoundationPanel.tsx';
+import RavenConfigurationPanel from '../setup/components/RavenConfigurationPanel.tsx';
 import { useSetupSteps } from '../setup/useSetupSteps.ts';
 import type { WizardStepStatus } from '../setup/api.ts';
 
@@ -49,9 +50,13 @@ export default function SetupPage(): JSX.Element {
     foundationSections,
     foundationState,
     envSections,
+    ravenSections,
     updateEnvValue,
     environmentError,
     portalError,
+    raven,
+    detectRaven,
+    checkRavenHealth,
     discord,
     install,
     loadInstallationLogs,
@@ -123,24 +128,14 @@ export default function SetupPage(): JSX.Element {
         );
       case 'raven':
         return (
-          <Stack spacing={4} data-testid="install-step">
-            {!install.started && (
-              <Alert status="info" borderRadius="md" data-testid="installer-instructions">
-                <AlertIcon />
-                Click “{nextLabel}” to begin installing the remaining services.
-              </Alert>
-            )}
-            <InstallerLogPanel
-              install={install}
-              installationLogs={installationLogs}
-              onLoadInstallation={loadInstallationLogs}
-              selectedService={selectedLogService}
-              onSelectService={setSelectedLogService}
-              serviceLogs={serviceLogs}
-              onLoadServiceLogs={loadServiceLogs}
-              services={logServices}
-            />
-          </Stack>
+          <RavenConfigurationPanel
+            sections={ravenSections}
+            onChange={updateEnvValue}
+            environmentError={environmentError}
+            raven={raven}
+            onDetect={detectRaven}
+            onCheckHealth={checkRavenHealth}
+          />
         );
       case 'verification':
         return (
