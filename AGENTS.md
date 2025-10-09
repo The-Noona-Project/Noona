@@ -14,6 +14,20 @@
 3. Within each directory, prefer `ls` for listing, and `rg <pattern>` for searching specific symbols or text.
 4. Always look for nested `AGENTS.md` files when entering a subdirectory; they may contain additional, more specific conventions.
 
+## Service-Specific Guides
+Detailed workflow, testing, and style expectations for each service live (or will soon live) alongside the code for that service. Whenever you begin work in one of the following areas, open the corresponding guide located at `services/<service>/AGENTS.md` for authoritative instructions.
+
+| Service | Scope & Responsibilities | Guide Location (when available) |
+| --- | --- | --- |
+| Warden | Request authentication, access control, and session management. | `services/warden/AGENTS.md` |
+| Vault | Secrets storage, encryption flows, and credential lifecycle tooling. | `services/vault/AGENTS.md` |
+| Portal | Public-facing APIs, routing, and request/response orchestration. | `services/portal/AGENTS.md` |
+| Sage | Business rules, analytics pipelines, and decisioning logic. | `services/sage/AGENTS.md` |
+| Moon | Front-end client, UI composition, and user interaction flows. | `services/moon/AGENTS.md` |
+| Raven | Notifications, messaging adapters, and asynchronous job handling. | `services/raven/AGENTS.md` |
+
+Consult these service guides **before** modifying code inside their directories so you follow the correct patterns, tests, and deployment expectations. If a service-specific guide has not been authored yet, coordinate with maintainers to confirm interim conventions.
+
 ## Development Flow
 1. Identify scope and read any relevant documentation in `docs/`.
 2. Locate the target module inside `services/` or `utilities/`.
