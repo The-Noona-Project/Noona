@@ -753,38 +753,6 @@ export function useSetupSteps(): UseSetupStepsResult {
     setCurrentStepId(previous.id);
   }, [currentStepId]);
 
-  const selectStep = useCallback(
-    (id: SetupStepId) => {
-      const index = STEP_DEFINITIONS.findIndex((step) => step.id === id);
-      if (index === -1) {
-        return;
-      }
-
-      const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
-      if (index > maxVisitedIndex || index > currentIndex + 1) {
-        return;
-      }
-
-      if (install.installing && (id === 'select' || id === 'configure' || id === 'discord')) {
-        return;
-      }
-
-      setCurrentStepId(id);
-    },
-    [currentStepId, maxVisitedIndex, install.installing],
-  );
-
-  const canGoPrevious = useMemo(() => {
-    const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
-    if (currentIndex <= 0) {
-      return false;
-    }
-    if (install.installing) {
-      return false;
-    }
-    return true;
-  }, [currentStepId, install.installing]);
-
   const canGoNext = useMemo(() => {
     switch (currentStepId) {
       case 'select':
@@ -827,6 +795,57 @@ export function useSetupSteps(): UseSetupStepsResult {
     install,
     preparingEnvironment,
   ]);
+
+  const selectStep = useCallback(
+    (id: SetupStepId) => {
+      const index = STEP_DEFINITIONS.findIndex((step) => step.id === id);
+      if (index === -1 || id === currentStepId) {
+        return;
+      }
+
+      if (install.installing && (id === 'select' || id === 'configure' || id === 'discord')) {
+        return;
+      }
+
+      const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+      const isNextStep = index === currentIndex + 1;
+      const hasVisited = index <= maxVisitedIndex;
+
+      if (isNextStep) {
+        if (!canGoNext) {
+          return;
+        }
+
+        void goNext();
+        return;
+      }
+
+      if (!hasVisited) {
+        return;
+      }
+
+      setCurrentStepId(id);
+      setMaxVisitedIndex((prev) => Math.max(prev, index));
+    },
+    [
+      currentStepId,
+      goNext,
+      canGoNext,
+      install.installing,
+      maxVisitedIndex,
+    ],
+  );
+
+  const canGoPrevious = useMemo(() => {
+    const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+    if (currentIndex <= 0) {
+      return false;
+    }
+    if (install.installing) {
+      return false;
+    }
+    return true;
+  }, [currentStepId, install.installing]);
 
   const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
 
