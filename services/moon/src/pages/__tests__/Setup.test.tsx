@@ -23,7 +23,8 @@ vi.mock('../../setup/api.ts', () => {
     validatePortalDiscordConfig: vi.fn(async () => ({ guild: { name: 'Test Guild' }, roles: [], channels: [] })),
     createPortalDiscordRole: vi.fn(async () => ({ role: { id: 'role-123' } })),
     createPortalDiscordChannel: vi.fn(async () => ({ channel: { id: 'chan-456' } })),
-    detectRavenMount: vi.fn(async () => ({ detection: {} })),
+    pullRavenContainer: vi.fn(async () => ({})),
+    startRavenContainer: vi.fn(async () => ({})),
   } satisfies Partial<typeof import('../../setup/api.ts')>;
 });
 
@@ -258,5 +259,84 @@ describe('SetupPage', () => {
 
     const errorAlert = await findByTestId('installer-error');
     expect(errorAlert).toHaveTextContent('Failed to install services.');
+  });
+
+  it('pulls and starts Raven when environment is confirmed', async () => {
+    const user = userEvent.setup();
+    const services = [
+      {
+        name: 'noona-sage',
+        displayName: 'Sage',
+        description: 'Monitoring and logging backbone.',
+        installed: false,
+        recommended: true,
+        dependencies: [],
+        envConfig: [
+          {
+            key: 'DEBUG',
+            label: 'Debug',
+            defaultValue: 'false',
+            required: false,
+            readOnly: false,
+          },
+        ],
+        metadata: {},
+      },
+      {
+        name: 'noona-raven',
+        displayName: 'Raven',
+        description: 'Downloader.',
+        installed: false,
+        recommended: true,
+        dependencies: [],
+        envConfig: [
+          {
+            key: 'APPDATA',
+            label: 'Raven Downloads Root',
+            defaultValue: '',
+            required: false,
+            readOnly: false,
+          },
+          {
+            key: 'KAVITA_DATA_MOUNT',
+            label: 'Kavita Data Mount',
+            defaultValue: '',
+            required: false,
+            readOnly: false,
+          },
+        ],
+        metadata: {},
+      },
+    ];
+
+    const pullMock = vi.mocked(api.pullRavenContainer);
+    const startMock = vi.mocked(api.startRavenContainer);
+
+    const { getByTestId, getByLabelText } = renderWithProviders(<SetupPage />, {
+      services,
+    });
+
+    await user.click(getByTestId('setup-next'));
+
+    const appDataField = getByLabelText(/Raven Downloads Root/i);
+    const mountField = getByLabelText(/Kavita Data Mount/i);
+
+    fireEvent.change(appDataField, { target: { value: '/downloads' } });
+    fireEvent.change(mountField, { target: { value: '/srv/kavita' } });
+
+    await user.click(getByTestId('setup-next'));
+
+    await waitFor(() => {
+      expect(pullMock).toHaveBeenCalledWith({
+        APPDATA: '/downloads',
+        KAVITA_DATA_MOUNT: '/srv/kavita',
+      });
+      expect(startMock).toHaveBeenCalledWith({
+        APPDATA: '/downloads',
+        KAVITA_DATA_MOUNT: '/srv/kavita',
+      });
+    });
+
+    expect(getByTestId('install-step')).toBeInTheDocument();
   });
 });

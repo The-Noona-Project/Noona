@@ -42,9 +42,7 @@ export default function SetupPage(): JSX.Element {
     toggleService,
     envSections,
     updateEnvValue,
-    detectRaven,
-    detectingRaven,
-    ravenDetectionError,
+    environmentError,
     discord,
     install,
     loadInstallationLogs,
@@ -82,9 +80,7 @@ export default function SetupPage(): JSX.Element {
           <EnvironmentEditor
             sections={envSections}
             onChange={updateEnvValue}
-            onDetectRaven={detectRaven}
-            detectingRaven={detectingRaven}
-            ravenDetectionError={ravenDetectionError}
+            error={environmentError}
           />
         );
       case 'discord':
