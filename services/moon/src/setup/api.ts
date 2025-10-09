@@ -270,3 +270,17 @@ export async function startRavenContainer(
     'Unable to start Raven container.',
   );
 }
+
+export async function fetchServiceHealth(
+  name: string,
+  options?: FetchJsonOptions,
+): Promise<Record<string, unknown>> {
+  const response = await fetchWithTimeout(
+    `/api/setup/services/${encodeURIComponent(name)}/health`,
+    options,
+  );
+  return await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to retrieve service health.',
+  );
+}
