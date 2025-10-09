@@ -236,6 +236,8 @@ function applyEnvOverrides(descriptor, overrides) {
     };
 }
 
+const timestamp = () => new Date().toISOString();
+
 export function createWarden(options = {}) {
     const {
         dockerInstance = new Docker(),
@@ -528,7 +530,18 @@ export function createWarden(options = {}) {
 
         const normalized = status.trim().toLowerCase();
 
-        if (['installed', 'ready', 'healthy', 'running', 'complete', 'completed'].includes(normalized)) {
+        if (
+            [
+                'installed',
+                'ready',
+                'healthy',
+                'running',
+                'complete',
+                'completed',
+                'detected',
+                'configured',
+            ].includes(normalized)
+        ) {
             return 'installed';
         }
 
@@ -536,7 +549,19 @@ export function createWarden(options = {}) {
             return 'error';
         }
 
-        if (['pending', 'installing', 'pulling', 'starting', 'exists', 'health-check', 'waiting'].includes(normalized)) {
+        if (
+            [
+                'pending',
+                'installing',
+                'pulling',
+                'starting',
+                'exists',
+                'health-check',
+                'waiting',
+                'detecting',
+                'not-found',
+            ].includes(normalized)
+        ) {
             return 'installing';
         }
 
@@ -1161,6 +1186,7 @@ export function createWarden(options = {}) {
             volumes: Array.isArray(descriptor.volumes) ? [...descriptor.volumes] : descriptor.volumes,
         };
         let normalizedOverrides = envOverrides ? { ...envOverrides } : null;
+        let launchStartedAt = null;
         const upsertEnvValue = (entries, key, value) => {
             const list = Array.isArray(entries) ? [...entries] : [];
             const prefix = `${key}=`;
@@ -1177,14 +1203,51 @@ export function createWarden(options = {}) {
         };
 
         if (descriptor.name === 'noona-raven') {
+            const detectionStartedAt = timestamp();
+            const detectionMessage = 'Detecting Kavita data mount…';
             appendHistoryEntry(descriptor.name, {
                 type: 'status',
                 status: 'detecting',
-                message: 'Detecting Kavita data mount',
+                message: detectionMessage,
                 detail: null,
             });
+            invokeWizard(
+                'recordRavenDetail',
+                {
+                    detection: {
+                        status: 'detecting',
+                        message: detectionMessage,
+                        mountPath: null,
+                        updatedAt: detectionStartedAt,
+                    },
+                    message: detectionMessage,
+                },
+                { status: 'in-progress', error: null },
+            );
 
-            kavitaDetection = await detectKavitaDataMount();
+            try {
+                kavitaDetection = await detectKavitaDataMount();
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                appendHistoryEntry(descriptor.name, {
+                    type: 'status',
+                    status: 'error',
+                    message: 'Failed to detect Kavita data mount',
+                    detail: message,
+                    error: message,
+                });
+                invokeWizard('recordRavenDetail', {
+                    detection: {
+                        status: 'error',
+                        message,
+                        mountPath: null,
+                        updatedAt: timestamp(),
+                    },
+                    message,
+                }, { status: 'error', error: message });
+                throw error;
+            }
+
             kavitaDataMount = kavitaDetection?.mountPath ?? null;
 
             if (kavitaDataMount) {
@@ -1198,12 +1261,26 @@ export function createWarden(options = {}) {
                     volumes,
                 };
 
+                const detectedMessage = `Kavita data mount detected at ${kavitaDataMount}`;
                 appendHistoryEntry(descriptor.name, {
                     type: 'status',
                     status: 'installed',
-                    message: `Using detected Kavita mount at ${kavitaDataMount}`,
+                    message: detectedMessage,
                     detail: kavitaDataMount,
                 });
+                invokeWizard(
+                    'recordRavenDetail',
+                    {
+                        detection: {
+                            status: 'detected',
+                            message: detectedMessage,
+                            mountPath: kavitaDataMount,
+                            updatedAt: timestamp(),
+                        },
+                        message: detectedMessage,
+                    },
+                    { status: 'in-progress', error: null },
+                );
             } else {
                 const trimValue = (value) => (typeof value === 'string' ? value.trim() : '');
                 const manualAppData = trimValue(normalizedOverrides?.APPDATA);
@@ -1228,18 +1305,49 @@ export function createWarden(options = {}) {
                     kavitaDataMount = hostPath;
                 }
 
+                const manualMessage = kavitaDataMount
+                    ? `Configured Kavita mount from overrides at ${kavitaDataMount}`
+                    : 'Kavita data mount not detected automatically';
                 appendHistoryEntry(descriptor.name, {
                     type: 'status',
                     status: kavitaDataMount ? 'configured' : 'installing',
-                    message: kavitaDataMount
-                        ? `Configured Kavita mount from overrides at ${kavitaDataMount}`
-                        : 'No automatic Kavita mount detected',
+                    message: manualMessage,
                     detail: kavitaDataMount ?? null,
                 });
+                invokeWizard(
+                    'recordRavenDetail',
+                    {
+                        detection: {
+                            status: kavitaDataMount ? 'detected' : 'not-found',
+                            message: manualMessage,
+                            mountPath: kavitaDataMount ?? null,
+                            updatedAt: timestamp(),
+                        },
+                        message: manualMessage,
+                    },
+                    { status: 'in-progress', error: null },
+                );
             }
         }
 
         serviceDescriptor = applyEnvOverrides(serviceDescriptor, normalizedOverrides);
+
+        if (descriptor.name === 'noona-raven') {
+            launchStartedAt = timestamp();
+            invokeWizard(
+                'recordRavenDetail',
+                {
+                    launch: {
+                        status: 'launching',
+                        startedAt: launchStartedAt,
+                        completedAt: null,
+                        error: null,
+                    },
+                    message: 'Requesting Raven installation…',
+                },
+                { status: 'in-progress', error: null },
+            );
+        }
 
         appendHistoryEntry(descriptor.name, {
             type: 'status',
@@ -1259,6 +1367,22 @@ export function createWarden(options = {}) {
                 detail: message,
                 error: message,
             });
+            if (descriptor.name === 'noona-raven') {
+                const failureMessage = message;
+                invokeWizard(
+                    'recordRavenDetail',
+                    {
+                        launch: {
+                            status: 'error',
+                            startedAt: launchStartedAt ?? timestamp(),
+                            completedAt: null,
+                            error: failureMessage,
+                        },
+                        message: failureMessage,
+                    },
+                    { status: 'error', error: failureMessage },
+                );
+            }
             throw error;
         }
 
@@ -1275,6 +1399,7 @@ export function createWarden(options = {}) {
         if (descriptor.name === 'noona-raven') {
             result.kavitaDataMount = kavitaDataMount;
             result.kavitaDetection = kavitaDetection;
+            const completedAt = timestamp();
             appendHistoryEntry(descriptor.name, {
                 type: 'status',
                 status: 'installed',
@@ -1283,6 +1408,19 @@ export function createWarden(options = {}) {
                     : 'Kavita data mount not detected automatically',
                 detail: kavitaDetection?.mountPath ?? null,
             });
+            invokeWizard(
+                'recordRavenDetail',
+                {
+                    launch: {
+                        status: 'launched',
+                        startedAt: launchStartedAt ?? completedAt,
+                        completedAt,
+                        error: null,
+                    },
+                    message: 'Raven installation requested.',
+                },
+                { status: 'in-progress', error: null },
+            );
         }
 
         return result;
@@ -1487,32 +1625,255 @@ export function createWarden(options = {}) {
     };
 
     api.detectKavitaMount = async function detectKavitaMount() {
+        const detectionStartedAt = timestamp();
         appendHistoryEntry('noona-raven', {
             type: 'status',
             status: 'detecting',
             message: 'Detecting Kavita data mount',
             detail: null,
         });
+        invokeWizard(
+            'recordRavenDetail',
+            {
+                detection: {
+                    status: 'detecting',
+                    message: 'Detecting Kavita data mount…',
+                    mountPath: null,
+                    updatedAt: detectionStartedAt,
+                },
+                message: 'Detecting Kavita data mount…',
+            },
+            { status: 'in-progress', error: null },
+        );
 
-        const detection = await detectKavitaDataMount();
+        try {
+            const detection = await detectKavitaDataMount();
 
-        if (detection?.mountPath) {
+            if (detection?.mountPath) {
+                appendHistoryEntry('noona-raven', {
+                    type: 'status',
+                    status: 'detected',
+                    message: `Kavita data mount detected at ${detection.mountPath}`,
+                    detail: detection.mountPath,
+                });
+                invokeWizard(
+                    'recordRavenDetail',
+                    {
+                        detection: {
+                            status: 'detected',
+                            message: `Kavita data mount detected at ${detection.mountPath}`,
+                            mountPath: detection.mountPath,
+                            updatedAt: timestamp(),
+                        },
+                        message: `Kavita data mount detected at ${detection.mountPath}`,
+                    },
+                    { status: 'in-progress', error: null },
+                );
+            } else {
+                appendHistoryEntry('noona-raven', {
+                    type: 'status',
+                    status: 'not-found',
+                    message: 'Kavita data mount not detected automatically',
+                    detail: null,
+                });
+                invokeWizard(
+                    'recordRavenDetail',
+                    {
+                        detection: {
+                            status: 'not-found',
+                            message: 'Kavita data mount not detected automatically',
+                            mountPath: null,
+                            updatedAt: timestamp(),
+                        },
+                        message: 'Kavita data mount not detected automatically',
+                    },
+                    { status: 'in-progress', error: null },
+                );
+            }
+
+            return detection;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
             appendHistoryEntry('noona-raven', {
                 type: 'status',
-                status: 'detected',
-                message: `Kavita data mount detected at ${detection.mountPath}`,
-                detail: detection.mountPath,
+                status: 'error',
+                message: 'Failed to detect Kavita data mount',
+                detail: message,
+                error: message,
             });
-        } else {
-            appendHistoryEntry('noona-raven', {
-                type: 'status',
-                status: 'not-found',
-                message: 'Kavita data mount not detected automatically',
-                detail: null,
-            });
+            invokeWizard(
+                'recordRavenDetail',
+                {
+                    detection: {
+                        status: 'error',
+                        message,
+                        mountPath: null,
+                        updatedAt: timestamp(),
+                    },
+                    message,
+                },
+                { status: 'error', error: message },
+            );
+            throw error;
+        }
+    };
+
+    api.getServiceHealth = async function getServiceHealth(name) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
         }
 
-        return detection;
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const entry = serviceCatalog.get(trimmedName);
+        if (!entry) {
+            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+        }
+
+        const descriptor = entry.descriptor;
+        const candidateUrls = [];
+        const seen = new Set();
+        const addCandidate = (candidate) => {
+            if (typeof candidate !== 'string') {
+                return;
+            }
+
+            const trimmed = candidate.trim();
+            if (!trimmed || seen.has(trimmed)) {
+                return;
+            }
+
+            seen.add(trimmed);
+            candidateUrls.push(trimmed);
+        };
+
+        const resolveHealthFromHostBase = (baseUrl) => {
+            if (typeof baseUrl !== 'string') {
+                return null;
+            }
+
+            const trimmed = baseUrl.trim();
+            if (!trimmed) {
+                return null;
+            }
+
+            if (/\/health\/?$/i.test(trimmed)) {
+                return trimmed;
+            }
+
+            try {
+                const parsed = new URL(trimmed);
+                const pathName = parsed.pathname ?? '';
+                if (!pathName || pathName === '/' || pathName === '//') {
+                    parsed.pathname = '/health';
+                } else {
+                    parsed.pathname = `${pathName.replace(/\/$/, '')}/health`;
+                }
+                return parsed.toString();
+            } catch {
+                return `${trimmed.replace(/\/$/, '')}/health`;
+            }
+        };
+
+        const hostBase = api.resolveHostServiceUrl(descriptor);
+        const hostHealth = resolveHealthFromHostBase(hostBase);
+        if (hostHealth) {
+            addCandidate(hostHealth);
+        }
+
+        if (typeof descriptor.health === 'string' && descriptor.health.trim()) {
+            addCandidate(descriptor.health.trim());
+        }
+
+        if (candidateUrls.length === 0) {
+            throw new Error(`Health endpoint is not defined for ${trimmedName}.`);
+        }
+
+        const attemptErrors = [];
+
+        for (const url of candidateUrls) {
+            try {
+                const response = await fetchImpl(url, { method: 'GET' });
+                const rawBody = await response.text();
+                let detailMessage = rawBody ? rawBody.trim() : '';
+                let normalizedStatus = response.ok ? 'healthy' : 'error';
+
+                if (detailMessage) {
+                    try {
+                        const parsed = JSON.parse(detailMessage);
+                        if (parsed && typeof parsed === 'object') {
+                            const record = parsed;
+                            if (typeof record.status === 'string' && record.status.trim()) {
+                                normalizedStatus = record.status.trim().toLowerCase();
+                            }
+                            if (typeof record.message === 'string' && record.message.trim()) {
+                                detailMessage = record.message.trim();
+                            } else if (typeof record.detail === 'string' && record.detail.trim()) {
+                                detailMessage = record.detail.trim();
+                            }
+                        }
+                    } catch {
+                        // keep raw body as detail
+                    }
+                }
+
+                if (!detailMessage) {
+                    detailMessage = response.ok
+                        ? 'Health check succeeded.'
+                        : `Health check failed with status ${response.status}`;
+                }
+
+                if (!response.ok) {
+                    throw new Error(detailMessage);
+                }
+
+                if (trimmedName === 'noona-raven') {
+                    invokeWizard(
+                        'recordRavenDetail',
+                        {
+                            health: {
+                                status: normalizedStatus,
+                                message: detailMessage,
+                                updatedAt: timestamp(),
+                            },
+                            message: detailMessage,
+                        },
+                        { status: 'in-progress', error: null },
+                    );
+                }
+
+                return { status: normalizedStatus, detail: detailMessage, url };
+            } catch (error) {
+                attemptErrors.push({ url, error });
+            }
+        }
+
+        const errorMessage = attemptErrors
+            .map((entry) => {
+                const reason = entry.error instanceof Error ? entry.error.message : String(entry.error);
+                return `${entry.url}: ${reason}`;
+            })
+            .join(' | ') || 'Unable to verify service health.';
+
+        if (trimmedName === 'noona-raven') {
+            invokeWizard(
+                'recordRavenDetail',
+                {
+                    health: {
+                        status: 'error',
+                        message: errorMessage,
+                        updatedAt: timestamp(),
+                    },
+                    message: errorMessage,
+                },
+                { status: 'error', error: errorMessage },
+            );
+        }
+
+        throw new Error(errorMessage);
     };
 
     api.testService = async function testService(name, options = {}) {

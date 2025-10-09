@@ -210,6 +210,10 @@ export interface PortalDiscordCredentials {
   guildId: string;
 }
 
+export interface RavenDetectionResponse {
+  detection: { mountPath?: string | null } | null;
+}
+
 export async function validatePortalDiscordConfig(
   credentials: PortalDiscordCredentials,
   options?: FetchJsonOptions,
@@ -305,6 +309,23 @@ export async function startRavenContainer(
   return await parseJson<Record<string, unknown>>(
     response,
     'Unable to start Raven container.',
+  );
+}
+
+export async function detectRavenMount(
+  options?: FetchJsonOptions,
+): Promise<RavenDetectionResponse> {
+  const response = await fetchWithTimeout('/api/setup/services/noona-raven/detect', {
+    ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+  return await parseJson<RavenDetectionResponse>(
+    response,
+    'Unable to detect Kavita data mount.',
   );
 }
 

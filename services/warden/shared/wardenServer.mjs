@@ -186,6 +186,30 @@ export const startWardenServer = ({
             return;
         }
 
+        if (
+            req.method === 'GET' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'health'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            try {
+                const result = await warden.getServiceHealth?.(serviceName);
+                if (!result) {
+                    sendJson(res, 404, { error: `Health check not supported for ${serviceName}.` });
+                    return;
+                }
+
+                sendJson(res, 200, result);
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to check health for ${serviceName}: ${error.message}`);
+                const message = error instanceof Error ? error.message : 'Unable to retrieve service health.';
+                sendJson(res, 500, { error: message });
+            }
+            return;
+        }
+
         if (req.method === 'GET' && url.pathname === '/api/services') {
             try {
                 const includeParam = url.searchParams.get('includeInstalled');

@@ -266,6 +266,153 @@ const mapInstallationStatusToWizard = (status) => {
     }
 }
 
+const normalizeStringValue = (candidate) => {
+    if (typeof candidate !== 'string') {
+        return null
+    }
+
+    const trimmed = candidate.trim()
+    return trimmed ? trimmed : null
+}
+
+const createDefaultRavenDetail = () => ({
+    overrides: {},
+    detection: null,
+    launch: null,
+    health: null,
+    message: null,
+})
+
+const parseRavenDetailFromState = (detail) => {
+    if (!detail || typeof detail !== 'string') {
+        return createDefaultRavenDetail()
+    }
+
+    try {
+        const parsed = JSON.parse(detail)
+        if (!parsed || typeof parsed !== 'object') {
+            return createDefaultRavenDetail()
+        }
+
+        const overrides =
+            parsed.overrides && typeof parsed.overrides === 'object'
+                ? parsed.overrides
+                : {}
+
+        const detectionSource = parsed.detection && typeof parsed.detection === 'object' ? parsed.detection : null
+        const detection = detectionSource
+            ? {
+                  status: normalizeStringValue(detectionSource.status),
+                  message: normalizeStringValue(detectionSource.message),
+                  mountPath: normalizeStringValue(detectionSource.mountPath),
+                  updatedAt: normalizeStringValue(detectionSource.updatedAt),
+              }
+            : null
+
+        const launchSource = parsed.launch && typeof parsed.launch === 'object' ? parsed.launch : null
+        const launch = launchSource
+            ? {
+                  status: normalizeStringValue(launchSource.status),
+                  startedAt: normalizeStringValue(launchSource.startedAt),
+                  completedAt: normalizeStringValue(launchSource.completedAt),
+                  error: normalizeStringValue(launchSource.error),
+              }
+            : null
+
+        const healthSource = parsed.health && typeof parsed.health === 'object' ? parsed.health : null
+        const health = healthSource
+            ? {
+                  status: normalizeStringValue(healthSource.status),
+                  message: normalizeStringValue(healthSource.message),
+                  checkedAt: normalizeStringValue(healthSource.checkedAt),
+              }
+            : null
+
+        return {
+            overrides,
+            detection,
+            launch,
+            health,
+            message: normalizeStringValue(parsed.message),
+        }
+    } catch {
+        return createDefaultRavenDetail()
+    }
+}
+
+const sanitizeRavenDetection = (value) => {
+    if (!value || typeof value !== 'object') {
+        return null
+    }
+
+    const record = value
+    return {
+        status: normalizeStringValue(record.status) || 'idle',
+        message: normalizeStringValue(record.message),
+        mountPath: normalizeStringValue(record.mountPath),
+        updatedAt: normalizeStringValue(record.updatedAt) || new Date().toISOString(),
+    }
+}
+
+const sanitizeRavenLaunch = (value) => {
+    if (!value || typeof value !== 'object') {
+        return null
+    }
+
+    const record = value
+    return {
+        status: normalizeStringValue(record.status) || 'idle',
+        startedAt: normalizeStringValue(record.startedAt) || new Date().toISOString(),
+        completedAt: normalizeStringValue(record.completedAt),
+        error: normalizeStringValue(record.error),
+    }
+}
+
+const sanitizeRavenHealth = (value) => {
+    if (!value || typeof value !== 'object') {
+        return null
+    }
+
+    const record = value
+    return {
+        status: normalizeStringValue(record.status),
+        message: normalizeStringValue(record.message),
+        checkedAt: normalizeStringValue(record.checkedAt) || new Date().toISOString(),
+    }
+}
+
+const mergeRavenDetail = (current = createDefaultRavenDetail(), patch = {}) => {
+    const next = {
+        overrides: { ...(current.overrides || {}) },
+        detection: current.detection ? { ...current.detection } : null,
+        launch: current.launch ? { ...current.launch } : null,
+        health: current.health ? { ...current.health } : null,
+        message: current.message ?? null,
+    }
+
+    if (patch && typeof patch.overrides === 'object') {
+        next.overrides = { ...next.overrides, ...patch.overrides }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'detection')) {
+        next.detection = sanitizeRavenDetection(patch.detection)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'launch')) {
+        next.launch = sanitizeRavenLaunch(patch.launch)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'health')) {
+        next.health = sanitizeRavenHealth(patch.health)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'message')) {
+        next.message = normalizeStringValue(patch.message)
+    }
+
+    return next
+}
+
 export const createWizardStatePublisher = ({
     client,
     logger = {},
@@ -308,6 +455,7 @@ export const createWizardStatePublisher = ({
     const stepStatuses = new Map()
     const stepDetails = new Map()
     const stepErrors = new Map()
+    let cachedRavenDetail = null
 
     const computeActiveSteps = () => {
         const steps = []
@@ -336,6 +484,7 @@ export const createWizardStatePublisher = ({
         const state = createDefaultWizardState()
         const now = state.updatedAt ?? new Date().toISOString()
         activeSteps = computeActiveSteps()
+        cachedRavenDetail = null
 
         for (const step of WIZARD_STEP_KEYS) {
             const stepState = state[step]
@@ -485,6 +634,66 @@ export const createWizardStatePublisher = ({
         return result.state
     }
 
+    const ensureRavenDetail = async () => {
+        if (cachedRavenDetail) {
+            return cachedRavenDetail
+        }
+
+        try {
+            const state = await client.loadState({ fallbackToDefault: true })
+            cachedRavenDetail = parseRavenDetailFromState(state?.raven?.detail ?? null)
+        } catch {
+            cachedRavenDetail = createDefaultRavenDetail()
+        }
+
+        return cachedRavenDetail
+    }
+
+    const recordRavenDetail = async (patch = {}, options = {}) => {
+        const current = await ensureRavenDetail()
+        const merged = mergeRavenDetail(current, patch)
+        cachedRavenDetail = merged
+
+        if (typeof merged.message === 'string' && merged.message.trim()) {
+            stepDetails.set('raven', merged.message.trim())
+        }
+
+        const update = {
+            step: 'raven',
+            detail: JSON.stringify({
+                overrides: merged.overrides || {},
+                detection: merged.detection,
+                launch: merged.launch,
+                health: merged.health,
+                message: merged.message ?? null,
+            }),
+        }
+
+        if (options.status) {
+            update.status = options.status
+            stepStatuses.set('raven', options.status)
+            update.updatedAt = new Date().toISOString()
+            update.completedAt = options.status === 'complete' ? update.updatedAt : null
+        }
+
+        if (Object.prototype.hasOwnProperty.call(options, 'error')) {
+            update.error = options.error ?? null
+            stepErrors.set('raven', update.error)
+        }
+
+        if (Object.prototype.hasOwnProperty.call(options, 'completedAt')) {
+            update.completedAt = options.completedAt
+        }
+
+        if (options.message && typeof options.message === 'string' && options.message.trim()) {
+            stepDetails.set('raven', options.message.trim())
+        }
+
+        const result = await client.applyUpdates([update])
+        debug(`[Wizard] Raven detail updated (${options.status || 'detail'}).`)
+        return result.state
+    }
+
     const completeInstall = async ({ hasErrors = false } = {}) => {
         const currentStatus = stepStatuses.get('verification')
         if (currentStatus === 'skipped') {
@@ -518,6 +727,7 @@ export const createWizardStatePublisher = ({
         reset,
         trackServiceStatus,
         completeInstall,
+        recordRavenDetail,
     }
 }
 

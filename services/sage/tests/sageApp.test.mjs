@@ -954,6 +954,9 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
             async detectRavenMount() {
                 return { status: 200, detection: { mountPath: '/data' } }
             },
+            async getServiceHealth() {
+                return { status: 'healthy', detail: 'ok' }
+            },
         },
     })
 
@@ -963,6 +966,55 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
     const response = await fetch(`${baseUrl}/api/setup/services/noona-raven/detect`, { method: 'POST' })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data' } })
+})
+
+test('GET /api/setup/services/:name/health proxies health payloads', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getServiceHealth(name) {
+                return { status: 'healthy', detail: `ok:${name}` }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-raven/health`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { status: 'healthy', detail: 'ok:noona-raven' })
+})
+
+test('GET /api/setup/services/:name/health surfaces validation errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getServiceHealth() {
+                throw new SetupValidationError('Unsupported service for health check')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/unknown/health`)
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unsupported service for health check')
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {
