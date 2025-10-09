@@ -10,7 +10,6 @@ import type { ServiceEntry } from '../utils/serviceStatus.ts';
 import {
   createPortalDiscordChannel,
   createPortalDiscordRole,
-  detectRavenMount,
   fetchInstallProgress,
   fetchInstallationLogs,
   fetchServiceLogs,
@@ -19,6 +18,8 @@ import {
   type InstallProgressSummary,
   type PortalDiscordValidationPayload,
   type ServiceInstallRequestEntry,
+  pullRavenContainer,
+  startRavenContainer,
   validatePortalDiscordConfig,
 } from './api.ts';
 
@@ -128,9 +129,7 @@ export interface UseSetupStepsResult {
   toggleService: (name: string) => void;
   envSections: EnvSection[];
   updateEnvValue: (serviceName: string, key: string, value: string) => void;
-  detectRaven: () => Promise<void>;
-  detectingRaven: boolean;
-  ravenDetectionError: string;
+  environmentError: string;
   envErrors: Map<string, string[]>;
   discord: DiscordState;
   install: InstallState;
@@ -319,19 +318,27 @@ function cloneOverrides(
   return next;
 }
 
+function getServiceEnvOverrides(
+  overrides: Map<string, Record<string, string>>,
+  name: string,
+): Record<string, string> {
+  const env = overrides.get(name) ?? {};
+  const cleaned: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof key !== 'string') {
+      continue;
+    }
+    cleaned[key] = value ?? '';
+  }
+  return cleaned;
+}
+
 function buildInstallPayload(
   selected: Set<string>,
   overrides: Map<string, Record<string, string>>,
 ): ServiceInstallRequestEntry[] {
   return Array.from(selected).map((name) => {
-    const env = overrides.get(name) ?? {};
-    const cleaned: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof key !== 'string') {
-        continue;
-      }
-      cleaned[key] = value ?? '';
-    }
+    const cleaned = getServiceEnvOverrides(overrides, name);
     return Object.keys(cleaned).length > 0 ? { name, env: cleaned } : { name };
   });
 }
@@ -346,8 +353,8 @@ export function useSetupSteps(): UseSetupStepsResult {
   const [overrides, setOverrides] = useState<Map<string, Record<string, string>>>(() =>
     initializeEnvOverrides(services),
   );
-  const [detectingRaven, setDetectingRaven] = useState(false);
-  const [ravenDetectionError, setRavenDetectionError] = useState('');
+  const [preparingEnvironment, setPreparingEnvironment] = useState(false);
+  const [environmentError, setEnvironmentError] = useState('');
 
   const [discordValidation, setDiscordValidation] = useState<PortalDiscordValidationPayload | null>(null);
   const [discordValidationError, setDiscordValidationError] = useState('');
@@ -458,6 +465,13 @@ export function useSetupSteps(): UseSetupStepsResult {
     return errors;
   }, [selected, serviceMap]);
 
+  useEffect(() => {
+    if (!selected.has(RAVEN_SERVICE_NAME)) {
+      setEnvironmentError('');
+      setPreparingEnvironment(false);
+    }
+  }, [selected]);
+
   const envSections = useMemo(() => {
     const sections: EnvSection[] = [];
     for (const name of selected) {
@@ -506,6 +520,7 @@ export function useSetupSteps(): UseSetupStepsResult {
 
   const updateEnvValue = useCallback(
     (serviceName: string, key: string, value: string) => {
+      setEnvironmentError('');
       setOverrides((prev) => {
         const next = cloneOverrides(prev);
         const existing = next.get(serviceName) ?? {};
@@ -515,38 +530,6 @@ export function useSetupSteps(): UseSetupStepsResult {
     },
     [],
   );
-
-  const detectRaven = useCallback(async () => {
-    setDetectingRaven(true);
-    setRavenDetectionError('');
-    try {
-      const payload = await detectRavenMount();
-      const detection = (payload?.detection ?? {}) as Record<string, unknown>;
-      const containerPath =
-        typeof detection.containerPath === 'string'
-          ? detection.containerPath
-          : typeof detection.appData === 'string'
-          ? detection.appData
-          : '';
-      const hostPath =
-        typeof detection.hostPath === 'string'
-          ? detection.hostPath
-          : typeof detection.kavitaDataMount === 'string'
-          ? detection.kavitaDataMount
-          : '';
-      if (containerPath) {
-        updateEnvValue(RAVEN_SERVICE_NAME, 'APPDATA', containerPath);
-      }
-      if (hostPath) {
-        updateEnvValue(RAVEN_SERVICE_NAME, 'KAVITA_DATA_MOUNT', hostPath);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to detect Raven mount.';
-      setRavenDetectionError(message);
-    } finally {
-      setDetectingRaven(false);
-    }
-  }, [updateEnvValue]);
 
   const toggleService = useCallback((name: string) => {
     setSelected((prev) => {
@@ -702,6 +685,26 @@ export function useSetupSteps(): UseSetupStepsResult {
         advance('configure');
         return;
       case 'configure':
+        if (selected.has(RAVEN_SERVICE_NAME)) {
+          setPreparingEnvironment(true);
+          setEnvironmentError('');
+          try {
+            const env = getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME);
+            await pullRavenContainer(env);
+            await startRavenContainer(env);
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : 'Unable to start Raven service.';
+            setEnvironmentError(message);
+            setPreparingEnvironment(false);
+            return;
+          }
+          setPreparingEnvironment(false);
+        } else {
+          setEnvironmentError('');
+        }
         if (portalSelected) {
           advance('discord');
         } else {
@@ -729,7 +732,16 @@ export function useSetupSteps(): UseSetupStepsResult {
       default:
         return;
     }
-  }, [currentStepId, portalSelected, install, triggerInstall]);
+  }, [
+    currentStepId,
+    portalSelected,
+    install,
+    triggerInstall,
+    selected,
+    overrides,
+    pullRavenContainer,
+    startRavenContainer,
+  ]);
 
   const goPrevious = useCallback(() => {
     const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
@@ -778,7 +790,7 @@ export function useSetupSteps(): UseSetupStepsResult {
       case 'select':
         return selectionErrors.length === 0;
       case 'configure':
-        return envErrors.size === 0;
+        return envErrors.size === 0 && !preparingEnvironment;
       case 'discord':
         if (!portalSelected) {
           return true;
@@ -803,7 +815,18 @@ export function useSetupSteps(): UseSetupStepsResult {
       default:
         return true;
     }
-  }, [currentStepId, selectionErrors, envErrors, portalSelected, portalEnv, discordValidationError, discordValidating, discordValidatedAt, install]);
+  }, [
+    currentStepId,
+    selectionErrors,
+    envErrors,
+    portalSelected,
+    portalEnv,
+    discordValidationError,
+    discordValidating,
+    discordValidatedAt,
+    install,
+    preparingEnvironment,
+  ]);
 
   const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
 
@@ -829,6 +852,10 @@ export function useSetupSteps(): UseSetupStepsResult {
           error = 'Missing environment values.';
         }
       }
+      if (definition.id === 'configure' && environmentError) {
+        status = 'error';
+        error = environmentError;
+      }
       if (definition.id === 'discord' && portalSelected) {
         if (discordValidationError) {
           status = 'error';
@@ -853,7 +880,16 @@ export function useSetupSteps(): UseSetupStepsResult {
         error,
       } satisfies SetupStepDefinition;
     });
-  }, [currentIndex, envErrors, selectionErrors, install, installationLogs.error, portalSelected, discordValidationError]);
+  }, [
+    currentIndex,
+    envErrors,
+    selectionErrors,
+    install,
+    installationLogs.error,
+    portalSelected,
+    discordValidationError,
+    environmentError,
+  ]);
 
   const currentStep = steps[currentIndex] ?? steps[0];
 
@@ -862,6 +898,9 @@ export function useSetupSteps(): UseSetupStepsResult {
       case 'select':
         return 'Next';
       case 'configure':
+        if (preparingEnvironment) {
+          return 'Preparing Raven…';
+        }
         return portalSelected ? 'Review Discord' : 'Start installation';
       case 'discord':
         return 'Start installation';
@@ -878,7 +917,7 @@ export function useSetupSteps(): UseSetupStepsResult {
       default:
         return 'Next';
     }
-  }, [currentStepId, portalSelected, install]);
+  }, [currentStepId, portalSelected, install, preparingEnvironment]);
 
   const onValidateDiscord = useCallback(async () => {
     if (!portalEnv.DISCORD_BOT_TOKEN || !portalEnv.DISCORD_GUILD_ID) {
@@ -1008,9 +1047,7 @@ export function useSetupSteps(): UseSetupStepsResult {
     toggleService,
     envSections,
     updateEnvValue,
-    detectRaven,
-    detectingRaven,
-    ravenDetectionError,
+    environmentError,
     envErrors,
     discord,
     install,

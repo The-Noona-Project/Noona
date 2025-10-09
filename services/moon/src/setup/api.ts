@@ -175,13 +175,40 @@ export async function createPortalDiscordChannel(
   return await legacyCreateChannel(payload, baseUrl);
 }
 
-export async function detectRavenMount(options?: FetchJsonOptions) {
-  const response = await fetchWithTimeout('/api/setup/services/noona-raven/detect', {
-    method: 'POST',
+export async function pullRavenContainer(
+  env: Record<string, string>,
+  options?: FetchJsonOptions,
+) {
+  const response = await fetchWithTimeout('/api/setup/services/noona-raven/pull', {
     ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify({ env }),
   });
   return await parseJson<Record<string, unknown>>(
     response,
-    'Unable to detect Kavita data mount.',
+    'Unable to pull Raven container.',
+  );
+}
+
+export async function startRavenContainer(
+  env: Record<string, string>,
+  options?: FetchJsonOptions,
+) {
+  const response = await fetchWithTimeout('/api/setup/services/noona-raven/start', {
+    ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify({ env }),
+  });
+  return await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to start Raven container.',
   );
 }
