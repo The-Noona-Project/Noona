@@ -51,6 +51,7 @@ export default function SetupPage(): JSX.Element {
     envSections,
     updateEnvValue,
     environmentError,
+    portalError,
     discord,
     install,
     loadInstallationLogs,
@@ -97,6 +98,9 @@ export default function SetupPage(): JSX.Element {
   }, [goNext]);
 
   const renderStepContent = () => {
+    const activeEnvironmentError =
+      currentStep.id === 'portal' ? portalError || environmentError : environmentError;
+
     switch (currentStep.id) {
       case 'foundation':
         return (
@@ -112,9 +116,9 @@ export default function SetupPage(): JSX.Element {
             <EnvironmentEditor
               sections={envSections}
               onChange={updateEnvValue}
-              error={environmentError}
+              error={activeEnvironmentError}
             />
-            <DiscordSetupForm discord={discord} isVisible />
+            <DiscordSetupForm discord={discord} />
           </Stack>
         );
       case 'raven':

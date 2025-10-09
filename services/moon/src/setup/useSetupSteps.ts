@@ -24,7 +24,7 @@ import {
   validatePortalDiscordConfig,
 } from './api.ts';
 import { useWizardState } from './useWizardState.ts';
-import type { WizardState, WizardStateUpdate } from './api.ts';
+import type { WizardState, WizardStateUpdate, WizardStepStatus } from './api.ts';
 
 export type SetupStepId = 'foundation' | 'portal' | 'raven' | 'verification';
 
@@ -77,7 +77,9 @@ export interface DiscordState {
   defaultRoleId: string;
   validating: boolean;
   validation: PortalDiscordValidationPayload | null;
-  lastValidatedAt: number | null;
+  lastValidatedAt: string | null;
+  lastRoleCreatedAt: string | null;
+  lastChannelCreatedAt: string | null;
   validationError: string;
   createRoleState: AsyncActionState;
   createChannelState: AsyncActionState;
@@ -212,6 +214,92 @@ function parseFoundationDetail(detail: string | null): FoundationDetailPayload |
   }
 }
 
+interface PortalDetailPayload {
+  overrides?: Record<string, Record<string, string>>;
+  discord?: {
+    validatedAt?: string | null;
+    roleCreatedAt?: string | null;
+    channelCreatedAt?: string | null;
+  } | null;
+  installTriggeredAt?: string | null;
+}
+
+function parsePortalDetail(detail: string | null): PortalDetailPayload | null {
+  if (!detail || typeof detail !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(detail);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    const overridesRaw = payload.overrides;
+    const overrides: Record<string, Record<string, string>> | undefined =
+      overridesRaw && typeof overridesRaw === 'object'
+        ? Object.fromEntries(
+            Object.entries(overridesRaw as Record<string, unknown>).map(([service, env]) => {
+              if (!env || typeof env !== 'object') {
+                return [service, {}];
+              }
+
+              const normalizedEnv: Record<string, string> = {};
+              for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+                if (typeof key !== 'string') {
+                  continue;
+                }
+                if (typeof value === 'string') {
+                  normalizedEnv[key] = value;
+                } else if (value == null) {
+                  normalizedEnv[key] = '';
+                }
+              }
+
+              return [service, normalizedEnv];
+            }),
+          )
+        : undefined;
+
+    const discordRaw = payload.discord;
+    let discord: PortalDetailPayload['discord'] = null;
+    if (discordRaw && typeof discordRaw === 'object') {
+      const candidate = discordRaw as Record<string, unknown>;
+      const normalized: NonNullable<PortalDetailPayload['discord']> = {};
+      if (typeof candidate.validatedAt === 'string' && candidate.validatedAt.trim()) {
+        normalized.validatedAt = candidate.validatedAt.trim();
+      } else if (candidate.validatedAt === null) {
+        normalized.validatedAt = null;
+      }
+      if (typeof candidate.roleCreatedAt === 'string' && candidate.roleCreatedAt.trim()) {
+        normalized.roleCreatedAt = candidate.roleCreatedAt.trim();
+      } else if (candidate.roleCreatedAt === null) {
+        normalized.roleCreatedAt = null;
+      }
+      if (typeof candidate.channelCreatedAt === 'string' && candidate.channelCreatedAt.trim()) {
+        normalized.channelCreatedAt = candidate.channelCreatedAt.trim();
+      } else if (candidate.channelCreatedAt === null) {
+        normalized.channelCreatedAt = null;
+      }
+      discord = normalized;
+    }
+
+    const installTriggeredAt =
+      typeof payload.installTriggeredAt === 'string' && payload.installTriggeredAt.trim()
+        ? payload.installTriggeredAt.trim()
+        : null;
+
+    return {
+      overrides,
+      discord,
+      installTriggeredAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function deriveFoundationStateFromWizard(
   detail: FoundationDetailPayload | null,
   stepState: WizardState['foundation'] | undefined,
@@ -265,6 +353,7 @@ export interface UseSetupStepsResult {
   envSections: EnvSection[];
   updateEnvValue: (serviceName: string, key: string, value: string) => void;
   environmentError: string;
+  portalError: string;
   envErrors: Map<string, string[]>;
   discord: DiscordState;
   install: InstallState;
@@ -483,6 +572,14 @@ function collectFoundationOverrides(
   return payload;
 }
 
+function collectPortalOverrides(
+  overrides: Map<string, Record<string, string>>,
+): Record<string, Record<string, string>> {
+  return {
+    [PORTAL_SERVICE_NAME]: getServiceEnvOverrides(overrides, PORTAL_SERVICE_NAME),
+  };
+}
+
 function buildInstallPayload(
   selected: Set<string>,
   overrides: Map<string, Record<string, string>>,
@@ -513,16 +610,26 @@ export function useSetupSteps(): UseSetupStepsResult {
     () => (wizardState ? parseFoundationDetail(wizardState.foundation?.detail ?? null) : null),
     [wizardState],
   );
+  const portalDetail = useMemo(
+    () => (wizardState ? parsePortalDetail(wizardState.portal?.detail ?? null) : null),
+    [wizardState],
+  );
+  const portalStatus = wizardState?.portal?.status ?? 'pending';
   const [overrides, setOverrides] = useState<Map<string, Record<string, string>>>(() =>
     initializeEnvOverrides(services),
   );
   const [preparingEnvironment, setPreparingEnvironment] = useState(false);
   const [environmentError, setEnvironmentError] = useState('');
+  const [portalError, setPortalError] = useState('');
+  const [portalInstalling, setPortalInstalling] = useState(false);
+  const [portalInstallTriggeredAt, setPortalInstallTriggeredAt] = useState<string | null>(null);
 
   const [discordValidation, setDiscordValidation] = useState<PortalDiscordValidationPayload | null>(null);
   const [discordValidationError, setDiscordValidationError] = useState('');
   const [discordValidating, setDiscordValidating] = useState(false);
-  const [discordValidatedAt, setDiscordValidatedAt] = useState<number | null>(null);
+  const [discordValidatedAt, setDiscordValidatedAt] = useState<string | null>(null);
+  const [discordRoleCreatedAt, setDiscordRoleCreatedAt] = useState<string | null>(null);
+  const [discordChannelCreatedAt, setDiscordChannelCreatedAt] = useState<string | null>(null);
   const [createRoleState, setCreateRoleState] = useState<AsyncActionState>({
     loading: false,
     error: '',
@@ -561,8 +668,69 @@ export function useSetupSteps(): UseSetupStepsResult {
     error: null,
   });
   const foundationOverridesSeededRef = useRef(false);
+  const portalOverridesSeededRef = useRef(false);
 
   const pollTimerRef = useRef<number | null>(null);
+  const portalPollTimerRef = useRef<number | null>(null);
+
+  const buildPortalDetail = useCallback(
+    (
+      options: {
+        overrides?: Record<string, Record<string, string>>;
+        discord?: Partial<NonNullable<PortalDetailPayload['discord']>>;
+        installTriggeredAt?: string | null;
+      } = {},
+    ): PortalDetailPayload => {
+      const overridesPayload = options.overrides ?? collectPortalOverrides(overrides);
+      const baseDiscord: NonNullable<PortalDetailPayload['discord']> = {
+        validatedAt: discordValidatedAt ?? null,
+        roleCreatedAt: discordRoleCreatedAt ?? null,
+        channelCreatedAt: discordChannelCreatedAt ?? null,
+      };
+      const discordPayload = options.discord ? { ...baseDiscord, ...options.discord } : baseDiscord;
+
+      return {
+        overrides: overridesPayload,
+        discord: discordPayload,
+        installTriggeredAt:
+          options.installTriggeredAt !== undefined
+            ? options.installTriggeredAt
+            : portalInstallTriggeredAt,
+      };
+    },
+    [
+      overrides,
+      discordValidatedAt,
+      discordRoleCreatedAt,
+      discordChannelCreatedAt,
+      portalInstallTriggeredAt,
+    ],
+  );
+
+  const persistPortalDetail = useCallback(
+    async (
+      detail: PortalDetailPayload,
+      status?: WizardStepStatus,
+      error?: string | null,
+    ): Promise<void> => {
+      const update: WizardStateUpdate = {
+        step: 'portal',
+        detail: JSON.stringify(detail),
+        updatedAt: new Date().toISOString(),
+      };
+      if (status) {
+        update.status = status;
+        if (status !== 'complete') {
+          update.completedAt = null;
+        }
+      }
+      if (error !== undefined) {
+        update.error = error;
+      }
+      await updateWizard(update);
+    },
+    [updateWizard],
+  );
 
   const waitForRedisHealth = useCallback(async () => {
     const maxAttempts = 10;
@@ -646,6 +814,77 @@ export function useSetupSteps(): UseSetupStepsResult {
 
     foundationOverridesSeededRef.current = true;
   }, [foundationDetail]);
+
+  useEffect(() => {
+    if (!portalDetail?.overrides) {
+      return;
+    }
+    if (portalOverridesSeededRef.current) {
+      return;
+    }
+
+    setOverrides((prev) => {
+      const next = cloneOverrides(prev);
+      for (const [serviceName, env] of Object.entries(portalDetail.overrides ?? {})) {
+        if (!next.has(serviceName)) {
+          next.set(serviceName, { ...env });
+        } else {
+          next.set(serviceName, { ...next.get(serviceName)!, ...env });
+        }
+      }
+      return next;
+    });
+
+    portalOverridesSeededRef.current = true;
+  }, [portalDetail]);
+
+  useEffect(() => {
+    if (!portalDetail) {
+      setDiscordValidatedAt(null);
+      setDiscordRoleCreatedAt(null);
+      setDiscordChannelCreatedAt(null);
+      setPortalInstallTriggeredAt(null);
+      return;
+    }
+
+    setDiscordValidatedAt(portalDetail.discord?.validatedAt ?? null);
+    setDiscordRoleCreatedAt(portalDetail.discord?.roleCreatedAt ?? null);
+    setDiscordChannelCreatedAt(portalDetail.discord?.channelCreatedAt ?? null);
+    setPortalInstallTriggeredAt(portalDetail.installTriggeredAt ?? null);
+  }, [portalDetail]);
+
+  useEffect(() => {
+    const message =
+      typeof wizardState?.portal?.error === 'string' && wizardState.portal.error.trim()
+        ? wizardState.portal.error.trim()
+        : '';
+    setPortalError(message);
+  }, [wizardState?.portal?.error]);
+
+  useEffect(() => {
+    const status = wizardState?.portal?.status;
+    setPortalInstalling(status === 'in-progress');
+  }, [wizardState?.portal?.status]);
+
+  useEffect(() => {
+    const status = wizardState?.portal?.status;
+    if (status === 'in-progress') {
+      if (portalPollTimerRef.current == null) {
+        const poll = async () => {
+          try {
+            await refreshWizard();
+          } catch {
+            // ignore polling errors
+          }
+          portalPollTimerRef.current = window.setTimeout(poll, 4000);
+        };
+        portalPollTimerRef.current = window.setTimeout(poll, 4000);
+      }
+    } else if (portalPollTimerRef.current != null) {
+      window.clearTimeout(portalPollTimerRef.current);
+      portalPollTimerRef.current = null;
+    }
+  }, [wizardState?.portal?.status, refreshWizard]);
 
   useEffect(() => {
     setSelected(() => {
@@ -763,14 +1002,42 @@ export function useSetupSteps(): UseSetupStepsResult {
   const updateEnvValue = useCallback(
     (serviceName: string, key: string, value: string) => {
       setEnvironmentError('');
+      if (serviceName === PORTAL_SERVICE_NAME) {
+        setPortalError('');
+      }
       setOverrides((prev) => {
         const next = cloneOverrides(prev);
         const existing = next.get(serviceName) ?? {};
-        next.set(serviceName, { ...existing, [key]: value });
+        if (existing[key] === value) {
+          return prev;
+        }
+        const updated = { ...existing, [key]: value };
+        next.set(serviceName, updated);
+        if (serviceName === PORTAL_SERVICE_NAME) {
+          const overridesSnapshot = collectPortalOverrides(next);
+          const resetValidationKeys = new Set(['DISCORD_BOT_TOKEN', 'DISCORD_GUILD_ID']);
+          const shouldResetValidation = resetValidationKeys.has(key);
+          if (shouldResetValidation) {
+            setPortalInstallTriggeredAt(null);
+            setPortalInstalling(false);
+          }
+          void persistPortalDetail(
+            buildPortalDetail({
+              overrides: overridesSnapshot,
+              discord: shouldResetValidation ? { validatedAt: null } : undefined,
+            }),
+            shouldResetValidation
+              ? 'pending'
+              : portalStatus === 'complete'
+              ? 'complete'
+              : undefined,
+            null,
+          ).catch(() => {});
+        }
         return next;
       });
     },
-    [],
+    [buildPortalDetail, persistPortalDetail, portalStatus],
   );
 
   const loadInstallationLogs = useCallback(
@@ -910,6 +1177,9 @@ export function useSetupSteps(): UseSetupStepsResult {
     return () => {
       if (pollTimerRef.current != null) {
         window.clearTimeout(pollTimerRef.current);
+      }
+      if (portalPollTimerRef.current != null) {
+        window.clearTimeout(portalPollTimerRef.current);
       }
     };
   }, []);
@@ -1095,6 +1365,7 @@ export function useSetupSteps(): UseSetupStepsResult {
       if (selected.has(RAVEN_SERVICE_NAME)) {
         setPreparingEnvironment(true);
         setEnvironmentError('');
+        setPortalError('');
         try {
           const env = getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME);
           await pullRavenContainer(env);
@@ -1103,6 +1374,7 @@ export function useSetupSteps(): UseSetupStepsResult {
           const message =
             error instanceof Error ? error.message : 'Unable to start Raven service.';
           setEnvironmentError(message);
+          setPortalError(message);
           setPreparingEnvironment(false);
           return;
         }
@@ -1159,13 +1431,14 @@ export function useSetupSteps(): UseSetupStepsResult {
       case 'portal':
         return (
           envErrors.size === 0 &&
-          !preparingEnvironment &&
           !!portalEnv.DISCORD_BOT_TOKEN &&
           !!portalEnv.DISCORD_GUILD_ID &&
           !discordValidationError &&
           !discordValidating &&
-          discordValidatedAt != null &&
-          !environmentError
+          !!discordValidatedAt &&
+          !portalError &&
+          !portalInstalling &&
+          portalStatus === 'complete'
         );
       case 'raven':
         if (!install.started) {
@@ -1190,7 +1463,9 @@ export function useSetupSteps(): UseSetupStepsResult {
     discordValidationError,
     discordValidating,
     discordValidatedAt,
-    environmentError,
+    portalError,
+    portalInstalling,
+    portalStatus,
     install,
   ]);
 
@@ -1278,9 +1553,9 @@ export function useSetupSteps(): UseSetupStepsResult {
             status = 'error';
             error = 'Missing environment values.';
           }
-        } else if (environmentError) {
+        } else if (portalError) {
           status = 'error';
-          error = environmentError;
+          error = portalError;
         } else if (discordValidationError) {
           status = 'error';
           error = discordValidationError;
@@ -1312,7 +1587,7 @@ export function useSetupSteps(): UseSetupStepsResult {
     install,
     installationLogs.error,
     discordValidationError,
-    environmentError,
+    portalError,
   ]);
 
   const currentStep = steps[currentIndex] ?? steps[0];
@@ -1328,8 +1603,14 @@ export function useSetupSteps(): UseSetupStepsResult {
         }
         return 'Bootstrap foundation';
       case 'portal':
+        if (portalInstalling || portalStatus === 'in-progress') {
+          return 'Waiting for Portal…';
+        }
         if (preparingEnvironment) {
           return 'Preparing Raven…';
+        }
+        if (!discordValidatedAt) {
+          return 'Validate Portal';
         }
         return 'Launch Raven install';
       case 'raven':
@@ -1345,7 +1626,16 @@ export function useSetupSteps(): UseSetupStepsResult {
       default:
         return 'Next';
     }
-  }, [currentStepId, foundationState.running, foundationState.completed, install, preparingEnvironment]);
+  }, [
+    currentStepId,
+    foundationState.running,
+    foundationState.completed,
+    install,
+    preparingEnvironment,
+    portalInstalling,
+    portalStatus,
+    discordValidatedAt,
+  ]);
 
   const onValidateDiscord = useCallback(async () => {
     if (!portalEnv.DISCORD_BOT_TOKEN || !portalEnv.DISCORD_GUILD_ID) {
@@ -1354,25 +1644,86 @@ export function useSetupSteps(): UseSetupStepsResult {
     }
 
     setDiscordValidationError('');
+    setPortalError('');
     setDiscordValidating(true);
     setDiscordValidation(null);
+    let validated = false;
     try {
       const payload = await validatePortalDiscordConfig({
         token: portalEnv.DISCORD_BOT_TOKEN,
         guildId: portalEnv.DISCORD_GUILD_ID,
       });
+      validated = true;
       setDiscordValidation(payload);
-      setDiscordValidatedAt(Date.now());
+      const validatedTimestamp = new Date().toISOString();
+      setDiscordValidatedAt(validatedTimestamp);
+
+      const overridesSnapshot = collectPortalOverrides(overrides);
+      const nextStatus: WizardStepStatus = portalStatus === 'complete' ? 'complete' : 'in-progress';
+      const detail = buildPortalDetail({
+        overrides: overridesSnapshot,
+        discord: { validatedAt: validatedTimestamp },
+      });
+
+      setPortalInstallTriggeredAt(validatedTimestamp);
+      await persistPortalDetail(detail, nextStatus, null);
+      setPortalInstalling(true);
+
+      const portalEnvOverrides = overridesSnapshot[PORTAL_SERVICE_NAME] ?? {};
+      const installPayload: ServiceInstallRequestEntry[] =
+        Object.keys(portalEnvOverrides).length > 0
+          ? [{ name: PORTAL_SERVICE_NAME, env: portalEnvOverrides }]
+          : [{ name: PORTAL_SERVICE_NAME }];
+
+      await installServices(installPayload);
+
+      await persistPortalDetail(
+        buildPortalDetail({
+          overrides: overridesSnapshot,
+          discord: { validatedAt: validatedTimestamp },
+          installTriggeredAt: validatedTimestamp,
+        }),
+        undefined,
+        null,
+      );
+
+      await refreshWizard().catch(() => {});
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Unable to verify Discord configuration.';
-      setDiscordValidationError(message);
-      setDiscordValidation(null);
-      setDiscordValidatedAt(null);
+      if (!validated) {
+        setDiscordValidationError(message);
+        setDiscordValidation(null);
+        setDiscordValidatedAt(null);
+        await persistPortalDetail(
+          buildPortalDetail({
+            discord: { validatedAt: null },
+          }),
+          'error',
+          message,
+        ).catch(() => {});
+      } else {
+        setPortalError(message);
+        setPortalInstalling(false);
+        setPortalInstallTriggeredAt(null);
+        await persistPortalDetail(
+          buildPortalDetail(),
+          'error',
+          message,
+        ).catch(() => {});
+      }
     } finally {
       setDiscordValidating(false);
     }
-  }, [portalEnv.DISCORD_BOT_TOKEN, portalEnv.DISCORD_GUILD_ID]);
+  }, [
+    portalEnv.DISCORD_BOT_TOKEN,
+    portalEnv.DISCORD_GUILD_ID,
+    overrides,
+    buildPortalDetail,
+    persistPortalDetail,
+    refreshWizard,
+    portalStatus,
+  ]);
 
   const onCreateRole = useCallback(
     async (name: string) => {
@@ -1387,6 +1738,13 @@ export function useSetupSteps(): UseSetupStepsResult {
         if (typeof id === 'string' && id.trim()) {
           updateEnvValue(PORTAL_SERVICE_NAME, 'DISCORD_GUILD_ROLE_ID', id.trim());
         }
+        const roleTimestamp = new Date().toISOString();
+        setDiscordRoleCreatedAt(roleTimestamp);
+        await persistPortalDetail(
+          buildPortalDetail({ discord: { roleCreatedAt: roleTimestamp } }),
+          portalStatus === 'complete' ? 'complete' : undefined,
+          null,
+        );
         setCreateRoleState({
           loading: false,
           error: '',
@@ -1398,7 +1756,15 @@ export function useSetupSteps(): UseSetupStepsResult {
         setCreateRoleState({ loading: false, error: message, successMessage: '' });
       }
     },
-    [portalEnv.DISCORD_BOT_TOKEN, portalEnv.DISCORD_GUILD_ID, updateEnvValue, onValidateDiscord],
+    [
+      portalEnv.DISCORD_BOT_TOKEN,
+      portalEnv.DISCORD_GUILD_ID,
+      updateEnvValue,
+      onValidateDiscord,
+      buildPortalDetail,
+      persistPortalDetail,
+      portalStatus,
+    ],
   );
 
   const onCreateChannel = useCallback(
@@ -1411,6 +1777,13 @@ export function useSetupSteps(): UseSetupStepsResult {
           name,
           type,
         });
+        const channelTimestamp = new Date().toISOString();
+        setDiscordChannelCreatedAt(channelTimestamp);
+        await persistPortalDetail(
+          buildPortalDetail({ discord: { channelCreatedAt: channelTimestamp } }),
+          portalStatus === 'complete' ? 'complete' : undefined,
+          null,
+        );
         setCreateChannelState({
           loading: false,
           error: '',
@@ -1423,7 +1796,14 @@ export function useSetupSteps(): UseSetupStepsResult {
         setCreateChannelState({ loading: false, error: message, successMessage: '' });
       }
     },
-    [portalEnv.DISCORD_BOT_TOKEN, portalEnv.DISCORD_GUILD_ID, onValidateDiscord],
+    [
+      portalEnv.DISCORD_BOT_TOKEN,
+      portalEnv.DISCORD_GUILD_ID,
+      onValidateDiscord,
+      buildPortalDetail,
+      persistPortalDetail,
+      portalStatus,
+    ],
   );
 
   const discord: DiscordState = useMemo(
@@ -1435,6 +1815,8 @@ export function useSetupSteps(): UseSetupStepsResult {
       validating: discordValidating,
       validation: discordValidation,
       lastValidatedAt: discordValidatedAt,
+      lastRoleCreatedAt: discordRoleCreatedAt,
+      lastChannelCreatedAt: discordChannelCreatedAt,
       validationError: discordValidationError,
       createRoleState,
       createChannelState,
@@ -1450,6 +1832,8 @@ export function useSetupSteps(): UseSetupStepsResult {
       discordValidating,
       discordValidation,
       discordValidatedAt,
+      discordRoleCreatedAt,
+      discordChannelCreatedAt,
       discordValidationError,
       createRoleState,
       createChannelState,
@@ -1475,6 +1859,7 @@ export function useSetupSteps(): UseSetupStepsResult {
     envSections,
     updateEnvValue,
     environmentError,
+    portalError,
     envErrors,
     discord,
     install,
