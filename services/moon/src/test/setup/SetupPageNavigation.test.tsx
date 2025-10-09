@@ -1,6 +1,6 @@
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SetupPage from '../../pages/Setup.tsx';
 import { renderWithProviders } from '../testUtils.tsx';
@@ -15,52 +15,98 @@ vi.mock('../../setup/api.ts', () => ({
   pullRavenContainer: vi.fn(async () => ({})),
   startRavenContainer: vi.fn(async () => ({})),
   validatePortalDiscordConfig: vi.fn(async () => ({})),
+  fetchWizardState: vi.fn(),
+  updateWizardState: vi.fn(),
+  fetchServiceHealth: vi.fn(async () => ({ status: 'healthy' })),
 }));
 
 const services = [
-  { name: 'noona-portal', installed: false },
-  { name: 'noona-raven', installed: false },
+  {
+    name: 'noona-vault',
+    installed: false,
+    envConfig: [
+      { key: 'VAULT_ADDRESS', label: 'Vault Address', defaultValue: 'http://vault', required: true, readOnly: false },
+    ],
+  },
+  { name: 'noona-redis', installed: false, envConfig: [] },
+  { name: 'noona-mongo', installed: false, envConfig: [] },
+  { name: 'noona-portal', installed: false, envConfig: [] },
+  { name: 'noona-raven', installed: false, envConfig: [] },
 ];
 
+const wizardState = {
+  version: 1,
+  updatedAt: null,
+  foundation: {
+    status: 'complete' as const,
+    detail: JSON.stringify({
+      overrides: {
+        'noona-vault': { VAULT_ADDRESS: 'http://vault' },
+      },
+      lastStage: 'health',
+      completed: true,
+    }),
+    error: null,
+    updatedAt: null,
+    completedAt: null,
+  },
+  portal: { status: 'pending' as const, detail: null, error: null, updatedAt: null, completedAt: null },
+  raven: { status: 'pending' as const, detail: null, error: null, updatedAt: null, completedAt: null },
+  verification: { status: 'pending' as const, detail: null, error: null, updatedAt: null, completedAt: null },
+};
+
+const api = vi.mocked(await import('../../setup/api.ts'));
+
 describe('SetupPage step navigation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.fetchWizardState.mockResolvedValue(wizardState);
+    api.updateWizardState.mockResolvedValue(wizardState);
+  });
+
   it('allows selecting the next step directly from the stepper', async () => {
     const user = userEvent.setup();
     renderWithProviders(<SetupPage />, { services });
 
-    const configureStep = await screen.findByTestId('setup-step-configure');
-    expect(configureStep).not.toHaveAttribute('aria-current', 'step');
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
 
-    await user.click(configureStep);
+    const portalStep = await screen.findByTestId('setup-step-portal');
+    expect(portalStep).not.toHaveAttribute('aria-current', 'step');
 
-    expect(configureStep).toHaveAttribute('aria-current', 'step');
-    expect(screen.getByText('Step 2 of 5')).toBeInTheDocument();
+    await user.click(portalStep);
+
+    await waitFor(() => expect(portalStep).toHaveAttribute('aria-current', 'step'));
+    expect(await screen.findByText('Step 2 of 4')).toBeInTheDocument();
   });
 
   it('keeps previously visited steps accessible after returning to an earlier step', async () => {
     const user = userEvent.setup();
     renderWithProviders(<SetupPage />, { services });
 
-    const configureStep = await screen.findByTestId('setup-step-configure');
-    await user.click(configureStep);
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
 
-    const selectStep = screen.getByTestId('setup-step-select');
-    await user.click(selectStep);
-    expect(selectStep).toHaveAttribute('aria-current', 'step');
+    const portalStep = await screen.findByTestId('setup-step-portal');
+    await user.click(portalStep);
 
-    await user.click(configureStep);
-    expect(configureStep).toHaveAttribute('aria-current', 'step');
+    const foundationStep = screen.getByTestId('setup-step-foundation');
+    await user.click(foundationStep);
+    await waitFor(() => expect(foundationStep).toHaveAttribute('aria-current', 'step'));
+
+    await user.click(portalStep);
+    await waitFor(() => expect(portalStep).toHaveAttribute('aria-current', 'step'));
   });
 
   it('prevents skipping ahead to unvisited steps', async () => {
     const user = userEvent.setup();
     renderWithProviders(<SetupPage />, { services });
 
-    const selectStep = await screen.findByTestId('setup-step-select');
-    const installStep = screen.getByTestId('setup-step-install');
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
 
-    await user.click(installStep);
+    const foundationStep = await screen.findByTestId('setup-step-foundation');
+    const verificationStep = screen.getByTestId('setup-step-verification');
 
-    expect(selectStep).toHaveAttribute('aria-current', 'step');
+    await user.click(verificationStep);
+
+    await waitFor(() => expect(foundationStep).toHaveAttribute('aria-current', 'step'));
   });
 });
-

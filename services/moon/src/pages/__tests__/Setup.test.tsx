@@ -10,13 +10,13 @@ vi.mock('@zag-js/focus-visible', () => ({
 }));
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../../test/testUtils.tsx';
-import { fireEvent, waitFor } from '@testing-library/react';
+import { fireEvent, waitFor, within } from '@testing-library/react';
 import SetupPage from '../Setup.tsx';
 import * as api from '../../setup/api.ts';
 
 vi.mock('../../setup/api.ts', () => {
   return {
-    installServices: vi.fn(async () => ({ results: [{ name: 'noona-sage', status: 'queued' }] })),
+    installServices: vi.fn(async () => ({ results: [{ name: 'noona-vault', status: 'queued' }] })),
     fetchInstallProgress: vi.fn(async () => ({ status: 'installing', percent: 10, items: [] })),
     fetchInstallationLogs: vi.fn(async () => ({ entries: [], summary: {} })),
     fetchServiceLogs: vi.fn(async () => ({ entries: [], summary: {} })),
@@ -27,6 +27,7 @@ vi.mock('../../setup/api.ts', () => {
     createPortalDiscordChannel: vi.fn(async () => ({ channel: { id: 'chan-456' } })),
     pullRavenContainer: vi.fn(async () => ({})),
     startRavenContainer: vi.fn(async () => ({})),
+    fetchServiceHealth: vi.fn(async () => ({ status: 'healthy' })),
   } satisfies Partial<typeof import('../../setup/api.ts')>;
 });
 
@@ -41,21 +42,41 @@ const defaultWizardState = {
 
 const baseServices = [
   {
-    name: 'noona-sage',
-    displayName: 'Sage',
-    description: 'Monitoring and logging backbone.',
+    name: 'noona-vault',
+    displayName: 'Vault',
+    description: 'Secrets manager.',
     installed: false,
     recommended: true,
     dependencies: [],
     envConfig: [
       {
-        key: 'DEBUG',
-        label: 'Debug',
-        defaultValue: 'false',
-        required: false,
+        key: 'VAULT_ADDRESS',
+        label: 'Vault Address',
+        defaultValue: '',
+        required: true,
         readOnly: false,
       },
     ],
+    metadata: {},
+  },
+  {
+    name: 'noona-redis',
+    displayName: 'Redis',
+    description: 'Caching layer.',
+    installed: false,
+    recommended: true,
+    dependencies: [],
+    envConfig: [],
+    metadata: {},
+  },
+  {
+    name: 'noona-mongo',
+    displayName: 'Mongo',
+    description: 'Database.',
+    installed: false,
+    recommended: true,
+    dependencies: [],
+    envConfig: [],
     metadata: {},
   },
   {
@@ -64,7 +85,7 @@ const baseServices = [
     description: 'Integration hub.',
     installed: false,
     recommended: true,
-    dependencies: ['noona-sage'],
+    dependencies: [],
     envConfig: [
       {
         key: 'DISCORD_BOT_TOKEN',
@@ -83,284 +104,145 @@ const baseServices = [
     ],
     metadata: {},
   },
+  {
+    name: 'noona-raven',
+    displayName: 'Raven',
+    description: 'Downloader.',
+    installed: false,
+    recommended: true,
+    dependencies: [],
+    envConfig: [],
+    metadata: {},
+  },
 ];
+
+async function completeFoundation({ getByTestId, getByLabelText }: ReturnType<typeof renderWithProviders>, user: ReturnType<typeof userEvent.setup>) {
+  const addressField = getByLabelText(/vault address/i);
+  fireEvent.change(addressField, { target: { value: 'http://vault.local' } });
+  await user.click(getByTestId('setup-next'));
+  await waitFor(() => {
+    expect(api.installServices).toHaveBeenCalled();
+    expect(api.fetchServiceHealth).toHaveBeenCalled();
+  });
+}
 
 describe('SetupPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.fetchWizardState).mockResolvedValue(defaultWizardState);
     vi.mocked(api.updateWizardState).mockResolvedValue(defaultWizardState);
+    vi.mocked(api.fetchServiceHealth).mockResolvedValue({ status: 'healthy' });
   });
 
-  it('requires at least one service to be selected before continuing', async () => {
+  it('bootstraps foundation services and advances to portal configuration', async () => {
     const user = userEvent.setup();
-    const { getByTestId, getByText } = renderWithProviders(<SetupPage />, {
+    const renderResult = renderWithProviders(<SetupPage />, {
       services: baseServices,
     });
+    const { getByTestId, getByLabelText, queryByTestId } = renderResult;
 
-    const next = getByTestId('setup-next');
-    expect(next).not.toBeDisabled();
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
 
-    await user.click(getByTestId('service-card-noona-sage'));
-    await user.click(getByTestId('service-card-noona-portal'));
-
-    expect(getByTestId('setup-next')).toBeDisabled();
-    expect(getByText(/select at least one service/i)).toBeInTheDocument();
-
-    await user.click(getByTestId('service-card-noona-sage'));
-    expect(getByTestId('setup-next')).not.toBeDisabled();
-  });
-
-  it('validates required environment variables before allowing Discord step', async () => {
-    const user = userEvent.setup();
-    const { getByTestId, getByRole, findByRole, getByLabelText } = renderWithProviders(<SetupPage />, {
-      services: baseServices,
-    });
+    const addressField = getByLabelText(/vault address/i);
+    fireEvent.change(addressField, { target: { value: 'http://vault.internal' } });
 
     await user.click(getByTestId('setup-next'));
 
-    const botField = getByLabelText(/Discord Bot Token/i);
-    const guildField = getByLabelText(/Discord Guild ID/i);
-    expect(botField).toBeInTheDocument();
-    expect(guildField).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.installServices).toHaveBeenCalledWith([
+        { name: 'noona-vault', env: { VAULT_ADDRESS: 'http://vault.internal' } },
+        { name: 'noona-redis' },
+        { name: 'noona-mongo' },
+      ]);
+      expect(api.fetchServiceHealth).toHaveBeenCalledWith('noona-redis');
+    });
 
-    expect(getByTestId('setup-next')).toBeDisabled();
+    const updateCalls = vi.mocked(api.updateWizardState).mock.calls;
+    expect(updateCalls[0]?.[0]).toMatchObject({ step: 'foundation', status: 'in-progress' });
+    expect(updateCalls.at(-1)?.[0]).toMatchObject({ step: 'foundation', status: 'complete' });
 
-    fireEvent.change(botField, { target: { value: 'test-token' } });
-    fireEvent.change(guildField, { target: { value: 'guild-123' } });
+    await waitFor(() => {
+      expect(queryByTestId('foundation-panel')).not.toBeInTheDocument();
+    });
 
-    expect((botField as HTMLInputElement).value).toBe('test-token');
-    expect((guildField as HTMLInputElement).value).toBe('guild-123');
-
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
-    await user.click(getByTestId('setup-next'));
-
-    expect(getByTestId('discord-setup')).toBeInTheDocument();
-    expect(await findByRole('button', { name: /validate credentials/i })).toBeInTheDocument();
+    const discordTokenFields = within(getByTestId('discord-token')).getAllByLabelText(/Discord Bot Token/i);
+    expect(discordTokenFields.length).toBeGreaterThan(0);
   });
 
-  it('blocks install until Discord credentials are validated', async () => {
+  it('displays foundation error when bootstrap fails', async () => {
     const user = userEvent.setup();
-    const { getByTestId, getByRole, queryByTestId, findByRole, getByLabelText } = renderWithProviders(
-      <SetupPage />,
-      {
-        services: baseServices,
+    vi.mocked(api.installServices).mockRejectedValueOnce(new Error('boom'));
+
+    const { getByTestId, getAllByText, getByLabelText } = renderWithProviders(<SetupPage />, {
+      services: baseServices,
+    });
+
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
+
+    const addressField = getByLabelText(/vault address/i);
+    fireEvent.change(addressField, { target: { value: 'http://vault.internal' } });
+    await user.click(getByTestId('setup-next'));
+
+    await waitFor(() => {
+      expect(getAllByText(/boom/i).length).toBeGreaterThan(0);
+    });
+    expect(getByTestId('setup-next')).not.toHaveTextContent(/launch raven/i);
+  });
+
+  it('restores foundation overrides from wizard state detail', async () => {
+    const detail = JSON.stringify({
+      overrides: {
+        'noona-vault': { VAULT_ADDRESS: 'http://vault.cached' },
       },
-    );
+      lastStage: 'persist',
+    });
+    vi.mocked(api.fetchWizardState).mockResolvedValue({
+      ...defaultWizardState,
+      foundation: { ...defaultWizardState.foundation, detail },
+    });
 
-    await user.click(getByTestId('setup-next'));
+    const { getByLabelText } = renderWithProviders(<SetupPage />, {
+      services: baseServices,
+    });
 
-    const botField = getByLabelText(/Discord Bot Token/i);
-    const guildField = getByLabelText(/Discord Guild ID/i);
-    fireEvent.change(botField, { target: { value: 'token-abc' } });
-    fireEvent.change(guildField, { target: { value: 'guild-xyz' } });
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
 
-    expect((botField as HTMLInputElement).value).toBe('token-abc');
-    expect((guildField as HTMLInputElement).value).toBe('guild-xyz');
+    const addressField = getByLabelText(/vault address/i) as HTMLInputElement;
+    expect(addressField.value).toBe('http://vault.cached');
+  });
 
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
+  it('requires Discord validation before installing Raven', async () => {
+    const user = userEvent.setup();
+    const renderResult = renderWithProviders(<SetupPage />, {
+      services: baseServices,
+    });
+    const { getByTestId, getByLabelText, queryByTestId, findByTestId } = renderResult;
 
-    await user.click(getByTestId('setup-next'));
+    await waitFor(() => expect(api.fetchWizardState).toHaveBeenCalled());
 
-    const validateButton = await findByRole('button', { name: /validate credentials/i });
+    await completeFoundation(renderResult, user);
+
+    await waitFor(() => expect(queryByTestId('foundation-panel')).not.toBeInTheDocument());
+
+    const botFieldGroup = within(getByTestId('discord-token')).getAllByLabelText(/Discord Bot Token/i);
+    const guildFieldGroup = within(getByTestId('discord-guild')).getAllByLabelText(/Discord Guild ID/i);
+
+    for (const field of botFieldGroup) {
+      fireEvent.change(field, { target: { value: 'test-token' } });
+    }
+
+    for (const field of guildFieldGroup) {
+      fireEvent.change(field, { target: { value: 'guild-123' } });
+    }
+
     expect(getByTestId('setup-next')).toBeDisabled();
 
+    const validateButton = await findByTestId('discord-validate');
     await user.click(validateButton);
-
-    await waitFor(() => {
-      expect(api.validatePortalDiscordConfig).toHaveBeenCalled();
-    });
-
-    expect(queryByTestId('discord-validation-success')).toBeInTheDocument();
-    expect(getByTestId('setup-next')).not.toBeDisabled();
-  });
-
-  it('triggers installation and displays progress once Discord is validated', async () => {
-    const fetchProgressMock = vi.mocked(api.fetchInstallProgress);
-    fetchProgressMock.mockResolvedValueOnce({ status: 'installing', percent: 10, items: [] });
-    fetchProgressMock.mockResolvedValueOnce({ status: 'completed', percent: 100, items: [] });
-
-    const user = userEvent.setup({ delay: null });
-    const { getByTestId, getByRole, findByTestId, findByRole, getByLabelText } = renderWithProviders(
-      <SetupPage />,
-      {
-        services: baseServices,
-      },
-    );
-
-    await user.click(getByTestId('setup-next'));
-
-    const botField = getByLabelText(/Discord Bot Token/i);
-    const guildField = getByLabelText(/Discord Guild ID/i);
-    fireEvent.change(botField, { target: { value: 'token' } });
-    fireEvent.change(guildField, { target: { value: 'guild' } });
-
-    expect((botField as HTMLInputElement).value).toBe('token');
-    expect((guildField as HTMLInputElement).value).toBe('guild');
-
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
-    await user.click(getByTestId('setup-next'));
-    await user.click(await findByRole('button', { name: /validate credentials/i }));
-
-    await waitFor(() => {
-      expect(api.validatePortalDiscordConfig).toHaveBeenCalled();
-    });
-
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
-    await user.click(getByTestId('setup-next'));
-
-    expect(getByTestId('install-step')).toBeInTheDocument();
-
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
-    await user.click(getByTestId('setup-next'));
-
-    await waitFor(() => {
-      expect(api.installServices).toHaveBeenCalledTimes(1);
-    });
-
-    await waitFor(() => {
-      expect(api.fetchInstallProgress).toHaveBeenCalled();
-    });
-
-    const statusPanel = await findByTestId('installer-panel');
-    expect(statusPanel).toBeInTheDocument();
-  });
-
-  it('surfaces installation errors when install request fails', async () => {
-    const installError = new Error('Failed to install services.');
-    (api.installServices as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(installError);
-    const user = userEvent.setup();
-    const { getByTestId, getByRole, findByTestId, findByRole, getByLabelText } = renderWithProviders(
-      <SetupPage />,
-      {
-        services: baseServices,
-      },
-    );
-
-    await user.click(getByTestId('setup-next'));
-    const botField = getByLabelText(/Discord Bot Token/i);
-    const guildField = getByLabelText(/Discord Guild ID/i);
-    fireEvent.change(botField, { target: { value: 'token' } });
-    fireEvent.change(guildField, { target: { value: 'guild' } });
-
-    expect((botField as HTMLInputElement).value).toBe('token');
-    expect((guildField as HTMLInputElement).value).toBe('guild');
-
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
-    await user.click(getByTestId('setup-next'));
-    await user.click(await findByRole('button', { name: /validate credentials/i }));
     await waitFor(() => expect(api.validatePortalDiscordConfig).toHaveBeenCalled());
-
     await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
     await user.click(getByTestId('setup-next'));
 
-    expect(getByTestId('install-step')).toBeInTheDocument();
-
-    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
-
-    await user.click(getByTestId('setup-next'));
-
-    await waitFor(() => {
-      expect(api.installServices).toHaveBeenCalled();
-    });
-
-    const errorAlert = await findByTestId('installer-error');
-    expect(errorAlert).toHaveTextContent('Failed to install services.');
-  });
-
-  it('pulls and starts Raven when environment is confirmed', async () => {
-    const user = userEvent.setup();
-    const services = [
-      {
-        name: 'noona-sage',
-        displayName: 'Sage',
-        description: 'Monitoring and logging backbone.',
-        installed: false,
-        recommended: true,
-        dependencies: [],
-        envConfig: [
-          {
-            key: 'DEBUG',
-            label: 'Debug',
-            defaultValue: 'false',
-            required: false,
-            readOnly: false,
-          },
-        ],
-        metadata: {},
-      },
-      {
-        name: 'noona-raven',
-        displayName: 'Raven',
-        description: 'Downloader.',
-        installed: false,
-        recommended: true,
-        dependencies: [],
-        envConfig: [
-          {
-            key: 'APPDATA',
-            label: 'Raven Downloads Root',
-            defaultValue: '',
-            required: false,
-            readOnly: false,
-          },
-          {
-            key: 'KAVITA_DATA_MOUNT',
-            label: 'Kavita Data Mount',
-            defaultValue: '',
-            required: false,
-            readOnly: false,
-          },
-        ],
-        metadata: {},
-      },
-    ];
-
-    const pullMock = vi.mocked(api.pullRavenContainer);
-    const startMock = vi.mocked(api.startRavenContainer);
-
-    const { getByTestId, getByLabelText } = renderWithProviders(<SetupPage />, {
-      services,
-    });
-
-    await user.click(getByTestId('setup-next'));
-
-    const appDataField = getByLabelText(/Raven Downloads Root/i);
-    const mountField = getByLabelText(/Kavita Data Mount/i);
-
-    fireEvent.change(appDataField, { target: { value: '/downloads' } });
-    fireEvent.change(mountField, { target: { value: '/srv/kavita' } });
-
-    await user.click(getByTestId('setup-next'));
-
-    await waitFor(() => {
-      expect(pullMock).toHaveBeenCalledWith({
-        APPDATA: '/downloads',
-        KAVITA_DATA_MOUNT: '/srv/kavita',
-      });
-      expect(startMock).toHaveBeenCalledWith({
-        APPDATA: '/downloads',
-        KAVITA_DATA_MOUNT: '/srv/kavita',
-      });
-    });
-
-    expect(getByTestId('install-step')).toBeInTheDocument();
-  });
-
-  it('displays wizard state load errors', async () => {
-    vi.mocked(api.fetchWizardState).mockRejectedValueOnce(new Error('vault offline'));
-
-    const { findByTestId } = renderWithProviders(<SetupPage />, {
-      services: baseServices,
-    });
-
-    const alert = await findByTestId('wizard-state-error');
-    expect(alert).toHaveTextContent('vault offline');
+    await waitFor(() => expect(api.pullRavenContainer).toHaveBeenCalled());
   });
 });

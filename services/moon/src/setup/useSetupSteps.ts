@@ -12,6 +12,7 @@ import {
   createPortalDiscordRole,
   fetchInstallProgress,
   fetchInstallationLogs,
+  fetchServiceHealth,
   fetchServiceLogs,
   installServices,
   type InstallLogsResponse,
@@ -22,8 +23,10 @@ import {
   startRavenContainer,
   validatePortalDiscordConfig,
 } from './api.ts';
+import { useWizardState } from './useWizardState.ts';
+import type { WizardState, WizardStateUpdate } from './api.ts';
 
-export type SetupStepId = 'select' | 'configure' | 'discord' | 'install' | 'logs';
+export type SetupStepId = 'foundation' | 'portal' | 'raven' | 'verification';
 
 export type SetupStepStatus = 'current' | 'complete' | 'upcoming' | 'error';
 
@@ -114,6 +117,139 @@ export interface ServiceLogState {
   response: InstallLogsResponse | null;
 }
 
+export type FoundationProgressStatus = 'idle' | 'pending' | 'success' | 'error';
+
+export interface FoundationProgressItem {
+  key: 'persist' | 'install' | 'health';
+  label: string;
+  status: FoundationProgressStatus;
+  message: string | null;
+}
+
+export interface FoundationState {
+  progress: FoundationProgressItem[];
+  running: boolean;
+  completed: boolean;
+  error: string | null;
+}
+
+const FOUNDATION_PROGRESS_STEPS: Array<Pick<FoundationProgressItem, 'key' | 'label'>> = [
+  { key: 'persist', label: 'Persist configuration' },
+  { key: 'install', label: 'Install core services' },
+  { key: 'health', label: 'Verify Redis health' },
+];
+
+const FOUNDATION_STAGE_PENDING_MESSAGES: Record<FoundationProgressItem['key'], string> = {
+  persist: 'Persisting configuration overrides…',
+  install: 'Installing Vault, Redis, and Mongo…',
+  health: 'Waiting for Redis health…',
+};
+
+const FOUNDATION_STAGE_SUCCESS_MESSAGES: Record<FoundationProgressItem['key'], string> = {
+  persist: 'Configuration overrides saved.',
+  install: 'Core services installed successfully.',
+  health: 'Redis is reporting healthy.',
+};
+
+function createFoundationProgress(): FoundationProgressItem[] {
+  return FOUNDATION_PROGRESS_STEPS.map((step) => ({
+    ...step,
+    status: 'idle',
+    message: null,
+  }));
+}
+
+function setFoundationProgressStatus(
+  progress: FoundationProgressItem[],
+  key: FoundationProgressItem['key'],
+  status: FoundationProgressStatus,
+  message: string | null = null,
+): FoundationProgressItem[] {
+  return progress.map((item) =>
+    item.key === key
+      ? {
+          ...item,
+          status,
+          message,
+        }
+      : item,
+  );
+}
+
+interface FoundationDetailPayload {
+  overrides?: Record<string, Record<string, string>>;
+  lastStage?: FoundationProgressItem['key'];
+  completed?: boolean;
+}
+
+function parseFoundationDetail(detail: string | null): FoundationDetailPayload | null {
+  if (!detail || typeof detail !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(detail);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    const payload = parsed as Record<string, unknown>;
+    const overrides = payload.overrides;
+    const lastStage = payload.lastStage;
+    const completed = payload.completed;
+
+    return {
+      overrides:
+        overrides && typeof overrides === 'object'
+          ? (overrides as Record<string, Record<string, string>>)
+          : undefined,
+      lastStage:
+        typeof lastStage === 'string' &&
+        (FOUNDATION_PROGRESS_STEPS.some((step) => step.key === lastStage) ? (lastStage as FoundationProgressItem['key']) : undefined),
+      completed: typeof completed === 'boolean' ? completed : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function deriveFoundationStateFromWizard(
+  detail: FoundationDetailPayload | null,
+  stepState: WizardState['foundation'] | undefined,
+): Pick<FoundationState, 'progress' | 'completed' | 'error'> {
+  let progress = createFoundationProgress();
+  const status = stepState?.status;
+  const errorMessage =
+    typeof stepState?.error === 'string' && stepState.error.trim()
+      ? stepState.error
+      : null;
+
+  const completed = detail?.completed === true || status === 'complete';
+  if (completed) {
+    progress = progress.map((item) => ({ ...item, status: 'success' }));
+    return { progress, completed: true, error: null };
+  }
+
+  const lastStage = detail?.lastStage;
+  if (lastStage) {
+    const order = FOUNDATION_PROGRESS_STEPS.map((step) => step.key);
+    const index = order.indexOf(lastStage);
+    if (index >= 0) {
+      for (let i = 0; i < index; i += 1) {
+        progress = setFoundationProgressStatus(progress, order[i], 'success');
+      }
+      const stageStatus = status === 'error' ? 'error' : 'pending';
+      const stageMessage = status === 'error' ? errorMessage : null;
+      progress = setFoundationProgressStatus(progress, lastStage, stageStatus, stageMessage);
+    }
+  }
+
+  return {
+    progress,
+    completed: false,
+    error: status === 'error' ? errorMessage : null,
+  };
+}
+
 export interface UseSetupStepsResult {
   steps: SetupStepDefinition[];
   currentStep: SetupStepDefinition;
@@ -124,9 +260,8 @@ export interface UseSetupStepsResult {
   canGoPrevious: boolean;
   nextLabel: string;
   services: SetupService[];
-  selected: Set<string>;
-  selectionErrors: string[];
-  toggleService: (name: string) => void;
+  foundationSections: EnvSection[];
+  foundationState: FoundationState;
   envSections: EnvSection[];
   updateEnvValue: (serviceName: string, key: string, value: string) => void;
   environmentError: string;
@@ -139,39 +274,44 @@ export interface UseSetupStepsResult {
   setSelectedLogService: (name: string) => void;
   serviceLogs: Map<string, ServiceLogState>;
   loadServiceLogs: (name: string, limit?: number) => Promise<void>;
+  wizardState: WizardState | null;
+  wizardLoading: boolean;
+  wizardError: string | null;
+  refreshWizard: () => Promise<void>;
 }
 
 const STEP_DEFINITIONS: Array<Omit<SetupStepDefinition, 'status' | 'error'>> = [
   {
-    id: 'select',
-    title: 'Select services',
-    description: 'Choose which Noona services should be installed.',
+    id: 'foundation',
+    title: 'Foundation services',
+    description: 'Configure core data services and bootstrap the stack.',
   },
   {
-    id: 'configure',
-    title: 'Environment variables',
-    description: 'Review and customise environment configuration before install.',
+    id: 'portal',
+    title: 'Portal configuration',
+    description: 'Provide Portal environment configuration and validate Discord access.',
   },
   {
-    id: 'discord',
-    title: 'Discord integration',
-    description: 'Validate Portal Discord credentials and bootstrap required resources.',
-    optional: true,
+    id: 'raven',
+    title: 'Raven deployment',
+    description: 'Launch Raven and monitor installer progress.',
   },
   {
-    id: 'install',
-    title: 'Installer',
-    description: 'Launch the installer and monitor progress in real time.',
-  },
-  {
-    id: 'logs',
-    title: 'Logs',
-    description: 'Inspect aggregated installer and per-service logs.',
+    id: 'verification',
+    title: 'Verification logs',
+    description: 'Inspect installer and per-service logs for verification.',
   },
 ];
 
 const PORTAL_SERVICE_NAME = 'noona-portal';
 const RAVEN_SERVICE_NAME = 'noona-raven';
+const FOUNDATION_SERVICE_NAMES = ['noona-vault', 'noona-redis', 'noona-mongo'] as const;
+const FOUNDATION_SERVICE_SET = new Set<string>(FOUNDATION_SERVICE_NAMES);
+const DEFAULT_SELECTED_SERVICES = new Set<string>([
+  ...FOUNDATION_SERVICE_NAMES,
+  PORTAL_SERVICE_NAME,
+  RAVEN_SERVICE_NAME,
+]);
 
 function formatDisplayName(name: string): string {
   return name
@@ -333,6 +473,16 @@ function getServiceEnvOverrides(
   return cleaned;
 }
 
+function collectFoundationOverrides(
+  overrides: Map<string, Record<string, string>>,
+): Record<string, Record<string, string>> {
+  const payload: Record<string, Record<string, string>> = {};
+  for (const name of FOUNDATION_SERVICE_NAMES) {
+    payload[name] = getServiceEnvOverrides(overrides, name);
+  }
+  return payload;
+}
+
 function buildInstallPayload(
   selected: Set<string>,
   overrides: Map<string, Record<string, string>>,
@@ -345,11 +495,24 @@ function buildInstallPayload(
 
 export function useSetupSteps(): UseSetupStepsResult {
   const { services: serviceEntries, ensureLoaded, refresh } = useServiceInstallation();
-  const [currentStepId, setCurrentStepId] = useState<SetupStepId>('select');
+  const {
+    state: wizardState,
+    loading: wizardLoading,
+    error: wizardError,
+    refresh: refreshWizard,
+    update: updateWizard,
+  } = useWizardState();
+  const [currentStepId, setCurrentStepId] = useState<SetupStepId>('foundation');
   const [maxVisitedIndex, setMaxVisitedIndex] = useState(0);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(DEFAULT_SELECTED_SERVICES),
+  );
   const services = useMemo(() => serviceEntries.map(toSetupService), [serviceEntries]);
   const serviceMap = useMemo(() => new Map(services.map((service) => [service.name, service])), [services]);
+  const foundationDetail = useMemo(
+    () => (wizardState ? parseFoundationDetail(wizardState.foundation?.detail ?? null) : null),
+    [wizardState],
+  );
   const [overrides, setOverrides] = useState<Map<string, Record<string, string>>>(() =>
     initializeEnvOverrides(services),
   );
@@ -391,8 +554,48 @@ export function useSetupSteps(): UseSetupStepsResult {
     () => new Map(),
   );
   const [selectedLogService, setSelectedLogService] = useState<string>('installation');
+  const [foundationState, setFoundationState] = useState<FoundationState>({
+    progress: createFoundationProgress(),
+    running: false,
+    completed: false,
+    error: null,
+  });
+  const foundationOverridesSeededRef = useRef(false);
 
   const pollTimerRef = useRef<number | null>(null);
+
+  const waitForRedisHealth = useCallback(async () => {
+    const maxAttempts = 10;
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const response = await fetchServiceHealth('noona-redis');
+        const status = typeof response?.status === 'string' ? response.status.toLowerCase() : '';
+        const healthyFlag = (response as Record<string, unknown>)?.healthy;
+        const isHealthy =
+          status === 'healthy' ||
+          status === 'ok' ||
+          status === 'ready' ||
+          healthyFlag === true;
+        if (isHealthy) {
+          return;
+        }
+        lastError = new Error('Redis is not healthy yet.');
+      } catch (error) {
+        lastError = error;
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error('Redis health check did not succeed in time.');
+  }, []);
 
   useEffect(() => {
     ensureLoaded().catch(() => {});
@@ -422,48 +625,39 @@ export function useSetupSteps(): UseSetupStepsResult {
   }, [services]);
 
   useEffect(() => {
-    setSelected((prev) => {
-      if (prev.size > 0) {
-        return prev;
-      }
-      const initial = new Set<string>();
-      for (const service of services) {
-        if (!service.installed) {
-          initial.add(service.name);
+    if (!foundationDetail?.overrides) {
+      return;
+    }
+    if (foundationOverridesSeededRef.current) {
+      return;
+    }
+
+    setOverrides((prev) => {
+      const next = cloneOverrides(prev);
+      for (const [serviceName, env] of Object.entries(foundationDetail.overrides ?? {})) {
+        if (!next.has(serviceName)) {
+          next.set(serviceName, { ...env });
+        } else {
+          next.set(serviceName, { ...next.get(serviceName)!, ...env });
         }
       }
-      return initial;
+      return next;
     });
-  }, [services]);
 
-  const selectionErrors = useMemo(() => {
-    const errors: string[] = [];
-    if (selected.size === 0) {
-      errors.push('Select at least one service to continue.');
-    }
+    foundationOverridesSeededRef.current = true;
+  }, [foundationDetail]);
 
-    const missingDependencies: string[] = [];
-    for (const name of selected) {
-      const service = serviceMap.get(name);
-      if (!service) continue;
-      for (const dep of service.dependencies) {
-        if (selected.has(dep)) {
-          continue;
+  useEffect(() => {
+    setSelected(() => {
+      const next = new Set<string>();
+      for (const name of DEFAULT_SELECTED_SERVICES) {
+        if (serviceMap.has(name)) {
+          next.add(name);
         }
-        const dependency = serviceMap.get(dep);
-        if (dependency?.installed) {
-          continue;
-        }
-        missingDependencies.push(`${service.displayName} requires ${formatDisplayName(dep)}.`);
       }
-    }
-
-    if (missingDependencies.length > 0) {
-      errors.push(...missingDependencies);
-    }
-
-    return errors;
-  }, [selected, serviceMap]);
+      return next;
+    });
+  }, [serviceMap]);
 
   useEffect(() => {
     if (!selected.has(RAVEN_SERVICE_NAME)) {
@@ -472,7 +666,26 @@ export function useSetupSteps(): UseSetupStepsResult {
     }
   }, [selected]);
 
-  const envSections = useMemo(() => {
+  useEffect(() => {
+    if (!wizardState) {
+      return;
+    }
+    setFoundationState((prev) => {
+      if (prev.running) {
+        return prev;
+      }
+      const derived = deriveFoundationStateFromWizard(foundationDetail, wizardState.foundation);
+      return {
+        ...prev,
+        progress: derived.progress,
+        completed: derived.completed,
+        error: derived.error,
+        running: false,
+      };
+    });
+  }, [wizardState, foundationDetail]);
+
+  const allEnvSections = useMemo(() => {
     const sections: EnvSection[] = [];
     for (const name of selected) {
       const service = serviceMap.get(name);
@@ -497,6 +710,36 @@ export function useSetupSteps(): UseSetupStepsResult {
     return sections;
   }, [selected, serviceMap, overrides]);
 
+  const foundationSections = useMemo(() => {
+    const byName = new Map(allEnvSections.map((section) => [section.service.name, section]));
+    const ordered: EnvSection[] = [];
+    for (const name of FOUNDATION_SERVICE_NAMES) {
+      const section = byName.get(name);
+      if (section) {
+        ordered.push(section);
+      }
+    }
+    return ordered;
+  }, [allEnvSections]);
+
+  const envSections = useMemo(
+    () => allEnvSections.filter((section) => section.service.name === PORTAL_SERVICE_NAME),
+    [allEnvSections],
+  );
+
+  const foundationEnvErrors = useMemo(() => {
+    const errors = new Map<string, string[]>();
+    for (const section of foundationSections) {
+      const messages = section.fields
+        .filter((field) => field.error)
+        .map((field) => field.error as string);
+      if (messages.length > 0) {
+        errors.set(section.service.name, messages);
+      }
+    }
+    return errors;
+  }, [foundationSections]);
+
   const envErrors = useMemo(() => {
     const errors = new Map<string, string[]>();
     for (const section of envSections) {
@@ -511,7 +754,6 @@ export function useSetupSteps(): UseSetupStepsResult {
   }, [envSections]);
 
   const portalEnv = useMemo(() => overrides.get(PORTAL_SERVICE_NAME) ?? {}, [overrides]);
-  const portalSelected = selected.has(PORTAL_SERVICE_NAME);
 
   useEffect(() => {
     setDiscordValidation(null);
@@ -530,18 +772,6 @@ export function useSetupSteps(): UseSetupStepsResult {
     },
     [],
   );
-
-  const toggleService = useCallback((name: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) {
-        next.delete(name);
-      } else {
-        next.add(name);
-      }
-      return next;
-    });
-  }, []);
 
   const loadInstallationLogs = useCallback(
     async (limit = installationLogs.limit) => {
@@ -645,7 +875,19 @@ export function useSetupSteps(): UseSetupStepsResult {
       progressError: '',
     }));
     try {
-      const payload = buildInstallPayload(selected, overrides);
+      const installTargets = Array.from(selected).filter(
+        (name) => !FOUNDATION_SERVICE_SET.has(name),
+      );
+      if (installTargets.length === 0) {
+        setInstall((prev) => ({
+          ...prev,
+          installing: false,
+          completed: true,
+          error: '',
+        }));
+        return;
+      }
+      const payload = buildInstallPayload(new Set(installTargets), overrides);
       const response = await installServices(payload);
       setInstall((prev) => ({
         ...prev,
@@ -680,67 +922,224 @@ export function useSetupSteps(): UseSetupStepsResult {
       setMaxVisitedIndex((prev) => Math.max(prev, nextIndex));
     };
 
-    switch (currentStepId) {
-      case 'select':
-        advance('configure');
+    if (currentStepId === 'foundation') {
+      if (foundationState.running) {
         return;
-      case 'configure':
-        if (selected.has(RAVEN_SERVICE_NAME)) {
-          setPreparingEnvironment(true);
-          setEnvironmentError('');
-          try {
-            const env = getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME);
-            await pullRavenContainer(env);
-            await startRavenContainer(env);
-          } catch (error) {
-            const message =
-              error instanceof Error
-                ? error.message
-                : 'Unable to start Raven service.';
-            setEnvironmentError(message);
-            setPreparingEnvironment(false);
-            return;
-          }
+      }
+      if (foundationEnvErrors.size > 0) {
+        setFoundationState((prev) => ({
+          ...prev,
+          error: 'Resolve required environment fields before continuing.',
+        }));
+        return;
+      }
+      if (foundationState.completed) {
+        advance('portal');
+        return;
+      }
+
+      const overridesSnapshot = collectFoundationOverrides(overrides);
+      let currentStage: FoundationProgressItem['key'] = 'persist';
+      const timestamp = () => new Date().toISOString();
+
+      setFoundationState({
+        progress: setFoundationProgressStatus(
+          createFoundationProgress(),
+          'persist',
+          'pending',
+          FOUNDATION_STAGE_PENDING_MESSAGES.persist,
+        ),
+        running: true,
+        completed: false,
+        error: null,
+      });
+
+      try {
+        const persistDetail = JSON.stringify({
+          overrides: overridesSnapshot,
+          lastStage: 'persist',
+          completed: false,
+        });
+        await updateWizard({
+          step: 'foundation',
+          status: 'in-progress',
+          detail: persistDetail,
+          error: null,
+          updatedAt: timestamp(),
+          completedAt: null,
+        });
+        setFoundationState((prev) => ({
+          ...prev,
+          progress: setFoundationProgressStatus(
+            prev.progress,
+            'persist',
+            'success',
+            FOUNDATION_STAGE_SUCCESS_MESSAGES.persist,
+          ),
+        }));
+
+        currentStage = 'install';
+        setFoundationState((prev) => ({
+          ...prev,
+          progress: setFoundationProgressStatus(
+            prev.progress,
+            'install',
+            'pending',
+            FOUNDATION_STAGE_PENDING_MESSAGES.install,
+          ),
+        }));
+
+        const installPayload = FOUNDATION_SERVICE_NAMES.map((name) => {
+          const env = overridesSnapshot[name] ?? {};
+          return Object.keys(env).length > 0 ? { name, env } : { name };
+        });
+        await installServices(installPayload);
+
+        const installDetail = JSON.stringify({
+          overrides: overridesSnapshot,
+          lastStage: 'install',
+          completed: false,
+        });
+        await updateWizard({
+          step: 'foundation',
+          status: 'in-progress',
+          detail: installDetail,
+          error: null,
+          updatedAt: timestamp(),
+          completedAt: null,
+        });
+        setFoundationState((prev) => ({
+          ...prev,
+          progress: setFoundationProgressStatus(
+            prev.progress,
+            'install',
+            'success',
+            FOUNDATION_STAGE_SUCCESS_MESSAGES.install,
+          ),
+        }));
+
+        currentStage = 'health';
+        setFoundationState((prev) => ({
+          ...prev,
+          progress: setFoundationProgressStatus(
+            prev.progress,
+            'health',
+            'pending',
+            FOUNDATION_STAGE_PENDING_MESSAGES.health,
+          ),
+        }));
+
+        await waitForRedisHealth();
+        const completionTimestamp = timestamp();
+        const completeDetail = JSON.stringify({
+          overrides: overridesSnapshot,
+          lastStage: 'health',
+          completed: true,
+        });
+        await updateWizard({
+          step: 'foundation',
+          status: 'complete',
+          detail: completeDetail,
+          error: null,
+          updatedAt: completionTimestamp,
+          completedAt: completionTimestamp,
+        });
+        setFoundationState((prev) => ({
+          ...prev,
+          progress: setFoundationProgressStatus(
+            prev.progress,
+            'health',
+            'success',
+            FOUNDATION_STAGE_SUCCESS_MESSAGES.health,
+          ),
+          running: false,
+          completed: true,
+          error: null,
+        }));
+        advance('portal');
+        await refreshWizard().catch(() => {});
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Failed to bootstrap foundation services.';
+        setFoundationState((prev) => ({
+          ...prev,
+          running: false,
+          completed: false,
+          error: message,
+          progress: setFoundationProgressStatus(prev.progress, currentStage, 'error', message),
+        }));
+        const errorDetail = JSON.stringify({
+          overrides: overridesSnapshot,
+          lastStage: currentStage,
+          completed: false,
+        });
+        try {
+          await updateWizard({
+            step: 'foundation',
+            status: 'error',
+            detail: errorDetail,
+            error: message,
+            updatedAt: timestamp(),
+            completedAt: null,
+          });
+        } catch {
+          // ignore secondary failures
+        }
+      }
+      return;
+    }
+
+    if (currentStepId === 'portal') {
+      if (selected.has(RAVEN_SERVICE_NAME)) {
+        setPreparingEnvironment(true);
+        setEnvironmentError('');
+        try {
+          const env = getServiceEnvOverrides(overrides, RAVEN_SERVICE_NAME);
+          await pullRavenContainer(env);
+          await startRavenContainer(env);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Unable to start Raven service.';
+          setEnvironmentError(message);
           setPreparingEnvironment(false);
-        } else {
-          setEnvironmentError('');
-        }
-        if (portalSelected) {
-          advance('discord');
-        } else {
-          advance('install');
-        }
-        return;
-      case 'discord':
-        advance('install');
-        return;
-      case 'install':
-        if (!install.started) {
-          await triggerInstall();
           return;
         }
-        if (install.installing || !install.completed) {
-          return;
-        }
-        advance('logs');
+        setPreparingEnvironment(false);
+      }
+      advance('raven');
+      return;
+    }
+
+    if (currentStepId === 'raven') {
+      if (!install.started) {
+        await triggerInstall();
         return;
-      case 'logs':
-        if (currentIndex < STEP_DEFINITIONS.length - 1) {
-          advance(STEP_DEFINITIONS[currentIndex + 1].id);
-        }
+      }
+      if (install.installing || !install.completed) {
         return;
-      default:
-        return;
+      }
+      advance('verification');
+      return;
+    }
+
+    if (currentStepId === 'verification') {
+      if (currentIndex < STEP_DEFINITIONS.length - 1) {
+        advance(STEP_DEFINITIONS[currentIndex + 1].id);
+      }
     }
   }, [
     currentStepId,
-    portalSelected,
+    foundationState,
+    foundationEnvErrors,
+    overrides,
+    updateWizard,
+    refreshWizard,
+    waitForRedisHealth,
+    selected,
     install,
     triggerInstall,
-    selected,
-    overrides,
-    pullRavenContainer,
-    startRavenContainer,
   ]);
 
   const goPrevious = useCallback(() => {
@@ -755,22 +1154,20 @@ export function useSetupSteps(): UseSetupStepsResult {
 
   const canGoNext = useMemo(() => {
     switch (currentStepId) {
-      case 'select':
-        return selectionErrors.length === 0;
-      case 'configure':
-        return envErrors.size === 0 && !preparingEnvironment;
-      case 'discord':
-        if (!portalSelected) {
-          return true;
-        }
+      case 'foundation':
+        return !foundationState.running && foundationEnvErrors.size === 0;
+      case 'portal':
         return (
+          envErrors.size === 0 &&
+          !preparingEnvironment &&
           !!portalEnv.DISCORD_BOT_TOKEN &&
           !!portalEnv.DISCORD_GUILD_ID &&
           !discordValidationError &&
           !discordValidating &&
-          discordValidatedAt != null
+          discordValidatedAt != null &&
+          !environmentError
         );
-      case 'install':
+      case 'raven':
         if (!install.started) {
           return true;
         }
@@ -778,22 +1175,23 @@ export function useSetupSteps(): UseSetupStepsResult {
           return false;
         }
         return install.completed;
-      case 'logs':
+      case 'verification':
         return true;
       default:
         return true;
     }
   }, [
     currentStepId,
-    selectionErrors,
+    foundationState.running,
+    foundationEnvErrors,
     envErrors,
-    portalSelected,
+    preparingEnvironment,
     portalEnv,
     discordValidationError,
     discordValidating,
     discordValidatedAt,
+    environmentError,
     install,
-    preparingEnvironment,
   ]);
 
   const selectStep = useCallback(
@@ -803,7 +1201,7 @@ export function useSetupSteps(): UseSetupStepsResult {
         return;
       }
 
-      if (install.installing && (id === 'select' || id === 'configure' || id === 'discord')) {
+      if (install.installing && (id === 'foundation' || id === 'portal' || id === 'raven')) {
         return;
       }
 
@@ -859,37 +1257,44 @@ export function useSetupSteps(): UseSetupStepsResult {
       }
 
       let error: string | null = null;
-      if (definition.id === 'select' && selectionErrors.length > 0) {
-        status = status === 'current' ? 'current' : 'error';
-        error = selectionErrors[0];
-      }
-      if (definition.id === 'configure' && envErrors.size > 0) {
-        if (status === 'current') {
-          error = 'Resolve required environment fields.';
-        } else {
-          status = 'error';
-          error = 'Missing environment values.';
+      if (definition.id === 'foundation') {
+        if (foundationState.error) {
+          status = status === 'current' ? 'current' : 'error';
+          error = foundationState.error;
+        } else if (foundationEnvErrors.size > 0) {
+          if (status === 'current') {
+            error = 'Resolve required environment fields.';
+          } else {
+            status = 'error';
+            error = 'Missing environment values.';
+          }
         }
       }
-      if (definition.id === 'configure' && environmentError) {
-        status = 'error';
-        error = environmentError;
-      }
-      if (definition.id === 'discord' && portalSelected) {
-        if (discordValidationError) {
+      if (definition.id === 'portal') {
+        if (envErrors.size > 0) {
+          if (status === 'current') {
+            error = 'Resolve required environment fields.';
+          } else {
+            status = 'error';
+            error = 'Missing environment values.';
+          }
+        } else if (environmentError) {
+          status = 'error';
+          error = environmentError;
+        } else if (discordValidationError) {
           status = 'error';
           error = discordValidationError;
         }
       }
-      if (definition.id === 'install' && install.error) {
+      if (definition.id === 'raven' && install.error) {
         status = 'error';
         error = install.error;
       }
-      if (definition.id === 'install' && install.progressError) {
+      if (definition.id === 'raven' && install.progressError) {
         status = 'error';
         error = install.progressError;
       }
-      if (definition.id === 'logs' && installationLogs.error) {
+      if (definition.id === 'verification' && installationLogs.error) {
         status = 'error';
         error = installationLogs.error;
       }
@@ -901,11 +1306,11 @@ export function useSetupSteps(): UseSetupStepsResult {
     });
   }, [
     currentIndex,
+    foundationState.error,
+    foundationEnvErrors,
     envErrors,
-    selectionErrors,
     install,
     installationLogs.error,
-    portalSelected,
     discordValidationError,
     environmentError,
   ]);
@@ -914,16 +1319,20 @@ export function useSetupSteps(): UseSetupStepsResult {
 
   const nextLabel = useMemo(() => {
     switch (currentStepId) {
-      case 'select':
-        return 'Next';
-      case 'configure':
+      case 'foundation':
+        if (foundationState.running) {
+          return 'Bootstrapping…';
+        }
+        if (foundationState.completed) {
+          return 'Continue';
+        }
+        return 'Bootstrap foundation';
+      case 'portal':
         if (preparingEnvironment) {
           return 'Preparing Raven…';
         }
-        return portalSelected ? 'Review Discord' : 'Start installation';
-      case 'discord':
-        return 'Start installation';
-      case 'install':
+        return 'Launch Raven install';
+      case 'raven':
         if (!install.started) {
           return 'Start installation';
         }
@@ -931,12 +1340,12 @@ export function useSetupSteps(): UseSetupStepsResult {
           return 'Installing…';
         }
         return 'View logs';
-      case 'logs':
+      case 'verification':
         return 'Finish';
       default:
         return 'Next';
     }
-  }, [currentStepId, portalSelected, install, preparingEnvironment]);
+  }, [currentStepId, foundationState.running, foundationState.completed, install, preparingEnvironment]);
 
   const onValidateDiscord = useCallback(async () => {
     if (!portalEnv.DISCORD_BOT_TOKEN || !portalEnv.DISCORD_GUILD_ID) {
@@ -1061,9 +1470,8 @@ export function useSetupSteps(): UseSetupStepsResult {
     canGoPrevious,
     nextLabel,
     services,
-    selected,
-    selectionErrors,
-    toggleService,
+    foundationSections,
+    foundationState,
     envSections,
     updateEnvValue,
     environmentError,
@@ -1076,5 +1484,9 @@ export function useSetupSteps(): UseSetupStepsResult {
     setSelectedLogService,
     serviceLogs,
     loadServiceLogs,
+    wizardState,
+    wizardLoading,
+    wizardError,
+    refreshWizard,
   };
 }

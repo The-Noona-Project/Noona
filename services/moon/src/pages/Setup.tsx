@@ -20,12 +20,11 @@ import {
   Text,
 } from '@chakra-ui/react';
 import SetupStepper from '../setup/components/SetupStepper.tsx';
-import ServiceSelectionGrid from '../setup/components/ServiceSelectionGrid.tsx';
 import EnvironmentEditor from '../setup/components/EnvironmentEditor.tsx';
 import DiscordSetupForm from '../setup/components/DiscordSetupForm.tsx';
 import InstallerLogPanel from '../setup/components/InstallerLogPanel.tsx';
+import FoundationPanel from '../setup/components/FoundationPanel.tsx';
 import { useSetupSteps } from '../setup/useSetupSteps.ts';
-import { useWizardState } from '../setup/useWizardState.ts';
 import type { WizardStepStatus } from '../setup/api.ts';
 
 const WIZARD_STATUS_COLORS: Record<WizardStepStatus, string> = {
@@ -47,9 +46,8 @@ export default function SetupPage(): JSX.Element {
     canGoPrevious,
     nextLabel,
     services,
-    selected,
-    selectionErrors,
-    toggleService,
+    foundationSections,
+    foundationState,
     envSections,
     updateEnvValue,
     environmentError,
@@ -61,14 +59,21 @@ export default function SetupPage(): JSX.Element {
     setSelectedLogService,
     serviceLogs,
     loadServiceLogs,
+    wizardState,
+    wizardLoading,
+    wizardError,
+    refreshWizard,
   } = useSetupSteps();
-  const { state: wizardState, loading: wizardLoading, error: wizardError, refresh: refreshWizard } =
-    useWizardState();
 
-  const selectedServices = React.useMemo(
-    () => services.filter((service) => selected.has(service.name)),
-    [services, selected],
+  const foundationServices = React.useMemo(
+    () => foundationSections.map((section) => section.service),
+    [foundationSections],
   );
+
+  const logServices = React.useMemo(() => {
+    const foundationNames = new Set(foundationServices.map((service) => service.name));
+    return services.filter((service) => !foundationNames.has(service.name));
+  }, [services, foundationServices]);
 
   const wizardSteps = React.useMemo(() => {
     if (!wizardState) {
@@ -91,36 +96,34 @@ export default function SetupPage(): JSX.Element {
     await goNext();
   }, [goNext]);
 
-  const portalSelected = selected.has('noona-portal');
-
   const renderStepContent = () => {
     switch (currentStep.id) {
-      case 'select':
+      case 'foundation':
         return (
-          <ServiceSelectionGrid
-            services={services}
-            selected={selected}
-            selectionErrors={selectionErrors}
-            onToggle={toggleService}
-          />
-        );
-      case 'configure':
-        return (
-          <EnvironmentEditor
-            sections={envSections}
+          <FoundationPanel
+            sections={foundationSections}
             onChange={updateEnvValue}
-            error={environmentError}
+            state={foundationState}
           />
         );
-      case 'discord':
-        return <DiscordSetupForm discord={discord} isVisible={portalSelected} />;
-      case 'install':
+      case 'portal':
+        return (
+          <Stack spacing={6}>
+            <EnvironmentEditor
+              sections={envSections}
+              onChange={updateEnvValue}
+              error={environmentError}
+            />
+            <DiscordSetupForm discord={discord} isVisible />
+          </Stack>
+        );
+      case 'raven':
         return (
           <Stack spacing={4} data-testid="install-step">
             {!install.started && (
               <Alert status="info" borderRadius="md" data-testid="installer-instructions">
                 <AlertIcon />
-                Click “{nextLabel}” to begin installing the selected services.
+                Click “{nextLabel}” to begin installing the remaining services.
               </Alert>
             )}
             <InstallerLogPanel
@@ -131,11 +134,11 @@ export default function SetupPage(): JSX.Element {
               onSelectService={setSelectedLogService}
               serviceLogs={serviceLogs}
               onLoadServiceLogs={loadServiceLogs}
-              services={selectedServices}
+              services={logServices}
             />
           </Stack>
         );
-      case 'logs':
+      case 'verification':
         return (
           <InstallerLogPanel
             install={install}
@@ -145,7 +148,7 @@ export default function SetupPage(): JSX.Element {
             onSelectService={setSelectedLogService}
             serviceLogs={serviceLogs}
             onLoadServiceLogs={loadServiceLogs}
-            services={selectedServices}
+            services={logServices}
           />
         );
       default:
@@ -209,36 +212,61 @@ export default function SetupPage(): JSX.Element {
               <Card variant="outline" borderColor="gray.200" h="full">
                 <CardHeader borderBottomWidth="1px" borderColor="gray.100">
                   <Stack spacing={1}>
-                    <Heading size="sm">Selected services</Heading>
+                    <Heading size="sm">Core services</Heading>
                     <Text fontSize="sm" color="gray.600">
-                      Review which services will be installed.
+                      Review foundation and additional installation targets.
                     </Text>
                   </Stack>
                 </CardHeader>
                 <CardBody>
-                  {selectedServices.length > 0 ? (
-                    <Stack spacing={4} divider={<StackDivider borderColor="gray.100" />}>
-                      {selectedServices.map((service) => (
-                        <Stack key={service.name} spacing={1} data-testid={`selected-service-${service.name}`}>
-                          <HStack justify="space-between" align="flex-start">
-                            <Text fontWeight="semibold">{service.displayName}</Text>
-                            {service.recommended && (
-                              <Badge colorScheme="purple" variant="subtle">
-                                Recommended
-                              </Badge>
-                            )}
-                          </HStack>
-                          <Text fontSize="sm" color="gray.600">
-                            {service.description}
-                          </Text>
+                  <Stack spacing={4} divider={<StackDivider borderColor="gray.100" />}>
+                    {foundationServices.length > 0 ? (
+                      <Stack spacing={2}>
+                        <Heading size="xs" textTransform="uppercase" color="gray.500">
+                          Foundation
+                        </Heading>
+                        <Stack spacing={3}>
+                          {foundationServices.map((service) => (
+                            <Stack key={service.name} spacing={1} data-testid={`foundation-service-${service.name}`}>
+                              <Text fontWeight="semibold">{service.displayName}</Text>
+                              <Text fontSize="sm" color="gray.600">
+                                {service.description}
+                              </Text>
+                            </Stack>
+                          ))}
                         </Stack>
-                      ))}
-                    </Stack>
-                  ) : (
-                    <Text fontSize="sm" color="gray.500">
-                      No services selected yet. Choose services to see them listed here.
-                    </Text>
-                  )}
+                      </Stack>
+                    ) : null}
+                    {logServices.length > 0 ? (
+                      <Stack spacing={2}>
+                        <Heading size="xs" textTransform="uppercase" color="gray.500">
+                          Additional services
+                        </Heading>
+                        <Stack spacing={3}>
+                          {logServices.map((service) => (
+                            <Stack key={service.name} spacing={1} data-testid={`install-service-${service.name}`}>
+                              <HStack justify="space-between" align="flex-start">
+                                <Text fontWeight="semibold">{service.displayName}</Text>
+                                {service.recommended && (
+                                  <Badge colorScheme="purple" variant="subtle">
+                                    Recommended
+                                  </Badge>
+                                )}
+                              </HStack>
+                              <Text fontSize="sm" color="gray.600">
+                                {service.description}
+                              </Text>
+                            </Stack>
+                          ))}
+                        </Stack>
+                      </Stack>
+                    ) : null}
+                    {foundationServices.length === 0 && logServices.length === 0 ? (
+                      <Text fontSize="sm" color="gray.500">
+                        Service information will appear once discovery completes.
+                      </Text>
+                    ) : null}
+                  </Stack>
                 </CardBody>
               </Card>
               <Card variant="outline" borderColor="gray.200">
