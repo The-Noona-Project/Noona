@@ -18,7 +18,6 @@ import type { DiscordState } from '../useSetupSteps.ts';
 
 interface DiscordSetupFormProps {
   discord: DiscordState;
-  isVisible: boolean;
 }
 
 function formatList(items: Array<Record<string, unknown>> | null | undefined, key: string) {
@@ -42,7 +41,7 @@ function formatList(items: Array<Record<string, unknown>> | null | undefined, ke
     .join(', ');
 }
 
-export default function DiscordSetupForm({ discord, isVisible }: DiscordSetupFormProps) {
+export default function DiscordSetupForm({ discord }: DiscordSetupFormProps) {
   const [roleName, setRoleName] = useState('Noona Member');
   const [channelName, setChannelName] = useState('noona-onboarding');
   const [channelType, setChannelType] = useState('text');
@@ -54,14 +53,19 @@ export default function DiscordSetupForm({ discord, isVisible }: DiscordSetupFor
     return new Date(discord.lastValidatedAt).toLocaleString();
   }, [discord.lastValidatedAt]);
 
-  if (!isVisible) {
-    return (
-      <Alert status="info" borderRadius="md" data-testid="discord-step-skipped">
-        <AlertIcon />
-        The Discord step is skipped when the Portal service is not selected.
-      </Alert>
-    );
-  }
+  const roleCreatedTimestamp = useMemo(() => {
+    if (!discord.lastRoleCreatedAt) {
+      return null;
+    }
+    return new Date(discord.lastRoleCreatedAt).toLocaleString();
+  }, [discord.lastRoleCreatedAt]);
+
+  const channelCreatedTimestamp = useMemo(() => {
+    if (!discord.lastChannelCreatedAt) {
+      return null;
+    }
+    return new Date(discord.lastChannelCreatedAt).toLocaleString();
+  }, [discord.lastChannelCreatedAt]);
 
   return (
     <Stack spacing={6} data-testid="discord-setup">
@@ -133,6 +137,16 @@ export default function DiscordSetupForm({ discord, isVisible }: DiscordSetupFor
         {validationTimestamp && (
           <Tag colorScheme="green" data-testid="discord-validation-success">
             <TagLabel>Validated {validationTimestamp}</TagLabel>
+          </Tag>
+        )}
+        {roleCreatedTimestamp && (
+          <Tag colorScheme="purple" data-testid="discord-role-created">
+            <TagLabel>Role created {roleCreatedTimestamp}</TagLabel>
+          </Tag>
+        )}
+        {channelCreatedTimestamp && (
+          <Tag colorScheme="purple" data-testid="discord-channel-created">
+            <TagLabel>Channel created {channelCreatedTimestamp}</TagLabel>
           </Tag>
         )}
       </Stack>

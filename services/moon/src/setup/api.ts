@@ -1,5 +1,3 @@
-import { validatePortalDiscordConfig as legacyValidate, createPortalDiscordRole as legacyCreateRole, createPortalDiscordChannel as legacyCreateChannel } from '../utils/portalDiscordSetup.js';
-
 export interface FetchJsonOptions extends RequestInit {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -214,23 +212,62 @@ export interface PortalDiscordCredentials {
 
 export async function validatePortalDiscordConfig(
   credentials: PortalDiscordCredentials,
-  baseUrl?: string,
+  options?: FetchJsonOptions,
 ) {
-  return await legacyValidate(credentials, baseUrl);
+  const response = await fetchWithTimeout('/api/setup/services/noona-portal/discord/validate', {
+    ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify(credentials),
+  });
+
+  return await parseJson<PortalDiscordValidationPayload>(
+    response,
+    'Unable to verify Discord configuration.',
+  );
 }
 
 export async function createPortalDiscordRole(
   payload: PortalDiscordCredentials & { name: string },
-  baseUrl?: string,
+  options?: FetchJsonOptions,
 ) {
-  return await legacyCreateRole(payload, baseUrl);
+  const response = await fetchWithTimeout('/api/setup/services/noona-portal/discord/roles', {
+    ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to create Discord role.',
+  );
 }
 
 export async function createPortalDiscordChannel(
   payload: PortalDiscordCredentials & { name: string; type: string },
-  baseUrl?: string,
+  options?: FetchJsonOptions,
 ) {
-  return await legacyCreateChannel(payload, baseUrl);
+  const response = await fetchWithTimeout('/api/setup/services/noona-portal/discord/channels', {
+    ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to create Discord channel.',
+  );
 }
 
 export async function pullRavenContainer(
