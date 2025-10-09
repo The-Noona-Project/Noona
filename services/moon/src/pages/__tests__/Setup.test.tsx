@@ -1,8 +1,16 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@zag-js/focus-visible', () => ({
+  __esModule: true,
+  trackFocusVisible: () => () => {},
+  trackInteractionModality: () => () => {},
+  getInteractionModality: () => null,
+  setInteractionModality: () => {},
+}));
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../../test/testUtils.tsx';
-import { waitFor } from '@testing-library/react';
+import { fireEvent, waitFor } from '@testing-library/react';
 import SetupPage from '../Setup.tsx';
 import * as api from '../../setup/api.ts';
 
@@ -91,46 +99,57 @@ describe('SetupPage', () => {
 
   it('validates required environment variables before allowing Discord step', async () => {
     const user = userEvent.setup();
-    const { getByTestId, getByRole } = renderWithProviders(<SetupPage />, {
+    const { getByTestId, getByRole, findByRole, getByLabelText } = renderWithProviders(<SetupPage />, {
       services: baseServices,
     });
 
     await user.click(getByTestId('setup-next'));
 
-    const botField = getByTestId('env-field-noona-portal-DISCORD_BOT_TOKEN').querySelector('input');
-    const guildField = getByTestId('env-field-noona-portal-DISCORD_GUILD_ID').querySelector('input');
+    const botField = getByLabelText(/Discord Bot Token/i);
+    const guildField = getByLabelText(/Discord Guild ID/i);
     expect(botField).toBeInTheDocument();
     expect(guildField).toBeInTheDocument();
 
     expect(getByTestId('setup-next')).toBeDisabled();
 
-    await user.type(botField as HTMLInputElement, 'test-token');
-    await user.type(guildField as HTMLInputElement, 'guild-123');
+    fireEvent.change(botField, { target: { value: 'test-token' } });
+    fireEvent.change(guildField, { target: { value: 'guild-123' } });
 
-    expect(getByTestId('setup-next')).not.toBeDisabled();
+    expect((botField as HTMLInputElement).value).toBe('test-token');
+    expect((guildField as HTMLInputElement).value).toBe('guild-123');
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
 
     await user.click(getByTestId('setup-next'));
 
     expect(getByTestId('discord-setup')).toBeInTheDocument();
-    expect(getByRole('button', { name: /validate credentials/i })).toBeInTheDocument();
+    expect(await findByRole('button', { name: /validate credentials/i })).toBeInTheDocument();
   });
 
   it('blocks install until Discord credentials are validated', async () => {
     const user = userEvent.setup();
-    const { getByTestId, getByRole, queryByTestId } = renderWithProviders(<SetupPage />, {
-      services: baseServices,
-    });
+    const { getByTestId, getByRole, queryByTestId, findByRole, getByLabelText } = renderWithProviders(
+      <SetupPage />,
+      {
+        services: baseServices,
+      },
+    );
 
     await user.click(getByTestId('setup-next'));
 
-    const botField = getByTestId('env-field-noona-portal-DISCORD_BOT_TOKEN').querySelector('input');
-    const guildField = getByTestId('env-field-noona-portal-DISCORD_GUILD_ID').querySelector('input');
-    await user.type(botField as HTMLInputElement, 'token-abc');
-    await user.type(guildField as HTMLInputElement, 'guild-xyz');
+    const botField = getByLabelText(/Discord Bot Token/i);
+    const guildField = getByLabelText(/Discord Guild ID/i);
+    fireEvent.change(botField, { target: { value: 'token-abc' } });
+    fireEvent.change(guildField, { target: { value: 'guild-xyz' } });
+
+    expect((botField as HTMLInputElement).value).toBe('token-abc');
+    expect((guildField as HTMLInputElement).value).toBe('guild-xyz');
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
 
     await user.click(getByTestId('setup-next'));
 
-    const validateButton = getByRole('button', { name: /validate credentials/i });
+    const validateButton = await findByRole('button', { name: /validate credentials/i });
     expect(getByTestId('setup-next')).toBeDisabled();
 
     await user.click(validateButton);
@@ -144,25 +163,44 @@ describe('SetupPage', () => {
   });
 
   it('triggers installation and displays progress once Discord is validated', async () => {
-    vi.useFakeTimers();
+    const fetchProgressMock = vi.mocked(api.fetchInstallProgress);
+    fetchProgressMock.mockResolvedValueOnce({ status: 'installing', percent: 10, items: [] });
+    fetchProgressMock.mockResolvedValueOnce({ status: 'completed', percent: 100, items: [] });
+
     const user = userEvent.setup({ delay: null });
-    const { getByTestId, getByRole, findByTestId } = renderWithProviders(<SetupPage />, {
-      services: baseServices,
-    });
+    const { getByTestId, getByRole, findByTestId, findByRole, getByLabelText } = renderWithProviders(
+      <SetupPage />,
+      {
+        services: baseServices,
+      },
+    );
 
     await user.click(getByTestId('setup-next'));
 
-    const botField = getByTestId('env-field-noona-portal-DISCORD_BOT_TOKEN').querySelector('input');
-    const guildField = getByTestId('env-field-noona-portal-DISCORD_GUILD_ID').querySelector('input');
-    await user.type(botField as HTMLInputElement, 'token');
-    await user.type(guildField as HTMLInputElement, 'guild');
+    const botField = getByLabelText(/Discord Bot Token/i);
+    const guildField = getByLabelText(/Discord Guild ID/i);
+    fireEvent.change(botField, { target: { value: 'token' } });
+    fireEvent.change(guildField, { target: { value: 'guild' } });
+
+    expect((botField as HTMLInputElement).value).toBe('token');
+    expect((guildField as HTMLInputElement).value).toBe('guild');
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
 
     await user.click(getByTestId('setup-next'));
-    await user.click(getByRole('button', { name: /validate credentials/i }));
+    await user.click(await findByRole('button', { name: /validate credentials/i }));
 
     await waitFor(() => {
       expect(api.validatePortalDiscordConfig).toHaveBeenCalled();
     });
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
+
+    await user.click(getByTestId('setup-next'));
+
+    expect(getByTestId('install-step')).toBeInTheDocument();
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
 
     await user.click(getByTestId('setup-next'));
 
@@ -170,32 +208,53 @@ describe('SetupPage', () => {
       expect(api.installServices).toHaveBeenCalledTimes(1);
     });
 
-    await vi.runOnlyPendingTimersAsync();
+    await waitFor(() => {
+      expect(api.fetchInstallProgress).toHaveBeenCalled();
+    });
 
     const statusPanel = await findByTestId('installer-panel');
     expect(statusPanel).toBeInTheDocument();
-    expect(api.fetchInstallProgress).toHaveBeenCalled();
-    vi.useRealTimers();
   });
 
   it('surfaces installation errors when install request fails', async () => {
     const installError = new Error('Failed to install services.');
     (api.installServices as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(installError);
     const user = userEvent.setup();
-    const { getByTestId, getByRole, findByTestId } = renderWithProviders(<SetupPage />, {
-      services: baseServices,
-    });
+    const { getByTestId, getByRole, findByTestId, findByRole, getByLabelText } = renderWithProviders(
+      <SetupPage />,
+      {
+        services: baseServices,
+      },
+    );
 
     await user.click(getByTestId('setup-next'));
-    const botField = getByTestId('env-field-noona-portal-DISCORD_BOT_TOKEN').querySelector('input');
-    const guildField = getByTestId('env-field-noona-portal-DISCORD_GUILD_ID').querySelector('input');
-    await user.type(botField as HTMLInputElement, 'token');
-    await user.type(guildField as HTMLInputElement, 'guild');
+    const botField = getByLabelText(/Discord Bot Token/i);
+    const guildField = getByLabelText(/Discord Guild ID/i);
+    fireEvent.change(botField, { target: { value: 'token' } });
+    fireEvent.change(guildField, { target: { value: 'guild' } });
+
+    expect((botField as HTMLInputElement).value).toBe('token');
+    expect((guildField as HTMLInputElement).value).toBe('guild');
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
+
     await user.click(getByTestId('setup-next'));
-    await user.click(getByRole('button', { name: /validate credentials/i }));
+    await user.click(await findByRole('button', { name: /validate credentials/i }));
     await waitFor(() => expect(api.validatePortalDiscordConfig).toHaveBeenCalled());
 
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
+
     await user.click(getByTestId('setup-next'));
+
+    expect(getByTestId('install-step')).toBeInTheDocument();
+
+    await waitFor(() => expect(getByTestId('setup-next')).not.toBeDisabled());
+
+    await user.click(getByTestId('setup-next'));
+
+    await waitFor(() => {
+      expect(api.installServices).toHaveBeenCalled();
+    });
 
     const errorAlert = await findByTestId('installer-error');
     expect(errorAlert).toHaveTextContent('Failed to install services.');
