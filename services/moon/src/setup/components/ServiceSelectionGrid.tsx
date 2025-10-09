@@ -106,7 +106,10 @@ export default function ServiceSelectionGrid({
                 <HStack justify="space-between" align="center">
                   <Checkbox
                     isChecked={isSelected}
-                    onChange={() => onToggle(service.name)}
+                    onChange={(event) => {
+                      event.stopPropagation();
+                      onToggle(service.name);
+                    }}
                     colorScheme="purple"
                     size="lg"
                   >

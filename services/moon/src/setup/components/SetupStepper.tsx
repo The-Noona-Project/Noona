@@ -27,7 +27,6 @@ export default function SetupStepper({ steps, currentStepId, onSelect }: SetupSt
 
         const content = (
           <Button
-            key={step.id}
             onClick={() => onSelect(step.id)}
             variant={isCurrent ? 'solid' : 'outline'}
             colorScheme={colorScheme}
@@ -64,15 +63,15 @@ export default function SetupStepper({ steps, currentStepId, onSelect }: SetupSt
           </Button>
         );
 
-        return tooltip ? (
-          <Tooltip key={step.id} label={tooltip} placement="top-start" hasArrow>
-            <Box flex="1" minW={{ base: 'auto', md: '12rem' }}>
-              {content}
-            </Box>
-          </Tooltip>
-        ) : (
+        return (
           <Box key={step.id} flex="1" minW={{ base: 'auto', md: '12rem' }}>
-            {content}
+            {tooltip ? (
+              <Tooltip label={tooltip} placement="top-start" hasArrow>
+                {content}
+              </Tooltip>
+            ) : (
+              content
+            )}
           </Box>
         );
       })}

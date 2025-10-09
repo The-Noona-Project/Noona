@@ -98,10 +98,13 @@ export async function installServices(
   options?: FetchJsonOptions,
 ): Promise<ServiceInstallResponse> {
   const response = await fetchWithTimeout('/api/setup/install', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
-    body: JSON.stringify({ services }),
     ...options,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.headers ?? {}),
+    },
+    body: JSON.stringify({ services }),
   });
   return await parseJson<ServiceInstallResponse>(response, 'Failed to install services.');
 }

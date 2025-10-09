@@ -203,7 +203,8 @@ export default function InstallerLogPanel({
               const message = resolveMessage(entry);
               const timestamp = resolveTimestamp(entry);
               return (
-                <Box key={`${message}-${index}`}>
+                <Box key={index}>
+                  {/* TODO: switch to a backend-provided log identifier when available. */}
                   <Text fontSize="sm" color="gray.500">
                     {timestamp ?? 'Timestamp unavailable'}
                   </Text>
