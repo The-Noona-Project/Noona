@@ -20,6 +20,8 @@ vi.mock('../../setup/api.ts', () => {
     fetchInstallProgress: vi.fn(async () => ({ status: 'installing', percent: 10, items: [] })),
     fetchInstallationLogs: vi.fn(async () => ({ entries: [], summary: {} })),
     fetchServiceLogs: vi.fn(async () => ({ entries: [], summary: {} })),
+    fetchWizardState: vi.fn(),
+    updateWizardState: vi.fn(),
     validatePortalDiscordConfig: vi.fn(async () => ({ guild: { name: 'Test Guild' }, roles: [], channels: [] })),
     createPortalDiscordRole: vi.fn(async () => ({ role: { id: 'role-123' } })),
     createPortalDiscordChannel: vi.fn(async () => ({ channel: { id: 'chan-456' } })),
@@ -27,6 +29,15 @@ vi.mock('../../setup/api.ts', () => {
     startRavenContainer: vi.fn(async () => ({})),
   } satisfies Partial<typeof import('../../setup/api.ts')>;
 });
+
+const defaultWizardState = {
+  version: 1,
+  updatedAt: null,
+  foundation: { status: 'pending', detail: null, error: null, updatedAt: null, completedAt: null },
+  portal: { status: 'pending', detail: null, error: null, updatedAt: null, completedAt: null },
+  raven: { status: 'pending', detail: null, error: null, updatedAt: null, completedAt: null },
+  verification: { status: 'pending', detail: null, error: null, updatedAt: null, completedAt: null },
+};
 
 const baseServices = [
   {
@@ -77,6 +88,8 @@ const baseServices = [
 describe('SetupPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.fetchWizardState).mockResolvedValue(defaultWizardState);
+    vi.mocked(api.updateWizardState).mockResolvedValue(defaultWizardState);
   });
 
   it('requires at least one service to be selected before continuing', async () => {
@@ -338,5 +351,16 @@ describe('SetupPage', () => {
     });
 
     expect(getByTestId('install-step')).toBeInTheDocument();
+  });
+
+  it('displays wizard state load errors', async () => {
+    vi.mocked(api.fetchWizardState).mockRejectedValueOnce(new Error('vault offline'));
+
+    const { findByTestId } = renderWithProviders(<SetupPage />, {
+      services: baseServices,
+    });
+
+    const alert = await findByTestId('wizard-state-error');
+    expect(alert).toHaveTextContent('vault offline');
   });
 });

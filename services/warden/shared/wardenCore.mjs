@@ -15,6 +15,10 @@ import {
     waitForHealthyStatus,
 } from '../docker/dockerUtilties.mjs';
 import { log, warn } from '../../../utilities/etc/logger.mjs';
+import {
+    createWizardStateClient,
+    createWizardStatePublisher,
+} from '../../sage/shared/wizardStateClient.mjs';
 
 function normalizeServices(servicesOption = {}) {
     const { addon = addonDockers, core = noonaDockers } = servicesOption;
@@ -249,6 +253,7 @@ export function createWarden(options = {}) {
         fs: fsOption,
         logLimit: logLimitOption,
         fetchImpl = fetch,
+        wizardState: wizardStateOption = {},
     } = options;
 
     const services = normalizeServices(servicesOption);
@@ -256,6 +261,7 @@ export function createWarden(options = {}) {
     const logger = createDefaultLogger(loggerOption);
     const serviceCatalog = createServiceCatalog(services);
     const fsModule = fsOption || fs;
+    const serviceName = env.SERVICE_NAME || 'noona-warden';
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
@@ -303,6 +309,70 @@ export function createWarden(options = {}) {
     const serviceHistories = new Map();
     const installationOrder = [];
     const installationStatuses = new Map();
+    let wizardStateClient = wizardStateOption.client || null;
+    let wizardStatePublisher = wizardStateOption.publisher || null;
+
+    if (!wizardStateClient) {
+        const wizardEnv = wizardStateOption.env ?? env;
+        const token =
+            wizardStateOption.token ??
+            wizardEnv?.VAULT_API_TOKEN ??
+            wizardEnv?.VAULT_ACCESS_TOKEN ??
+            null;
+
+        if (token) {
+            const baseCandidates = [];
+            if (wizardStateOption.baseUrl) {
+                baseCandidates.push(wizardStateOption.baseUrl);
+            }
+            if (Array.isArray(wizardStateOption.baseUrls)) {
+                baseCandidates.push(...wizardStateOption.baseUrls);
+            }
+
+            try {
+                wizardStateClient = createWizardStateClient({
+                    baseUrl: baseCandidates[0],
+                    baseUrls: baseCandidates.slice(1),
+                    token,
+                    fetchImpl: wizardStateOption.fetchImpl ?? wizardStateOption.fetch ?? fetchImpl,
+                    env: wizardEnv,
+                    logger,
+                    serviceName,
+                    redisKey: wizardStateOption.redisKey,
+                    timeoutMs: wizardStateOption.timeoutMs,
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn?.(`[${serviceName}] ⚠️ Wizard state client initialization failed: ${message}`);
+            }
+        }
+    }
+
+    if (!wizardStatePublisher && wizardStateClient) {
+        try {
+            wizardStatePublisher = createWizardStatePublisher({
+                client: wizardStateClient,
+                logger,
+                stepServices: wizardStateOption.stepServices,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] ⚠️ Wizard state publisher initialization failed: ${message}`);
+            wizardStatePublisher = null;
+        }
+    }
+
+    const invokeWizard = (method, ...args) => {
+        const handler = wizardStatePublisher?.[method];
+        if (typeof handler !== 'function') {
+            return;
+        }
+
+        Promise.resolve(handler(...args)).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] ⚠️ Wizard state ${method} failed: ${message}`);
+        });
+    };
 
     const parsePositiveLimit = (candidate) => {
         if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) {
@@ -420,6 +490,7 @@ export function createWarden(options = {}) {
         }
 
         refreshInstallationSummary();
+        invokeWizard('reset', Array.from(installationOrder));
     };
 
     const updateInstallationStatus = (name, status, extra = {}) => {
@@ -567,6 +638,8 @@ export function createWarden(options = {}) {
                         });
                     }
                 }
+
+                invokeWizard('trackServiceStatus', name, mappedStatus, normalized);
             }
         }
     };
@@ -1273,6 +1346,9 @@ export function createWarden(options = {}) {
             { mirrorToInstallation: false },
         );
 
+        const hasErrors = !targetResult || targetResult.status === 'error';
+        invokeWizard('completeInstall', { hasErrors });
+
         if (!targetResult) {
             throw new Error(`Service ${trimmedName} is not registered with Warden.`);
         }
@@ -1362,6 +1438,8 @@ export function createWarden(options = {}) {
             },
             { mirrorToInstallation: false },
         );
+
+        invokeWizard('completeInstall', { hasErrors });
 
         return [...results, ...invalidEntries];
     };
