@@ -20,6 +20,11 @@ const colors = {
     red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m'
 };
 
+const CLI_ARGS = new Set(process.argv.slice(2));
+const FORCE_CLEAN_BUILD = CLI_ARGS.has('--clean-build');
+const FORCE_CACHED_BUILD = CLI_ARGS.has('--cached-build');
+const CONFLICTING_BUILD_FLAGS = FORCE_CLEAN_BUILD && FORCE_CACHED_BUILD;
+
 const printHeader = () => {
     console.log(`\n${colors.bold}${colors.cyan}`);
     console.log('==============================');
@@ -236,6 +241,26 @@ const askBootMode = async () => {
     return 'minimal';
 };
 
+const askCleanBuild = async () => {
+    if (CONFLICTING_BUILD_FLAGS) {
+        console.warn(`${colors.yellow}⚠️  Conflicting build cache flags detected; defaulting to cached builds.${colors.reset}`);
+        return false;
+    }
+
+    if (FORCE_CLEAN_BUILD) {
+        console.log(`${colors.cyan}🧼 Clean build requested via CLI flag (--clean-build).${colors.reset}`);
+        return true;
+    }
+
+    if (FORCE_CACHED_BUILD) {
+        console.log(`${colors.cyan}📦 Cached build requested via CLI flag (--cached-build).${colors.reset}`);
+        return false;
+    }
+
+    const answer = (await rl.question('Perform a clean build (use --no-cache)? (y/N): ')).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+};
+
 const run = async () => {
     while (true) {
         printHeader();
@@ -271,6 +296,11 @@ const run = async () => {
             continue;
         }
 
+        let useNoCache = false;
+        if (mainChoice === '1') {
+            useNoCache = await askCleanBuild();
+        }
+
         for (const svc of selected) {
             if (!svc) continue;
             const image = `${DOCKERHUB_USER}/noona-${svc}`;
@@ -282,8 +312,12 @@ const run = async () => {
                     console.log(`${colors.yellow}🔨 Building ${svc}...${colors.reset}`);
                     try {
                         await ensureExecutables(svc);
+                        const buildArgs = ['build', '-f', dockerfile, '-t', image, ROOT_DIR];
+                        if (useNoCache) {
+                            buildArgs.splice(1, 0, '--no-cache');
+                        }
                         await runDockerCommand({
-                            args: ['build', '--no-cache', '-f', dockerfile, '-t', image, ROOT_DIR],
+                            args: buildArgs,
                             successMessage: `Build complete: ${image}`,
                             errorMessage: `Build failed: ${image}`
                         });

@@ -55,7 +55,7 @@ This design allows you to keep the core management stack on a primary machine wh
 - **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
 - **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
 
-The `deployment/` directory contains Dockerfiles for single-service containers. The `deploy.mjs` script provides a starting point for bootstrapping the stack. Expect additional automation as the 2.x overhaul progresses.
+The `deployment/` directory contains Dockerfiles for single-service containers. The `deploy.mjs` script provides a starting point for bootstrapping the stack. Expect additional automation as the 2.x overhaul progresses. By default, builds now reuse Docker's cache; choose the clean build option when prompted—or run `node deployment/deploy.mjs --clean-build`—to force a `--no-cache` rebuild. Pass `--cached-build` to skip the prompt while keeping cached layers.
 
 ## Roadmap & Vision
 
