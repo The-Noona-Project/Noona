@@ -6,11 +6,11 @@
 FROM node:24-slim AS builder
 
 WORKDIR /app
-COPY services/moon ./services/moon
+COPY services/moon/package*.json ./services/moon/
 WORKDIR /app/services/moon
 
-RUN rm -rf node_modules package-lock.json
-RUN npm install
+RUN npm ci
+COPY services/moon/ ./
 RUN npx vite build
 
 # ─────────────────────────────────────────────────────────────
