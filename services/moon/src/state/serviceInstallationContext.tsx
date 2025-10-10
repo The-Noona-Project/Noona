@@ -8,9 +8,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { fetchWizardState as fetchWizardStateRequest, type WizardState } from '../setup/api.ts';
 import { normalizeServiceList, resolveServiceInstalled, type ServiceEntry } from '../utils/serviceStatus.ts';
 
 type FetchServicesFn = (force?: boolean) => Promise<ServiceEntry[]>;
+type FetchWizardStateFn = (force?: boolean) => Promise<WizardState>;
 
 export interface ServiceNavigationItem {
   title: string;
@@ -92,8 +94,12 @@ export interface ServiceInstallationState {
   error: string;
   navigationItems: ServiceNavigationItem[];
   hasPendingSetup: boolean;
+  wizardState: WizardState | null;
+  wizardLoading: boolean;
+  wizardError: string;
   ensureLoaded: () => Promise<ServiceEntry[]>;
   refresh: () => Promise<ServiceEntry[]>;
+  refreshWizard: () => Promise<WizardState | null>;
   isServiceInstalled: (name: string | null | undefined) => boolean;
 }
 
@@ -114,15 +120,23 @@ async function defaultFetchServices(): Promise<ServiceEntry[]> {
   return normalizeServiceList(payload);
 }
 
+async function defaultFetchWizardState(): Promise<WizardState> {
+  return await fetchWizardStateRequest();
+}
+
 export interface ServiceInstallationProviderProps extends PropsWithChildren {
   initialServices?: ServiceEntry[];
   fetchServices?: FetchServicesFn;
+  initialWizardState?: WizardState | null;
+  fetchWizardState?: FetchWizardStateFn;
 }
 
 export function ServiceInstallationProvider({
   children,
   initialServices = [],
   fetchServices = defaultFetchServices,
+  initialWizardState: initialWizardStateProp,
+  fetchWizardState = defaultFetchWizardState,
 }: ServiceInstallationProviderProps): JSX.Element {
   const [services, setServices] = useState<ServiceEntry[]>(() =>
     initialServices.map((item) => ({
@@ -133,10 +147,18 @@ export function ServiceInstallationProvider({
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [wizardState, setWizardState] = useState<WizardState | null>(
+    initialWizardStateProp ?? null,
+  );
+  const [wizardLoading, setWizardLoading] = useState(false);
+  const [wizardError, setWizardError] = useState('');
 
   const servicesRef = useRef<ServiceEntry[]>(services);
   const loadPromiseRef = useRef<Promise<ServiceEntry[]> | null>(null);
   const fetcherRef = useRef<FetchServicesFn>(fetchServices);
+  const wizardFetcherRef = useRef<FetchWizardStateFn>(fetchWizardState);
+  const wizardStateRef = useRef<WizardState | null>(initialWizardStateProp ?? null);
+  const wizardLoadedRef = useRef<boolean>(initialWizardStateProp !== undefined);
 
   useEffect(() => {
     servicesRef.current = services;
@@ -146,23 +168,48 @@ export function ServiceInstallationProvider({
     fetcherRef.current = fetchServices;
   }, [fetchServices]);
 
+  useEffect(() => {
+    wizardFetcherRef.current = fetchWizardState;
+  }, [fetchWizardState]);
+
+  useEffect(() => {
+    wizardStateRef.current = wizardState;
+  }, [wizardState]);
+
   const loadServices = useCallback(
     async (force = false): Promise<ServiceEntry[]> => {
       if (!force) {
         if (loadPromiseRef.current) {
           return loadPromiseRef.current;
         }
-        if (servicesRef.current.length > 0) {
+        if (servicesRef.current.length > 0 && wizardLoadedRef.current) {
           return servicesRef.current;
         }
       }
 
       setLoading(true);
+      setWizardLoading(true);
       setError('');
+      setWizardError('');
 
-      const pending = fetcherRef
-        .current(force)
-        .then((list) => {
+      const pending = (async () => {
+        try {
+          const wizardPromise = wizardFetcherRef.current(force)
+            .then((state) => ({ state, error: null as string | null }))
+            .catch((cause) => {
+              const message =
+                cause instanceof Error
+                  ? cause.message
+                  : 'Failed to load wizard state';
+              setWizardError(message);
+              return { state: wizardStateRef.current, error: message };
+            });
+
+          const [list, wizardResult] = await Promise.all([
+            fetcherRef.current(force),
+            wizardPromise,
+          ]);
+
           const normalized = list.map((item) => ({
             ...item,
             name: typeof item.name === 'string' ? item.name : '',
@@ -170,20 +217,29 @@ export function ServiceInstallationProvider({
           }));
           servicesRef.current = normalized;
           setServices(normalized);
+
+          if (!wizardResult.error) {
+            setWizardError('');
+          }
+
+          setWizardState(wizardResult.state ?? null);
+          wizardStateRef.current = wizardResult.state ?? null;
+          wizardLoadedRef.current = !wizardResult.error;
+
           return normalized;
-        })
-        .catch((cause) => {
+        } catch (cause) {
           servicesRef.current = [];
           setServices([]);
           const message =
             cause instanceof Error ? cause.message : 'Failed to load services';
           setError(message);
           throw cause;
-        })
-        .finally(() => {
+        } finally {
           setLoading(false);
+          setWizardLoading(false);
           loadPromiseRef.current = null;
-        });
+        }
+      })();
 
       loadPromiseRef.current = pending;
       return pending;
@@ -202,6 +258,26 @@ export function ServiceInstallationProvider({
 
   const refresh = useCallback(() => loadServices(true), [loadServices]);
 
+  const refreshWizard = useCallback(async (): Promise<WizardState | null> => {
+    setWizardLoading(true);
+    setWizardError('');
+    try {
+      const state = await wizardFetcherRef.current(true);
+      setWizardState(state ?? null);
+      wizardStateRef.current = state ?? null;
+      wizardLoadedRef.current = true;
+      return state;
+    } catch (cause) {
+      const message =
+        cause instanceof Error ? cause.message : 'Failed to load wizard state';
+      setWizardError(message);
+      wizardLoadedRef.current = false;
+      throw cause;
+    } finally {
+      setWizardLoading(false);
+    }
+  }, []);
+
   const installedServiceNames = useMemo(() => {
     const installed = new Set<string>();
     services.forEach((service) => {
@@ -212,16 +288,8 @@ export function ServiceInstallationProvider({
     return installed;
   }, [services]);
 
-  const hasPendingSetup = useMemo(
-    () =>
-      SERVICE_NAVIGATION_CONFIG.some((item) => {
-        if (!item.requiredService) {
-          return false;
-        }
-        return !installedServiceNames.has(item.requiredService);
-      }),
-    [installedServiceNames],
-  );
+  const wizardCompleted = wizardState?.completed === true;
+  const hasPendingSetup = !wizardCompleted;
 
   const navigationItems = useMemo(() => {
     return SERVICE_NAVIGATION_CONFIG.filter((item) => {
@@ -252,11 +320,28 @@ export function ServiceInstallationProvider({
       error,
       navigationItems,
       hasPendingSetup,
+      wizardState,
+      wizardLoading,
+      wizardError,
       ensureLoaded,
       refresh,
+      refreshWizard,
       isServiceInstalled,
     }),
-    [services, loading, error, navigationItems, hasPendingSetup, ensureLoaded, refresh, isServiceInstalled],
+    [
+      services,
+      loading,
+      error,
+      navigationItems,
+      hasPendingSetup,
+      wizardState,
+      wizardLoading,
+      wizardError,
+      ensureLoaded,
+      refresh,
+      refreshWizard,
+      isServiceInstalled,
+    ],
   );
 
   return (

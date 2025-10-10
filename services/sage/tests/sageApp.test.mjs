@@ -257,6 +257,152 @@ test('PUT /api/setup/wizard/state validates payload', async (t) => {
     assert.ok(typeof payload?.error === 'string' && payload.error.length > 0)
 })
 
+test('GET /api/setup/verification/status returns wizard summary and health', async (t) => {
+    const wizardState = createDefaultWizardState()
+    wizardState.verification.detail = JSON.stringify({
+        lastRunAt: '2024-01-01T00:00:00.000Z',
+        checks: [{ service: 'noona-vault', success: true, supported: true }],
+    })
+
+    const healthCalls = []
+    const app = createSageApp({
+        setupClient: {
+            async getServiceHealth(name) {
+                healthCalls.push(name)
+                return { status: 'healthy', detail: `${name} ok` }
+            },
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return []
+            },
+        },
+        wizardStateClient: {
+            async loadState() {
+                return wizardState
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/verification/status`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.wizard, wizardState)
+    assert.equal(payload.summary.checks.length, 1)
+    assert.equal(payload.summary.checks[0].service, 'noona-vault')
+    assert.deepEqual(healthCalls.sort(), ['noona-sage', 'noona-warden'])
+})
+
+test('POST /api/setup/verification/checks runs service tests and updates wizard state', async (t) => {
+    const wizardState = createDefaultWizardState()
+    const updatesApplied = []
+    const testCalls = []
+
+    const app = createSageApp({
+        setupClient: {
+            async testService(name) {
+                testCalls.push(name)
+                return { status: 200, result: { success: true, supported: true } }
+            },
+            async getServiceHealth() {
+                return { status: 'healthy', detail: 'ok' }
+            },
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return []
+            },
+        },
+        wizardStateClient: {
+            async applyUpdates(updates = []) {
+                updatesApplied.push(updates)
+                for (const update of updates) {
+                    if (update.step === 'verification') {
+                        if (update.status) {
+                            wizardState.verification.status = update.status
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'detail')) {
+                            wizardState.verification.detail = update.detail
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'error')) {
+                            wizardState.verification.error = update.error
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'updatedAt')) {
+                            wizardState.verification.updatedAt = update.updatedAt
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'completedAt')) {
+                            wizardState.verification.completedAt = update.completedAt
+                        }
+                    }
+                }
+                return { state: wizardState }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/verification/checks`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.ok(Array.isArray(payload.summary.checks))
+    assert.equal(payload.summary.checks.length, 5)
+    assert.equal(new Set(testCalls).size, 5)
+    assert.equal(wizardState.verification.status, 'complete')
+    assert.ok(updatesApplied.length >= 2)
+})
+
+test('POST /api/setup/wizard/complete persists completion flag', async (t) => {
+    const wizardState = createDefaultWizardState()
+    wizardState.verification.status = 'complete'
+    wizardState.verification.detail = JSON.stringify({
+        lastRunAt: '2024-01-01T00:00:00.000Z',
+        checks: [
+            { service: 'noona-vault', success: true, supported: true },
+            { service: 'noona-portal', success: true, supported: true },
+        ],
+    })
+
+    const writes = []
+    const app = createSageApp({
+        setupClient: {
+            async getServiceHealth() {
+                return { status: 'healthy', detail: 'ok' }
+            },
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return []
+            },
+        },
+        wizardStateClient: {
+            async loadState() {
+                return wizardState
+            },
+            async writeState(next) {
+                writes.push(next)
+                return next
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/complete`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.wizard.completed, true)
+    assert.ok(writes.length >= 1)
+})
+
 test('createDiscordSetupClient uses limited intents during validation', async () => {
     const createdOptions = []
     const loginCalls = []

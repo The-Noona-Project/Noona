@@ -11,19 +11,23 @@ import {
   createPortalDiscordChannel,
   createPortalDiscordRole,
   fetchInstallProgress,
-  fetchInstallationLogs,
   fetchServiceHealth,
-  fetchServiceLogs,
   installServices,
-  type InstallLogsResponse,
   type InstallProgressSummary,
   type PortalDiscordValidationPayload,
   type ServiceInstallRequestEntry,
   detectRavenMount,
   validatePortalDiscordConfig,
+  fetchVerificationStatus,
+  runVerificationChecks as runVerificationChecksRequest,
+  completeWizardSetup as completeWizardSetupRequest,
+  type VerificationSummaryState,
+  type VerificationHealthSummary,
+  type WizardState,
+  type WizardStateUpdate,
+  type WizardStepStatus,
 } from './api.ts';
 import { useWizardState } from './useWizardState.ts';
-import type { WizardState, WizardStateUpdate, WizardStepStatus } from './api.ts';
 
 export type SetupStepId = 'foundation' | 'portal' | 'raven' | 'verification';
 
@@ -104,18 +108,16 @@ export interface InstallState {
   progress: InstallProgressSummary | null;
 }
 
-export interface InstallationLogsState {
-  limit: number;
+export interface VerificationState {
   loading: boolean;
+  running: boolean;
+  completing: boolean;
   error: string;
-  response: InstallLogsResponse | null;
-}
-
-export interface ServiceLogState {
-  limit: number;
-  loading: boolean;
-  error: string;
-  response: InstallLogsResponse | null;
+  summary: VerificationSummaryState | null;
+  health: {
+    warden: VerificationHealthSummary | null;
+    sage: VerificationHealthSummary | null;
+  };
 }
 
 export type FoundationProgressStatus = 'idle' | 'pending' | 'success' | 'error';
@@ -545,12 +547,10 @@ export interface UseSetupStepsResult {
   checkRavenHealth: () => Promise<void>;
   discord: DiscordState;
   install: InstallState;
-  loadInstallationLogs: (limit?: number) => Promise<void>;
-  installationLogs: InstallationLogsState;
-  selectedLogService: string;
-  setSelectedLogService: (name: string) => void;
-  serviceLogs: Map<string, ServiceLogState>;
-  loadServiceLogs: (name: string, limit?: number) => Promise<void>;
+  verification: VerificationState;
+  refreshVerification: () => Promise<void>;
+  runVerificationChecks: () => Promise<void>;
+  completeSetup: () => Promise<void>;
   wizardState: WizardState | null;
   wizardLoading: boolean;
   wizardError: string | null;
@@ -575,8 +575,8 @@ const STEP_DEFINITIONS: Array<Omit<SetupStepDefinition, 'status' | 'error'>> = [
   },
   {
     id: 'verification',
-    title: 'Verification logs',
-    description: 'Inspect installer and per-service logs for verification.',
+    title: 'Verification checks',
+    description: 'Run health checks and confirm service readiness.',
   },
 ];
 
@@ -871,16 +871,17 @@ export function useSetupSteps(): UseSetupStepsResult {
     progress: null,
   });
 
-  const [installationLogs, setInstallationLogs] = useState<InstallationLogsState>({
-    limit: 25,
+  const [verificationState, setVerificationState] = useState<VerificationState>({
     loading: false,
+    running: false,
+    completing: false,
     error: '',
-    response: null,
+    summary: null,
+    health: {
+      warden: null,
+      sage: null,
+    },
   });
-  const [serviceLogs, setServiceLogs] = useState<Map<string, ServiceLogState>>(
-    () => new Map(),
-  );
-  const [selectedLogService, setSelectedLogService] = useState<string>('installation');
   const [foundationState, setFoundationState] = useState<FoundationState>({
     progress: createFoundationProgress(),
     running: false,
@@ -1604,6 +1605,33 @@ export function useSetupSteps(): UseSetupStepsResult {
     setDiscordValidatedAt(null);
   }, [portalEnv.DISCORD_BOT_TOKEN, portalEnv.DISCORD_GUILD_ID]);
 
+  const loadVerificationStatus = useCallback(async () => {
+    setVerificationState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const payload = await fetchVerificationStatus();
+      setVerificationState({
+        loading: false,
+        running: false,
+        completing: false,
+        error: '',
+        summary: payload.summary ?? null,
+        health: {
+          warden: payload.health?.warden ?? null,
+          sage: payload.health?.sage ?? null,
+        },
+      });
+      await refreshWizard().catch(() => {});
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to load verification status.';
+      setVerificationState((prev) => ({ ...prev, loading: false, error: message }));
+    }
+  }, [refreshWizard]);
+
+  useEffect(() => {
+    void loadVerificationStatus();
+  }, [loadVerificationStatus]);
+
   const updateEnvValue = useCallback(
     (serviceName: string, key: string, value: string) => {
       setEnvironmentError('');
@@ -1648,56 +1676,51 @@ export function useSetupSteps(): UseSetupStepsResult {
     [buildPortalDetail, persistPortalDetail, portalStatus],
   );
 
-  const loadInstallationLogs = useCallback(
-    async (limit = installationLogs.limit) => {
-      setInstallationLogs((prev) => ({ ...prev, loading: true, error: '', limit }));
-      try {
-        const response = await fetchInstallationLogs(limit);
-        setInstallationLogs({ limit, loading: false, error: '', response });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Unable to retrieve installation logs.';
-        setInstallationLogs((prev) => ({ ...prev, loading: false, error: message }));
-      }
-    },
-    [installationLogs.limit],
-  );
-
-  const loadServiceLogs = useCallback(
-    async (name: string, limit?: number) => {
-      const nextLimit = limit ?? serviceLogs.get(name)?.limit ?? 25;
-      setServiceLogs((prev) => {
-        const next = new Map(prev);
-        const existing = next.get(name) ?? {
-          limit: nextLimit,
-          loading: false,
-          error: '',
-          response: null,
-        };
-        next.set(name, { ...existing, loading: true, error: '', limit: nextLimit });
-        return next;
+  const runVerificationChecks = useCallback(async () => {
+    setVerificationState((prev) => ({ ...prev, running: true, error: '' }));
+    try {
+      const payload = await runVerificationChecksRequest();
+      setVerificationState({
+        loading: false,
+        running: false,
+        completing: false,
+        error: '',
+        summary: payload.summary ?? null,
+        health: {
+          warden: payload.health?.warden ?? null,
+          sage: payload.health?.sage ?? null,
+        },
       });
-      try {
-        const response = await fetchServiceLogs(name, nextLimit);
-        setServiceLogs((prev) => {
-          const next = new Map(prev);
-          next.set(name, { limit: nextLimit, loading: false, error: '', response });
-          return next;
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to retrieve service logs.';
-        setServiceLogs((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(name);
-          if (existing) {
-            next.set(name, { ...existing, loading: false, error: message });
-          }
-          return next;
-        });
-      }
-    },
-    [serviceLogs],
-  );
+      await refreshWizard().catch(() => {});
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to run verification checks.';
+      setVerificationState((prev) => ({ ...prev, running: false, error: message }));
+    }
+  }, [refreshWizard]);
+
+  const completeSetup = useCallback(async () => {
+    setVerificationState((prev) => ({ ...prev, completing: true, error: '' }));
+    try {
+      const payload = await completeWizardSetupRequest();
+      setVerificationState({
+        loading: false,
+        running: false,
+        completing: false,
+        error: '',
+        summary: payload.summary ?? null,
+        health: {
+          warden: payload.health?.warden ?? null,
+          sage: payload.health?.sage ?? null,
+        },
+      });
+      await refreshWizard().catch(() => {});
+      await refresh().catch(() => {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to complete setup.';
+      setVerificationState((prev) => ({ ...prev, completing: false, error: message }));
+    }
+  }, [refreshWizard, refresh]);
 
   const startProgressPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -1770,7 +1793,6 @@ export function useSetupSteps(): UseSetupStepsResult {
         error: '',
       }));
       startProgressPolling();
-      await loadInstallationLogs();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to install services.';
       setInstall((prev) => ({
@@ -1779,7 +1801,7 @@ export function useSetupSteps(): UseSetupStepsResult {
         error: message,
       }));
     }
-  }, [selected, overrides, startProgressPolling, loadInstallationLogs]);
+  }, [selected, overrides, startProgressPolling]);
 
   useEffect(() => {
     return () => {
@@ -2225,9 +2247,18 @@ export function useSetupSteps(): UseSetupStepsResult {
           status = 'current';
         }
       }
-      if (definition.id === 'verification' && installationLogs.error) {
-        status = 'error';
-        error = installationLogs.error;
+      if (definition.id === 'verification') {
+        const verificationStatus = wizardState?.verification?.status ?? 'pending';
+        if (verificationState.error) {
+          status = 'error';
+          error = verificationState.error;
+        } else if (verificationStatus === 'error') {
+          status = 'error';
+          error =
+            wizardState?.verification?.error ?? 'Verification checks reported failures.';
+        } else if (verificationStatus === 'complete') {
+          status = 'complete';
+        }
       }
       return {
         ...definition,
@@ -2244,7 +2275,9 @@ export function useSetupSteps(): UseSetupStepsResult {
     ravenError,
     ravenStatus,
     wizardState?.raven?.error,
-    installationLogs.error,
+    verificationState.error,
+    wizardState?.verification?.status,
+    wizardState?.verification?.error,
     discordValidationError,
     portalError,
   ]);
@@ -2575,12 +2608,10 @@ export function useSetupSteps(): UseSetupStepsResult {
     checkRavenHealth,
     discord,
     install,
-    loadInstallationLogs,
-    installationLogs,
-    selectedLogService,
-    setSelectedLogService,
-    serviceLogs,
-    loadServiceLogs,
+    verification: verificationState,
+    refreshVerification: loadVerificationStatus,
+    runVerificationChecks,
+    completeSetup,
     wizardState,
     wizardLoading,
     wizardError,

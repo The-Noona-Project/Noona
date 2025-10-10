@@ -90,6 +90,7 @@ export interface WizardStepState {
 export interface WizardState {
   version: number;
   updatedAt: string | null;
+  completed: boolean;
   foundation: WizardStepState;
   portal: WizardStepState;
   raven: WizardStepState;
@@ -105,6 +106,150 @@ export interface WizardStateUpdate {
   error?: string | null;
   completedAt?: string | null;
   updatedAt?: string | null;
+}
+
+export interface VerificationHealthSummary {
+  service: string;
+  status: string;
+  message: string | null;
+  checkedAt: string | null;
+  success: boolean;
+  detail?: unknown;
+}
+
+export interface VerificationCheckResult {
+  service: string;
+  label: string;
+  success: boolean;
+  supported: boolean;
+  status: 'pass' | 'fail' | 'skipped';
+  message: string | null;
+  detail?: unknown;
+  checkedAt: string | null;
+  duration: number | null;
+}
+
+export interface VerificationSummaryState {
+  lastRunAt: string | null;
+  checks: VerificationCheckResult[];
+}
+
+export interface VerificationStatusResponse {
+  wizard: WizardState | null;
+  summary: VerificationSummaryState | null;
+  health: {
+    warden: VerificationHealthSummary | null;
+    sage: VerificationHealthSummary | null;
+  };
+}
+
+function normalizeVerificationHealthEntry(
+  entry: unknown,
+  service: string,
+): VerificationHealthSummary | null {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const payload = entry as Record<string, unknown>;
+  const message =
+    typeof payload.message === 'string' && payload.message.trim()
+      ? payload.message.trim()
+      : null;
+
+  return {
+    service,
+    status: typeof payload.status === 'string' ? payload.status : 'unknown',
+    message,
+    checkedAt:
+      typeof payload.checkedAt === 'string' && payload.checkedAt.trim()
+        ? payload.checkedAt.trim()
+        : null,
+    success: payload.success === true,
+    detail: payload.detail,
+  } satisfies VerificationHealthSummary;
+}
+
+function normalizeVerificationCheck(entry: unknown): VerificationCheckResult | null {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const payload = entry as Record<string, unknown>;
+  const service = typeof payload.service === 'string' ? payload.service : '';
+  const label = typeof payload.label === 'string' ? payload.label : service;
+  const supported = payload.supported !== false;
+  const success = supported && payload.success === true;
+  const status = supported ? (success ? 'pass' : 'fail') : 'skipped';
+  const message =
+    typeof payload.message === 'string' && payload.message.trim()
+      ? payload.message.trim()
+      : null;
+
+  return {
+    service,
+    label,
+    success,
+    supported,
+    status,
+    message,
+    detail: payload.detail,
+    checkedAt:
+      typeof payload.checkedAt === 'string' && payload.checkedAt.trim()
+        ? payload.checkedAt.trim()
+        : null,
+    duration:
+      typeof payload.duration === 'number' && Number.isFinite(payload.duration)
+        ? payload.duration
+        : null,
+  } satisfies VerificationCheckResult;
+}
+
+function normalizeVerificationSummary(summary: unknown): VerificationSummaryState | null {
+  if (!summary || typeof summary !== 'object') {
+    return null;
+  }
+
+  const payload = summary as Record<string, unknown>;
+  const lastRunAt =
+    typeof payload.lastRunAt === 'string' && payload.lastRunAt.trim()
+      ? payload.lastRunAt.trim()
+      : null;
+
+  const checks = Array.isArray(payload.checks)
+    ? payload.checks
+        .map((entry) => normalizeVerificationCheck(entry))
+        .filter((entry): entry is VerificationCheckResult => Boolean(entry))
+    : [];
+
+  return {
+    lastRunAt,
+    checks,
+  } satisfies VerificationSummaryState;
+}
+
+function normalizeVerificationResponse(
+  payload: Record<string, unknown>,
+): VerificationStatusResponse {
+  const wizard =
+    payload.wizard && typeof payload.wizard === 'object'
+      ? (payload.wizard as WizardState)
+      : null;
+
+  const summary = normalizeVerificationSummary(payload.summary);
+  const healthPayload =
+    payload.health && typeof payload.health === 'object'
+      ? (payload.health as Record<string, unknown>)
+      : {};
+
+  return {
+    wizard,
+    summary,
+    health: {
+      warden: normalizeVerificationHealthEntry(healthPayload?.warden, 'noona-warden'),
+      sage: normalizeVerificationHealthEntry(healthPayload?.sage, 'noona-sage'),
+    },
+  } satisfies VerificationStatusResponse;
 }
 
 export async function fetchInstallableServices(options?: FetchJsonOptions) {
@@ -341,4 +486,57 @@ export async function fetchServiceHealth(
     response,
     'Unable to retrieve service health.',
   );
+}
+
+export async function fetchVerificationStatus(
+  options?: FetchJsonOptions,
+): Promise<VerificationStatusResponse> {
+  const response = await fetchWithTimeout('/api/setup/verification/status', {
+    ...options,
+    headers: {
+      accept: 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+  const payload = await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to load verification status.',
+  );
+  return normalizeVerificationResponse(payload);
+}
+
+export async function runVerificationChecks(
+  options?: FetchJsonOptions,
+): Promise<VerificationStatusResponse> {
+  const response = await fetchWithTimeout('/api/setup/verification/checks', {
+    ...options,
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+  const payload = await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to run verification checks.',
+  );
+  return normalizeVerificationResponse(payload);
+}
+
+export async function completeWizardSetup(
+  options?: FetchJsonOptions,
+): Promise<VerificationStatusResponse> {
+  const response = await fetchWithTimeout('/api/setup/wizard/complete', {
+    ...options,
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+  const payload = await parseJson<Record<string, unknown>>(
+    response,
+    'Unable to complete setup.',
+  );
+  return normalizeVerificationResponse(payload);
 }

@@ -2,7 +2,7 @@
 
 import { SetupValidationError } from './errors.mjs'
 
-export const WIZARD_STATE_VERSION = 1
+export const WIZARD_STATE_VERSION = 2
 export const WIZARD_STEP_KEYS = Object.freeze(['foundation', 'portal', 'raven', 'verification'])
 export const WIZARD_STATUS_VALUES = Object.freeze(['pending', 'in-progress', 'complete', 'error', 'skipped'])
 export const DEFAULT_WIZARD_STATE_KEY = 'noona:wizard:state'
@@ -40,6 +40,28 @@ const normalizeIsoString = (value) => {
     return trimmed
 }
 
+const normalizeBoolean = (value, fallback = false) => {
+    if (value === true) {
+        return true
+    }
+
+    if (value === false) {
+        return false
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase()
+        if (['true', '1', 'yes', 'completed', 'done'].includes(normalized)) {
+            return true
+        }
+        if (['false', '0', 'no', 'pending'].includes(normalized)) {
+            return false
+        }
+    }
+
+    return fallback
+}
+
 export const normalizeWizardStatus = (status) => {
     if (typeof status !== 'string') {
         return 'pending'
@@ -73,6 +95,7 @@ export const normalizeWizardState = (candidate = {}) => {
     const state = {
         version: Number.isFinite(candidate?.version) ? candidate.version : WIZARD_STATE_VERSION,
         updatedAt: normalizeIsoString(candidate?.updatedAt),
+        completed: normalizeBoolean(candidate?.completed, false),
     }
 
     for (const step of WIZARD_STEP_KEYS) {
@@ -88,6 +111,7 @@ export const createDefaultWizardState = () => {
     const state = normalizeWizardState({})
 
     state.updatedAt = now
+    state.completed = false
     for (const step of WIZARD_STEP_KEYS) {
         state[step].status = 'pending'
         state[step].updatedAt = now
@@ -167,6 +191,7 @@ export const applyWizardStateUpdates = (state, updatesInput) => {
     const next = {
         version: base.version,
         updatedAt: base.updatedAt,
+        completed: base.completed,
     }
 
     for (const step of WIZARD_STEP_KEYS) {

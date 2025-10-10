@@ -1891,35 +1891,52 @@ export function createWarden(options = {}) {
             throw new Error(`Service ${trimmedName} is not registered with Warden.`);
         }
 
-        if (trimmedName !== 'noona-portal') {
-            return {
-                service: trimmedName,
-                success: false,
-                supported: false,
-                error: `Test action not supported for ${trimmedName}.`,
-            };
-        }
-
         const descriptor = entry.descriptor;
-        const { path: pathOverride, url: urlOverride, method = 'GET', headers = {}, body: requestBody = null } = options ?? {};
-        const candidateUrls = [];
-        const seenCandidates = new Set();
+        const formatServiceLabel = (service) =>
+            service
+                .replace(/^noona-/, '')
+                .split('-')
+                .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+                .join(' ');
 
-        const addCandidate = (candidate) => {
-            if (typeof candidate !== 'string') {
-                return;
+        const httpTestConfig = {
+            'noona-portal': {
+                displayName: formatServiceLabel('noona-portal'),
+                defaultPath: '/health',
+                successMessage: 'Portal health check succeeded',
+                failurePrefix: 'Portal',
+            },
+            'noona-vault': {
+                displayName: formatServiceLabel('noona-vault'),
+                defaultPath: '/v1/vault/health',
+                successMessage: 'Vault health check succeeded',
+                failurePrefix: 'Vault',
+            },
+            'noona-redis': {
+                displayName: formatServiceLabel('noona-redis'),
+                defaultPath: '/',
+                successMessage: 'Redis health check succeeded',
+                failurePrefix: 'Redis',
+            },
+            'noona-raven': {
+                displayName: formatServiceLabel('noona-raven'),
+                defaultPath: '/v1/library/health',
+                successMessage: 'Raven health check succeeded',
+                failurePrefix: 'Raven',
+            },
+        }[trimmedName];
+
+        const ensurePath = (path) => {
+            if (!path) {
+                return '/health';
             }
-
-            const trimmedCandidate = candidate.trim();
-            if (!trimmedCandidate || seenCandidates.has(trimmedCandidate)) {
-                return;
+            if (path === '/') {
+                return '/';
             }
-
-            seenCandidates.add(trimmedCandidate);
-            candidateUrls.push(trimmedCandidate);
+            return path.startsWith('/') ? path : `/${path}`;
         };
 
-        const resolveHealthFromHostBase = (baseUrl) => {
+        const resolveHealthFromHostBase = (baseUrl, fallbackPath) => {
             if (typeof baseUrl !== 'string') {
                 return null;
             }
@@ -1929,156 +1946,255 @@ export function createWarden(options = {}) {
                 return null;
             }
 
-            if (/\/health\/?$/i.test(trimmed)) {
+            const normalizedPath = ensurePath(fallbackPath);
+
+            if (!fallbackPath && /\/health\/?$/i.test(trimmed)) {
+                return trimmed;
+            }
+
+            if (fallbackPath && trimmed.toLowerCase().endsWith(normalizedPath.toLowerCase())) {
                 return trimmed;
             }
 
             try {
-                const parsed = new URL(trimmed);
-                const pathName = parsed.pathname ?? '';
-                if (!pathName || pathName === '/' || pathName === '//') {
-                    parsed.pathname = '/health';
-                } else {
-                    parsed.pathname = `${pathName.replace(/\/$/, '')}/health`;
-                }
-                return parsed.toString();
+                return new URL(normalizedPath, trimmed).toString();
             } catch {
-                return `${trimmed.replace(/\/$/, '')}/health`;
+                const base = trimmed.replace(/\/$/, '');
+                if (normalizedPath === '/') {
+                    return `${base}/`;
+                }
+                return `${base}${normalizedPath}`;
             }
         };
 
-        // Prefer a host-facing health endpoint when available so setup wizard
-        // checks work in host-mode deployments.
-        const hostBase = api.resolveHostServiceUrl(descriptor);
-        const hostHealthUrl = hostBase ? resolveHealthFromHostBase(hostBase) : null;
+        if (httpTestConfig) {
+            const {
+                path: pathOverride,
+                url: urlOverride,
+                method = 'GET',
+                headers = {},
+                body: requestBody = null,
+            } = options ?? {};
+            const candidateUrls = [];
+            const seenCandidates = new Set();
 
-        if (typeof urlOverride === 'string' && urlOverride.trim()) {
-            addCandidate(urlOverride);
-        }
+            const addCandidate = (candidate) => {
+                if (typeof candidate !== 'string') {
+                    return;
+                }
 
-        if (!urlOverride && typeof pathOverride === 'string' && pathOverride.trim()) {
-            if (hostBase) {
-                try {
-                    addCandidate(new URL(pathOverride, hostBase).toString());
-                } catch {
-                    addCandidate(`${hostBase.replace(/\/$/, '')}/${pathOverride.replace(/^\//, '')}`);
+                const trimmedCandidate = candidate.trim();
+                if (!trimmedCandidate || seenCandidates.has(trimmedCandidate)) {
+                    return;
+                }
+
+                seenCandidates.add(trimmedCandidate);
+                candidateUrls.push(trimmedCandidate);
+            };
+
+            const hostBase = api.resolveHostServiceUrl(descriptor);
+            const hostHealthUrl = hostBase
+                ? resolveHealthFromHostBase(hostBase, httpTestConfig.defaultPath)
+                : null;
+
+            if (typeof urlOverride === 'string' && urlOverride.trim()) {
+                addCandidate(urlOverride);
+            }
+
+            if (!urlOverride && typeof pathOverride === 'string' && pathOverride.trim()) {
+                if (hostBase) {
+                    try {
+                        addCandidate(new URL(pathOverride, hostBase).toString());
+                    } catch {
+                        const normalizedPath = ensurePath(pathOverride);
+                        const base = hostBase.replace(/\/$/, '');
+                        addCandidate(
+                            normalizedPath === '/'
+                                ? `${base}/`
+                                : `${base}${normalizedPath}`,
+                        );
+                    }
                 }
             }
-        }
 
-        addCandidate(hostHealthUrl);
+            addCandidate(hostHealthUrl);
 
-        if (typeof descriptor.health === 'string' && descriptor.health.trim()) {
-            addCandidate(descriptor.health.trim());
-        }
+            if (typeof descriptor.health === 'string' && descriptor.health.trim()) {
+                addCandidate(descriptor.health.trim());
+            }
 
-        if (!candidateUrls.length) {
-            const errorMessage = 'Portal health endpoint is not defined.';
-            appendHistoryEntry(trimmedName, {
-                type: 'error',
-                status: 'error',
-                message: errorMessage,
-                detail: errorMessage,
-                error: errorMessage,
-            });
+            if (!candidateUrls.length) {
+                const errorMessage = `${httpTestConfig.displayName} health endpoint is not defined.`;
+                appendHistoryEntry(trimmedName, {
+                    type: 'error',
+                    status: 'error',
+                    message: errorMessage,
+                    detail: errorMessage,
+                    error: errorMessage,
+                });
+
+                return {
+                    service: trimmedName,
+                    success: false,
+                    supported: true,
+                    error: errorMessage,
+                };
+            }
+
+            const attemptErrors = [];
+
+            for (const targetUrl of candidateUrls) {
+                appendHistoryEntry(trimmedName, {
+                    type: 'status',
+                    status: 'testing',
+                    message: `Testing ${httpTestConfig.displayName} via ${targetUrl}`,
+                    detail: targetUrl,
+                });
+
+                const start = Date.now();
+
+                try {
+                    const response = await fetchImpl(targetUrl, {
+                        method,
+                        headers,
+                        body: requestBody,
+                    });
+
+                    const duration = Date.now() - start;
+                    const rawBody = await response.text();
+                    let parsedBody = rawBody;
+
+                    try {
+                        parsedBody = rawBody ? JSON.parse(rawBody) : null;
+                    } catch {
+                        // Ignore JSON parse failures and preserve raw body.
+                    }
+
+                    if (!response.ok) {
+                        const errorMessage = `${httpTestConfig.displayName} responded with status ${response.status}`;
+                        appendHistoryEntry(trimmedName, {
+                            type: 'error',
+                            status: 'error',
+                            message: errorMessage,
+                            detail: typeof parsedBody === 'string' ? parsedBody : JSON.stringify(parsedBody),
+                            error: errorMessage,
+                        });
+
+                        return {
+                            service: trimmedName,
+                            success: false,
+                            supported: true,
+                            status: response.status,
+                            duration,
+                            error: errorMessage,
+                            body: parsedBody,
+                        };
+                    }
+
+                    appendHistoryEntry(trimmedName, {
+                        type: 'status',
+                        status: 'tested',
+                        message: httpTestConfig.successMessage,
+                        detail: targetUrl,
+                    });
+
+                    return {
+                        service: trimmedName,
+                        success: true,
+                        supported: true,
+                        status: response.status,
+                        duration,
+                        body: parsedBody,
+                    };
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    attemptErrors.push({ url: targetUrl, message });
+
+                    appendHistoryEntry(trimmedName, {
+                        type: 'error',
+                        status: 'error',
+                        message: `${httpTestConfig.failurePrefix} test failed`,
+                        detail: message,
+                        error: message,
+                    });
+                }
+            }
+
+            const formattedErrors = attemptErrors.map(({ url, message }) => `${url} (${message})`);
+            const aggregatedMessage = attemptErrors.length
+                ? `${httpTestConfig.failurePrefix} test failed for all candidates: ${formattedErrors.join('; ')}`
+                : `${httpTestConfig.failurePrefix} test failed for all candidates.`;
 
             return {
                 service: trimmedName,
                 success: false,
                 supported: true,
-                error: errorMessage,
+                error: aggregatedMessage,
             };
         }
 
-        const attemptErrors = [];
-
-        for (const targetUrl of candidateUrls) {
+        if (trimmedName === 'noona-mongo') {
             appendHistoryEntry(trimmedName, {
                 type: 'status',
                 status: 'testing',
-                message: `Testing service via ${targetUrl}`,
-                detail: targetUrl,
+                message: 'Inspecting Mongo container status',
+                detail: null,
             });
 
-            const start = Date.now();
-
             try {
-                const response = await fetchImpl(targetUrl, {
-                    method,
-                    headers,
-                    body: requestBody,
-                });
-
-                const duration = Date.now() - start;
-                const rawBody = await response.text();
-                let parsedBody = rawBody;
-
-                try {
-                    parsedBody = rawBody ? JSON.parse(rawBody) : null;
-                } catch {
-                    // Keep rawBody as-is when not valid JSON.
-                }
-
-                if (!response.ok) {
-                    const errorMessage = `Service responded with status ${response.status}`;
-                    appendHistoryEntry(trimmedName, {
-                        type: 'error',
-                        status: 'error',
-                        message: errorMessage,
-                        detail: typeof parsedBody === 'string' ? parsedBody : JSON.stringify(parsedBody),
-                        error: errorMessage,
-                    });
-
-                    return {
-                        service: trimmedName,
-                        success: false,
-                        supported: true,
-                        status: response.status,
-                        duration,
-                        error: errorMessage,
-                        body: parsedBody,
-                    };
-                }
+                const container = dockerInstance.getContainer(trimmedName);
+                const inspection = await container.inspect();
+                const state = inspection?.State || {};
+                const running = state.Running === true;
+                const status = state.Status || (running ? 'running' : 'stopped');
+                const healthStatus = state.Health?.Status || null;
+                const detailMessage = running
+                    ? `Mongo container is ${status}${healthStatus ? ` (health: ${healthStatus})` : ''}.`
+                    : `Mongo container is not running (status: ${status}).`;
 
                 appendHistoryEntry(trimmedName, {
-                    type: 'status',
-                    status: 'tested',
-                    message: 'Portal health check succeeded',
-                    detail: targetUrl,
+                    type: running ? 'status' : 'error',
+                    status: running ? 'tested' : 'error',
+                    message: running ? 'Mongo container inspection succeeded' : 'Mongo container reported inactive',
+                    detail: detailMessage,
+                    error: running ? null : detailMessage,
                 });
 
                 return {
                     service: trimmedName,
-                    success: true,
+                    success: running,
                     supported: true,
-                    status: response.status,
-                    duration,
-                    body: parsedBody,
+                    status,
+                    detail: detailMessage,
+                    body: {
+                        state,
+                    },
+                    error: running ? undefined : detailMessage,
                 };
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                attemptErrors.push({ url: targetUrl, message });
-
                 appendHistoryEntry(trimmedName, {
                     type: 'error',
                     status: 'error',
-                    message: 'Portal test failed',
+                    message: 'Mongo inspection failed',
                     detail: message,
                     error: message,
                 });
+
+                return {
+                    service: trimmedName,
+                    success: false,
+                    supported: true,
+                    error: message,
+                };
             }
         }
-
-        const formattedErrors = attemptErrors.map(({ url, message }) => `${url} (${message})`);
-        const aggregatedMessage = attemptErrors.length
-            ? `Portal test failed for all candidates: ${formattedErrors.join('; ')}`
-            : 'Portal test failed for all candidates.';
 
         return {
             service: trimmedName,
             success: false,
-            supported: true,
-            error: aggregatedMessage,
+            supported: false,
+            error: `Test action not supported for ${trimmedName}.`,
         };
     };
 

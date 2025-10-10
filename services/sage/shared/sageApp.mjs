@@ -76,6 +76,133 @@ const resolveLogger = (overrides = {}) => ({
     ...overrides,
 })
 
+const VERIFICATION_SERVICES = Object.freeze([
+    { name: 'noona-vault', label: 'Vault' },
+    { name: 'noona-redis', label: 'Redis' },
+    { name: 'noona-mongo', label: 'Mongo' },
+    { name: 'noona-portal', label: 'Portal' },
+    { name: 'noona-raven', label: 'Raven' },
+])
+
+const VERIFICATION_LABELS = new Map(VERIFICATION_SERVICES.map((entry) => [entry.name, entry.label]))
+
+const createEmptyVerificationSummary = () => ({
+    lastRunAt: null,
+    checks: [],
+})
+
+const formatVerificationLabel = (service) => {
+    if (VERIFICATION_LABELS.has(service)) {
+        return VERIFICATION_LABELS.get(service)
+    }
+
+    if (typeof service !== 'string') {
+        return 'Service'
+    }
+
+    return service
+        .replace(/^noona-/, '')
+        .split('-')
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join(' ')
+}
+
+const normalizeVerificationCheck = (check = {}) => {
+    const service = typeof check.service === 'string' ? check.service.trim() : ''
+    if (!service) {
+        return null
+    }
+
+    const supported = check.supported !== false
+    const success = supported ? check.success === true : false
+    const status = (() => {
+        if (!supported) {
+            return 'skipped'
+        }
+        return success ? 'pass' : 'fail'
+    })()
+
+    return {
+        service,
+        label: typeof check.label === 'string' && check.label.trim() ? check.label.trim() : formatVerificationLabel(service),
+        success,
+        supported,
+        status,
+        message: typeof check.message === 'string' && check.message.trim() ? check.message.trim() : null,
+        detail: Object.prototype.hasOwnProperty.call(check, 'detail') ? check.detail : null,
+        checkedAt:
+            typeof check.checkedAt === 'string' && check.checkedAt.trim()
+                ? check.checkedAt.trim()
+                : null,
+        duration: Number.isFinite(check.duration) ? Number(check.duration) : null,
+    }
+}
+
+const parseVerificationSummary = (detail) => {
+    if (typeof detail !== 'string' || !detail.trim()) {
+        return createEmptyVerificationSummary()
+    }
+
+    try {
+        const parsed = JSON.parse(detail)
+        const checks = Array.isArray(parsed?.checks) ? parsed.checks : []
+        const normalizedChecks = checks
+            .map((entry) => normalizeVerificationCheck(entry))
+            .filter(Boolean)
+
+        return {
+            lastRunAt:
+                typeof parsed?.lastRunAt === 'string' && parsed.lastRunAt.trim()
+                    ? parsed.lastRunAt.trim()
+                    : null,
+            checks: normalizedChecks,
+        }
+    } catch {
+        return createEmptyVerificationSummary()
+    }
+}
+
+const buildVerificationCheckResult = (config, result, timestamp) => {
+    const supported = result?.supported !== false
+    const success = supported && result?.success === true
+    const status = supported ? (success ? 'pass' : 'fail') : 'skipped'
+    const message = (() => {
+        if (typeof result?.error === 'string' && result.error.trim()) {
+            return result.error.trim()
+        }
+        if (typeof result?.detail === 'string' && result.detail.trim()) {
+            return result.detail.trim()
+        }
+        if (typeof result?.body === 'string' && result.body.trim()) {
+            return result.body.trim()
+        }
+        if (result?.body && typeof result.body === 'object') {
+            const bodyMessage = result.body.message || result.body.detail
+            if (typeof bodyMessage === 'string' && bodyMessage.trim()) {
+                return bodyMessage.trim()
+            }
+        }
+
+        if (!supported) {
+            return `${config.label} does not expose a test endpoint.`
+        }
+
+        return success ? `${config.label} health check succeeded.` : `${config.label} test failed.`
+    })()
+
+    return {
+        service: config.name,
+        label: config.label,
+        success,
+        supported,
+        status,
+        message,
+        detail: Object.prototype.hasOwnProperty.call(result || {}, 'body') ? result.body : null,
+        checkedAt: timestamp,
+        duration: Number.isFinite(result?.duration) ? Number(result.duration) : null,
+    }
+}
+
 export const normalizeServiceInstallPayload = (services) => {
     if (!Array.isArray(services) || services.length === 0) {
         throw new SetupValidationError('Body must include a non-empty "services" array.')
@@ -324,6 +451,59 @@ export const createSageApp = ({
             fetchImpl: ravenOptions.fetchImpl ?? ravenOptions.fetch ?? fetch,
             env: ravenOptions.env ?? process.env,
         })
+
+    const collectVerificationHealth = async () => {
+        const buildEntry = (service, payload, error) => {
+            if (error) {
+                return {
+                    service,
+                    status: 'error',
+                    message: error,
+                    detail: null,
+                    checkedAt: new Date().toISOString(),
+                    success: false,
+                }
+            }
+
+            const detailMessage =
+                (typeof payload?.detail === 'string' && payload.detail.trim() && payload.detail.trim()) ||
+                (typeof payload?.message === 'string' && payload.message.trim() && payload.message.trim()) ||
+                `${formatVerificationLabel(service)} responded successfully.`
+
+            return {
+                service,
+                status: typeof payload?.status === 'string' ? payload.status : 'unknown',
+                message: detailMessage,
+                detail: payload ?? null,
+                checkedAt: new Date().toISOString(),
+                success: true,
+            }
+        }
+
+        const snapshot = {}
+
+        try {
+            const payload = await setupClient.getServiceHealth('noona-warden')
+            snapshot.warden = buildEntry('noona-warden', payload, null)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn?.(`[${serviceName}] ⚠️ Warden health lookup failed: ${message}`)
+            snapshot.warden = buildEntry('noona-warden', null, message)
+        }
+
+        try {
+            const payload = await setupClient.getServiceHealth('noona-sage')
+            snapshot.sage = buildEntry('noona-sage', payload, null)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn?.(`[${serviceName}] ⚠️ Sage self-health lookup failed: ${message}`)
+            snapshot.sage = buildEntry('noona-sage', null, message)
+        }
+
+        return snapshot
+    }
+
+    const readVerificationSummary = (state) => parseVerificationSummary(state?.verification?.detail)
     let wizardStateClient = wizardStateClientOverride || wizardOptions.client || null
 
     if (!wizardStateClient) {
@@ -496,6 +676,147 @@ export const createSageApp = ({
 
             logger.error(`[${serviceName}] ❌ Failed to update wizard state: ${error.message}`)
             res.status(502).json({ error: 'Unable to update setup wizard state.' })
+        }
+    })
+
+    app.get('/api/setup/verification/status', async (_req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        try {
+            const [wizard, health] = await Promise.all([
+                wizardStateClient.loadState({ fallbackToDefault: true }),
+                collectVerificationHealth(),
+            ])
+
+            res.json({ wizard, summary: readVerificationSummary(wizard), health })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load verification status: ${error.message}`)
+            res.status(502).json({ error: 'Unable to load verification status.' })
+        }
+    })
+
+    app.post('/api/setup/verification/checks', async (_req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        const timestamp = new Date().toISOString()
+
+        try {
+            await wizardStateClient
+                .applyUpdates([
+                    {
+                        step: 'verification',
+                        status: 'in-progress',
+                        detail: 'Running verification checks…',
+                        error: null,
+                        updatedAt: timestamp,
+                        completedAt: null,
+                    },
+                ])
+                .catch(() => null)
+
+            const checks = []
+
+            for (const config of VERIFICATION_SERVICES) {
+                try {
+                    const response = await setupClient.testService(config.name)
+                    checks.push(
+                        buildVerificationCheckResult(
+                            config,
+                            response?.result ?? response,
+                            new Date().toISOString(),
+                        ),
+                    )
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    checks.push(
+                        buildVerificationCheckResult(
+                            config,
+                            { success: false, supported: true, error: message },
+                            new Date().toISOString(),
+                        ),
+                    )
+                }
+            }
+
+            const completedAt = new Date().toISOString()
+            const summary = {
+                lastRunAt: completedAt,
+                checks,
+            }
+
+            const hasFailures = summary.checks.some((check) => check.supported !== false && !check.success)
+            const stepUpdate = {
+                step: 'verification',
+                status: hasFailures ? 'error' : 'complete',
+                detail: JSON.stringify(summary),
+                error: hasFailures ? 'Verification checks reported failures.' : null,
+                updatedAt: completedAt,
+                completedAt: hasFailures ? null : completedAt,
+            }
+
+            const { state } = await wizardStateClient.applyUpdates([stepUpdate])
+            const health = await collectVerificationHealth()
+
+            res.json({ wizard: state, summary, health })
+        } catch (error) {
+            logger.error(`[${serviceName}] ❌ Failed to execute verification checks: ${error.message}`)
+            res.status(502).json({ error: 'Unable to run verification checks.' })
+        }
+    })
+
+    app.post('/api/setup/wizard/complete', async (_req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        try {
+            const current = await wizardStateClient.loadState({ fallbackToDefault: true })
+            const summary = readVerificationSummary(current)
+
+            const allChecksPassed =
+                summary.checks.length > 0 &&
+                summary.checks.every((check) => check.success || check.supported === false)
+
+            if (!allChecksPassed || current?.verification?.status !== 'complete') {
+                res.status(400).json({ error: 'Verification checks must succeed before completing setup.' })
+                return
+            }
+
+            if (current.completed) {
+                const health = await collectVerificationHealth()
+                res.json({ wizard: current, summary, health })
+                return
+            }
+
+            const now = new Date().toISOString()
+            const nextState = {
+                ...current,
+                completed: true,
+                updatedAt: now,
+                verification: {
+                    ...current.verification,
+                    completedAt:
+                        current?.verification?.completedAt && current.verification.completedAt.trim()
+                            ? current.verification.completedAt
+                            : now,
+                    updatedAt: current?.verification?.updatedAt || now,
+                },
+            }
+
+            const persisted = await wizardStateClient.writeState(nextState)
+            const health = await collectVerificationHealth()
+
+            res.json({ wizard: persisted, summary, health })
+        } catch (error) {
+            logger.error(`[${serviceName}] ❌ Failed to complete setup: ${error.message}`)
+            res.status(502).json({ error: 'Unable to complete setup.' })
         }
     })
 
