@@ -69,6 +69,46 @@ function ServiceRouteGuard({ requiredService, children }) {
   return children;
 }
 
+function SetupRouteGuard({ children }) {
+  const location = useLocation();
+  const { ensureLoaded, hasPendingSetup, loading, wizardLoading } = useServiceInstallation();
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    ensureLoaded()
+      .then(() => {
+        if (!cancelled) {
+          setChecked(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setChecked(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ensureLoaded]);
+
+  if (loading || wizardLoading || !checked) {
+    return (
+      <Box py={16} textAlign="center">
+        <Spinner size="lg" />
+      </Box>
+    );
+  }
+
+  if (!hasPendingSetup) {
+    return <Navigate to="/" replace state={{ from: location.pathname }} />;
+  }
+
+  return children;
+}
+
 const router = createBrowserRouter([
   {
     path: '/',
@@ -81,7 +121,11 @@ const router = createBrowserRouter([
       },
       {
         path: 'setup',
-        element: <SetupPage />,
+        element: (
+          <SetupRouteGuard>
+            <SetupPage />
+          </SetupRouteGuard>
+        ),
         handle: { title: 'Setup' },
       },
       {

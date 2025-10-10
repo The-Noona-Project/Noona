@@ -22,7 +22,7 @@ import {
 import SetupStepper from '../setup/components/SetupStepper.tsx';
 import EnvironmentEditor from '../setup/components/EnvironmentEditor.tsx';
 import DiscordSetupForm from '../setup/components/DiscordSetupForm.tsx';
-import InstallerLogPanel from '../setup/components/InstallerLogPanel.tsx';
+import VerificationPanel from '../setup/components/VerificationPanel.tsx';
 import FoundationPanel from '../setup/components/FoundationPanel.tsx';
 import RavenConfigurationPanel from '../setup/components/RavenConfigurationPanel.tsx';
 import { useSetupSteps } from '../setup/useSetupSteps.ts';
@@ -59,12 +59,10 @@ export default function SetupPage(): JSX.Element {
     checkRavenHealth,
     discord,
     install,
-    loadInstallationLogs,
-    installationLogs,
-    selectedLogService,
-    setSelectedLogService,
-    serviceLogs,
-    loadServiceLogs,
+    verification,
+    refreshVerification,
+    runVerificationChecks,
+    completeSetup,
     wizardState,
     wizardLoading,
     wizardError,
@@ -95,8 +93,8 @@ export default function SetupPage(): JSX.Element {
   }, [wizardState]);
 
   const handleRefreshWizard = React.useCallback(async () => {
-    await refreshWizard();
-  }, [refreshWizard]);
+    await Promise.allSettled([refreshWizard(), refreshVerification()]);
+  }, [refreshWizard, refreshVerification]);
 
   const handleNext = React.useCallback(async () => {
     await goNext();
@@ -139,15 +137,14 @@ export default function SetupPage(): JSX.Element {
         );
       case 'verification':
         return (
-          <InstallerLogPanel
+          <VerificationPanel
             install={install}
-            installationLogs={installationLogs}
-            onLoadInstallation={loadInstallationLogs}
-            selectedService={selectedLogService}
-            onSelectService={setSelectedLogService}
-            serviceLogs={serviceLogs}
-            onLoadServiceLogs={loadServiceLogs}
-            services={logServices}
+            verification={verification}
+            wizardState={wizardState}
+            wizardLoading={wizardLoading}
+            onRefresh={refreshVerification}
+            onRunChecks={runVerificationChecks}
+            onComplete={completeSetup}
           />
         );
       default:

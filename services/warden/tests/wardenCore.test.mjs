@@ -944,6 +944,160 @@ test('testService aggregates errors when all health candidates fail', async () =
     ]);
 });
 
+test('testService runs Vault health check against custom path', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': {
+                    name: 'noona-vault',
+                    image: 'vault',
+                    port: 3005,
+                    health: 'http://noona-vault:3005/v1/vault/health',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-vault');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://localhost:3005/v1/vault/health']);
+});
+
+test('testService checks Redis health root endpoint', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': {
+                    name: 'noona-redis',
+                    image: 'redis',
+                    port: 8001,
+                    hostServiceUrl: 'http://localhost:8001',
+                    health: 'http://noona-redis:8001/',
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-redis');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://localhost:8001/']);
+});
+
+test('testService exercises Raven health endpoint', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    port: 3002,
+                    health: 'http://noona-raven:8080/v1/library/health',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-raven');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://localhost:3002/v1/library/health']);
+});
+
+test('testService inspects Mongo container state', async () => {
+    const dockerInstance = {
+        getContainer: () => ({
+            inspect: async () => ({
+                State: {
+                    Running: true,
+                    Status: 'running',
+                    Health: { Status: 'healthy' },
+                },
+            }),
+        }),
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services: {
+            addon: {
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.testService('noona-mongo');
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'running');
+    assert.equal(result.body.state.Status, 'running');
+});
+
+test('testService reports Mongo inspection failures', async () => {
+    const dockerInstance = {
+        getContainer: () => ({
+            inspect: async () => {
+                throw new Error('boom');
+            },
+        }),
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services: {
+            addon: {
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.testService('noona-mongo');
+    assert.equal(result.success, false);
+    assert.match(result.error, /boom/);
+});
+
 test('detectKavitaMount logs detection attempts and returns result', async () => {
     const dockerInstance = {
         listContainers: async () => [],
