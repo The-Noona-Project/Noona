@@ -29,13 +29,44 @@ export async function ensureNetwork(dockerInstance, networkName) {
  * Attaches the Warden container to the Docker network if not already connected
  */
 export async function attachSelfToNetwork(dockerInstance, networkName) {
-    const id = process.env.HOSTNAME;
-    const info = await dockerInstance.getContainer(id).inspect();
+    const hostId = process.env.HOSTNAME;
+    const fallbackId = process.env.SERVICE_NAME || 'noona-warden';
+    let containerId = hostId;
+    let info;
+
+    if (hostId) {
+        try {
+            info = await dockerInstance.getContainer(hostId).inspect();
+        } catch (error) {
+            if (error?.statusCode === 404) {
+                warn(`[dockerUtil] HOSTNAME '${hostId}' not found when attaching to ${networkName}. Falling back to SERVICE_NAME '${fallbackId}'.`);
+                containerId = fallbackId;
+            } else {
+                throw error;
+            }
+        }
+    } else {
+        warn(`[dockerUtil] HOSTNAME env not set. Falling back to SERVICE_NAME '${fallbackId}'.`);
+        containerId = fallbackId;
+    }
+
+    if (!info) {
+        try {
+            info = await dockerInstance.getContainer(containerId).inspect();
+        } catch (error) {
+            if (error?.statusCode === 404) {
+                warn(`[dockerUtil] Unable to locate container '${containerId}' while attaching to network '${networkName}'. Skipping attach.`);
+                return;
+            }
+            throw error;
+        }
+    }
+
     const networks = info?.NetworkSettings?.Networks || {};
 
     if (!networks[networkName]) {
         log(`Attaching Warden to Docker network: ${networkName}`);
-        await dockerInstance.getNetwork(networkName).connect({ Container: id });
+        await dockerInstance.getNetwork(networkName).connect({ Container: containerId });
     }
 }
 

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createWarden } from '../shared/wardenCore.mjs';
+import { attachSelfToNetwork } from '../docker/dockerUtilties.mjs';
 
 test('resolveHostServiceUrl prefers explicit hostServiceUrl', () => {
     const warden = createWarden({ services: { addon: {}, core: {} }, hostDockerSockets: [] });
@@ -1354,4 +1355,99 @@ test('shutdownAll stops, removes, clears tracked containers and exits with code 
     ]);
     assert.equal(trackedContainers.size, 0);
     assert.equal(exitCode, 0);
+});
+
+test('init falls back to SERVICE_NAME when HOSTNAME lookup fails', async () => {
+    const originalHostname = process.env.HOSTNAME;
+    const originalServiceName = process.env.SERVICE_NAME;
+
+    process.env.HOSTNAME = 'ephemeral-host';
+    process.env.SERVICE_NAME = 'noona-warden-fallback';
+
+    const warnings = [];
+    const originalConsoleWarn = console.warn;
+    console.warn = (...args) => {
+        warnings.push(args.join(' '));
+    };
+
+    const connections = [];
+    const dockerInstance = {
+        getContainer(id) {
+            return {
+                async inspect() {
+                    if (id === 'ephemeral-host') {
+                        const error = new Error('not found');
+                        error.statusCode = 404;
+                        throw error;
+                    }
+
+                    if (id === 'noona-warden-fallback') {
+                        return { NetworkSettings: { Networks: {} } };
+                    }
+
+                    throw new Error(`unexpected container id: ${id}`);
+                },
+            };
+        },
+        getNetwork(name) {
+            return {
+                async connect({ Container }) {
+                    connections.push({ network: name, container: Container });
+                },
+            };
+        },
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        dockerUtils: {
+            ensureNetwork: async () => {},
+            attachSelfToNetwork,
+            containerExists: async () => false,
+            pullImageIfNeeded: async () => {},
+            runContainerWithLogs: async () => {},
+            waitForHealthyStatus: async () => {},
+        },
+        services: {
+            core: {
+                'noona-moon': { name: 'noona-moon' },
+                'noona-sage': { name: 'noona-sage' },
+            },
+            addon: {},
+        },
+        logger: { log: () => {}, warn: () => {} },
+        env: { SERVICE_NAME: 'noona-warden-fallback', DEBUG: 'false' },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    try {
+        const result = await warden.init();
+        assert.equal(result.mode, 'minimal');
+        assert.deepEqual(started, ['noona-sage', 'noona-moon']);
+        assert.ok(connections.some(({ container }) => container === 'noona-warden-fallback'));
+        assert.ok(
+            warnings.some((message) =>
+                message.toLowerCase().includes("falling back to service_name 'noona-warden-fallback'"),
+            ),
+        );
+    } finally {
+        console.warn = originalConsoleWarn;
+
+        if (originalHostname === undefined) {
+            delete process.env.HOSTNAME;
+        } else {
+            process.env.HOSTNAME = originalHostname;
+        }
+
+        if (originalServiceName === undefined) {
+            delete process.env.SERVICE_NAME;
+        } else {
+            process.env.SERVICE_NAME = originalServiceName;
+        }
+    }
 });
