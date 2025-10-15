@@ -71,19 +71,50 @@ const ensureExecutables = async service => {
     }
 };
 
-const dockerRunPowerShell = async (service, image, envVars = {}) => {
-    const envParts = Object.entries(envVars)
-        .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
-        .map(([key, value]) => `-e ${key}=${value}`);
+const buildDockerRunArgs = (service, image, envVars = {}) => {
+    const entries = Object.entries(envVars)
+        .filter(([, value]) => typeof value === 'string' && value.trim() !== '');
 
-    envParts.push(`-e SERVICE_NAME=noona-${service}`);
+    const normalizedEnv = Object.fromEntries(entries);
+    if (!normalizedEnv.SERVICE_NAME) {
+        normalizedEnv.SERVICE_NAME = `noona-${service}`;
+    }
 
-    const envString = envParts.join(' ');
-    const envSection = envString ? `${envString} ` : '';
+    const containerName = normalizedEnv.SERVICE_NAME;
+    const args = [
+        'run',
+        '-d',
+        '--rm',
+        '--name',
+        containerName,
+        '--hostname',
+        containerName,
+        '--network',
+        NETWORK_NAME,
+        '-v',
+        '/var/run/docker.sock:/var/run/docker.sock'
+    ];
 
-    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --hostname noona-${service} --network ${NETWORK_NAME} -v /var/run/docker.sock:/var/run/docker.sock ${envSection}${image}:latest"`;
-    await execAsync(cmd);
-    print.success(`${service} started in new PowerShell window.`);
+    if (service === 'warden') {
+        const apiPort = normalizedEnv.WARDEN_API_PORT?.trim() || '4001';
+        args.push('-p', `${apiPort}:${apiPort}`);
+    }
+
+    for (const [key, value] of Object.entries(normalizedEnv)) {
+        args.push('-e', `${key}=${value}`);
+    }
+
+    args.push(`${image}:latest`);
+    return args;
+};
+
+const dockerRunService = async (service, image, envVars = {}) => {
+    const args = buildDockerRunArgs(service, image, envVars);
+    await runDockerCommand({
+        args,
+        successMessage: `${service} started.`,
+        errorMessage: `Failed to start ${service}`
+    });
 };
 
 const execLines = async command => {
@@ -362,7 +393,7 @@ const run = async () => {
                         await ensureNetwork();
                         const DEBUG = await askDebugSetting();
                         const BOOT_MODE = await askBootMode();
-                        await dockerRunPowerShell(svc, image, { DEBUG, BOOT_MODE });
+                        await dockerRunService(svc, image, { DEBUG, BOOT_MODE });
                     } catch (e) {
                         print.error(`Failed to start ${svc}: ${e.message}`);
                     }
