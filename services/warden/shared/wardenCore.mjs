@@ -10,6 +10,7 @@ import {
     attachSelfToNetwork,
     containerExists,
     ensureNetwork,
+    formatDockerProgressMessage,
     pullImageIfNeeded,
     runContainerWithLogs,
     waitForHealthyStatus,
@@ -30,6 +31,7 @@ function normalizeDockerUtils(utilsOption = {}) {
         attachSelfToNetwork,
         containerExists,
         ensureNetwork,
+        formatDockerProgressMessage,
         pullImageIfNeeded,
         runContainerWithLogs,
         waitForHealthyStatus,
@@ -950,40 +952,47 @@ export function createWarden(options = {}) {
 
             await dockerUtils.pullImageIfNeeded(service.image, {
                 onProgress: (event = {}) => {
-                    const layerId = event.layerId || event.id || null;
-                    const status = event.phase || event.status || 'progress';
+                    const explicitLayerId =
+                        event.layerId != null ? String(event.layerId).trim() : '';
+                    const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
+                    const layerId = explicitLayerId || fallbackLayerId || null;
+                    const phase =
+                        typeof event.phase === 'string' && event.phase.trim()
+                            ? event.phase.trim()
+                            : null;
+                    const rawStatus = event.status || phase || 'progress';
+                    const status =
+                        typeof rawStatus === 'string'
+                            ? rawStatus.trim() || 'progress'
+                            : String(rawStatus ?? 'progress');
                     const detail = event.detail != null ? String(event.detail).trim() : '';
-                    const messageParts = [];
+                    const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
+                    const message =
+                        explicitMessage ||
+                        formatDockerProgressMessage({
+                            layerId,
+                            phase,
+                            status,
+                            detail,
+                        }) ||
+                        status;
 
-                    if (layerId) {
-                        messageParts.push(`[${layerId}]`);
-                    }
-
-                    if (status) {
-                        messageParts.push(status);
-                    }
-
-                    if (detail) {
-                        messageParts.push(detail);
-                    }
-
-                    const message = messageParts.join(' ').trim() || status;
                     const meta = {};
 
                     if (layerId) {
                         meta.layerId = layerId;
                     }
 
-                    if (event.phase) {
-                        meta.phase = event.phase;
+                    if (phase) {
+                        meta.phase = phase;
                     }
 
                     if (event.progressDetail && typeof event.progressDetail === 'object') {
                         meta.progressDetail = cloneMeta(event.progressDetail);
                     }
 
-                    if (event.message) {
-                        meta.message = String(event.message);
+                    if (explicitMessage) {
+                        meta.message = explicitMessage;
                     }
 
                     const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
