@@ -6,12 +6,12 @@
 FROM node:24-slim AS builder
 
 WORKDIR /app
-COPY services/moon ./services/moon
-WORKDIR /app/services/moon
 
-RUN rm -rf node_modules package-lock.json
-RUN npm install
-RUN npx vite build
+COPY services/moon/package*.json ./
+RUN npm ci
+
+COPY services/moon/ ./
+RUN npm run build
 
 # ─────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ HEALTHCHECK --interval=5s --timeout=2s --start-period=3s --retries=5 \
   CMD curl -fsS http://localhost:3000/ || exit 1
 
 COPY services/moon/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=builder /app/services/moon/dist /usr/share/nginx/html
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 3000
 

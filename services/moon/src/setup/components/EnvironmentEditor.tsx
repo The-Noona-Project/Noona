@@ -2,7 +2,6 @@ import React from 'react';
 import {
   Alert,
   AlertIcon,
-  Button,
   FormControl,
   FormLabel,
   FormErrorMessage,
@@ -20,17 +19,13 @@ import type { EnvSection } from '../useSetupSteps.ts';
 interface EnvironmentEditorProps {
   sections: EnvSection[];
   onChange: (serviceName: string, key: string, value: string) => void;
-  onDetectRaven: () => void;
-  detectingRaven: boolean;
-  ravenDetectionError: string;
+  error?: string;
 }
 
 export default function EnvironmentEditor({
   sections,
   onChange,
-  onDetectRaven,
-  detectingRaven,
-  ravenDetectionError,
+  error,
 }: EnvironmentEditorProps) {
   if (sections.length === 0) {
     return (
@@ -43,6 +38,12 @@ export default function EnvironmentEditor({
 
   return (
     <Stack spacing={8} data-testid="environment-editor">
+      {error && (
+        <Alert status="error" borderRadius="md" data-testid="environment-error">
+          <AlertIcon />
+          {error}
+        </Alert>
+      )}
       {sections.map((section) => (
         <Stack key={section.service.name} spacing={4} borderWidth="1px" borderRadius="md" p={6}>
           <HStack justify="space-between" align="flex-start">
@@ -54,25 +55,6 @@ export default function EnvironmentEditor({
                 Configure environment variables for {section.service.displayName} before installation.
               </Text>
             </Stack>
-            {section.service.name === 'noona-raven' && (
-              <Stack spacing={2} align="flex-end">
-                <Button
-                  colorScheme="purple"
-                  size="sm"
-                  onClick={onDetectRaven}
-                  isLoading={detectingRaven}
-                  loadingText="Detecting"
-                  data-testid="detect-raven"
-                >
-                  Detect Kavita mount
-                </Button>
-                {ravenDetectionError && (
-                  <Text color="red.500" fontSize="sm" data-testid="raven-detect-error">
-                    {ravenDetectionError}
-                  </Text>
-                )}
-              </Stack>
-            )}
           </HStack>
           <Stack spacing={6}>
             {section.fields.map((field) => (

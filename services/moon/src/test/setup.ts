@@ -16,3 +16,23 @@ if (!window.matchMedia) {
     })),
   });
 }
+
+let focusImpl: () => void = () => {
+  /* noop for jsdom */
+};
+
+try {
+  Object.defineProperty(HTMLElement.prototype, 'focus', {
+    configurable: true,
+    get() {
+      return focusImpl;
+    },
+    set(value) {
+      if (typeof value === 'function') {
+        focusImpl = value as () => void;
+      }
+    },
+  });
+} catch (error) {
+  // ignore - jsdom may already expose a writable focus implementation
+}

@@ -260,6 +260,123 @@ test('installServices returns per-service results with errors', async () => {
     assert.deepEqual(started, ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage']);
 });
 
+test('installServices publishes wizard state transitions', async () => {
+    const events = [];
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis' },
+                'noona-mongo': { name: 'noona-mongo', image: 'mongo', hostServiceUrl: 'mongodb://localhost:27017' },
+            },
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+                'noona-portal': { name: 'noona-portal', image: 'portal' },
+            },
+        },
+        dockerUtils: {
+            ensureNetwork: async () => {},
+            attachSelfToNetwork: async () => {},
+            containerExists: async () => false,
+            pullImageIfNeeded: async () => {},
+            runContainerWithLogs: async () => {},
+            waitForHealthyStatus: async () => {},
+        },
+        wizardState: {
+            publisher: {
+                async reset(names) {
+                    events.push({ type: 'reset', names });
+                },
+                async trackServiceStatus(name, status) {
+                    events.push({ type: 'track', name, status });
+                },
+                async completeInstall(payload) {
+                    events.push({ type: 'complete', ...payload });
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async () => {};
+
+    const results = await warden.installServices([
+        { name: 'noona-redis' },
+        { name: 'noona-portal' },
+    ]);
+
+    const installed = results.filter((entry) => entry.status === 'installed');
+    assert.deepEqual(
+        installed.map((entry) => entry.name),
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-portal'],
+    );
+    assert.ok(events.some((event) => event.type === 'reset'));
+    const tracked = events.filter((event) => event.type === 'track');
+    assert.ok(tracked.some((event) => event.name === 'noona-redis' && event.status === 'installing'));
+    assert.ok(
+        tracked.some(
+            (event) =>
+                event.name === 'noona-portal' && (event.status === 'installing' || event.status === 'installed'),
+        ),
+    );
+    const completion = events.find((event) => event.type === 'complete');
+    assert.deepEqual(completion, { type: 'complete', hasErrors: false });
+});
+
+test('installServices publishes wizard errors when installs fail', async () => {
+    const events = [];
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': { name: 'noona-redis', image: 'redis' },
+                'noona-mongo': { name: 'noona-mongo', image: 'mongo', hostServiceUrl: 'mongodb://localhost:27017' },
+            },
+            core: {
+                'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
+                'noona-portal': { name: 'noona-portal', image: 'portal' },
+            },
+        },
+        dockerUtils: {
+            ensureNetwork: async () => {},
+            attachSelfToNetwork: async () => {},
+            containerExists: async () => false,
+            pullImageIfNeeded: async () => {},
+            runContainerWithLogs: async () => {},
+            waitForHealthyStatus: async () => {},
+        },
+        wizardState: {
+            publisher: {
+                async reset(names) {
+                    events.push({ type: 'reset', names });
+                },
+                async trackServiceStatus(name, status) {
+                    events.push({ type: 'track', name, status });
+                },
+                async completeInstall(payload) {
+                    events.push({ type: 'complete', ...payload });
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async (service) => {
+        if (service.name === 'noona-portal') {
+            throw new Error('boom');
+        }
+    };
+
+    const results = await warden.installServices([
+        { name: 'noona-redis' },
+        { name: 'noona-portal' },
+    ]);
+
+    assert.ok(results.some((entry) => entry.name === 'noona-portal' && entry.status === 'error'));
+    const completion = events.find((event) => event.type === 'complete');
+    assert.ok(completion && completion.hasErrors === true);
+    const portalEvents = events.filter((event) => event.type === 'track' && event.name === 'noona-portal');
+    assert.ok(portalEvents.some((event) => event.status === 'error'));
+});
+
 test('installServices merges environment overrides before starting services', async () => {
     const warden = createWarden({
         services: {
@@ -827,6 +944,160 @@ test('testService aggregates errors when all health candidates fail', async () =
     ]);
 });
 
+test('testService runs Vault health check against custom path', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': {
+                    name: 'noona-vault',
+                    image: 'vault',
+                    port: 3005,
+                    health: 'http://noona-vault:3005/v1/vault/health',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-vault');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://localhost:3005/v1/vault/health']);
+});
+
+test('testService checks Redis health root endpoint', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {
+                'noona-redis': {
+                    name: 'noona-redis',
+                    image: 'redis',
+                    port: 8001,
+                    hostServiceUrl: 'http://localhost:8001',
+                    health: 'http://noona-redis:8001/',
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-redis');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://localhost:8001/']);
+});
+
+test('testService exercises Raven health endpoint', async () => {
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    port: 3002,
+                    health: 'http://noona-raven:8080/v1/library/health',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'ok' }),
+            };
+        },
+    });
+
+    const result = await warden.testService('noona-raven');
+    assert.equal(result.success, true);
+    assert.deepEqual(fetchCalls, ['http://localhost:3002/v1/library/health']);
+});
+
+test('testService inspects Mongo container state', async () => {
+    const dockerInstance = {
+        getContainer: () => ({
+            inspect: async () => ({
+                State: {
+                    Running: true,
+                    Status: 'running',
+                    Health: { Status: 'healthy' },
+                },
+            }),
+        }),
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services: {
+            addon: {
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.testService('noona-mongo');
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'running');
+    assert.equal(result.body.state.Status, 'running');
+});
+
+test('testService reports Mongo inspection failures', async () => {
+    const dockerInstance = {
+        getContainer: () => ({
+            inspect: async () => {
+                throw new Error('boom');
+            },
+        }),
+    };
+
+    const warden = createWarden({
+        dockerInstance,
+        services: {
+            addon: {
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.testService('noona-mongo');
+    assert.equal(result.success, false);
+    assert.match(result.error, /boom/);
+});
+
 test('detectKavitaMount logs detection attempts and returns result', async () => {
     const dockerInstance = {
         listContainers: async () => [],
@@ -845,6 +1116,98 @@ test('detectKavitaMount logs detection attempts and returns result', async () =>
     const history = warden.getServiceHistory('noona-raven');
     assert.ok(history.entries.some((entry) => entry.status === 'detecting'));
     assert.ok(history.entries.some((entry) => entry.status === 'not-found'));
+});
+
+test('getServiceHealth returns Raven health and records wizard detail', async () => {
+    const wizardCalls = [];
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    health: 'http://noona-raven:8080/ready',
+                },
+            },
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({ status: 'healthy', message: 'Raven is good' }),
+            };
+        },
+        wizardState: {
+            publisher: {
+                async recordRavenDetail(...args) {
+                    wizardCalls.push(args);
+                },
+            },
+        },
+    });
+
+    const result = await warden.getServiceHealth('noona-raven');
+    assert.deepEqual(fetchCalls, ['http://noona-raven:8080/ready']);
+    assert.deepEqual(result, {
+        status: 'healthy',
+        detail: 'Raven is good',
+        url: 'http://noona-raven:8080/ready',
+    });
+
+    assert.equal(wizardCalls.length, 1);
+    const [detail, options] = wizardCalls[0];
+    assert.equal(detail.health.status, 'healthy');
+    assert.equal(detail.health.message, 'Raven is good');
+    assert.ok(detail.health.updatedAt);
+    assert.equal(options.status, 'in-progress');
+    assert.equal(options.error, null);
+});
+
+test('getServiceHealth aggregates failures and records Raven error', async () => {
+    const wizardCalls = [];
+    const fetchCalls = [];
+    const warden = createWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    port: 8080,
+                    health: 'http://noona-raven:8080/ready',
+                },
+            },
+        },
+        env: { HOST_SERVICE_URL: 'http://localhost' },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            throw new Error(`failed:${url}`);
+        },
+        wizardState: {
+            publisher: {
+                async recordRavenDetail(...args) {
+                    wizardCalls.push(args);
+                },
+            },
+        },
+    });
+
+    await assert.rejects(() => warden.getServiceHealth('noona-raven'), /failed:http:\/\/noona-raven:8080\/ready/);
+    assert.deepEqual(fetchCalls, [
+        'http://localhost:8080/health',
+        'http://noona-raven:8080/ready',
+    ]);
+
+    assert.equal(wizardCalls.length, 1);
+    const [detail, options] = wizardCalls[0];
+    assert.equal(detail.health.status, 'error');
+    assert.match(detail.health.message, /failed:http:\/\/noona-raven:8080\/ready/);
+    assert.equal(options.status, 'error');
 });
 
 test('bootFull launches services in super boot order with correct health URLs', async () => {

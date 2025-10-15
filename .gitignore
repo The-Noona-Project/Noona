@@ -53,6 +53,7 @@ deployment/.dockerignore
 
 # Custom exclusions
 services/**/package-lock.json
+!services/moon/package-lock.json
 services/**/logs/
 utilities/**/__generated__/
 

@@ -1,6 +1,6 @@
 // deploy.mjs - Noona Docker Manager (Node.js version)
 import readline from 'readline/promises';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
@@ -19,6 +19,11 @@ const colors = {
     reset: '\x1b[0m', bold: '\x1b[1m',
     red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m'
 };
+
+const CLI_ARGS = new Set(process.argv.slice(2));
+const FORCE_CLEAN_BUILD = CLI_ARGS.has('--clean-build');
+const FORCE_CACHED_BUILD = CLI_ARGS.has('--cached-build');
+const CONFLICTING_BUILD_FLAGS = FORCE_CLEAN_BUILD && FORCE_CACHED_BUILD;
 
 const printHeader = () => {
     console.log(`\n${colors.bold}${colors.cyan}`);
@@ -88,6 +93,39 @@ const execLines = async command => {
         return [];
     }
 };
+
+const runDockerCommand = ({ args, successMessage, errorMessage }) =>
+    new Promise((resolve, reject) => {
+        const child = spawn('docker', args, {
+            stdio: 'inherit',
+            shell: process.platform === 'win32'
+        });
+
+        child.on('error', error => {
+            if (errorMessage) {
+                print.error(`${errorMessage}: ${error.message}`);
+            } else {
+                print.error(`Docker command failed: ${error.message}`);
+            }
+            reject(error);
+        });
+
+        child.on('close', code => {
+            if (code === 0) {
+                if (successMessage) {
+                    print.success(successMessage);
+                }
+                resolve();
+                return;
+            }
+
+            const failureMessage = errorMessage
+                ? `${errorMessage} (exit code ${code})`
+                : `Docker command exited with code ${code}`;
+            print.error(failureMessage);
+            reject(new Error(failureMessage));
+        });
+    });
 
 const ensureNetwork = async () => {
     const networks = await execLines(`docker network ls --filter "name=^${NETWORK_NAME}$" --format "{{.Name}}"`);
@@ -203,6 +241,26 @@ const askBootMode = async () => {
     return 'minimal';
 };
 
+const askCleanBuild = async () => {
+    if (CONFLICTING_BUILD_FLAGS) {
+        console.warn(`${colors.yellow}⚠️  Conflicting build cache flags detected; defaulting to cached builds.${colors.reset}`);
+        return false;
+    }
+
+    if (FORCE_CLEAN_BUILD) {
+        console.log(`${colors.cyan}🧼 Clean build requested via CLI flag (--clean-build).${colors.reset}`);
+        return true;
+    }
+
+    if (FORCE_CACHED_BUILD) {
+        console.log(`${colors.cyan}📦 Cached build requested via CLI flag (--cached-build).${colors.reset}`);
+        return false;
+    }
+
+    const answer = (await rl.question('Perform a clean build (use --no-cache)? (y/N): ')).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+};
+
 const run = async () => {
     while (true) {
         printHeader();
@@ -238,6 +296,11 @@ const run = async () => {
             continue;
         }
 
+        let useNoCache = false;
+        if (mainChoice === '1') {
+            useNoCache = await askCleanBuild();
+        }
+
         for (const svc of selected) {
             if (!svc) continue;
             const image = `${DOCKERHUB_USER}/noona-${svc}`;
@@ -249,23 +312,44 @@ const run = async () => {
                     console.log(`${colors.yellow}🔨 Building ${svc}...${colors.reset}`);
                     try {
                         await ensureExecutables(svc);
-                        await execAsync(`docker build --no-cache -f "${dockerfile}" -t "${image}" "${ROOT_DIR}"`, { stdio: 'inherit' });
-                        print.success(`Build complete: ${image}`);
-                    } catch (e) {
-                        print.error(`Build failed: ${e.message}`);
+                        const buildArgs = ['build', '-f', dockerfile, '-t', image, ROOT_DIR];
+                        if (useNoCache) {
+                            buildArgs.splice(1, 0, '--no-cache');
+                        }
+                        await runDockerCommand({
+                            args: buildArgs,
+                            successMessage: `Build complete: ${image}`,
+                            errorMessage: `Build failed: ${image}`
+                        });
+                    } catch {
+                        // Errors are reported by runDockerCommand
                     }
                     break;
 
                 case '2': // Push
                     console.log(`${colors.yellow}📤 Pushing ${svc}...${colors.reset}`);
-                    await execAsync(`docker push ${image}:latest`);
-                    print.success(`Push complete: ${image}`);
+                    try {
+                        await runDockerCommand({
+                            args: ['push', `${image}:latest`],
+                            successMessage: `Push complete: ${image}`,
+                            errorMessage: `Push failed: ${image}`
+                        });
+                    } catch {
+                        // Errors are reported by runDockerCommand
+                    }
                     break;
 
                 case '3': // Pull
                     console.log(`${colors.yellow}📥 Pulling ${svc}...${colors.reset}`);
-                    await execAsync(`docker pull ${image}:latest`);
-                    print.success(`Pull complete: ${image}`);
+                    try {
+                        await runDockerCommand({
+                            args: ['pull', `${image}:latest`],
+                            successMessage: `Pull complete: ${image}`,
+                            errorMessage: `Pull failed: ${image}`
+                        });
+                    } catch {
+                        // Errors are reported by runDockerCommand
+                    }
                     break;
 
                 case '4': // Start

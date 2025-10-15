@@ -12,6 +12,7 @@ import {
     normalizeServiceInstallPayload,
     startSage,
 } from '../shared/sageApp.mjs'
+import { createDefaultWizardState } from '../shared/wizardStateSchema.mjs'
 import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
@@ -169,6 +170,237 @@ test('GET /api/setup/services proxies to setup client', async (t) => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { services: [{ name: 'noona-moon' }] })
     assert.deepEqual(calls, ['list'])
+})
+
+test('GET /api/setup/wizard/state returns state from client', async (t) => {
+    const wizardState = createDefaultWizardState()
+    const calls = []
+    const app = createSageApp({
+        wizardStateClient: {
+            async loadState() {
+                calls.push('load')
+                return wizardState
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/state`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), wizardState)
+    assert.deepEqual(calls, ['load'])
+})
+
+test('PUT /api/setup/wizard/state applies updates through client', async (t) => {
+    const nextState = createDefaultWizardState()
+    nextState.foundation = { ...nextState.foundation, status: 'complete' }
+    const updates = []
+    const app = createSageApp({
+        wizardStateClient: {
+            async applyUpdates(changeSet) {
+                updates.push(changeSet)
+                return { state: nextState, changed: true }
+            },
+            async writeState() {
+                throw new Error('writeState should not be called')
+            },
+            async loadState() {
+                return createDefaultWizardState()
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/state`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: [{ step: 'foundation', status: 'complete' }] }),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.foundation.status, 'complete')
+    assert.equal(updates.length, 1)
+    assert.deepEqual(updates[0], [{ step: 'foundation', status: 'complete' }])
+})
+
+test('PUT /api/setup/wizard/state validates payload', async (t) => {
+    const app = createSageApp({
+        wizardStateClient: {
+            async loadState() {
+                return createDefaultWizardState()
+            },
+            async applyUpdates() {
+                throw new Error('applyUpdates should not be called')
+            },
+            async writeState() {
+                throw new Error('writeState should not be called')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/state`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: [] }),
+    })
+
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.ok(typeof payload?.error === 'string' && payload.error.length > 0)
+})
+
+test('GET /api/setup/verification/status returns wizard summary and health', async (t) => {
+    const wizardState = createDefaultWizardState()
+    wizardState.verification.detail = JSON.stringify({
+        lastRunAt: '2024-01-01T00:00:00.000Z',
+        checks: [{ service: 'noona-vault', success: true, supported: true }],
+    })
+
+    const healthCalls = []
+    const app = createSageApp({
+        setupClient: {
+            async getServiceHealth(name) {
+                healthCalls.push(name)
+                return { status: 'healthy', detail: `${name} ok` }
+            },
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return []
+            },
+        },
+        wizardStateClient: {
+            async loadState() {
+                return wizardState
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/verification/status`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.wizard, wizardState)
+    assert.equal(payload.summary.checks.length, 1)
+    assert.equal(payload.summary.checks[0].service, 'noona-vault')
+    assert.deepEqual(healthCalls.sort(), ['noona-sage', 'noona-warden'])
+})
+
+test('POST /api/setup/verification/checks runs service tests and updates wizard state', async (t) => {
+    const wizardState = createDefaultWizardState()
+    const updatesApplied = []
+    const testCalls = []
+
+    const app = createSageApp({
+        setupClient: {
+            async testService(name) {
+                testCalls.push(name)
+                return { status: 200, result: { success: true, supported: true } }
+            },
+            async getServiceHealth() {
+                return { status: 'healthy', detail: 'ok' }
+            },
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return []
+            },
+        },
+        wizardStateClient: {
+            async applyUpdates(updates = []) {
+                updatesApplied.push(updates)
+                for (const update of updates) {
+                    if (update.step === 'verification') {
+                        if (update.status) {
+                            wizardState.verification.status = update.status
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'detail')) {
+                            wizardState.verification.detail = update.detail
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'error')) {
+                            wizardState.verification.error = update.error
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'updatedAt')) {
+                            wizardState.verification.updatedAt = update.updatedAt
+                        }
+                        if (Object.prototype.hasOwnProperty.call(update, 'completedAt')) {
+                            wizardState.verification.completedAt = update.completedAt
+                        }
+                    }
+                }
+                return { state: wizardState }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/verification/checks`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.ok(Array.isArray(payload.summary.checks))
+    assert.equal(payload.summary.checks.length, 5)
+    assert.equal(new Set(testCalls).size, 5)
+    assert.equal(wizardState.verification.status, 'complete')
+    assert.ok(updatesApplied.length >= 2)
+})
+
+test('POST /api/setup/wizard/complete persists completion flag', async (t) => {
+    const wizardState = createDefaultWizardState()
+    wizardState.verification.status = 'complete'
+    wizardState.verification.detail = JSON.stringify({
+        lastRunAt: '2024-01-01T00:00:00.000Z',
+        checks: [
+            { service: 'noona-vault', success: true, supported: true },
+            { service: 'noona-portal', success: true, supported: true },
+        ],
+    })
+
+    const writes = []
+    const app = createSageApp({
+        setupClient: {
+            async getServiceHealth() {
+                return { status: 'healthy', detail: 'ok' }
+            },
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return []
+            },
+        },
+        wizardStateClient: {
+            async loadState() {
+                return wizardState
+            },
+            async writeState(next) {
+                writes.push(next)
+                return next
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/complete`, { method: 'POST' })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.wizard.completed, true)
+    assert.ok(writes.length >= 1)
 })
 
 test('createDiscordSetupClient uses limited intents during validation', async () => {
@@ -868,6 +1100,9 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
             async detectRavenMount() {
                 return { status: 200, detection: { mountPath: '/data' } }
             },
+            async getServiceHealth() {
+                return { status: 'healthy', detail: 'ok' }
+            },
         },
     })
 
@@ -877,6 +1112,55 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
     const response = await fetch(`${baseUrl}/api/setup/services/noona-raven/detect`, { method: 'POST' })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data' } })
+})
+
+test('GET /api/setup/services/:name/health proxies health payloads', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getServiceHealth(name) {
+                return { status: 'healthy', detail: `ok:${name}` }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-raven/health`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { status: 'healthy', detail: 'ok:noona-raven' })
+})
+
+test('GET /api/setup/services/:name/health surfaces validation errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return { status: 200, results: [] }
+            },
+            async getServiceHealth() {
+                throw new SetupValidationError('Unsupported service for health check')
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/unknown/health`)
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unsupported service for health check')
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {

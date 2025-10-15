@@ -1,0 +1,25 @@
+# Global Docker build ignores
+.git
+.gitignore
+**/.git
+**/.svn
+**/.hg
+node_modules
+**/node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store
+**/.pnpm-store
+**/.cache
+**/.turbo
+**/.next
+**/dist
+**/build
+**/.DS_Store
+**/Thumbs.db
+**/.env
+**/.env.*
+**/coverage
+**/logs
+**/tmp
