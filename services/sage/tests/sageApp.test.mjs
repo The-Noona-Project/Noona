@@ -674,7 +674,19 @@ test('GET /api/setup/services/install/progress proxies progress summary', async 
                 return { status: 200, results: [] }
             },
             async getInstallProgress() {
-                return { status: 'installing', percent: 25, items: [{ name: 'noona-sage', status: 'installing' }] }
+                return {
+                    status: 'installing',
+                    percent: 25,
+                    items: [
+                        {
+                            name: 'noona-sage',
+                            status: 'installing',
+                            layerId: 'layer-abc',
+                            phase: 'Downloading',
+                            detail: '10/100',
+                        },
+                    ],
+                }
             },
         },
     })
@@ -687,7 +699,15 @@ test('GET /api/setup/services/install/progress proxies progress summary', async 
     assert.deepEqual(await response.json(), {
         status: 'installing',
         percent: 25,
-        items: [{ name: 'noona-sage', status: 'installing' }],
+        items: [
+            {
+                name: 'noona-sage',
+                status: 'installing',
+                layerId: 'layer-abc',
+                phase: 'Downloading',
+                detail: '10/100',
+            },
+        ],
     })
 })
 
@@ -709,7 +729,16 @@ test('GET /api/setup/services/installation/logs proxies installation history', a
                 calls.push(options)
                 return {
                     service: 'installation',
-                    entries: [{ message: 'Starting installation' }],
+                    entries: [
+                        {
+                            message: 'Starting installation',
+                            meta: {
+                                layerId: 'layer-abc',
+                                phase: 'Pulling',
+                                progressDetail: { current: 5, total: 10 },
+                            },
+                        },
+                    ],
                     summary: { status: 'installing', percent: 10, detail: null, updatedAt: 'now' },
                 }
             },
@@ -723,7 +752,16 @@ test('GET /api/setup/services/installation/logs proxies installation history', a
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {
         service: 'installation',
-        entries: [{ message: 'Starting installation' }],
+        entries: [
+            {
+                message: 'Starting installation',
+                meta: {
+                    layerId: 'layer-abc',
+                    phase: 'Pulling',
+                    progressDetail: { current: 5, total: 10 },
+                },
+            },
+        ],
         summary: { status: 'installing', percent: 10, detail: null, updatedAt: 'now' },
     })
     assert.deepEqual(calls, [{ limit: '5' }])
@@ -772,7 +810,14 @@ test('GET /api/setup/services/:name/logs proxies history and honours limit', asy
                 calls.push([name, options])
                 return {
                     service: name,
-                    entries: [{ type: 'status', status: 'ready', message: 'Ready' }],
+                    entries: [
+                        {
+                            type: 'status',
+                            status: 'ready',
+                            message: 'Ready',
+                            meta: { layerId: 'layer-xyz', phase: 'Extracting' },
+                        },
+                    ],
                     summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
                 }
             },
@@ -786,7 +831,14 @@ test('GET /api/setup/services/:name/logs proxies history and honours limit', asy
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), {
         service: 'noona-sage',
-        entries: [{ type: 'status', status: 'ready', message: 'Ready' }],
+        entries: [
+            {
+                type: 'status',
+                status: 'ready',
+                message: 'Ready',
+                meta: { layerId: 'layer-xyz', phase: 'Extracting' },
+            },
+        ],
         summary: { status: 'ready', percent: null, detail: null, updatedAt: 'now' },
     })
     assert.deepEqual(calls, [['noona-sage', { limit: '5' }]])

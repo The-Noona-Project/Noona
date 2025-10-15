@@ -795,8 +795,17 @@ test('installation progress and service histories track install lifecycle', asyn
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
         containerExists: async () => false,
-        pullImageIfNeeded: async (_image, options) => {
-            options?.onProgress?.({ status: 'Pulling', detail: 'layers' });
+        pullImageIfNeeded: async (image, options) => {
+            const layerId = `layer-${image}`;
+            options?.onProgress?.({
+                id: layerId,
+                layerId,
+                status: 'Downloading',
+                phase: 'Downloading',
+                detail: '10/100',
+                progressDetail: { current: 10, total: 100 },
+                message: `[${layerId}] Downloading 10/100`,
+            });
         },
         runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
             tracked.add(service.name);
@@ -836,6 +845,15 @@ test('installation progress and service histories track install lifecycle', asyn
     assert.ok(limitedHistory.entries.length <= 2);
     const fullHistory = warden.getServiceHistory('noona-sage');
     assert.ok(fullHistory.entries.length >= limitedHistory.entries.length);
+
+    const progressEntry = fullHistory.entries.find((entry) => entry.meta?.layerId === 'layer-sage');
+    assert.ok(progressEntry, 'Expected progress entry with layer metadata');
+    assert.equal(progressEntry.meta.phase, 'Downloading');
+    assert.deepEqual(progressEntry.meta.progressDetail, { current: 10, total: 100 });
+
+    const mirroredEntry = installationHistory.entries.find((entry) => entry.meta?.layerId === 'layer-sage');
+    assert.ok(mirroredEntry, 'Installation history should mirror layer metadata');
+    assert.ok(mirroredEntry.message.includes('noona-sage'));
 });
 
 test('testService prefers host health URL when resolveHostServiceUrl can produce one', async () => {
