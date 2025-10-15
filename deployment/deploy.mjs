@@ -72,12 +72,16 @@ const ensureExecutables = async service => {
 };
 
 const dockerRunPowerShell = async (service, image, envVars = {}) => {
-    const envString = Object.entries(envVars)
+    const envParts = Object.entries(envVars)
         .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
-        .map(([key, value]) => `-e ${key}=${value}`)
-        .join(' ');
+        .map(([key, value]) => `-e ${key}=${value}`);
 
-    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --network ${NETWORK_NAME} -v /var/run/docker.sock:/var/run/docker.sock ${envString} ${image}:latest"`;
+    envParts.push(`-e SERVICE_NAME=noona-${service}`);
+
+    const envString = envParts.join(' ');
+    const envSection = envString ? `${envString} ` : '';
+
+    const cmd = `start powershell -NoExit -Command "docker run -d --rm --name noona-${service} --hostname noona-${service} --network ${NETWORK_NAME} -v /var/run/docker.sock:/var/run/docker.sock ${envSection}${image}:latest"`;
     await execAsync(cmd);
     print.success(`${service} started in new PowerShell window.`);
 };
