@@ -584,7 +584,25 @@ export const createWizardStatePublisher = ({
             error: previousError,
         }
 
-        const message = entry?.detail || entry?.message || null
+        const baseMessage = entry?.message || entry?.meta?.message || null
+        const fallbackDetail = entry?.detail || null
+        let message = baseMessage || fallbackDetail
+
+        if (!baseMessage && entry?.meta?.layerId) {
+            const parts = [`[${entry.meta.layerId}]`]
+            const phase = entry?.meta?.phase || entry?.status || null
+            if (phase) {
+                parts.push(phase)
+            }
+            if (fallbackDetail) {
+                parts.push(fallbackDetail)
+            }
+
+            const combined = parts.join(' ').trim()
+            if (combined) {
+                message = combined
+            }
+        }
 
         switch (aggregated) {
             case 'error':

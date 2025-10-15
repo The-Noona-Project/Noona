@@ -391,6 +391,34 @@ export function createWarden(options = {}) {
         return null;
     };
 
+    const cloneMeta = (meta) => {
+        if (meta == null) {
+            return null;
+        }
+
+        try {
+            if (typeof structuredClone === 'function') {
+                return structuredClone(meta);
+            }
+        } catch {
+            // Fallback to manual cloning when structuredClone is unavailable or fails.
+        }
+
+        if (Array.isArray(meta)) {
+            return meta.map((value) => (value && typeof value === 'object' ? cloneMeta(value) : value));
+        }
+
+        if (typeof meta === 'object') {
+            const cloned = {};
+            for (const [key, value] of Object.entries(meta)) {
+                cloned[key] = value && typeof value === 'object' ? cloneMeta(value) : value;
+            }
+            return cloned;
+        }
+
+        return meta;
+    };
+
     const ensureHistory = (name) => {
         if (!name) {
             return {
@@ -593,6 +621,13 @@ export function createWarden(options = {}) {
             normalized.percent = entry.percent;
         }
 
+        if (entry.meta && typeof entry.meta === 'object') {
+            const clonedMeta = cloneMeta(entry.meta);
+            if (clonedMeta && Object.keys(clonedMeta).length > 0) {
+                normalized.meta = clonedMeta;
+            }
+        }
+
         history.entries.push(normalized);
         if (history.entries.length > LOG_ENTRY_LIMIT) {
             history.entries.splice(0, history.entries.length - LOG_ENTRY_LIMIT);
@@ -631,16 +666,24 @@ export function createWarden(options = {}) {
             name !== INSTALLATION_SERVICE &&
             ['status', 'progress', 'error'].includes(normalized.type)
         ) {
+            const mirroredEntry = {
+                ...entry,
+                type: normalized.type,
+                status: normalized.status,
+                detail: normalized.detail,
+                error: normalized.error,
+                message: `[${name}] ${normalized.message || normalized.status || ''}`.trim(),
+            };
+
+            if (normalized.meta) {
+                mirroredEntry.meta = cloneMeta(normalized.meta);
+            } else if (mirroredEntry.meta !== undefined) {
+                delete mirroredEntry.meta;
+            }
+
             appendHistoryEntry(
                 INSTALLATION_SERVICE,
-                {
-                    ...entry,
-                    type: normalized.type,
-                    status: normalized.status,
-                    detail: normalized.detail,
-                    error: normalized.error,
-                    message: `[${name}] ${normalized.message || normalized.status || ''}`.trim(),
-                },
+                mirroredEntry,
                 { mirrorToInstallation: false },
             );
         }
@@ -907,15 +950,49 @@ export function createWarden(options = {}) {
 
             await dockerUtils.pullImageIfNeeded(service.image, {
                 onProgress: (event = {}) => {
-                    const status = event.status || 'progress';
-                    const detail = event.detail ? String(event.detail).trim() : '';
-                    const messageParts = [status, detail].filter(Boolean);
+                    const layerId = event.layerId || event.id || null;
+                    const status = event.phase || event.status || 'progress';
+                    const detail = event.detail != null ? String(event.detail).trim() : '';
+                    const messageParts = [];
 
+                    if (layerId) {
+                        messageParts.push(`[${layerId}]`);
+                    }
+
+                    if (status) {
+                        messageParts.push(status);
+                    }
+
+                    if (detail) {
+                        messageParts.push(detail);
+                    }
+
+                    const message = messageParts.join(' ').trim() || status;
+                    const meta = {};
+
+                    if (layerId) {
+                        meta.layerId = layerId;
+                    }
+
+                    if (event.phase) {
+                        meta.phase = event.phase;
+                    }
+
+                    if (event.progressDetail && typeof event.progressDetail === 'object') {
+                        meta.progressDetail = cloneMeta(event.progressDetail);
+                    }
+
+                    if (event.message) {
+                        meta.message = String(event.message);
+                    }
+
+                    const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
                     appendHistoryEntry(serviceName, {
                         type: 'progress',
                         status,
-                        message: messageParts.join(' - '),
+                        message,
                         detail: detail || null,
+                        ...(metaPayload ? { meta: metaPayload } : {}),
                     });
                 },
             });
