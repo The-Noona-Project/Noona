@@ -7,6 +7,85 @@ const docker = new Docker();
 
 const escapeRegExp = (value) => String(value ?? '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
+const formatProgressDetail = (event = {}) => {
+    if (typeof event.progress === 'string') {
+        const trimmed = event.progress.trim();
+        if (trimmed) {
+            return trimmed;
+        }
+    }
+
+    const detail = event.progressDetail;
+    if (detail && typeof detail === 'object') {
+        const { current, total } = detail;
+
+        const isFiniteNumber = (value) => Number.isFinite(value) && value >= 0;
+        if (isFiniteNumber(current) && isFiniteNumber(total) && total > 0) {
+            return `${current}/${total}`;
+        }
+
+        if (isFiniteNumber(current)) {
+            return `${current}`;
+        }
+    }
+
+    if (event.detail != null) {
+        const stringified = String(event.detail).trim();
+        if (stringified) {
+            return stringified;
+        }
+    }
+
+    return '';
+};
+
+export const formatDockerProgressMessage = ({ layerId, phase, status, detail } = {}) => {
+    const parts = [];
+    const label = phase || status || '';
+
+    if (layerId) {
+        parts.push(`[${layerId}]`);
+    }
+
+    if (label) {
+        parts.push(label);
+    }
+
+    if (detail) {
+        parts.push(detail);
+    }
+
+    return parts.join(' ').trim();
+};
+
+export const normalizeDockerProgressEvent = (event = {}, { fallbackId } = {}) => {
+    const rawId = event.id ?? fallbackId ?? null;
+    const hasStatus = typeof event.status === 'string' && event.status.trim();
+    const phase = hasStatus ? event.status.trim() : null;
+    const status = hasStatus ? phase : 'progress';
+    const detail = formatProgressDetail(event);
+    const progressDetail =
+        event.progressDetail && typeof event.progressDetail === 'object'
+            ? { ...event.progressDetail }
+            : null;
+
+    const payload = {
+        id: rawId ?? fallbackId ?? null,
+        status,
+        detail,
+        layerId: rawId ?? null,
+        phase,
+        progressDetail,
+    };
+
+    const message = formatDockerProgressMessage(payload);
+    if (message) {
+        payload.message = message;
+    }
+
+    return payload;
+};
+
 const buildNameMatcher = (target) => {
     const escaped = escapeRegExp(target);
     // Matches exact container names as well as common docker-compose naming patterns:
@@ -29,13 +108,44 @@ export async function ensureNetwork(dockerInstance, networkName) {
  * Attaches the Warden container to the Docker network if not already connected
  */
 export async function attachSelfToNetwork(dockerInstance, networkName) {
-    const id = process.env.HOSTNAME;
-    const info = await dockerInstance.getContainer(id).inspect();
+    const hostId = process.env.HOSTNAME;
+    const fallbackId = process.env.SERVICE_NAME || 'noona-warden';
+    let containerId = hostId;
+    let info;
+
+    if (hostId) {
+        try {
+            info = await dockerInstance.getContainer(hostId).inspect();
+        } catch (error) {
+            if (error?.statusCode === 404) {
+                warn(`[dockerUtil] HOSTNAME '${hostId}' not found when attaching to ${networkName}. Falling back to SERVICE_NAME '${fallbackId}'.`);
+                containerId = fallbackId;
+            } else {
+                throw error;
+            }
+        }
+    } else {
+        warn(`[dockerUtil] HOSTNAME env not set. Falling back to SERVICE_NAME '${fallbackId}'.`);
+        containerId = fallbackId;
+    }
+
+    if (!info) {
+        try {
+            info = await dockerInstance.getContainer(containerId).inspect();
+        } catch (error) {
+            if (error?.statusCode === 404) {
+                warn(`[dockerUtil] Unable to locate container '${containerId}' while attaching to network '${networkName}'. Skipping attach.`);
+                return;
+            }
+            throw error;
+        }
+    }
+
     const networks = info?.NetworkSettings?.Networks || {};
 
     if (!networks[networkName]) {
         log(`Attaching Warden to Docker network: ${networkName}`);
-        await dockerInstance.getNetwork(networkName).connect({ Container: id });
+        await dockerInstance.getNetwork(networkName).connect({ Container: containerId });
     }
 }
 
@@ -82,11 +192,11 @@ export async function pullImageIfNeeded(image, options = {}) {
 
     if (exists) {
         debugMSG(`[dockerUtil] 🐳 Image already present: ${image}`);
-        onProgress?.({
-            id: image,
-            status: 'exists',
-            detail: 'Image already present',
-        });
+        const payload = normalizeDockerProgressEvent(
+            { id: image, status: 'exists', detail: 'Image already present' },
+            { fallbackId: image },
+        );
+        onProgress?.(payload);
         return;
     }
 
@@ -98,14 +208,11 @@ export async function pullImageIfNeeded(image, options = {}) {
                 stream,
                 resolve,
                 (event) => {
-                    if (event.status) {
-                        process.stdout.write(`\r[warden] ${event.status} ${event.progress || ''}  `);
-                        onProgress?.({
-                            id: event.id ?? image,
-                            status: event.status,
-                            detail: event.progress ?? event.progressDetail ?? '',
-                        });
+                    const payload = normalizeDockerProgressEvent(event, { fallbackId: image });
+                    if (payload.message) {
+                        process.stdout.write(`\r[warden] ${payload.message}  `);
                     }
+                    onProgress?.(payload);
                 }
             );
         });
@@ -113,11 +220,11 @@ export async function pullImageIfNeeded(image, options = {}) {
 
     const completionMessage = `\nPull complete for ${image}`;
     log(completionMessage);
-    onProgress?.({
-        id: image,
-        status: 'complete',
-        detail: 'Image pulled successfully',
-    });
+    const payload = normalizeDockerProgressEvent(
+        { id: image, status: 'complete', detail: 'Image pulled successfully' },
+        { fallbackId: image },
+    );
+    onProgress?.(payload);
 }
 
 /**

@@ -28,3 +28,23 @@
   - `/scan` queries Kavita libraries and formats a comma-separated summary.
   - `/search` looks up Kavita users and optionally Vault-stored credentials for a given Discord ID, returning a combined report.
 - Each handler uses ephemeral responses, defers replies while awaiting downstream calls, and leverages helper utilities (e.g., `ensureArray`, `respondWithError`) to normalise user input. Testing hooks include dependency injection via the factory parameters (`discord`, `getDiscord`, `kavita`, `vault`, `onboardingStore`) so mocks can be supplied during automated tests.
+
+## Module collaboration map
+- `shared/config.mjs` resolves and validates runtime settings before `initPortal.mjs` composes the service. Its frozen return value feeds every downstream constructor invoked during initialisation.
+- `shared/discordClient.mjs` exports the factory that `initPortal.mjs` calls once the command map and collaborators are assembled. The resulting client instance is cached on the `runtime` object and torn down via `stopPortal`.
+- `shared/discordCommands.mjs` exposes the slash-command definitions that `initPortal.mjs` injects into the Discord client factory, ensuring handlers receive the Kavita, Vault, and onboarding store dependencies created earlier in the boot sequence.
+- `shared/onboardingStore.mjs` provides the Redis-backed token manager instantiated by `initPortal.mjs`. The store is passed to both HTTP route handlers and Discord commands so they share token persistence.
+- `shared/vaultClient.mjs` creates the Vault HTTP adapter that `initPortal.mjs` wires into Discord command handlers and onboarding flows, enabling credential storage and retrieval.
+
+## npm scripts
+- `npm run start` – launches the production build by calling the entrypoint that invokes `initPortal.mjs`. Use this in deployed environments or when reproducing production behaviour locally.
+- `npm run dev` – runs the service in watch mode with development-focused logging. Prefer this during active feature work where hot reloads and verbose diagnostics are valuable.
+- `npm test` – executes the Node.js built-in test runner across the suites in `services/portal/tests/`. Run this before committing to ensure the portal integration and unit tests remain green.
+
+## Testing expectations & coverage
+- Existing suites cover configuration validation edge cases, Discord client event behaviour, command permission gating, and onboarding-store semantics. Review the tests under `services/portal/tests/` to understand fixtures and helpers before extending coverage.
+- Add new tests alongside their modules in `services/portal/tests/`, mirroring the directory structure where practical. Each new feature or bug fix should include targeted tests that exercise the code paths being introduced or changed.
+
+## Troubleshooting runtime issues
+- **Discord login failures** – verify `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and guild identifiers are present. If the client partially initialises, call `stopPortal` to release the cached Discord instance before retrying a fresh `initPortal` to avoid stale sessions.
+- **Redis connectivity** – ensure the onboarding store can reach the configured host and namespace. When redis errors surface during development, trigger `stopPortal` so any lingering Redis connections or timers are cleaned up prior to restarting the service.
