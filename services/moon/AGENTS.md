@@ -27,6 +27,27 @@ The setup wizard is orchestrated by `src/setup/useSetupSteps.ts`, which sequence
 - Reference [`docs/moon-env-config.md`](../../docs/moon-env-config.md) for environment variable behavior, Raven overrides, and the end-to-end setup experience.
 - Any new configuration surfaces should map to environment keys documented there. Coordinate with Sage to add documentation updates when new keys are introduced.
 
+## Project Structure
+- `src/main.jsx` bootstraps the React application, wraps the Chakra and service providers, and mounts the router.
+- `src/router.jsx` defines the top-level routes and integrates navigation guards.
+- `src/state/` contains global state providers, selectors, and hooks—update these when wiring new features into shared context.
+- `src/setup/` houses the onboarding flow logic, including hooks and components that coordinate initial configuration.
+- `src/test/` mirrors production folders with Vitest-compatible suites and helpers.
+
+## Local Development
+- `npm run dev` starts the Vite development server with hot module replacement. Expect the app to run in the browser for this command, while Vitest uses jsdom for unit tests.
+- `npm run build` generates the production bundle; run this before shipping changes that alter build-time configuration.
+- `npm run preview` serves the production build locally via Vite for smoke testing optimized assets.
+- `npm test` runs Vitest in a jsdom environment. Chakra theming is available through the shared test providers so component stories render identically to runtime.
+
+## Testing Utilities
+- `src/test/testUtils.tsx` exports Chakra-aware render helpers. Use `renderWithProviders` (and related helpers) to mount components with the `ServiceInstallationProvider`, router context, and theme.
+- The same helpers expose `createMockWizardState` and other setup utilities for mocking onboarding progress. Consume them in setup wizard tests to keep state shape consistent with production hooks.
+
+## Theming & Global Providers
+- Chakra theming is centralized in `src/theme.js`. Import tokens from this module when building new components to stay aligned with the design system.
+- Wrap new provider-aware components with the `ServiceInstallationProvider` (available via `src/state`) or the shared render helpers so they participate in the global installation state and wizard flows.
+
 ## Testing & Tooling
 - Primary tests reside in `src/test`. Mirror the folder structure of the modules under test.
 - Use Jest and Testing Library helpers exported from `src/test/utils`.
