@@ -2,7 +2,7 @@
 import readline from 'readline/promises';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { chmod } from 'fs/promises';
+import { chmod, readFile } from 'fs/promises';
 import {
     buildImage,
     pushImage,
@@ -14,11 +14,16 @@ import {
     createNetwork,
     listContainers
 } from './dockerHost.mjs';
+import { BuildQueue } from './buildQueue.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(__dirname, '..');
 const DOCKERHUB_USER = 'captainpax';
 const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault', 'portal'];
 const NETWORK_NAME = 'noona-network';
+const DEFAULT_WORKER_THREADS = 4;
+const DEFAULT_SUBPROCESSES_PER_WORKER = 2;
+const BUILD_CONFIG_PATH = resolve(__dirname, 'build.config.json');
+let cachedBuildSchedulerConfig = null;
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -27,7 +32,219 @@ const colors = {
     red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m'
 };
 
-const CLI_ARGS = new Set(process.argv.slice(2));
+const parsePositiveInteger = (value, fallback, { flag } = {}) => {
+    if (value === undefined || value === null || value === '') {
+        return fallback;
+    }
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isInteger(parsed) && parsed > 0) {
+        return parsed;
+    }
+    if (flag) {
+        console.warn(`${colors.yellow}⚠️  Ignoring invalid ${flag} value (${value}); using ${fallback}.${colors.reset}`);
+    }
+    return fallback;
+};
+
+const loadBuildSchedulerConfig = async () => {
+    if (cachedBuildSchedulerConfig) {
+        return cachedBuildSchedulerConfig;
+    }
+
+    try {
+        const raw = await readFile(BUILD_CONFIG_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+            if (parsed.buildScheduler && typeof parsed.buildScheduler === 'object') {
+                cachedBuildSchedulerConfig = parsed.buildScheduler;
+            } else if (parsed.build && typeof parsed.build === 'object') {
+                cachedBuildSchedulerConfig = parsed.build;
+            } else {
+                cachedBuildSchedulerConfig = parsed;
+            }
+        } else {
+            cachedBuildSchedulerConfig = {};
+        }
+    } catch (error) {
+        if (error?.code !== 'ENOENT') {
+            console.warn(`${colors.yellow}⚠️  Failed to read ${BUILD_CONFIG_PATH}: ${error.message}${colors.reset}`);
+        }
+        cachedBuildSchedulerConfig = {};
+    }
+
+    return cachedBuildSchedulerConfig;
+};
+
+const gatherBuildRecords = (records = []) => {
+    return records
+        .map(record => {
+            if (!record) return '';
+            if (typeof record === 'string') {
+                return record.trim();
+            }
+            if (typeof record === 'object') {
+                const value = record.stream || record.status || record.error;
+                return typeof value === 'string' ? value.trim() : '';
+            }
+            return String(record).trim();
+        })
+        .filter(line => line);
+};
+
+const createSchedulerLogger = () => ({
+    info: message => console.log(`${colors.cyan}${message}${colors.reset}`),
+    warn: message => console.warn(`${colors.yellow}${message}${colors.reset}`),
+    error: message => console.error(`${colors.red}${message}${colors.reset}`)
+});
+
+const resolveBuildConcurrency = async () => {
+    const fileConfig = await loadBuildSchedulerConfig();
+    const fileWorkers = parsePositiveInteger(
+        fileConfig?.workerThreads ?? fileConfig?.workers,
+        DEFAULT_WORKER_THREADS
+    );
+    const fileSubprocesses = parsePositiveInteger(
+        fileConfig?.subprocessesPerWorker ?? fileConfig?.subprocesses,
+        DEFAULT_SUBPROCESSES_PER_WORKER
+    );
+
+    const workers = parsePositiveInteger(
+        CLI_ARG_VALUES.get('--build-workers'),
+        fileWorkers,
+        { flag: '--build-workers' }
+    );
+    const subprocessesPerWorker = parsePositiveInteger(
+        CLI_ARG_VALUES.get('--build-subprocesses'),
+        fileSubprocesses,
+        { flag: '--build-subprocesses' }
+    );
+
+    return { workerThreads: workers, subprocessesPerWorker };
+};
+
+const executeBuilds = async (services, { useNoCache }) => {
+    if (!services || services.length === 0) {
+        print.error('No services selected for build.');
+        return;
+    }
+
+    const { workerThreads, subprocessesPerWorker } = await resolveBuildConcurrency();
+    const maxCapacity = workerThreads * subprocessesPerWorker;
+    console.log(`${colors.cyan}🧵 Build worker pool: ${workerThreads} thread(s), up to ${maxCapacity} concurrent jobs (subprocess limit ${subprocessesPerWorker}).${colors.reset}`);
+
+    const scheduler = new BuildQueue({
+        workerThreads,
+        subprocessesPerWorker,
+        logger: createSchedulerLogger()
+    });
+
+    scheduler.useBaseCapacity();
+
+    const ravenSelected = services.includes('raven');
+    const standardServices = services.filter(service => service !== 'raven');
+
+    const scheduleServiceBuild = service => scheduler.enqueue({
+        name: service,
+        run: async report => {
+            report({ message: 'Preparing build context' });
+            await ensureExecutables(service);
+
+            const image = `${DOCKERHUB_USER}/noona-${service}`;
+            const dockerfile = `${ROOT_DIR}/deployment/${service}.Dockerfile`;
+
+            const result = await buildImage({
+                context: ROOT_DIR,
+                dockerfile,
+                tag: `${image}:latest`,
+                noCache: useNoCache
+            });
+
+            if (!result.ok) {
+                const error = new Error(result.error?.message || `Build failed: ${image}`);
+                error.details = result.error;
+                error.records = gatherBuildRecords(result.data?.records || result.error?.records || []);
+                throw error;
+            }
+
+            const records = gatherBuildRecords(result.data?.records || []);
+            const stepLines = records.filter(line => /^Step\s+\d+/i.test(line)).slice(-3);
+            if (stepLines.length) {
+                stepLines.forEach(line => report({ message: line }));
+            } else if (records.length) {
+                report({ message: `${service} emitted ${records.length} build log entries.` });
+            }
+
+            (result.warnings || []).forEach(warning => {
+                report({ level: 'warn', message: warning.trim() });
+            });
+
+            return { service, image, records, warnings: result.warnings || [] };
+        }
+    });
+
+    const jobPromises = standardServices.map(service => scheduleServiceBuild(service).catch(() => {}));
+    await Promise.allSettled(jobPromises);
+    await scheduler.drain();
+
+    if (ravenSelected) {
+        if (standardServices.length) {
+            console.log(`${colors.cyan}🦅 Raven build deferred until other services complete. Expanding pool to ${scheduler.useMaxCapacity()} slots.${colors.reset}`);
+        } else {
+            console.log(`${colors.cyan}🦅 Raven build scheduled with expanded pool size ${scheduler.useMaxCapacity()}.${colors.reset}`);
+        }
+        const ravenPromise = scheduleServiceBuild('raven').catch(() => {});
+        await Promise.allSettled([ravenPromise]);
+        await scheduler.drain();
+    }
+
+    const summary = scheduler.getResults();
+    if (summary.length === 0) {
+        print.error('No builds were executed.');
+        return;
+    }
+
+    console.log(`${colors.bold}${colors.cyan}Build Summary${colors.reset}`);
+
+    const failures = [];
+    for (const entry of summary) {
+        const durationSeconds = (entry.duration / 1000).toFixed(2);
+        if (entry.status === 'fulfilled') {
+            print.success(`${entry.id} built in ${durationSeconds}s.`);
+            const warnings = entry.value?.warnings || [];
+            warnings.forEach(warning => console.warn(`${colors.yellow}⚠️  ${entry.id}: ${warning}${colors.reset}`));
+        } else {
+            failures.push(entry);
+            print.error(`${entry.id} build failed after ${durationSeconds}s.`);
+            if (entry.error?.message) {
+                console.error(`${colors.red}   ↳ ${entry.error.message}${colors.reset}`);
+            }
+            const tail = entry.logs.slice(-10);
+            if (tail.length) {
+                console.error(`${colors.red}--- ${entry.id} log tail ---${colors.reset}`);
+                tail.forEach(line => console.error(line));
+                console.error(`${colors.red}--- end ${entry.id} ---${colors.reset}`);
+            }
+        }
+    }
+
+    if (failures.length === 0) {
+        print.success('All builds completed successfully.');
+    } else {
+        console.error(`${colors.red}${failures.length} build(s) failed. Review logs above for details.${colors.reset}`);
+    }
+};
+
+const RAW_CLI_ARGS = process.argv.slice(2);
+const CLI_ARGS = new Set(RAW_CLI_ARGS);
+const CLI_ARG_VALUES = RAW_CLI_ARGS.reduce((map, arg) => {
+    if (arg.startsWith('--') && arg.includes('=')) {
+        const [key, ...rest] = arg.split('=');
+        if (key) {
+            map.set(key, rest.join('='));
+        }
+    }
+    return map;
+}, new Map());
 const FORCE_CLEAN_BUILD = CLI_ARGS.has('--clean-build');
 const FORCE_CACHED_BUILD = CLI_ARGS.has('--cached-build');
 const CONFLICTING_BUILD_FLAGS = FORCE_CLEAN_BUILD && FORCE_CACHED_BUILD;
@@ -329,34 +546,21 @@ const run = async () => {
             useNoCache = await askCleanBuild();
         }
 
+        if (mainChoice === '1') {
+            try {
+                await executeBuilds(selected, { useNoCache });
+            } catch (error) {
+                print.error(`Build orchestration failed: ${error.message}`);
+            }
+            continue;
+        }
+
         for (const svc of selected) {
             if (!svc) continue;
             const image = `${DOCKERHUB_USER}/noona-${svc}`;
             const local = `noona-${svc}`;
-            const dockerfile = `${ROOT_DIR}/deployment/${svc}.Dockerfile`;
 
             switch (mainChoice) {
-                case '1': // Build
-                    console.log(`${colors.yellow}🔨 Building ${svc}...${colors.reset}`);
-                    try {
-                        await ensureExecutables(svc);
-                        const result = await buildImage({
-                            context: ROOT_DIR,
-                            dockerfile,
-                            tag: `${image}:latest`,
-                            noCache: useNoCache
-                        });
-                        if (!reportDockerResult(result, {
-                            successMessage: `Build complete: ${image}`,
-                            failureMessage: `Build failed: ${image}`
-                        })) {
-                            continue;
-                        }
-                    } catch (error) {
-                        print.error(`Build failed: ${image}: ${error.message}`);
-                    }
-                    break;
-
                 case '2': // Push
                     console.log(`${colors.yellow}📤 Pushing ${svc}...${colors.reset}`);
                     try {
