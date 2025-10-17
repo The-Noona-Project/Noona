@@ -4,6 +4,7 @@ WORKDIR /app/Noona
 
 # Copy relevant folders
 COPY services/warden ./services/warden
+COPY services/sage/shared ./services/sage/shared
 COPY utilities ./utilities
 
 # Install dependencies in utilities
