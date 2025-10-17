@@ -6,12 +6,16 @@ import { join } from 'node:path';
 import dockerHost, {
     buildImage,
     runContainer,
+    startService,
+    streamLogs,
+    waitForHealth,
     stopContainer,
     removeResources,
     inspectNetwork,
     pushImage,
     pullImage
 } from './dockerHost.mjs';
+import { Readable } from 'node:stream';
 
 const withFakeDocker = fake => {
     dockerHost.docker = fake;
@@ -253,4 +257,150 @@ test('inspectNetwork returns structured error when not found', async () => {
     const result = await inspectNetwork('ghost');
     assert.equal(result.ok, false);
     assert.equal(result.error.context.notFound, true);
+});
+
+test('startService validates network attachment and waits for health', async () => {
+    withFakeDocker({
+        modem: { followProgress: () => {} },
+        getContainer() {
+            return {
+                async inspect() {
+                    return {
+                        Name: '/noona-warden',
+                        NetworkSettings: { Networks: { 'noona-network': {} } },
+                        State: { Status: 'running' }
+                    };
+                }
+            };
+        }
+    });
+
+    const originalRunContainer = dockerHost.runContainer;
+    const originalWaitForHealth = dockerHost.waitForHealth;
+    dockerHost.runContainer = async () => ({ ok: true, data: { id: 'abc123' } });
+    let waited = false;
+    dockerHost.waitForHealth = async ({ name, url }) => {
+        waited = name === 'noona-warden' && url === 'http://localhost:4001/health';
+        return { ok: true, data: { attempts: 1, status: 200 } };
+    };
+
+    const result = await startService({
+        name: 'noona-warden',
+        image: 'captainpax/noona-warden:latest',
+        network: 'noona-network',
+        healthCheck: { url: 'http://localhost:4001/health', interval: 5, timeout: 10 }
+    });
+
+    assert.ok(result.ok);
+    assert.equal(waited, true);
+    assert.equal(result.data.health.status, 200);
+    assert.deepEqual(result.data.inspection.NetworkSettings.Networks, { 'noona-network': {} });
+
+    dockerHost.runContainer = originalRunContainer;
+    dockerHost.waitForHealth = originalWaitForHealth;
+});
+
+test('startService reports failure when network attachment is missing', async () => {
+    withFakeDocker({
+        modem: { followProgress: () => {} },
+        getContainer() {
+            return {
+                async inspect() {
+                    return { NetworkSettings: { Networks: {} } };
+                }
+            };
+        }
+    });
+
+    const originalRunContainer = dockerHost.runContainer;
+    dockerHost.runContainer = async () => ({ ok: true, data: { id: 'abc123' } });
+
+    const result = await startService({
+        name: 'noona-warden',
+        image: 'captainpax/noona-warden:latest',
+        network: 'noona-network'
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.context.networkAttached, false);
+
+    dockerHost.runContainer = originalRunContainer;
+});
+
+test('streamLogs forwards log lines to the callback', async () => {
+    withFakeDocker({
+        modem: { followProgress: () => {} },
+        getContainer() {
+            return {
+                async logs() {
+                    return Readable.from(['line one\nline two\n']);
+                }
+            };
+        }
+    });
+
+    const received = [];
+    const result = await streamLogs({
+        name: 'noona-warden',
+        follow: false,
+        tail: 10,
+        onData: line => received.push(line)
+    });
+
+    assert.ok(result.ok);
+    await new Promise(resolve => result.data.stream.on('end', resolve));
+    assert.deepEqual(received, ['line one', 'line two']);
+});
+
+test('waitForHealth resolves after receiving a successful response', async () => {
+    const originalFetch = globalThis.fetch;
+    const responses = [
+        { ok: false, status: 503 },
+        { ok: true, status: 200 }
+    ];
+
+    globalThis.fetch = async () => {
+        const res = responses.shift();
+        if (!res) {
+            throw new Error('no more responses');
+        }
+        return res;
+    };
+
+    try {
+        const result = await waitForHealth({
+            name: 'noona-warden',
+            url: 'http://localhost:4001/health',
+            interval: 5,
+            timeout: 30
+        });
+
+        assert.ok(result.ok);
+        assert.equal(result.data.status, 200);
+        assert.equal(result.data.attempts, 2);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test('waitForHealth surfaces remediation guidance on failure', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+        throw new Error('ECONNREFUSED');
+    };
+
+    try {
+        const result = await waitForHealth({
+            name: 'noona-warden',
+            url: 'http://localhost:4001/health',
+            interval: 5,
+            timeout: 20
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(result.error.context.remediation, /Docker socket/);
+        assert.equal(result.error.operation, 'waitForHealth');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
 });

@@ -2,12 +2,14 @@
 import readline from 'readline/promises';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { chmod, readFile } from 'fs/promises';
+import { chmod, readFile, writeFile } from 'fs/promises';
 import {
     buildImage,
     pushImage,
     pullImage,
-    runContainer,
+    startService,
+    streamLogs,
+    waitForHealth,
     stopContainer,
     removeResources,
     inspectNetwork,
@@ -24,12 +26,110 @@ const DEFAULT_WORKER_THREADS = 4;
 const DEFAULT_SUBPROCESSES_PER_WORKER = 2;
 const BUILD_CONFIG_PATH = resolve(__dirname, 'build.config.json');
 let cachedBuildSchedulerConfig = null;
+const HISTORY_FILE = resolve(__dirname, 'lifecycleHistory.json');
+const MAX_HISTORY_ENTRIES = 50;
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
 const colors = {
     reset: '\x1b[0m', bold: '\x1b[1m',
     red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m'
+};
+
+const readLifecycleHistory = async () => {
+    try {
+        const raw = await readFile(HISTORY_FILE, 'utf8');
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        if (error?.code !== 'ENOENT') {
+            console.warn(`${colors.yellow}⚠️  Failed to read lifecycle history: ${error.message}${colors.reset}`);
+        }
+        return [];
+    }
+};
+
+const recordLifecycleEvent = async event => {
+    try {
+        const history = await readLifecycleHistory();
+        history.push({ ...event, timestamp: new Date().toISOString() });
+        const trimmed = history.slice(-MAX_HISTORY_ENTRIES);
+        await writeFile(HISTORY_FILE, JSON.stringify(trimmed, null, 2));
+    } catch (error) {
+        console.warn(`${colors.yellow}⚠️  Unable to persist lifecycle history: ${error.message}${colors.reset}`);
+    }
+};
+
+const formatPorts = ports => {
+    if (!ports) return '—';
+    if (Array.isArray(ports)) {
+        const entries = ports.map(port => {
+            const privatePort = port.PrivatePort ? `${port.PrivatePort}/${port.Type || 'tcp'}` : port.Type || '';
+            if (port.PublicPort) {
+                const host = port.IP && port.IP !== '0.0.0.0' ? port.IP : 'localhost';
+                return `${host}:${port.PublicPort} → ${privatePort}`;
+            }
+            return privatePort || `${port.Type || 'tcp'}`;
+        }).filter(Boolean);
+        return entries.length ? entries.join(', ') : '—';
+    }
+
+    const entries = Object.entries(ports)
+        .flatMap(([internal, bindings]) => {
+            if (!bindings || !bindings.length) {
+                return internal;
+            }
+            return bindings.map(binding => {
+                const host = binding.HostIp && binding.HostIp !== '0.0.0.0' ? binding.HostIp : 'localhost';
+                return `${host}:${binding.HostPort} → ${internal}`;
+            });
+        })
+        .filter(Boolean);
+    return entries.length ? entries.join(', ') : '—';
+};
+
+const buildContainerRow = (inspection, { result, note } = {}) => {
+    const networks = Object.keys(inspection?.NetworkSettings?.Networks || {});
+    return {
+        Name: inspection?.Name?.replace(/^\//, '') || inspection?.Config?.Hostname || 'unknown',
+        State: result || inspection?.State?.Status || 'unknown',
+        Health: inspection?.State?.Health?.Status || 'n/a',
+        Networks: networks.length ? networks.join(', ') : '—',
+        Ports: formatPorts(inspection?.NetworkSettings?.Ports),
+        Note: note || ''
+    };
+};
+
+const printContainerTable = (rows, { title } = {}) => {
+    if (!rows || rows.length === 0) {
+        return;
+    }
+    if (title) {
+        console.log(`${colors.cyan}${title}${colors.reset}`);
+    }
+    console.table(rows);
+};
+
+const presentRemovalSummary = (summary = {}, { title } = {}) => {
+    const rows = [];
+    (summary.containers || []).forEach(name => rows.push({ Type: 'container', Target: name.replace(/^\//, ''), Result: 'removed' }));
+    (summary.images || []).forEach(name => rows.push({ Type: 'image', Target: name, Result: 'removed' }));
+    (summary.volumes || []).forEach(name => rows.push({ Type: 'volume', Target: name, Result: 'removed' }));
+    (summary.networks || []).forEach(name => rows.push({ Type: 'network', Target: name, Result: 'removed' }));
+
+    if (!rows.length) {
+        rows.push({ Type: 'info', Target: 'No matching resources', Result: '—' });
+    }
+
+    if (title) {
+        console.log(`${colors.cyan}${title}${colors.reset}`);
+    }
+    console.table(rows);
+};
+
+const printRemediation = remediation => {
+    if (!remediation) return;
+    console.log(`${colors.yellow}💡 ${remediation}${colors.reset}`);
 };
 
 const parsePositiveInteger = (value, fallback, { flag } = {}) => {
@@ -382,25 +482,40 @@ const stopAllContainers = async () => {
     const containers = results.data || [];
     if (containers.length === 0) {
         print.success('No running Noona containers found.');
-        return;
+        const rows = [{ Name: '—', State: 'none', Ports: '—', Result: 'No running containers' }];
+        console.table(rows);
+        return { ok: true, rows };
     }
 
+    const rows = [];
     for (const info of containers) {
         const name = info.Names?.[0]?.replace(/^\//, '') || info.Id;
         const outcome = await stopContainer({ name });
+        const result = outcome.ok
+            ? (outcome.data?.skipped ? 'already stopped' : 'stopped')
+            : `error: ${outcome.error?.message || 'unknown error'}`;
         if (!outcome.ok) {
             print.error(`Failed to stop ${name}: ${outcome.error?.message}`);
         }
+        rows.push({
+            Name: name,
+            State: info.State || info.Status || 'unknown',
+            Ports: formatPorts(info.Ports),
+            Result: result
+        });
     }
 
-    print.success('Stop command sent to all running Noona containers.');
+    console.table(rows);
+    if (rows.every(row => !row.Result.startsWith('error'))) {
+        print.success('Stop command sent to all running Noona containers.');
+    }
+    return { ok: rows.every(row => !row.Result.startsWith('error')), rows };
 };
 
 const cleanService = async service => {
     const image = `${DOCKERHUB_USER}/noona-${service}`;
     const local = `noona-${service}`;
-
-    const removal = await removeResources({
+    const removalRequest = {
         containers: { names: [local] },
         images: {
             references: [
@@ -410,15 +525,19 @@ const cleanService = async service => {
                 local
             ]
         }
-    });
+    };
+
+    if (service === 'warden') {
+        removalRequest.networks = { names: [NETWORK_NAME] };
+    }
+
+    const removal = await removeResources(removalRequest);
 
     if (!removal.ok) {
         throw new Error('Some resources could not be removed.');
     }
 
-    if (service === 'warden') {
-        await removeResources({ networks: { names: [NETWORK_NAME] } });
-    }
+    return removal.data;
 };
 
 const deleteDockerResources = async () => {
@@ -426,7 +545,7 @@ const deleteDockerResources = async () => {
 
     if (confirmation !== 'DELETE') {
         print.error('Delete aborted.');
-        return;
+        return { ok: false, cancelled: true };
     }
 
     console.log(`${colors.yellow}🗑️ Deleting Noona Docker resources...${colors.reset}`);
@@ -440,10 +559,11 @@ const deleteDockerResources = async () => {
 
     if (!removal.ok) {
         print.error('Some Docker resources could not be deleted.');
-        return;
+        return { ok: false, error: removal.error };
     }
 
     print.success('All local Noona Docker resources deleted.');
+    return { ok: true, summary: removal.data };
 };
 
 const selectServices = async mainChoice => {
@@ -520,18 +640,43 @@ const run = async () => {
 
         if (mainChoice === '5') {
             try {
-                await stopAllContainers();
+                const summary = await stopAllContainers();
+                await recordLifecycleEvent({
+                    action: 'stop-all',
+                    status: summary.ok ? 'success' : 'partial',
+                    details: { containers: summary.rows }
+                });
             } catch (e) {
                 print.error(`Failed to stop containers: ${e.message}`);
+                await recordLifecycleEvent({
+                    action: 'stop-all',
+                    status: 'failed',
+                    details: { message: e.message }
+                });
             }
             continue;
         }
 
         if (mainChoice === '7') {
             try {
-                await deleteDockerResources();
+                const result = await deleteDockerResources();
+                if (result?.ok) {
+                    presentRemovalSummary(result.summary, { title: 'Deleted resources' });
+                }
+                await recordLifecycleEvent({
+                    action: 'delete-all',
+                    status: result?.ok ? 'success' : result?.cancelled ? 'cancelled' : 'failed',
+                    details: result?.ok
+                        ? { removed: result.summary }
+                        : { message: result?.cancelled ? 'User cancelled deletion' : result?.error?.message || 'Unknown error' }
+                });
             } catch (e) {
                 print.error(`Failed to delete Docker resources: ${e.message}`);
+                await recordLifecycleEvent({
+                    action: 'delete-all',
+                    status: 'failed',
+                    details: { message: e.message }
+                });
             }
             continue;
         }
@@ -558,7 +703,6 @@ const run = async () => {
         for (const svc of selected) {
             if (!svc) continue;
             const image = `${DOCKERHUB_USER}/noona-${svc}`;
-            const local = `noona-${svc}`;
 
             switch (mainChoice) {
                 case '2': // Push
@@ -587,8 +731,10 @@ const run = async () => {
                     }
                     break;
 
-                case '4': // Start
+                case '4': { // Start
                     console.log(`${colors.yellow}▶️  Starting ${svc}...${colors.reset}`);
+                    const logBuffer = [];
+                    let logStream;
                     try {
                         await ensureNetwork();
                         const requestedDebug = await askDebugSetting();
@@ -604,23 +750,129 @@ const run = async () => {
                         if (!cleanup.ok) {
                             throw new Error('Unable to remove existing container');
                         }
-                        const result = await runContainer(options);
-                        reportDockerResult(result, {
-                            successMessage: `${svc} started.`,
-                            failureMessage: `Failed to start ${svc}`
+
+                        const startResult = await startService(options);
+                        if (!startResult.ok) {
+                            print.error(`Failed to start ${svc}: ${startResult.error?.message}`);
+                            await recordLifecycleEvent({
+                                action: 'start',
+                                service: svc,
+                                status: 'failed',
+                                details: {
+                                    step: 'start-service',
+                                    error: startResult.error
+                                }
+                            });
+                            break;
+                        }
+
+                        const inspection = startResult.data.inspection;
+                        const logResult = await streamLogs({
+                            name: options.name,
+                            follow: true,
+                            tail: 50,
+                            onData: rawLine => {
+                                const line = rawLine.trim();
+                                if (!line) return;
+                                logBuffer.push(line);
+                                if (logBuffer.length > 50) {
+                                    logBuffer.shift();
+                                }
+                                process.stdout.write(`${colors.cyan}[${options.name}]${colors.reset} ${line}\n`);
+                            }
+                        });
+
+                        if (!logResult.ok) {
+                            console.warn(`${colors.yellow}⚠️  Unable to stream logs for ${options.name}: ${logResult.error?.message}${colors.reset}`);
+                        } else {
+                            logStream = logResult.data.stream;
+                        }
+
+                        const apiPort = (options.env?.WARDEN_API_PORT || '4001').trim();
+                        const healthUrl = `http://localhost:${apiPort}/health`;
+                        const healthResult = await waitForHealth({
+                            name: options.name,
+                            url: healthUrl,
+                            interval: BOOT_MODE === 'super' ? 1000 : 2000,
+                            timeout: 120000
+                        });
+
+                        if (!healthResult.ok) {
+                            print.error(`Failed to start ${svc}: ${healthResult.error?.message}`);
+                            printRemediation(healthResult.error?.context?.remediation);
+                            await recordLifecycleEvent({
+                                action: 'start',
+                                service: svc,
+                                status: 'failed',
+                                details: {
+                                    step: 'health-check',
+                                    health: healthResult.error,
+                                    logs: logBuffer.slice(-20)
+                                }
+                            });
+                            break;
+                        }
+
+                        if (logStream?.destroy) {
+                            logStream.destroy();
+                            logStream = null;
+                        }
+
+                        const row = buildContainerRow(inspection, {
+                            result: inspection?.State?.Status,
+                            note: `Health ${healthResult.data.status} after ${healthResult.data.attempts} attempt(s)`
+                        });
+                        printContainerTable([row], { title: 'Container status' });
+                        print.success(`${svc} started and reported healthy (HTTP ${healthResult.data.status}).`);
+
+                        await recordLifecycleEvent({
+                            action: 'start',
+                            service: svc,
+                            status: 'success',
+                            details: {
+                                container: row,
+                                health: { ...healthResult.data, url: healthUrl }
+                            }
                         });
                     } catch (e) {
                         print.error(`Failed to start ${svc}: ${e.message}`);
+                        await recordLifecycleEvent({
+                            action: 'start',
+                            service: svc,
+                            status: 'failed',
+                            details: {
+                                message: e.message,
+                                logs: logBuffer.slice(-20)
+                            }
+                        });
+                    } finally {
+                        if (logStream?.destroy) {
+                            logStream.destroy();
+                        }
                     }
                     break;
+                }
 
                 case '6': // Clean
                     console.log(`${colors.yellow}🧹 Cleaning ${svc}...${colors.reset}`);
                     try {
-                        await cleanService(svc);
+                        const summary = await cleanService(svc);
+                        presentRemovalSummary(summary, { title: `Removed resources for ${svc}` });
+                        await recordLifecycleEvent({
+                            action: 'clean',
+                            service: svc,
+                            status: 'success',
+                            details: { removed: summary }
+                        });
                         print.success(`Cleaned ${svc}`);
                     } catch (e) {
                         print.error(`Failed to clean ${svc}: ${e.message}`);
+                        await recordLifecycleEvent({
+                            action: 'clean',
+                            service: svc,
+                            status: 'failed',
+                            details: { message: e.message }
+                        });
                     }
                     break;
             }
