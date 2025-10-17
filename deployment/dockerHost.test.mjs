@@ -82,6 +82,77 @@ test('DockerHost normalizes Windows pipe style DOCKER_HOST values', () => {
     }
 });
 
+test('DockerHost prefers detected Windows pipe when available', () => {
+    const previousHost = process.env.DOCKER_HOST;
+    const hadHost = Object.prototype.hasOwnProperty.call(process.env, 'DOCKER_HOST');
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+    delete process.env.DOCKER_HOST;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    try {
+        const configs = [];
+        const host = new DockerHost({
+            createDocker: (cfg) => {
+                configs.push(cfg);
+                return { modem: { socketPath: cfg.socketPath } };
+            },
+            detectDockerSockets: () => ['//./pipe/docker_engine_detected'],
+        });
+
+        assert.equal(configs.length, 1);
+        assert.equal(configs[0].socketPath, '//./pipe/docker_engine_detected');
+        assert.ok(!('host' in configs[0]));
+        assert.ok(!('port' in configs[0]));
+        assert.ok(!('protocol' in configs[0]));
+        assert.equal(host.docker.modem.socketPath, '//./pipe/docker_engine_detected');
+    } finally {
+        if (hadHost) {
+            process.env.DOCKER_HOST = previousHost;
+        } else {
+            delete process.env.DOCKER_HOST;
+        }
+
+        if (originalPlatform) {
+            Object.defineProperty(process, 'platform', originalPlatform);
+        }
+    }
+});
+
+test('DockerHost falls back to default Unix socket when detection finds nothing', () => {
+    const previousHost = process.env.DOCKER_HOST;
+    const hadHost = Object.prototype.hasOwnProperty.call(process.env, 'DOCKER_HOST');
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+    delete process.env.DOCKER_HOST;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+
+    try {
+        const configs = [];
+        const host = new DockerHost({
+            createDocker: (cfg) => {
+                configs.push(cfg);
+                return { modem: { socketPath: cfg.socketPath } };
+            },
+            detectDockerSockets: () => [],
+        });
+
+        assert.equal(configs.length, 1);
+        assert.equal(configs[0].socketPath, '/var/run/docker.sock');
+        assert.equal(host.docker.modem.socketPath, '/var/run/docker.sock');
+    } finally {
+        if (hadHost) {
+            process.env.DOCKER_HOST = previousHost;
+        } else {
+            delete process.env.DOCKER_HOST;
+        }
+
+        if (originalPlatform) {
+            Object.defineProperty(process, 'platform', originalPlatform);
+        }
+    }
+});
+
 test('pushImage and pullImage stream progress', async () => {
     const tracked = { pushes: [], pulls: [] };
     const fake = withFakeDocker({
