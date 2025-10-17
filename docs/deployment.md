@@ -50,3 +50,13 @@ The TUI supports batching across services:
 * Scheduler telemetry (capacity changes, per-service completion) is relayed through `deployment/deploy.mjs` reporters so additional automation can subscribe to the same hooks if needed.
 
 Refer to the on-screen hints within each view for up-to-date shortcuts and status indicators.
+
+## Windows Docker hosts
+
+The deployment CLI now shares Warden's Windows detection logic. `DOCKER_HOST` or CLI config entries using `npipe://` endpoints are normalized to the `//./pipe/...` path before creating the Dockerode client. When running on Windows, the tool also queries available Docker pipes via:
+
+```powershell
+Get-ChildItem -Path '\\.\pipe\' -Filter '*docker*' | Select -ExpandProperty FullName
+```
+
+This allows the same build and install workflows to operate against Docker Desktop named pipes without requiring manual socket adjustments.
