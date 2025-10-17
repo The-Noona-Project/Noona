@@ -1,7 +1,6 @@
 // services/warden/shared/wardenCore.mjs
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
@@ -20,6 +19,7 @@ import { log, warn } from '../../../utilities/etc/logger.mjs';
 import {
     normalizeDockerSocket as normalizeSocketPath,
     isWindowsPipePath,
+    defaultDockerSocketDetector,
 } from '../../../utilities/etc/dockerSockets.mjs';
 import {
     createWizardStateClient,
@@ -50,129 +50,6 @@ function createDefaultLogger(loggerOption = {}) {
         warn,
         ...loggerOption,
     };
-}
-
-function defaultDockerSocketDetector({
-    env = process.env,
-    fs: fsModule = fs,
-    process: processModule = process,
-    spawnSync: spawnSyncImpl = spawnSync,
-} = {}) {
-    const sockets = new Set();
-
-    const addCandidate = (candidate) => {
-        const normalized = normalizeSocketPath(candidate);
-        if (normalized) {
-            sockets.add(normalized);
-        }
-    };
-
-    const envCandidates = [env?.NOONA_HOST_DOCKER_SOCKETS, env?.HOST_DOCKER_SOCKETS]
-        .filter(value => typeof value === 'string' && value.trim().length > 0)
-        .flatMap(value => value.split(',').map(entry => normalizeSocketPath(entry)));
-
-    for (const candidate of envCandidates) {
-        if (candidate) {
-            sockets.add(candidate);
-        }
-    }
-
-    const dockerHost = normalizeSocketPath(env?.DOCKER_HOST);
-    if (dockerHost) {
-        sockets.add(dockerHost);
-    }
-
-    const defaultCandidates = [
-        '/var/run/docker.sock',
-        '/var/run/docker/docker.sock',
-        '/run/docker.sock',
-        '/run/docker/docker.sock',
-        '/var/run/podman/podman.sock',
-        '/run/podman/podman.sock',
-    ];
-
-    if (processModule?.platform === 'win32') {
-        defaultCandidates.push('npipe:////./pipe/docker_engine');
-        defaultCandidates.push('\\\\.\\pipe\\docker_engine');
-        defaultCandidates.push('//./pipe/docker_engine');
-    }
-
-    for (const candidate of defaultCandidates) {
-        addCandidate(candidate);
-    }
-
-    if (processModule?.platform === 'win32' && typeof spawnSyncImpl === 'function') {
-        try {
-            const command = [
-                'Get-ChildItem',
-                String.raw`-Path '\\.\pipe\'`,
-                "-Filter '*docker*'",
-                '| Select -ExpandProperty FullName',
-            ].join(' ');
-
-            const probe = spawnSyncImpl('powershell.exe', [
-                '-NoProfile',
-                '-Command',
-                command,
-            ], { encoding: 'utf8' });
-
-            if (probe?.stdout) {
-                probe.stdout
-                    .split(/\r?\n/)
-                    .map((line) => line.trim())
-                    .filter(Boolean)
-                    .forEach(addCandidate);
-            }
-        } catch (error) {
-            // Ignore PowerShell discovery errors on Windows.
-        }
-    }
-
-    if (typeof fsModule?.readdirSync === 'function') {
-        const directories = [
-            '/var/run',
-            '/run',
-            '/var/run/docker',
-            '/run/docker',
-            '/var/run/podman',
-            '/run/podman',
-        ];
-
-        for (const directory of directories) {
-            try {
-                const entries = fsModule.readdirSync(directory, { withFileTypes: true });
-
-                for (const entry of entries) {
-                    if (!entry) {
-                        continue;
-                    }
-
-                    const isSocket = typeof entry.isSocket === 'function' && entry.isSocket();
-                    const isFile = typeof entry.isFile === 'function' && entry.isFile();
-
-                    if (!isSocket && !isFile) {
-                        continue;
-                    }
-
-                    const name = entry.name;
-                    if (!name || !name.toLowerCase().includes('sock')) {
-                        continue;
-                    }
-
-                    if (!/(docker|podman)/i.test(name)) {
-                        continue;
-                    }
-
-                    const fullPath = path.posix.join(directory, name);
-                    sockets.add(fullPath);
-                }
-            } catch (error) {
-                // Ignore inaccessible directories.
-            }
-        }
-    }
-
-    return Array.from(sockets);
 }
 
 function createServiceCatalog(services) {
