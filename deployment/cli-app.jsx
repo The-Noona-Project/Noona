@@ -1136,6 +1136,7 @@ const DeploymentLayout = () => {
     const persistLog = usePersistentLog();
     const [activeView, setActiveView] = useState('overview');
     const [paletteOpen, setPaletteOpen] = useState(false);
+    const [pendingBuildCommand, setPendingBuildCommand] = useState(null);
     const [mission, setMission] = useState({ environment: 'local', capacity: '—', wardenStatus: 'unknown' });
     const buildRef = useRef(null);
 
@@ -1193,6 +1194,40 @@ const DeploymentLayout = () => {
         requestView: setActiveView
     }), [pushMessage, createReporter, updateMission, mission]);
 
+    const executeBuildCommand = useCallback(command => {
+        if (!command) {
+            return;
+        }
+        if (command.type === 'focus') {
+            buildRef.current?.focusOperation(command.operation);
+        }
+        if (command.type === 'run') {
+            buildRef.current?.runOperation(command.operation);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (activeView !== 'builds' || !pendingBuildCommand) {
+            return;
+        }
+        if (!buildRef.current) {
+            return;
+        }
+        executeBuildCommand(pendingBuildCommand);
+        setPendingBuildCommand(null);
+    }, [activeView, executeBuildCommand, pendingBuildCommand]);
+
+    const requestBuildCommand = useCallback(command => {
+        setPaletteOpen(false);
+        if (activeView === 'builds' && buildRef.current) {
+            executeBuildCommand(command);
+            setPendingBuildCommand(null);
+            return;
+        }
+        setPendingBuildCommand(command);
+        setActiveView('builds');
+    }, [activeView, executeBuildCommand]);
+
     useInput((input, key) => {
         if (key.ctrl && input === 'c') {
             exit();
@@ -1216,21 +1251,15 @@ const DeploymentLayout = () => {
                 return;
             }
             if (input === 'b') {
-                setPaletteOpen(false);
-                setActiveView('builds');
-                buildRef.current?.focusOperation('build');
+                requestBuildCommand({ type: 'focus', operation: 'build' });
                 return;
             }
             if (input === 'p') {
-                setPaletteOpen(false);
-                setActiveView('builds');
-                buildRef.current?.runOperation('push');
+                requestBuildCommand({ type: 'run', operation: 'push' });
                 return;
             }
             if (input === 'u') {
-                setPaletteOpen(false);
-                setActiveView('builds');
-                buildRef.current?.runOperation('pull');
+                requestBuildCommand({ type: 'run', operation: 'pull' });
                 return;
             }
             if (input === 'o') {
