@@ -1,12 +1,19 @@
 // deploy.mjs - Noona Docker Manager (Node.js version)
 import readline from 'readline/promises';
-import { exec, spawn } from 'child_process';
-import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { chmod } from 'fs/promises';
-
-const execAsync = promisify(exec);
+import {
+    buildImage,
+    pushImage,
+    pullImage,
+    runContainer,
+    stopContainer,
+    removeResources,
+    inspectNetwork,
+    createNetwork,
+    listContainers
+} from './dockerHost.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(__dirname, '..');
 const DOCKERHUB_USER = 'captainpax';
@@ -57,6 +64,30 @@ const print = {
     error: msg => console.error(`${colors.red}❌ ${msg}${colors.reset}`)
 };
 
+const reportDockerResult = (result, { successMessage, failureMessage }) => {
+    if (result.ok) {
+        if (successMessage) {
+            print.success(successMessage);
+        }
+        (result.warnings || []).forEach(warning => {
+            console.warn(`${colors.yellow}⚠️  ${warning.trim()}${colors.reset}`);
+        });
+        return true;
+    }
+
+    const details = result.error?.message || failureMessage || 'Docker operation failed';
+    if (failureMessage) {
+        print.error(`${failureMessage}: ${details}`);
+    } else {
+        print.error(details);
+    }
+
+    if (result.error?.details) {
+        console.error(result.error.details);
+    }
+    return false;
+};
+
 const ensureExecutables = async service => {
     if (service !== 'raven') return;
 
@@ -71,7 +102,7 @@ const ensureExecutables = async service => {
     }
 };
 
-const buildDockerRunArgs = (service, image, envVars = {}) => {
+const createContainerOptions = (service, image, envVars = {}) => {
     const entries = Object.entries(envVars)
         .filter(([, value]) => typeof value === 'string' && value.trim() !== '');
 
@@ -81,110 +112,68 @@ const buildDockerRunArgs = (service, image, envVars = {}) => {
     }
 
     const containerName = normalizedEnv.SERVICE_NAME;
-    const args = [
-        'run',
-        '-d',
-        '--rm',
-        '--name',
-        containerName,
-        '--hostname',
-        containerName,
-        '--network',
-        NETWORK_NAME,
-        '-v',
-        '/var/run/docker.sock:/var/run/docker.sock'
-    ];
+    const hostConfig = {
+        Binds: ['/var/run/docker.sock:/var/run/docker.sock']
+    };
+    const exposedPorts = {};
 
     if (service === 'warden') {
         const apiPort = normalizedEnv.WARDEN_API_PORT?.trim() || '4001';
-        args.push('-p', `${apiPort}:${apiPort}`);
+        const portKey = `${apiPort}/tcp`;
+        hostConfig.PortBindings = { [portKey]: [{ HostPort: apiPort }] };
+        exposedPorts[portKey] = {};
     }
 
-    for (const [key, value] of Object.entries(normalizedEnv)) {
-        args.push('-e', `${key}=${value}`);
-    }
-
-    args.push(`${image}:latest`);
-    return args;
+    return {
+        name: containerName,
+        image: `${image}:latest`,
+        env: normalizedEnv,
+        network: NETWORK_NAME,
+        hostConfig,
+        exposedPorts
+    };
 };
-
-const dockerRunService = async (service, image, envVars = {}) => {
-    const args = buildDockerRunArgs(service, image, envVars);
-    await runDockerCommand({
-        args,
-        successMessage: `${service} started.`,
-        errorMessage: `Failed to start ${service}`
-    });
-};
-
-const execLines = async command => {
-    try {
-        const { stdout } = await execAsync(command);
-        return stdout
-            .split('\n')
-            .map(line => line.trim())
-            .filter(Boolean);
-    } catch {
-        return [];
-    }
-};
-
-const runDockerCommand = ({ args, successMessage, errorMessage }) =>
-    new Promise((resolve, reject) => {
-        const child = spawn('docker', args, {
-            stdio: 'inherit',
-            shell: process.platform === 'win32'
-        });
-
-        child.on('error', error => {
-            if (errorMessage) {
-                print.error(`${errorMessage}: ${error.message}`);
-            } else {
-                print.error(`Docker command failed: ${error.message}`);
-            }
-            reject(error);
-        });
-
-        child.on('close', code => {
-            if (code === 0) {
-                if (successMessage) {
-                    print.success(successMessage);
-                }
-                resolve();
-                return;
-            }
-
-            const failureMessage = errorMessage
-                ? `${errorMessage} (exit code ${code})`
-                : `Docker command exited with code ${code}`;
-            print.error(failureMessage);
-            reject(new Error(failureMessage));
-        });
-    });
 
 const ensureNetwork = async () => {
-    const networks = await execLines(`docker network ls --filter "name=^${NETWORK_NAME}$" --format "{{.Name}}"`);
-    if (networks.length) {
+    const inspection = await inspectNetwork(NETWORK_NAME);
+    if (inspection.ok) {
         console.log(`${colors.cyan}🔗 Using existing Docker network ${NETWORK_NAME}.${colors.reset}`);
         return;
     }
 
-    console.log(`${colors.yellow}🌐 Creating Docker network ${NETWORK_NAME}...${colors.reset}`);
-    await execAsync(`docker network create ${NETWORK_NAME}`);
-    print.success(`Created Docker network ${NETWORK_NAME}`);
+    if (inspection.error?.context?.notFound) {
+        console.log(`${colors.yellow}🌐 Creating Docker network ${NETWORK_NAME}...${colors.reset}`);
+        const creation = await createNetwork({ name: NETWORK_NAME });
+        if (creation.ok) {
+            print.success(`Created Docker network ${NETWORK_NAME}`);
+        } else {
+            throw new Error(creation.error?.message || 'Unable to create network');
+        }
+        return;
+    }
+
+    throw new Error(inspection.error?.message || 'Unable to inspect network');
 };
 
 const stopAllContainers = async () => {
     console.log(`${colors.yellow}⏹ Stopping all running Noona containers...${colors.reset}`);
-    const containers = await execLines('docker ps --filter "name=noona-" --format "{{.Names}}"');
+    const results = await listContainers({ filters: { name: ['noona-'] } });
+    if (!results.ok) {
+        throw new Error(results.error?.message || 'Failed to list containers');
+    }
 
+    const containers = results.data || [];
     if (containers.length === 0) {
         print.success('No running Noona containers found.');
         return;
     }
 
-    for (const name of containers) {
-        await execAsync(`docker stop ${name} 2>/dev/null || true`);
+    for (const info of containers) {
+        const name = info.Names?.[0]?.replace(/^\//, '') || info.Id;
+        const outcome = await stopContainer({ name });
+        if (!outcome.ok) {
+            print.error(`Failed to stop ${name}: ${outcome.error?.message}`);
+        }
     }
 
     print.success('Stop command sent to all running Noona containers.');
@@ -194,11 +183,25 @@ const cleanService = async service => {
     const image = `${DOCKERHUB_USER}/noona-${service}`;
     const local = `noona-${service}`;
 
-    await execAsync(`docker rm -f ${local} 2>/dev/null || true`);
-    await execAsync(`docker image rm ${image}:latest 2>/dev/null || true`);
-    await execAsync(`docker image rm ${image} 2>/dev/null || true`);
-    await execAsync(`docker image rm ${local}:latest 2>/dev/null || true`);
-    await execAsync(`docker image rm ${local} 2>/dev/null || true`);
+    const removal = await removeResources({
+        containers: { names: [local] },
+        images: {
+            references: [
+                `${image}:latest`,
+                image,
+                `${local}:latest`,
+                local
+            ]
+        }
+    });
+
+    if (!removal.ok) {
+        throw new Error('Some resources could not be removed.');
+    }
+
+    if (service === 'warden') {
+        await removeResources({ networks: { names: [NETWORK_NAME] } });
+    }
 };
 
 const deleteDockerResources = async () => {
@@ -211,26 +214,16 @@ const deleteDockerResources = async () => {
 
     console.log(`${colors.yellow}🗑️ Deleting Noona Docker resources...${colors.reset}`);
 
-    const containers = await execLines('docker ps -a --filter "name=noona-" --format "{{.Names}}"');
-    for (const name of containers) {
-        await execAsync(`docker rm -f ${name} 2>/dev/null || true`);
-    }
+    const removal = await removeResources({
+        containers: { filters: { name: ['noona-'] } },
+        images: { match: tag => tag.startsWith('captainpax/noona-') || tag.startsWith('noona-') },
+        volumes: { filters: { name: ['noona-'] } },
+        networks: { filters: { name: ['noona-'] } }
+    });
 
-    const images = await execLines('docker images --format "{{.Repository}}:{{.Tag}}"');
-    for (const image of images) {
-        if (image.startsWith('captainpax/noona-') || image.startsWith('noona-')) {
-            await execAsync(`docker image rm ${image} 2>/dev/null || true`);
-        }
-    }
-
-    const volumes = await execLines('docker volume ls --filter "name=noona-" --format "{{.Name}}"');
-    for (const volume of volumes) {
-        await execAsync(`docker volume rm ${volume} 2>/dev/null || true`);
-    }
-
-    const networks = await execLines('docker network ls --filter "name=noona-" --format "{{.Name}}"');
-    for (const network of networks) {
-        await execAsync(`docker network rm ${network} 2>/dev/null || true`);
+    if (!removal.ok) {
+        print.error('Some Docker resources could not be deleted.');
+        return;
     }
 
     print.success('All local Noona Docker resources deleted.');
@@ -347,43 +340,46 @@ const run = async () => {
                     console.log(`${colors.yellow}🔨 Building ${svc}...${colors.reset}`);
                     try {
                         await ensureExecutables(svc);
-                        const buildArgs = ['build', '-f', dockerfile, '-t', image, ROOT_DIR];
-                        if (useNoCache) {
-                            buildArgs.splice(1, 0, '--no-cache');
-                        }
-                        await runDockerCommand({
-                            args: buildArgs,
-                            successMessage: `Build complete: ${image}`,
-                            errorMessage: `Build failed: ${image}`
+                        const result = await buildImage({
+                            context: ROOT_DIR,
+                            dockerfile,
+                            tag: `${image}:latest`,
+                            noCache: useNoCache
                         });
-                    } catch {
-                        // Errors are reported by runDockerCommand
+                        if (!reportDockerResult(result, {
+                            successMessage: `Build complete: ${image}`,
+                            failureMessage: `Build failed: ${image}`
+                        })) {
+                            continue;
+                        }
+                    } catch (error) {
+                        print.error(`Build failed: ${image}: ${error.message}`);
                     }
                     break;
 
                 case '2': // Push
                     console.log(`${colors.yellow}📤 Pushing ${svc}...${colors.reset}`);
                     try {
-                        await runDockerCommand({
-                            args: ['push', `${image}:latest`],
+                        const result = await pushImage({ reference: `${image}:latest` });
+                        reportDockerResult(result, {
                             successMessage: `Push complete: ${image}`,
-                            errorMessage: `Push failed: ${image}`
+                            failureMessage: `Push failed: ${image}`
                         });
-                    } catch {
-                        // Errors are reported by runDockerCommand
+                    } catch (error) {
+                        print.error(`Push failed: ${image}: ${error.message}`);
                     }
                     break;
 
                 case '3': // Pull
                     console.log(`${colors.yellow}📥 Pulling ${svc}...${colors.reset}`);
                     try {
-                        await runDockerCommand({
-                            args: ['pull', `${image}:latest`],
+                        const result = await pullImage({ reference: `${image}:latest` });
+                        reportDockerResult(result, {
                             successMessage: `Pull complete: ${image}`,
-                            errorMessage: `Pull failed: ${image}`
+                            failureMessage: `Pull failed: ${image}`
                         });
-                    } catch {
-                        // Errors are reported by runDockerCommand
+                    } catch (error) {
+                        print.error(`Pull failed: ${image}: ${error.message}`);
                     }
                     break;
 
@@ -399,7 +395,16 @@ const run = async () => {
                             console.log(`${colors.cyan}ℹ️  Forcing DEBUG="super" to match selected boot mode.${colors.reset}`);
                         }
 
-                        await dockerRunService(svc, image, { DEBUG, BOOT_MODE });
+                        const options = createContainerOptions(svc, image, { DEBUG, BOOT_MODE });
+                        const cleanup = await removeResources({ containers: { names: [options.name] } });
+                        if (!cleanup.ok) {
+                            throw new Error('Unable to remove existing container');
+                        }
+                        const result = await runContainer(options);
+                        reportDockerResult(result, {
+                            successMessage: `${svc} started.`,
+                            failureMessage: `Failed to start ${svc}`
+                        });
                     } catch (e) {
                         print.error(`Failed to start ${svc}: ${e.message}`);
                     }
@@ -409,9 +414,6 @@ const run = async () => {
                     console.log(`${colors.yellow}🧹 Cleaning ${svc}...${colors.reset}`);
                     try {
                         await cleanService(svc);
-                        if (svc === 'warden') {
-                            await execAsync(`docker network rm ${NETWORK_NAME} 2>/dev/null || true`);
-                        }
                         print.success(`Cleaned ${svc}`);
                     } catch (e) {
                         print.error(`Failed to clean ${svc}: ${e.message}`);
