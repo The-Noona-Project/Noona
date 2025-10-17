@@ -749,6 +749,11 @@ export const createContainerOptions = (service, image, envVars = {}, {
     const hostConfig = {
         Binds: [`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`]
     };
+    const socketCandidates = new Set();
+    if (typeof hostDockerSocket === 'string' && hostDockerSocket.trim()) {
+        socketCandidates.add(hostDockerSocket.trim());
+    }
+    socketCandidates.add(DOCKER_SOCKET_TARGET);
     const exposedPorts = {};
 
     if (service === 'warden') {
@@ -756,6 +761,13 @@ export const createContainerOptions = (service, image, envVars = {}, {
         const portKey = `${apiPort}/tcp`;
         hostConfig.PortBindings = { [portKey]: [{ HostPort: apiPort }] };
         exposedPorts[portKey] = {};
+
+        if (!normalizedEnv.NOONA_HOST_DOCKER_SOCKETS) {
+            normalizedEnv.NOONA_HOST_DOCKER_SOCKETS = Array.from(socketCandidates).join(',');
+        }
+        if (!normalizedEnv.HOST_DOCKER_SOCKETS) {
+            normalizedEnv.HOST_DOCKER_SOCKETS = normalizedEnv.NOONA_HOST_DOCKER_SOCKETS;
+        }
     }
 
     return {

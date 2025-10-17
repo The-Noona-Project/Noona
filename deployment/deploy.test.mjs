@@ -15,6 +15,8 @@ test('createContainerOptions binds Windows Docker pipe when on win32', () => {
     assert.ok(options.hostConfig);
     assert.deepEqual(options.hostConfig.Binds, ['//./pipe/docker_engine:/var/run/docker.sock']);
     assert.ok(options.hostConfig.Binds.every(entry => entry.endsWith(':/var/run/docker.sock')));
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, '//./pipe/docker_engine,/var/run/docker.sock');
+    assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
 });
 
 test('createContainerOptions binds Unix Docker socket on non-Windows platforms', () => {
@@ -25,6 +27,20 @@ test('createContainerOptions binds Unix Docker socket on non-Windows platforms',
 
     assert.ok(options.hostConfig);
     assert.deepEqual(options.hostConfig.Binds, ['/var/run/docker.sock:/var/run/docker.sock']);
+});
+
+test('createContainerOptions keeps explicit host socket env overrides for warden', () => {
+    const options = createContainerOptions('warden', TEST_IMAGE, {
+        ...buildEnv('warden'),
+        NOONA_HOST_DOCKER_SOCKETS: '/custom.sock',
+        HOST_DOCKER_SOCKETS: '/custom.sock'
+    }, {
+        detectDockerSockets: () => ['/var/run/docker.sock'],
+        platform: 'linux'
+    });
+
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, '/custom.sock');
+    assert.equal(options.env.HOST_DOCKER_SOCKETS, '/custom.sock');
 });
 
 test('resolveDockerSocketBinding falls back to platform defaults when none detected', () => {
