@@ -33,6 +33,7 @@ node deployment/deploy.mjs
 * Adjust worker thread/subprocess capacity or update default `DEBUG`/boot-mode values.
 * Navigation is fully keyboard driven (`↑/↓` select menu item, `enter` apply, `esc` cancel).
 * Updates persist to `deployment/build.config.json` so future sessions inherit new defaults.
+* Access the deployment log directory (and launch Windows Explorer when available) via the settings menu.
 
 ## Live Feedback &amp; Accessibility
 
@@ -40,6 +41,10 @@ node deployment/deploy.mjs
 * Spinner indicators and high-contrast colour palettes keep long-running jobs visible.
 * Every interaction is keyboard accessible: view switching (`←/→`, `1-4`), operation shortcuts, and `q`/`Ctrl+C` to exit.
 * The terminal layout is screen-reader friendly—landmarks use semantic ordering and announcements surface through the shared activity log.
+
+## Deployment logs
+
+Each CLI session writes structured output to timestamped files under `deployment/logs/`. The tool automatically keeps the three most recent files and prunes older entries on startup. Non-reporter activity feed messages are now persisted alongside build/push/pull output, so the Activity panel mirrors the log history. Use the new "Open deployment log folder" option in **Settings &amp; Defaults** to jump into the directory (launches `explorer.exe` on Windows, reports the location on other platforms).
 
 ## Batch Operations
 

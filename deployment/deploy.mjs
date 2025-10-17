@@ -1,7 +1,7 @@
 // deploy.mjs - Noona Docker Manager (Node.js version)
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, resolve } from 'path';
-import { chmod, readFile, writeFile } from 'fs/promises';
+import { appendFile, chmod, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
 import util from 'util';
 import {
     defaultDockerSocketDetector,
@@ -24,6 +24,7 @@ import {
 import { BuildQueue } from './buildQueue.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(__dirname, '..');
+export const LOG_DIR = resolve(__dirname, 'logs');
 const DOCKERHUB_USER = 'captainpax';
 export const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault', 'portal'];
 const NETWORK_NAME = 'noona-network';
@@ -38,6 +39,94 @@ const MAX_HISTORY_ENTRIES = 50;
 const DOCKER_SOCKET_TARGET = '/var/run/docker.sock';
 
 let cachedHostDockerSocket = null;
+
+const stripAnsi = input => typeof input === 'string'
+    ? input.replace(/\u001B\[[0-9;]*m/g, '')
+    : String(input ?? '');
+
+const ensureLogDirectory = async () => {
+    try {
+        await mkdir(LOG_DIR, { recursive: true });
+    } catch (error) {
+        if (error?.code !== 'EEXIST') {
+            throw error;
+        }
+    }
+};
+
+const pruneOldLogs = async () => {
+    try {
+        const entries = await readdir(LOG_DIR);
+        const stats = await Promise.all(entries.map(async name => {
+            const filePath = resolve(LOG_DIR, name);
+            try {
+                const fileStats = await stat(filePath);
+                return { filePath, name, mtime: fileStats.mtimeMs, isFile: fileStats.isFile() };
+            } catch {
+                return null;
+            }
+        }));
+
+        const files = stats
+            .filter(Boolean)
+            .filter(entry => entry.isFile)
+            .sort((a, b) => b.mtime - a.mtime);
+
+        const stale = files.slice(3);
+        await Promise.all(stale.map(async entry => {
+            try {
+                await unlink(entry.filePath);
+            } catch {
+                // ignore deletion failures to avoid interrupting logging
+            }
+        }));
+    } catch (error) {
+        if (error?.code !== 'ENOENT') {
+            // Swallow errors silently to avoid recursive logging loops
+        }
+    }
+};
+
+const createTimestampedLogFile = async () => {
+    await ensureLogDirectory();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = resolve(LOG_DIR, `deploy-${timestamp}.log`);
+    try {
+        await appendFile(filePath, `# Noona deployment log started ${new Date().toISOString()}\n`);
+    } catch (error) {
+        throw error;
+    }
+    await pruneOldLogs();
+    return filePath;
+};
+
+let activeLogFilePath = null;
+
+export const getActiveDeploymentLogFile = async () => {
+    if (!activeLogFilePath) {
+        try {
+            activeLogFilePath = await createTimestampedLogFile();
+        } catch (error) {
+            activeLogFilePath = null;
+            throw error;
+        }
+    }
+    return activeLogFilePath;
+};
+
+export const appendDeploymentLogEntry = async (level = 'info', message = '') => {
+    const text = stripAnsi(String(message ?? ''));
+    if (!text.trim()) {
+        return;
+    }
+    try {
+        const filePath = await getActiveDeploymentLogFile();
+        const timestamp = new Date().toISOString();
+        await appendFile(filePath, `[${timestamp}] [${String(level).toUpperCase()}] ${text}\n`);
+    } catch {
+        // Ignore write errors to avoid interfering with CLI output
+    }
+};
 
 const collectDetectedSockets = detectionResult => {
     const rawCandidates = Array.isArray(detectionResult)
@@ -124,6 +213,7 @@ const withReporter = async (reporter, fn) => {
 
     console.log = (...args) => {
         const message = formatConsoleArgs(args);
+        appendDeploymentLogEntry('info', message).catch(() => {});
         if (typeof reporter.info === 'function') {
             reporter.info(message);
         } else {
@@ -132,6 +222,7 @@ const withReporter = async (reporter, fn) => {
     };
     console.warn = (...args) => {
         const message = formatConsoleArgs(args);
+        appendDeploymentLogEntry('warn', message).catch(() => {});
         if (typeof reporter.warn === 'function') {
             reporter.warn(message);
         } else {
@@ -140,6 +231,7 @@ const withReporter = async (reporter, fn) => {
     };
     console.error = (...args) => {
         const message = formatConsoleArgs(args);
+        appendDeploymentLogEntry('error', message).catch(() => {});
         if (typeof reporter.error === 'function') {
             reporter.error(message);
         } else {
@@ -147,6 +239,8 @@ const withReporter = async (reporter, fn) => {
         }
     };
     console.table = (data, columns) => {
+        const tableSummary = util.inspect({ columns, data }, { depth: 3, colors: false });
+        appendDeploymentLogEntry('table', tableSummary).catch(() => {});
         if (typeof reporter.table === 'function') {
             reporter.table(data, columns);
         } else {
@@ -166,6 +260,7 @@ const withReporter = async (reporter, fn) => {
 };
 
 const emitThroughReporter = (kind, fallback, message) => {
+    appendDeploymentLogEntry(kind, message).catch(() => {});
     if (activeReporter && typeof activeReporter[kind] === 'function') {
         activeReporter[kind](message);
         return;
