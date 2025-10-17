@@ -1,6 +1,7 @@
 // services/warden/shared/wardenCore.mjs
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
@@ -16,6 +17,10 @@ import {
     waitForHealthyStatus,
 } from '../docker/dockerUtilties.mjs';
 import { log, warn } from '../../../utilities/etc/logger.mjs';
+import {
+    normalizeDockerSocket as normalizeSocketPath,
+    isWindowsPipePath,
+} from '../../../utilities/etc/dockerSockets.mjs';
 import {
     createWizardStateClient,
     createWizardStatePublisher,
@@ -47,30 +52,20 @@ function createDefaultLogger(loggerOption = {}) {
     };
 }
 
-function normalizeSocketPath(candidate) {
-    if (!candidate || typeof candidate !== 'string') {
-        return null;
-    }
-
-    const trimmed = candidate.trim();
-
-    if (!trimmed) {
-        return null;
-    }
-
-    if (trimmed.startsWith('unix://')) {
-        return trimmed.slice('unix://'.length);
-    }
-
-    if (trimmed.startsWith('tcp://')) {
-        return null;
-    }
-
-    return trimmed;
-}
-
-function defaultDockerSocketDetector({ env = process.env, fs: fsModule = fs } = {}) {
+function defaultDockerSocketDetector({
+    env = process.env,
+    fs: fsModule = fs,
+    process: processModule = process,
+    spawnSync: spawnSyncImpl = spawnSync,
+} = {}) {
     const sockets = new Set();
+
+    const addCandidate = (candidate) => {
+        const normalized = normalizeSocketPath(candidate);
+        if (normalized) {
+            sockets.add(normalized);
+        }
+    };
 
     const envCandidates = [env?.NOONA_HOST_DOCKER_SOCKETS, env?.HOST_DOCKER_SOCKETS]
         .filter(value => typeof value === 'string' && value.trim().length > 0)
@@ -96,10 +91,40 @@ function defaultDockerSocketDetector({ env = process.env, fs: fsModule = fs } = 
         '/run/podman/podman.sock',
     ];
 
+    if (processModule?.platform === 'win32') {
+        defaultCandidates.push('npipe:////./pipe/docker_engine');
+        defaultCandidates.push('\\\\.\\pipe\\docker_engine');
+        defaultCandidates.push('//./pipe/docker_engine');
+    }
+
     for (const candidate of defaultCandidates) {
-        const normalized = normalizeSocketPath(candidate);
-        if (normalized) {
-            sockets.add(normalized);
+        addCandidate(candidate);
+    }
+
+    if (processModule?.platform === 'win32' && typeof spawnSyncImpl === 'function') {
+        try {
+            const command = [
+                'Get-ChildItem',
+                String.raw`-Path '\\.\pipe\'`,
+                "-Filter '*docker*'",
+                '| Select -ExpandProperty FullName',
+            ].join(' ');
+
+            const probe = spawnSyncImpl('powershell.exe', [
+                '-NoProfile',
+                '-Command',
+                command,
+            ], { encoding: 'utf8' });
+
+            if (probe?.stdout) {
+                probe.stdout
+                    .split(/\r?\n/)
+                    .map((line) => line.trim())
+                    .filter(Boolean)
+                    .forEach(addCandidate);
+            }
+        } catch (error) {
+            // Ignore PowerShell discovery errors on Windows.
         }
     }
 
@@ -779,13 +804,16 @@ export function createWarden(options = {}) {
             }
 
             for (const candidate of hostDockerSockets) {
-                if (!candidate || visitedSockets.has(candidate)) {
+                const normalizedCandidate = normalizeSocketPath(candidate);
+                if (!normalizedCandidate || visitedSockets.has(normalizedCandidate)) {
                     continue;
                 }
 
-                if (typeof fsModule?.existsSync === 'function') {
+                const candidateIsPipe = isWindowsPipePath(normalizedCandidate);
+
+                if (!candidateIsPipe && typeof fsModule?.existsSync === 'function') {
                     try {
-                        if (!fsModule.existsSync(candidate)) {
+                        if (!fsModule.existsSync(normalizedCandidate)) {
                             continue;
                         }
                     } catch {
@@ -793,9 +821,9 @@ export function createWarden(options = {}) {
                     }
                 }
 
-                if (typeof fsModule?.statSync === 'function') {
+                if (!candidateIsPipe && typeof fsModule?.statSync === 'function') {
                     try {
-                        const stats = fsModule.statSync(candidate);
+                        const stats = fsModule.statSync(normalizedCandidate);
                         if (typeof stats?.isSocket === 'function' && !stats.isSocket()) {
                             continue;
                         }
@@ -805,10 +833,10 @@ export function createWarden(options = {}) {
                 }
 
                 try {
-                    const client = dockerFactory(candidate);
+                    const client = dockerFactory(normalizedCandidate);
                     if (client) {
-                        contexts.push({ client, socketPath: candidate, label: `socket ${candidate}` });
-                        visitedSockets.add(candidate);
+                        contexts.push({ client, socketPath: normalizedCandidate, label: `socket ${normalizedCandidate}` });
+                        visitedSockets.add(normalizedCandidate);
                     }
                 } catch (error) {
                     logger.warn(`[Warden] Failed to initialize Docker client for socket ${candidate}: ${error.message}`);
@@ -2357,3 +2385,4 @@ export function createWarden(options = {}) {
 }
 
 export default createWarden;
+export { defaultDockerSocketDetector };

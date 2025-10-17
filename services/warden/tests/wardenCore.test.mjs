@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createWarden } from '../shared/wardenCore.mjs';
+import { createWarden, defaultDockerSocketDetector } from '../shared/wardenCore.mjs';
 import { attachSelfToNetwork } from '../docker/dockerUtilties.mjs';
 
 test('resolveHostServiceUrl prefers explicit hostServiceUrl', () => {
@@ -1135,6 +1135,56 @@ test('detectKavitaMount logs detection attempts and returns result', async () =>
     const history = warden.getServiceHistory('noona-raven');
     assert.ok(history.entries.some((entry) => entry.status === 'detecting'));
     assert.ok(history.entries.some((entry) => entry.status === 'not-found'));
+});
+
+test('defaultDockerSocketDetector merges Windows named pipes discovered via PowerShell', () => {
+    const spawnCalls = [];
+    const result = defaultDockerSocketDetector({
+        env: { DOCKER_HOST: 'npipe:////./pipe/docker_alt' },
+        fs: { readdirSync: () => [] },
+        process: { platform: 'win32' },
+        spawnSync: (...args) => {
+            spawnCalls.push(args);
+            return { stdout: '\\.\pipe\docker_engine\r\n' };
+        },
+    });
+
+    assert.ok(spawnCalls.length === 1);
+    assert.ok(result.includes('//./pipe/docker_engine'));
+    assert.ok(result.includes('//./pipe/docker_alt'));
+});
+
+test('detectKavitaMount initialises Docker clients for normalized Windows pipes', async () => {
+    const dockerInstance = {
+        listContainers: async () => [],
+        modem: { socketPath: '//./pipe/docker_primary' },
+    };
+
+    const dockerFactoryCalls = [];
+    const warden = createWarden({
+        dockerInstance,
+        services: { addon: {}, core: {} },
+        hostDockerSockets: ['npipe:////./pipe/docker_engine_alt'],
+        dockerFactory: (socketPath) => {
+            dockerFactoryCalls.push(socketPath);
+            return {
+                listContainers: async () => [],
+            };
+        },
+        fs: {
+            readdirSync: () => [],
+            existsSync: () => {
+                throw new Error('existsSync should not be called for Windows pipes');
+            },
+            statSync: () => {
+                throw new Error('statSync should not be called for Windows pipes');
+            },
+        },
+    });
+
+    await warden.detectKavitaMount();
+
+    assert.deepEqual(dockerFactoryCalls, ['//./pipe/docker_engine_alt']);
 });
 
 test('getServiceHealth returns Raven health and records wizard detail', async () => {

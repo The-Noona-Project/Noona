@@ -58,6 +58,18 @@ DEBUG=super node initWarden.mjs
 
 ---
 
+### 🪟 Windows hosts
+
+Warden now normalizes Windows named-pipe sockets so that `npipe://` or `DOCKER_HOST` values are converted to the `//./pipe/...` format expected by Dockerode. When `process.platform === 'win32'`, Warden shells out to enumerate Docker pipes with:
+
+```powershell
+Get-ChildItem -Path '\\.\pipe\' -Filter '*docker*' | Select -ExpandProperty FullName
+```
+
+The Kavita data mount detector reuses the normalized pipe value when creating temporary Docker clients, avoiding Unix-only `fs.statSync` and `fs.existsSync` calls that previously failed on Windows.
+
+---
+
 ## 📦 Project Structure
 
 ```

@@ -3,6 +3,7 @@ import { pack } from 'tar-fs';
 import ignore from 'ignore';
 import { access, readFile } from 'fs/promises';
 import { dirname, join, relative, resolve } from 'path';
+import { normalizeDockerSocket } from '../utilities/etc/dockerSockets.mjs';
 
 const DEFAULT_SOCKET = '/var/run/docker.sock';
 
@@ -83,23 +84,39 @@ const generateRemediation = (name, url) => {
     return 'Inspect the container logs and verify the Docker network configuration for the service.';
 };
 
-class DockerHost {
+export class DockerHost {
     constructor(options = {}) {
-        const config = { socketPath: DEFAULT_SOCKET, ...options };
-        if (process.env.DOCKER_HOST && !options.host && !options.socketPath) {
+        const { createDocker = (cfg) => new Docker(cfg), ...dockerOptions } = options;
+        const hasOwn = (key) => Object.prototype.hasOwnProperty.call(dockerOptions, key);
+
+        const config = { socketPath: DEFAULT_SOCKET, ...dockerOptions };
+
+        if (typeof config.socketPath === 'string') {
+            const normalized = normalizeDockerSocket(config.socketPath);
+            if (normalized) {
+                config.socketPath = normalized;
+            }
+        }
+
+        if (process.env.DOCKER_HOST && !hasOwn('host') && !hasOwn('socketPath')) {
             const host = process.env.DOCKER_HOST;
-            if (host.startsWith('unix://')) {
-                config.socketPath = host.replace('unix://', '');
-            } else if (host.startsWith('npipe://')) {
-                config.socketPath = host;
+            const normalizedSocket = normalizeDockerSocket(host);
+
+            if (normalizedSocket) {
+                config.socketPath = normalizedSocket;
+                delete config.host;
+                delete config.port;
+                delete config.protocol;
             } else {
                 const url = new URL(host);
                 config.host = url.hostname;
                 config.port = url.port || 2375;
                 config.protocol = url.protocol.replace(':', '');
+                delete config.socketPath;
             }
         }
-        this.docker = new Docker(config);
+
+        this.docker = createDocker(config);
     }
 
     async _collectStream(stream) {

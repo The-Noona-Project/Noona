@@ -13,7 +13,8 @@ import dockerHost, {
     removeResources,
     inspectNetwork,
     pushImage,
-    pullImage
+    pullImage,
+    DockerHost,
 } from './dockerHost.mjs';
 import { Readable } from 'node:stream';
 
@@ -55,6 +56,30 @@ test('buildImage forwards options to Docker and surfaces warnings', async () => 
     assert.ok(result.ok);
     assert.deepEqual(result.warnings, ['warning: cached layer']);
     assert.equal(fake.followedStream, 'build-stream');
+});
+
+test('DockerHost normalizes Windows pipe style DOCKER_HOST values', () => {
+    const previous = process.env.DOCKER_HOST;
+    process.env.DOCKER_HOST = 'npipe:////./pipe/docker_engine_alt';
+
+    try {
+        const configs = [];
+        const host = new DockerHost({
+            createDocker: (cfg) => {
+                configs.push(cfg);
+                return { modem: { socketPath: cfg.socketPath } };
+            },
+        });
+
+        assert.ok(configs.length === 1);
+        assert.equal(configs[0].socketPath, '//./pipe/docker_engine_alt');
+        assert.ok(!('host' in configs[0]));
+        assert.ok(!('port' in configs[0]));
+        assert.ok(!('protocol' in configs[0]));
+        assert.equal(host.docker.modem.socketPath, '//./pipe/docker_engine_alt');
+    } finally {
+        process.env.DOCKER_HOST = previous;
+    }
 });
 
 test('pushImage and pullImage stream progress', async () => {
