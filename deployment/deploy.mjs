@@ -391,8 +391,14 @@ const run = async () => {
                     console.log(`${colors.yellow}▶️  Starting ${svc}...${colors.reset}`);
                     try {
                         await ensureNetwork();
-                        const DEBUG = await askDebugSetting();
+                        const requestedDebug = await askDebugSetting();
                         const BOOT_MODE = await askBootMode();
+                        const DEBUG = BOOT_MODE === 'super' ? 'super' : requestedDebug;
+
+                        if (BOOT_MODE === 'super' && requestedDebug !== 'super') {
+                            console.log(`${colors.cyan}ℹ️  Forcing DEBUG="super" to match selected boot mode.${colors.reset}`);
+                        }
+
                         await dockerRunService(svc, image, { DEBUG, BOOT_MODE });
                     } catch (e) {
                         print.error(`Failed to start ${svc}: ${e.message}`);
