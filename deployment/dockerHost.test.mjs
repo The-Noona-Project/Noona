@@ -16,6 +16,7 @@ import dockerHost, {
     pullImage,
     DockerHost,
 } from './dockerHost.mjs';
+import { defaultDockerSocketDetector } from '../utilities/etc/dockerSockets.mjs';
 import { Readable } from 'node:stream';
 
 const withFakeDocker = fake => {
@@ -117,6 +118,19 @@ test('DockerHost prefers detected Windows pipe when available', () => {
             Object.defineProperty(process, 'platform', originalPlatform);
         }
     }
+});
+
+test('defaultDockerSocketDetector prioritizes Windows pipe defaults', () => {
+    const sockets = defaultDockerSocketDetector({
+        env: {},
+        process: { platform: 'win32' },
+        fs: { readdirSync: () => [] },
+        spawnSync: () => ({ stdout: '' }),
+    });
+
+    assert.ok(Array.isArray(sockets));
+    assert.equal(sockets[0], '//./pipe/docker_engine');
+    assert.ok(sockets.indexOf('/var/run/docker.sock') > 0);
 });
 
 test('DockerHost falls back to default Unix socket when detection finds nothing', () => {
