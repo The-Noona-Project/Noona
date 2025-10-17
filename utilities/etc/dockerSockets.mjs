@@ -103,7 +103,7 @@ export function defaultDockerSocketDetector({
         sockets.add(dockerHost);
     }
 
-    const defaultCandidates = [
+    const unixSocketDefaults = [
         '/var/run/docker.sock',
         '/var/run/docker/docker.sock',
         '/run/docker.sock',
@@ -112,11 +112,14 @@ export function defaultDockerSocketDetector({
         '/run/podman/podman.sock',
     ];
 
-    if (processModule?.platform === 'win32') {
-        defaultCandidates.push('npipe:////./pipe/docker_engine');
-        defaultCandidates.push('\\\\.\\pipe\\docker_engine');
-        defaultCandidates.push('//./pipe/docker_engine');
-    }
+    const defaultCandidates = processModule?.platform === 'win32'
+        ? [
+            'npipe:////./pipe/docker_engine',
+            '\\\\.\\pipe\\docker_engine',
+            '//./pipe/docker_engine',
+            ...unixSocketDefaults,
+        ]
+        : unixSocketDefaults;
 
     for (const candidate of defaultCandidates) {
         addCandidate(candidate);
