@@ -11,7 +11,7 @@ import React, {
     useImperativeHandle,
     useContext
 } from 'react';
-import { render, Box, Text, useApp, useInput, Static } from 'ink';
+import { render, Box, Text, useApp, useInput, Static, useStdoutDimensions } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { spawn } from 'child_process';
@@ -128,8 +128,35 @@ const usePersistentLog = () => {
     }, []);
 };
 
+const useTerminalLayout = () => {
+    const dimensions = useStdoutDimensions();
+    const width = dimensions?.[0] ?? 80;
+    const height = dimensions?.[1] ?? 24;
+
+    return useMemo(() => {
+        const isTiny = width < 60;
+        const isSmall = width < 80;
+        const isCompact = width < 100;
+        const isNarrow = width < 120;
+        const isWide = width >= 140;
+        const isTall = height >= 35;
+
+        return {
+            width,
+            height,
+            isTiny,
+            isSmall,
+            isCompact,
+            isNarrow,
+            isWide,
+            isTall
+        };
+    }, [width, height]);
+};
+
 const DeploymentContext = React.createContext(null);
 const TickerContext = React.createContext(null);
+const LayoutContext = React.createContext(null);
 
 const useDeployment = () => {
     const ctx = useContext(DeploymentContext);
@@ -139,53 +166,91 @@ const useDeployment = () => {
     return ctx;
 };
 
-const Pane = ({ title, children }) => (
-    <Box
-        flexDirection="column"
-        flexGrow={1}
-        borderStyle="round"
-        borderColor="cyan"
-        paddingX={1}
-        paddingY={1}
-        marginX={1}
-    >
-        {title && (
-            <Text color="cyan" bold>
-                {title}
-            </Text>
-        )}
-        <Box marginTop={title ? 1 : 0} flexDirection="column" flexGrow={1}>
-            {children}
-        </Box>
-    </Box>
-);
+const useLayout = () => {
+    const ctx = useContext(LayoutContext);
+    if (!ctx) {
+        throw new Error('Layout context unavailable');
+    }
+    return ctx;
+};
 
-const Card = ({ title, subtitle, children }) => (
-    <Box flexDirection="column" borderStyle="round" borderColor="gray" padding={1} marginBottom={1}>
-        {title && (
-            <Text bold>{title}</Text>
-        )}
-        {subtitle && (
-            <Text dimColor>{subtitle}</Text>
-        )}
-        <Box marginTop={title || subtitle ? 1 : 0} flexDirection="column">
-            {children}
-        </Box>
-    </Box>
-);
+const Pane = ({ title, children }) => {
+    const layout = useLayout();
+    const horizontalPadding = layout.isTiny ? 0 : 1;
+    const horizontalMargin = layout.isNarrow ? 0 : 1;
 
-const MetricGroup = ({ items }) => (
-    <Box flexDirection="row" flexWrap="wrap">
-        {items.map(item => (
-            <Box key={item.label} flexDirection="column" marginRight={3} marginBottom={1}>
-                <Text dimColor>{item.label}</Text>
-                <Text bold color={item.color}>
-                    {item.value}
+    return (
+        <Box
+            flexDirection="column"
+            flexGrow={1}
+            borderStyle="round"
+            borderColor="cyan"
+            paddingX={horizontalPadding}
+            paddingY={1}
+            marginX={horizontalMargin}
+            marginBottom={layout.isNarrow ? 1 : 0}
+        >
+            {title && (
+                <Text color="cyan" bold>
+                    {title}
                 </Text>
+            )}
+            <Box marginTop={title ? 1 : 0} flexDirection="column" flexGrow={1}>
+                {children}
             </Box>
-        ))}
-    </Box>
-);
+        </Box>
+    );
+};
+
+const Card = ({ title, subtitle, children }) => {
+    const layout = useLayout();
+    const horizontalPadding = layout.isTiny ? 0 : 1;
+    const verticalPadding = layout.isCompact ? 0 : 1;
+
+    return (
+        <Box
+            flexDirection="column"
+            borderStyle="round"
+            borderColor="gray"
+            paddingX={horizontalPadding}
+            paddingY={verticalPadding}
+            marginBottom={1}
+        >
+            {title && (
+                <Text bold>{title}</Text>
+            )}
+            {subtitle && (
+                <Text dimColor>{subtitle}</Text>
+            )}
+            <Box marginTop={title || subtitle ? 1 : 0} flexDirection="column">
+                {children}
+            </Box>
+        </Box>
+    );
+};
+
+const MetricGroup = ({ items }) => {
+    const layout = useLayout();
+    const isStacked = layout.isNarrow;
+
+    return (
+        <Box flexDirection={isStacked ? 'column' : 'row'} flexWrap={isStacked ? 'nowrap' : 'wrap'}>
+            {items.map((item, index) => (
+                <Box
+                    key={item.label}
+                    flexDirection="column"
+                    marginRight={!isStacked && index < items.length - 1 ? 3 : 0}
+                    marginBottom={isStacked && index < items.length - 1 ? 1 : 0}
+                >
+                    <Text dimColor>{item.label}</Text>
+                    <Text bold color={item.color}>
+                        {item.value}
+                    </Text>
+                </Box>
+            ))}
+        </Box>
+    );
+};
 
 const NAVIGATION_ITEMS = [
     { id: 'overview', label: 'Overview' },
@@ -194,59 +259,107 @@ const NAVIGATION_ITEMS = [
     { id: 'settings', label: 'Settings' }
 ];
 
-const NavigationRail = React.memo(({ active }) => (
-    <Box flexDirection="column" width={28} paddingX={1} borderStyle="round" borderColor="gray" marginRight={1}>
-        <Text color="cyan" bold>
-            Mission Console
-        </Text>
-        <Box marginTop={1} flexDirection="column">
-            {NAVIGATION_ITEMS.map((item, index) => {
-                const isActive = item.id === active;
-                return (
-                    <Text
-                        key={item.id}
-                        color={isActive ? 'green' : undefined}
-                    >
-                        {isActive ? '▸' : ' '} {index + 1}. {item.label}
-                    </Text>
-                );
-            })}
-        </Box>
-        <Box marginTop={1} flexDirection="column">
-            <Text dimColor>←/→ or 1-4 to change view</Text>
-            <Text dimColor>Ctrl+Space opens Command Palette</Text>
-            <Text dimColor>Press q to exit</Text>
-        </Box>
-        <Box marginTop={1} flexDirection="column">
-            <Text dimColor>Active view updates only its canvas for faster feedback.</Text>
-        </Box>
-    </Box>
-));
+const NavigationRail = React.memo(({ active }) => {
+    const layout = useLayout();
+    const isStacked = layout.isNarrow;
 
-const MissionHeader = React.memo(({ mission, activeView }) => (
-    <Box flexDirection="row" paddingX={1} paddingY={1} borderStyle="round" borderColor="gray" marginBottom={1}>
-        <Box flexDirection="column" marginRight={3}>
-            <Text dimColor>Active Environment</Text>
-            <Text bold>{mission.environment || 'local'}</Text>
-        </Box>
-        <Box flexDirection="column" marginRight={3}>
-            <Text dimColor>Build Capacity</Text>
-            <Text bold>{mission.capacity ?? '—'}</Text>
-        </Box>
-        <Box flexDirection="column" marginRight={3}>
-            <Text dimColor>Warden Status</Text>
-            <Text bold color={mission.wardenStatus === 'running' ? 'green' : mission.wardenStatus === 'starting' ? 'yellow' : 'red'}>
-                {mission.wardenStatus || 'unknown'}
+    return (
+        <Box
+            flexDirection="column"
+            width={isStacked ? undefined : 28}
+            paddingX={isStacked ? 0 : 1}
+            borderStyle="round"
+            borderColor="gray"
+            marginRight={isStacked ? 0 : 1}
+            marginBottom={isStacked ? 1 : 0}
+        >
+            <Text color="cyan" bold>
+                Mission Console
             </Text>
+            <Box marginTop={1} flexDirection="column">
+                {NAVIGATION_ITEMS.map((item, index) => {
+                    const isActive = item.id === active;
+                    return (
+                        <Text
+                            key={item.id}
+                            color={isActive ? 'green' : undefined}
+                        >
+                            {isActive ? '▸' : ' '} {index + 1}. {item.label}
+                        </Text>
+                    );
+                })}
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+                <Text dimColor>←/→ or 1-4 to change view</Text>
+                <Text dimColor>Ctrl+Space opens Command Palette</Text>
+                <Text dimColor>Press q to exit</Text>
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+                <Text dimColor>Active view updates only its canvas for faster feedback.</Text>
+            </Box>
         </Box>
-        <Box flexDirection="column">
-            <Text dimColor>Canvas</Text>
-            <Text bold>{activeView}</Text>
+    );
+});
+
+const MissionHeader = React.memo(({ mission, activeView }) => {
+    const layout = useLayout();
+    const isStacked = layout.isNarrow;
+    const items = [
+        {
+            key: 'environment',
+            label: 'Active Environment',
+            value: mission.environment || 'local'
+        },
+        {
+            key: 'capacity',
+            label: 'Build Capacity',
+            value: mission.capacity ?? '—'
+        },
+        {
+            key: 'warden',
+            label: 'Warden Status',
+            value: mission.wardenStatus || 'unknown',
+            color: mission.wardenStatus === 'running'
+                ? 'green'
+                : mission.wardenStatus === 'starting'
+                    ? 'yellow'
+                    : 'red'
+        },
+        {
+            key: 'canvas',
+            label: 'Canvas',
+            value: activeView
+        }
+    ];
+
+    return (
+        <Box
+            flexDirection={isStacked ? 'column' : 'row'}
+            paddingX={layout.isTiny ? 0 : 1}
+            paddingY={layout.isCompact ? 0 : 1}
+            borderStyle="round"
+            borderColor="gray"
+            marginBottom={1}
+        >
+            {items.map((item, index) => (
+                <Box
+                    key={item.key}
+                    flexDirection="column"
+                    marginRight={!isStacked && index < items.length - 1 ? 3 : 0}
+                    marginBottom={isStacked && index < items.length - 1 ? 1 : 0}
+                >
+                    <Text dimColor>{item.label}</Text>
+                    <Text bold color={item.color}>
+                        {item.value}
+                    </Text>
+                </Box>
+            ))}
         </Box>
-    </Box>
-));
+    );
+});
 
 const StatusBar = () => {
+    const layout = useLayout();
     const ticker = useContext(TickerContext);
     const entry = useSyncExternalStore(ticker.subscribe, ticker.getSnapshot);
     const palette = {
@@ -256,7 +369,13 @@ const StatusBar = () => {
         error: 'red'
     };
     return (
-        <Box borderStyle="round" borderColor="gray" paddingX={1} paddingY={0} marginTop={1}>
+        <Box
+            borderStyle="round"
+            borderColor="gray"
+            paddingX={layout.isTiny ? 0 : 1}
+            paddingY={0}
+            marginTop={1}
+        >
             <Text color={palette[entry.level]}>
                 [{new Date(entry.timestamp).toLocaleTimeString()}] {entry.text || 'Ready'}
             </Text>
@@ -273,12 +392,14 @@ const COMMAND_DEFINITIONS = [
 ];
 
 const CommandPalette = ({ visible }) => {
+    const layout = useLayout();
     if (!visible) return null;
     return (
         <Box
             borderStyle="double"
             borderColor="cyan"
-            padding={1}
+            paddingX={layout.isTiny ? 0 : 1}
+            paddingY={layout.isCompact ? 0 : 1}
             flexDirection="column"
             marginTop={1}
         >
@@ -491,6 +612,7 @@ const LiveLogPane = ({ tabState }) => {
 
 const BuildOperationsView = React.memo(forwardRef(({ isActive }, ref) => {
     const { pushMessage, createReporter, updateMission } = useDeployment();
+    const layout = useLayout();
     const services = useMemo(() => [...SERVICES], []);
     const [cursor, setCursor] = useState(0);
     const [selection, setSelection] = useState(() => [...services]);
@@ -685,14 +807,14 @@ const BuildOperationsView = React.memo(forwardRef(({ isActive }, ref) => {
     const activeTabState = tabs[operation] || createTabState();
 
     return (
-        <Box flexDirection="row" flexGrow={1}>
-        <QueuePane
-            services={services}
-            cursor={cursor}
-            selection={selection}
-            operation={operation}
-            useNoCache={useNoCache}
-        />
+        <Box flexDirection={layout.isNarrow ? 'column' : 'row'} flexGrow={1}>
+            <QueuePane
+                services={services}
+                cursor={cursor}
+                selection={selection}
+                operation={operation}
+                useNoCache={useNoCache}
+            />
             <LiveLogPane tabState={activeTabState} />
         </Box>
     );
@@ -1134,6 +1256,7 @@ const DeploymentLayout = () => {
     const { exit } = useApp();
     const ticker = useEventTicker();
     const persistLog = usePersistentLog();
+    const layout = useTerminalLayout();
     const [activeView, setActiveView] = useState('overview');
     const [paletteOpen, setPaletteOpen] = useState(false);
     const [pendingBuildCommand, setPendingBuildCommand] = useState(null);
@@ -1300,23 +1423,27 @@ const DeploymentLayout = () => {
         canvas = <SettingsPanel isActive />;
     }
 
+    const activeViewLabel = NAVIGATION_ITEMS.find(item => item.id === activeView)?.label ?? activeView;
+
     return (
         <TickerContext.Provider value={ticker}>
-            <DeploymentContext.Provider value={contextValue}>
-                <Box flexDirection="column">
-                    <MissionHeader mission={mission} activeView={NAVIGATION_ITEMS.find(item => item.id === activeView)?.label ?? activeView} />
-                    <Box flexDirection="row" flexGrow={1}>
-                        <NavigationRail active={activeView} />
-                        <Box flexDirection="column" flexGrow={1}>
+            <LayoutContext.Provider value={layout}>
+                <DeploymentContext.Provider value={contextValue}>
+                    <Box flexDirection="column" paddingX={layout.isTiny ? 0 : 1}>
+                        <MissionHeader mission={mission} activeView={activeViewLabel} />
+                        <Box flexDirection={layout.isNarrow ? 'column' : 'row'} flexGrow={1}>
+                            <NavigationRail active={activeView} />
                             <Box flexDirection="column" flexGrow={1}>
-                                {canvas}
+                                <Box flexDirection="column" flexGrow={1}>
+                                    {canvas}
+                                </Box>
+                                <CommandPalette visible={paletteOpen} />
                             </Box>
-                            <CommandPalette visible={paletteOpen} />
                         </Box>
+                        <StatusBar />
                     </Box>
-                    <StatusBar />
-                </Box>
-            </DeploymentContext.Provider>
+                </DeploymentContext.Provider>
+            </LayoutContext.Provider>
         </TickerContext.Provider>
     );
 };
