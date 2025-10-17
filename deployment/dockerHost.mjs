@@ -70,6 +70,19 @@ const createBuildContext = async (contextPath, dockerfile) => {
     });
 };
 
+const generateRemediation = (name, url) => {
+    if (name && /warden/i.test(name)) {
+        return [
+            'Ensure the Warden container can bind the configured host port (default 4001).',
+            'Verify the Docker socket volume (/var/run/docker.sock) is mounted so Warden can inspect other containers.',
+            `Confirm the health endpoint ${url} is reachable from the host.`,
+            'Inspect the Warden logs for startup or dependency errors.'
+        ].join(' ');
+    }
+
+    return 'Inspect the container logs and verify the Docker network configuration for the service.';
+};
+
 class DockerHost {
     constructor(options = {}) {
         const config = { socketPath: DEFAULT_SOCKET, ...options };
@@ -159,6 +172,135 @@ class DockerHost {
         } catch (error) {
             return failure('runContainer', error, { name, image });
         }
+    }
+
+    async startService({ name, healthCheck, ...options }) {
+        const result = await this.runContainer({ name, ...options });
+        if (!result.ok) {
+            return result;
+        }
+
+        try {
+            const container = this.docker.getContainer(name);
+            const inspection = await container.inspect();
+            const networks = Object.keys(inspection?.NetworkSettings?.Networks || {});
+            const attached = options.network ? networks.includes(options.network) : true;
+            if (!attached) {
+                const error = new Error(`Container is not attached to network ${options.network}`);
+                return failure('startService', error, {
+                    name,
+                    requestedNetwork: options.network,
+                    networks,
+                    networkAttached: false,
+                    inspection
+                });
+            }
+
+            if (healthCheck?.url) {
+                const { url, interval, timeout, expectedStatus } = healthCheck;
+                const healthResult = await this.waitForHealth({
+                    name,
+                    url,
+                    interval,
+                    timeout,
+                    expectedStatus
+                });
+                if (!healthResult.ok) {
+                    return {
+                        ...healthResult,
+                        error: {
+                            ...healthResult.error,
+                            context: {
+                                ...healthResult.error.context,
+                                inspection
+                            }
+                        }
+                    };
+                }
+
+                return success({
+                    id: result.data.id,
+                    inspection,
+                    health: healthResult.data
+                });
+            }
+
+            return success({ id: result.data.id, inspection });
+        } catch (error) {
+            return failure('startService', error, { name, network: options.network });
+        }
+    }
+
+    async streamLogs({
+        name,
+        follow = true,
+        stdout = true,
+        stderr = true,
+        tail = 50,
+        since,
+        onData
+    }) {
+        try {
+            const container = this.docker.getContainer(name);
+            const stream = await container.logs({
+                follow,
+                stdout,
+                stderr,
+                tail,
+                since,
+                timestamps: false
+            });
+
+            if (onData) {
+                stream.on('data', chunk => {
+                    const text = chunk?.toString?.('utf8') || '';
+                    if (!text) return;
+                    const lines = text.split(/\r?\n/).filter(Boolean);
+                    lines.forEach(line => onData(line));
+                });
+            }
+
+            return success({ stream });
+        } catch (error) {
+            return failure('streamLogs', error, { name, follow, tail, since });
+        }
+    }
+
+    async waitForHealth({ name, url, interval = 2000, timeout = 60000, expectedStatus }) {
+        const deadline = Date.now() + timeout;
+        let attempts = 0;
+        let lastError = null;
+
+        while (Date.now() <= deadline) {
+            attempts += 1;
+            try {
+                const response = await fetch(url);
+                const statusOk = expectedStatus ? response.status === expectedStatus : response.ok;
+                if (statusOk) {
+                    return success({ attempts, status: response.status });
+                }
+                lastError = new Error(`Unexpected status code: ${response.status}`);
+            } catch (error) {
+                lastError = error;
+            }
+
+            if (Date.now() + interval > deadline) {
+                break;
+            }
+            await new Promise(resolve => setTimeout(resolve, interval));
+        }
+
+        const context = {
+            name,
+            url,
+            attempts,
+            timeout,
+            remediation: generateRemediation(name, url)
+        };
+        if (lastError?.message) {
+            context.lastError = lastError.message;
+        }
+        return failure('waitForHealth', lastError || new Error('Health check timed out'), context);
     }
 
     async stopContainer({ name, timeout = 10 }) {
@@ -337,6 +479,9 @@ export const buildImage = options => dockerHost.buildImage(options);
 export const pushImage = options => dockerHost.pushImage(options);
 export const pullImage = options => dockerHost.pullImage(options);
 export const runContainer = options => dockerHost.runContainer(options);
+export const startService = options => dockerHost.startService(options);
+export const streamLogs = options => dockerHost.streamLogs(options);
+export const waitForHealth = options => dockerHost.waitForHealth(options);
 export const stopContainer = options => dockerHost.stopContainer(options);
 export const removeResources = options => dockerHost.removeResources(options);
 export const inspectNetwork = name => dockerHost.inspectNetwork(name);
