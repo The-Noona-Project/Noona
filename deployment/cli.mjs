@@ -154,7 +154,7 @@ const Navigation = ({
     label: 'Build Queue Manager'
   }, {
     id: 'containers',
-    label: 'Container Status Board'
+    label: 'Running Containers'
   }, {
     id: 'settings',
     label: 'Settings & Defaults'
@@ -684,7 +684,7 @@ const BuildQueueManager = ({
     })]
   });
 };
-const ContainerStatusBoard = ({
+const RunningContainersSection = ({
   isActive,
   createReporter,
   pushMessage
@@ -715,6 +715,7 @@ const ContainerStatusBoard = ({
   useEffect(() => {
     load();
   }, [load]);
+  const runningContainers = useMemo(() => containers.filter(container => container.state === 'running'), [containers]);
   useInput((input, key) => {
     if (!isActive) return;
     if (operating) return;
@@ -846,8 +847,9 @@ const ContainerStatusBoard = ({
       setOperating(false);
     }
   }, [createReporter, load, pushMessage]);
+  const statusSummary = `${runningContainers.length} running · ${containers.length} tracked`;
   return /*#__PURE__*/_jsx(ViewContainer, {
-    title: "Container Status Board",
+    title: "Running Containers",
     children: loading ? /*#__PURE__*/_jsxs(Text, {
       children: [/*#__PURE__*/_jsx(Text, {
         color: "cyan",
@@ -856,20 +858,32 @@ const ContainerStatusBoard = ({
         })
       }), " Loading container metadata\u2026"]
     }) : /*#__PURE__*/_jsxs(_Fragment, {
-      children: [containers.length === 0 ? /*#__PURE__*/_jsx(Text, {
-        dimColor: true,
-        children: "No managed containers detected."
-      }) : /*#__PURE__*/_jsx(Box, {
+      children: [/*#__PURE__*/_jsxs(Box, {
         flexDirection: "column",
-        children: containers.map(container => /*#__PURE__*/_jsxs(Text, {
-          children: [container.name.padEnd(12), " \xB7 ", container.state.padEnd(10), " \xB7 ", container.ports !== '—' ? container.ports : 'no ports exposed']
-        }, container.id))
+        children: [/*#__PURE__*/_jsx(Text, {
+          bold: true,
+          children: "Active Services"
+        }), /*#__PURE__*/_jsx(Text, {
+          dimColor: true,
+          children: statusSummary
+        }), runningContainers.length === 0 ? /*#__PURE__*/_jsx(Text, {
+          dimColor: true,
+          children: "No containers are currently running."
+        }) : runningContainers.map(container => /*#__PURE__*/_jsxs(Text, {
+          children: [container.name.padEnd(12), " · ", container.ports !== '—' ? container.ports : 'no exposed ports']
+        }, container.id)), runningContainers.length > 0 && runningContainers.length < containers.length && /*#__PURE__*/_jsxs(Box, {
+          marginTop: 1,
+          children: [/*#__PURE__*/_jsx(Text, {
+            dimColor: true,
+            children: `${containers.length - runningContainers.length} additional services are stopped.`
+          })]
+        })]
       }), /*#__PURE__*/_jsxs(Box, {
         marginTop: 1,
         flexDirection: "column",
         children: [/*#__PURE__*/_jsx(Text, {
-          children: "Select services to clean (\u2191/\u2193 to move, space to toggle):"
-        }), /*#__PURE__*/_jsx(Box, {
+          children: isActive ? "Select services to clean (↑/↓ to move, space to toggle):" : "Open the Running Containers view (press 3) to manage cleanup just below the build queue."
+        }), isActive && /*#__PURE__*/_jsx(Box, {
           flexDirection: "column",
           marginTop: 1,
           children: serviceList.map((service, index) => {
@@ -885,7 +899,8 @@ const ContainerStatusBoard = ({
         marginTop: 1,
         flexDirection: "column",
         children: [/*#__PURE__*/_jsx(Text, {
-          children: "Shortcuts: \u2191/\u2193 move \xB7 space toggle \xB7 r refresh \xB7 k stop all \xB7 w start warden \xB7 x clean selected \xB7 d delete all"
+          dimColor: true,
+          children: "Shortcuts (Running Containers view): ↑/↓ move · space toggle · r refresh · k stop all · w start warden · x clean selected · d delete all"
         }), confirmDelete && /*#__PURE__*/_jsx(Text, {
           color: "red",
           children: "Confirm delete of all Docker resources? Press y to confirm or any other key to cancel."
@@ -893,7 +908,7 @@ const ContainerStatusBoard = ({
           color: "yellow",
           children: [/*#__PURE__*/_jsx(Spinner, {
             type: "dots"
-          }), " Executing container operation\u2026"]
+          }), " Executing container operation…"]
         })]
       })]
     })
@@ -1184,7 +1199,7 @@ const App = () => {
         isActive: true,
         createReporter: createReporter,
         pushMessage: pushMessage
-      }), view === 'containers' && /*#__PURE__*/_jsx(ContainerStatusBoard, {
+      }), view === 'containers' && /*#__PURE__*/_jsx(RunningContainersSection, {
         isActive: true,
         createReporter: createReporter,
         pushMessage: pushMessage

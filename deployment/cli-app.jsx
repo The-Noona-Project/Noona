@@ -174,7 +174,7 @@ const useLayout = () => {
     return ctx;
 };
 
-const Pane = ({ title, children }) => {
+const Pane = ({ title, children, grow = 1 }) => {
     const layout = useLayout();
     const horizontalPadding = layout.isTiny ? 0 : 1;
     const horizontalMargin = layout.isNarrow ? 0 : 1;
@@ -182,7 +182,7 @@ const Pane = ({ title, children }) => {
     return (
         <Box
             flexDirection="column"
-            flexGrow={1}
+            flexGrow={grow}
             borderStyle="round"
             borderColor="cyan"
             paddingX={horizontalPadding}
@@ -255,7 +255,7 @@ const MetricGroup = ({ items }) => {
 const NAVIGATION_ITEMS = [
     { id: 'overview', label: 'Overview' },
     { id: 'builds', label: 'Build Operations' },
-    { id: 'containers', label: 'Containers' },
+    { id: 'containers', label: 'Running Containers' },
     { id: 'settings', label: 'Settings' }
 ];
 
@@ -943,7 +943,7 @@ const OverviewDashboard = React.memo(({ isActive }) => {
     );
 });
 
-const ContainerStatusBoard = React.memo(({ isActive }) => {
+const RunningContainersSection = React.memo(({ isActive }) => {
     const { pushMessage, createReporter, updateMission } = useDeployment();
     const serviceList = useMemo(() => [...SERVICES], []);
     const [containers, setContainers] = useState([]);
@@ -972,6 +972,11 @@ const ContainerStatusBoard = React.memo(({ isActive }) => {
     useEffect(() => {
         load();
     }, [load]);
+
+    const runningContainers = useMemo(
+        () => containers.filter(container => container.state === 'running'),
+        [containers]
+    );
 
     const handleStopAll = useCallback(async () => {
         setOperating(true);
@@ -1078,38 +1083,57 @@ const ContainerStatusBoard = React.memo(({ isActive }) => {
         }
     });
 
+    const statusSummary = `${runningContainers.length} running · ${containers.length} tracked`;
+
     return (
-        <Pane title="Container Status">
+        <Pane title="Running Containers" grow={isActive ? 1 : 0}>
             {loading ? (
                 <Text><Text color="cyan"><Spinner type="dots" /></Text> Loading container metadata…</Text>
             ) : (
                 <>
-                    {containers.length === 0 ? (
-                        <Text dimColor>No managed containers detected.</Text>
-                    ) : (
-                        <Card title="Tracked Containers">
-                            {containers.map(container => (
+                    <Card title="Active Services" subtitle={statusSummary}>
+                        {runningContainers.length === 0 ? (
+                            <Text dimColor>No containers are currently running.</Text>
+                        ) : (
+                            runningContainers.map(container => (
                                 <Text key={container.id}>
-                                    {container.name.padEnd(12)} · {container.state.padEnd(10)} · {container.ports !== '—' ? container.ports : 'no ports exposed'}
+                                    {container.name.padEnd(12)} · {container.ports !== '—' ? container.ports : 'no exposed ports'}
                                 </Text>
-                            ))}
-                        </Card>
-                    )}
-                    <Card title="Maintenance Queue">
-                        <Text>Select services to clean (↑/↓ to move, space to toggle):</Text>
-                        <Box flexDirection="column" marginTop={1}>
-                            {serviceList.map((service, index) => {
-                                const isSelected = selectedValues.includes(service);
-                                const isHighlighted = index === cursor;
-                                return (
-                                    <Text key={service} color={isHighlighted ? 'cyan' : undefined}>
-                                        {isHighlighted ? '▸' : ' '} [{isSelected ? 'x' : ' '}] {service}
-                                    </Text>
-                                );
-                            })}
-                        </Box>
+                            ))
+                        )}
+                        {runningContainers.length > 0 && runningContainers.length < containers.length && (
+                            <Box marginTop={1}>
+                                <Text dimColor>
+                                    {containers.length - runningContainers.length} additional services are stopped.
+                                </Text>
+                            </Box>
+                        )}
                     </Card>
-                    <Text>Shortcuts: r refresh · k stop all · w start warden · x clean selected · d delete all</Text>
+                    <Card
+                        title="Maintenance Queue"
+                        subtitle={isActive
+                            ? '↑/↓ to move · space to toggle · use shortcuts below'
+                            : 'Select the Running Containers view (press 3) to manage the queue beneath the build row'}
+                    >
+                        {isActive ? (
+                            <Box flexDirection="column">
+                                {serviceList.map((service, index) => {
+                                    const isSelected = selectedValues.includes(service);
+                                    const isHighlighted = index === cursor;
+                                    return (
+                                        <Text key={service} color={isHighlighted ? 'cyan' : undefined}>
+                                            {isHighlighted ? '▸' : ' '} [{isSelected ? 'x' : ' '}] {service}
+                                        </Text>
+                                    );
+                                })}
+                            </Box>
+                        ) : (
+                            <Text dimColor>Use the Running Containers view (press 3) to manage the queue shown below the build operations.</Text>
+                        )}
+                    </Card>
+                    <Text dimColor>
+                        Shortcuts (Running Containers view): r refresh · k stop all · w start warden · x clean selected · d delete all
+                    </Text>
                     {confirmDelete && (
                         <Text color="red">Confirm delete of all Docker resources? Press y to confirm or any other key to cancel.</Text>
                     )}
@@ -1425,8 +1449,6 @@ const DeploymentLayout = () => {
     let canvas = null;
     if (activeView === 'overview') {
         canvas = <OverviewDashboard isActive />;
-    } else if (activeView === 'containers') {
-        canvas = <ContainerStatusBoard isActive />;
     } else if (activeView === 'settings') {
         canvas = <SettingsPanel isActive />;
     }
@@ -1446,6 +1468,7 @@ const DeploymentLayout = () => {
                         />
                         <BuildOperationsView isActive={activeView === 'builds'} ref={buildRef} />
                         <Box flexDirection="column" flexGrow={1}>
+                            <RunningContainersSection isActive={activeView === 'containers'} />
                             <Box flexDirection="column" flexGrow={1}>
                                 {canvas}
                             </Box>
