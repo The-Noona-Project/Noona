@@ -614,9 +614,33 @@ const LiveLogPane = ({ tabState }) => {
     );
 };
 
+const ActiveBuildsSection = ({
+    services,
+    cursor,
+    selection,
+    operation,
+    useNoCache,
+    tabState
+}) => {
+    const layout = useLayout();
+    const direction = layout.isNarrow ? 'column' : 'row';
+
+    return (
+        <Box flexDirection={direction} flexGrow={0} flexShrink={0} marginBottom={1}>
+            <QueuePane
+                services={services}
+                cursor={cursor}
+                selection={selection}
+                operation={operation}
+                useNoCache={useNoCache}
+            />
+            <LiveLogPane tabState={tabState} />
+        </Box>
+    );
+};
+
 const BuildOperationsView = React.memo(forwardRef(({ isActive }, ref) => {
     const { pushMessage, createReporter, updateMission } = useDeployment();
-    const layout = useLayout();
     const services = useMemo(() => [...SERVICES], []);
     const [cursor, setCursor] = useState(0);
     const [selection, setSelection] = useState(() => [...services]);
@@ -811,16 +835,14 @@ const BuildOperationsView = React.memo(forwardRef(({ isActive }, ref) => {
     const activeTabState = tabs[operation] || createTabState();
 
     return (
-        <Box flexDirection={layout.isNarrow ? 'column' : 'row'} flexGrow={1}>
-            <QueuePane
-                services={services}
-                cursor={cursor}
-                selection={selection}
-                operation={operation}
-                useNoCache={useNoCache}
-            />
-            <LiveLogPane tabState={activeTabState} />
-        </Box>
+        <ActiveBuildsSection
+            services={services}
+            cursor={cursor}
+            selection={selection}
+            operation={operation}
+            useNoCache={useNoCache}
+            tabState={activeTabState}
+        />
     );
 }));
 
@@ -1263,7 +1285,6 @@ const DeploymentLayout = () => {
     const layout = useTerminalLayout();
     const [activeView, setActiveView] = useState('overview');
     const [paletteOpen, setPaletteOpen] = useState(false);
-    const [pendingBuildCommand, setPendingBuildCommand] = useState(null);
     const [mission, setMission] = useState({ environment: 'local', capacity: '—', wardenStatus: 'unknown' });
     const buildRef = useRef(null);
 
@@ -1326,34 +1347,19 @@ const DeploymentLayout = () => {
             return;
         }
         if (command.type === 'focus') {
+            setActiveView('builds');
             buildRef.current?.focusOperation(command.operation);
+            return;
         }
         if (command.type === 'run') {
             buildRef.current?.runOperation(command.operation);
         }
-    }, []);
-
-    useEffect(() => {
-        if (activeView !== 'builds' || !pendingBuildCommand) {
-            return;
-        }
-        if (!buildRef.current) {
-            return;
-        }
-        executeBuildCommand(pendingBuildCommand);
-        setPendingBuildCommand(null);
-    }, [activeView, executeBuildCommand, pendingBuildCommand]);
+    }, [setActiveView]);
 
     const requestBuildCommand = useCallback(command => {
         setPaletteOpen(false);
-        if (activeView === 'builds' && buildRef.current) {
-            executeBuildCommand(command);
-            setPendingBuildCommand(null);
-            return;
-        }
-        setPendingBuildCommand(command);
-        setActiveView('builds');
-    }, [activeView, executeBuildCommand]);
+        executeBuildCommand(command);
+    }, [executeBuildCommand]);
 
     useInput((input, key) => {
         if (key.ctrl && input === 'c') {
@@ -1419,8 +1425,6 @@ const DeploymentLayout = () => {
     let canvas = null;
     if (activeView === 'overview') {
         canvas = <OverviewDashboard isActive />;
-    } else if (activeView === 'builds') {
-        canvas = <BuildOperationsView isActive ref={buildRef} />;
     } else if (activeView === 'containers') {
         canvas = <ContainerStatusBoard isActive />;
     } else if (activeView === 'settings') {
@@ -1440,6 +1444,7 @@ const DeploymentLayout = () => {
                             activeViewLabel={activeViewLabel}
                             navigationItems={NAVIGATION_ITEMS}
                         />
+                        <BuildOperationsView isActive={activeView === 'builds'} ref={buildRef} />
                         <Box flexDirection="column" flexGrow={1}>
                             <Box flexDirection="column" flexGrow={1}>
                                 {canvas}
