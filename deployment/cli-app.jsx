@@ -259,52 +259,9 @@ const NAVIGATION_ITEMS = [
     { id: 'settings', label: 'Settings' }
 ];
 
-const NavigationRail = React.memo(({ active }) => {
+const TopNavBar = React.memo(({ mission, activeViewId, activeViewLabel, navigationItems }) => {
     const layout = useLayout();
-    const isStacked = layout.isNarrow;
-
-    return (
-        <Box
-            flexDirection="column"
-            width={isStacked ? undefined : 28}
-            paddingX={isStacked ? 0 : 1}
-            borderStyle="round"
-            borderColor="gray"
-            marginRight={isStacked ? 0 : 1}
-            marginBottom={isStacked ? 1 : 0}
-        >
-            <Text color="cyan" bold>
-                Mission Console
-            </Text>
-            <Box marginTop={1} flexDirection="column">
-                {NAVIGATION_ITEMS.map((item, index) => {
-                    const isActive = item.id === active;
-                    return (
-                        <Text
-                            key={item.id}
-                            color={isActive ? 'green' : undefined}
-                        >
-                            {isActive ? '▸' : ' '} {index + 1}. {item.label}
-                        </Text>
-                    );
-                })}
-            </Box>
-            <Box marginTop={1} flexDirection="column">
-                <Text dimColor>←/→ or 1-4 to change view</Text>
-                <Text dimColor>Ctrl+Space opens Command Palette</Text>
-                <Text dimColor>Press q to exit</Text>
-            </Box>
-            <Box marginTop={1} flexDirection="column">
-                <Text dimColor>Active view updates only its canvas for faster feedback.</Text>
-            </Box>
-        </Box>
-    );
-});
-
-const MissionHeader = React.memo(({ mission, activeView }) => {
-    const layout = useLayout();
-    const isStacked = layout.isNarrow;
-    const items = [
+    const missionSummary = [
         {
             key: 'environment',
             label: 'Active Environment',
@@ -328,32 +285,79 @@ const MissionHeader = React.memo(({ mission, activeView }) => {
         {
             key: 'canvas',
             label: 'Canvas',
-            value: activeView
+            value: activeViewLabel
         }
+    ];
+
+    const systemActions = [
+        { key: 'palette', label: 'Command Palette', hint: 'Ctrl+Space · F1' },
+        { key: 'navigate', label: 'Change View', hint: '←/→ · 1-4' },
+        { key: 'exit', label: 'Exit', hint: 'q · Ctrl+C' }
     ];
 
     return (
         <Box
-            flexDirection={isStacked ? 'column' : 'row'}
-            paddingX={layout.isTiny ? 0 : 1}
-            paddingY={layout.isCompact ? 0 : 1}
+            flexDirection="column"
             borderStyle="round"
             borderColor="gray"
+            paddingX={layout.isTiny ? 0 : 1}
+            paddingY={layout.isCompact ? 0 : 1}
             marginBottom={1}
         >
-            {items.map((item, index) => (
-                <Box
-                    key={item.key}
-                    flexDirection="column"
-                    marginRight={!isStacked && index < items.length - 1 ? 3 : 0}
-                    marginBottom={isStacked && index < items.length - 1 ? 1 : 0}
-                >
-                    <Text dimColor>{item.label}</Text>
-                    <Text bold color={item.color}>
-                        {item.value}
-                    </Text>
+            <Box
+                flexDirection="row"
+                flexWrap="wrap"
+                alignItems="flex-start"
+                justifyContent="space-between"
+            >
+                <Box flexDirection="row" flexWrap="wrap">
+                    {missionSummary.map((item, index) => (
+                        <Box
+                            key={item.key}
+                            flexDirection="column"
+                            marginRight={index < missionSummary.length - 1 ? 3 : 0}
+                            marginBottom={layout.isNarrow ? 1 : 0}
+                        >
+                            <Text dimColor>{item.label}</Text>
+                            <Text bold color={item.color}>
+                                {item.value}
+                            </Text>
+                        </Box>
+                    ))}
                 </Box>
-            ))}
+                <Box
+                    flexDirection="row"
+                    flexWrap="wrap"
+                    alignItems="center"
+                    marginTop={layout.isNarrow ? 1 : 0}
+                >
+                    {navigationItems.map((item, index) => {
+                        const isActive = item.id === activeViewId;
+                        return (
+                            <Box key={item.id} marginRight={index < navigationItems.length - 1 ? 2 : 0}>
+                                <Text color={isActive ? 'green' : 'gray'} bold={isActive}>
+                                    {index + 1}. {item.label}
+                                </Text>
+                            </Box>
+                        );
+                    })}
+                </Box>
+            </Box>
+            <Box
+                marginTop={1}
+                flexDirection="row"
+                flexWrap="wrap"
+                alignItems="center"
+            >
+                {systemActions.map((action, index) => (
+                    <Box key={action.key} marginRight={index < systemActions.length - 1 ? 3 : 0}>
+                        <Text dimColor>
+                            {action.label}: {action.hint}
+                        </Text>
+                    </Box>
+                ))}
+                <Text dimColor>Active view updates only its canvas for faster feedback.</Text>
+            </Box>
         </Box>
     );
 });
@@ -1430,15 +1434,17 @@ const DeploymentLayout = () => {
             <LayoutContext.Provider value={layout}>
                 <DeploymentContext.Provider value={contextValue}>
                     <Box flexDirection="column" paddingX={layout.isTiny ? 0 : 1}>
-                        <MissionHeader mission={mission} activeView={activeViewLabel} />
-                        <Box flexDirection={layout.isNarrow ? 'column' : 'row'} flexGrow={1}>
-                            <NavigationRail active={activeView} />
+                        <TopNavBar
+                            mission={mission}
+                            activeViewId={activeView}
+                            activeViewLabel={activeViewLabel}
+                            navigationItems={NAVIGATION_ITEMS}
+                        />
+                        <Box flexDirection="column" flexGrow={1}>
                             <Box flexDirection="column" flexGrow={1}>
-                                <Box flexDirection="column" flexGrow={1}>
-                                    {canvas}
-                                </Box>
-                                <CommandPalette visible={paletteOpen} />
+                                {canvas}
                             </Box>
+                            <CommandPalette visible={paletteOpen} />
                         </Box>
                         <StatusBar />
                     </Box>
