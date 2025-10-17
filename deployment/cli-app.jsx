@@ -46,6 +46,52 @@ const formatTable = (rows, columns) => {
     return `${header}\n${separator}\n${body}`;
 };
 
+const LOG_HISTORY_LIMIT = 120;
+
+const appendLogEntry = (logs, entry) => {
+    if (!entry || !entry.text) {
+        return logs;
+    }
+
+    const text = stripAnsi(entry.text);
+    if (!text) {
+        return logs;
+    }
+
+    const normalized = {
+        id: entry.id || `${Date.now()}-${Math.random()}`,
+        level: entry.level || 'info',
+        text,
+        timestamp: entry.timestamp || Date.now()
+    };
+
+    const next = [...logs, normalized];
+    return next.slice(-LOG_HISTORY_LIMIT);
+};
+
+const TAB_DEFINITIONS = [
+    { id: 'build', label: 'Build Images' },
+    { id: 'push', label: 'Push Images' },
+    { id: 'pull', label: 'Pull Images' }
+];
+
+const createTabSnapshot = () => ({
+    jobs: {},
+    logs: [],
+    queueSize: 0,
+    capacity: null,
+    isRunning: false,
+    lastServices: [],
+    lastUpdated: null
+});
+
+const createInitialTabState = () => {
+    return TAB_DEFINITIONS.reduce((acc, tab) => {
+        acc[tab.id] = createTabSnapshot();
+        return acc;
+    }, {});
+};
+
 const useMessageLog = () => {
     const [messages, setMessages] = useState([]);
 
@@ -214,41 +260,157 @@ const BuildQueueManager = ({ isActive, createReporter, pushMessage }) => {
     const [operation, setOperation] = useState('build');
     const [useNoCache, setUseNoCache] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
-    const [jobState, setJobState] = useState({});
+    const [tabState, setTabState] = useState(() => createInitialTabState());
 
-    const updateJob = useCallback((service, data) => {
-        setJobState(prev => ({
+    const updateTabState = useCallback((tabId, updater) => {
+        setTabState(prev => {
+            const current = prev[tabId] || createTabSnapshot();
+            const nextTab = updater(current);
+            if (!nextTab || nextTab === current) {
+                return prev;
+            }
+            return {
+                ...prev,
+                [tabId]: {
+                    ...nextTab
+                }
+            };
+        });
+    }, []);
+
+    const initializeTabRun = useCallback((tabId, services, headline) => {
+        const normalized = Array.isArray(services) ? [...services] : [];
+        setTabState(prev => ({
             ...prev,
-            [service]: {
-                ...(prev[service] || {}),
-                ...data,
-                updatedAt: Date.now()
+            [tabId]: {
+                ...createTabSnapshot(),
+                isRunning: true,
+                lastUpdated: Date.now(),
+                lastServices: normalized,
+                jobs: normalized.reduce((acc, svc) => {
+                    acc[svc] = { status: 'pending', message: 'Pending…' };
+                    return acc;
+                }, {}),
+                logs: headline ? appendLogEntry([], { text: headline }) : []
             }
         }));
     }, []);
 
-    const handleProgress = useCallback(event => {
-        if (!event || !event.service) return;
-        switch (event.type) {
-            case 'update':
-                updateJob(event.service, { status: 'running', message: stripAnsi(event.message || '') });
-                break;
-            case 'log':
-                updateJob(event.service, { status: 'running', message: stripAnsi(event.message || '') });
-                break;
-            case 'capacity':
-                pushMessage({ level: 'info', text: `Scheduler capacity updated to ${event.limit}` });
-                break;
-            case 'complete':
-                updateJob(event.service, {
-                    status: event.ok === false || event.status === 'rejected' ? 'failed' : 'succeeded',
-                    message: event.error?.message || event.status || 'completed'
-                });
-                break;
-            default:
-                break;
+    const finalizeTabRun = useCallback((tabId) => {
+        updateTabState(tabId, current => ({
+            ...current,
+            isRunning: false,
+            lastUpdated: Date.now()
+        }));
+    }, [updateTabState]);
+
+    const handleProgress = useCallback((tabId, event) => {
+        if (!event) return;
+        const sanitizedMessage = event.message ? stripAnsi(event.message) : '';
+        updateTabState(tabId, current => {
+            const now = Date.now();
+            const jobs = { ...current.jobs };
+            let logs = [...current.logs];
+            let queueSize = current.queueSize;
+            let capacity = current.capacity;
+            let isRunningTab = current.isRunning;
+            let lastServices = current.lastServices || [];
+            const pushLog = (text, level = 'info') => {
+                if (!text) return;
+                logs = appendLogEntry(logs, { text, level, timestamp: now });
+            };
+
+            if (event.type === 'capacity' && typeof event.limit === 'number') {
+                capacity = event.limit;
+                pushLog(`Scheduler capacity set to ${event.limit}.`);
+            }
+
+            if (event.service) {
+                lastServices = Array.from(new Set([...lastServices, event.service]));
+            }
+
+            if (event.type === 'enqueue' && event.service) {
+                jobs[event.service] = {
+                    status: 'queued',
+                    message: `Queued (${event.queueSize ?? 'pending'} ahead)`
+                };
+                queueSize = event.queueSize ?? queueSize;
+                pushLog(`[${event.service}] queued for execution.`);
+                isRunningTab = true;
+            }
+
+            if ((event.type === 'log' || event.type === 'update') && event.service) {
+                const statusMessage = sanitizedMessage || 'Running…';
+                jobs[event.service] = {
+                    status: 'running',
+                    message: statusMessage
+                };
+                pushLog(`[${event.service}] ${statusMessage}`, event.level || 'info');
+                isRunningTab = true;
+            }
+
+            if (event.type === 'start' && event.service) {
+                const statusMessage = sanitizedMessage || 'Starting…';
+                jobs[event.service] = {
+                    status: 'running',
+                    message: statusMessage
+                };
+                pushLog(`[${event.service}] ${statusMessage}`);
+                isRunningTab = true;
+            }
+
+            if (event.type === 'error' && event.service) {
+                const errorMessage = sanitizedMessage || event.error?.message || 'Error reported.';
+                jobs[event.service] = {
+                    status: 'failed',
+                    message: errorMessage
+                };
+                pushLog(`[${event.service}] ${errorMessage}`, 'error');
+                isRunningTab = true;
+            }
+
+            if (event.type === 'complete' && event.service) {
+                const succeeded = event.status === 'fulfilled' || (event.ok !== false && event.status !== 'rejected');
+                const detail = succeeded
+                    ? sanitizedMessage || 'Completed successfully.'
+                    : event.error?.message || sanitizedMessage || 'Failed.';
+                jobs[event.service] = {
+                    status: succeeded ? 'succeeded' : 'failed',
+                    message: detail
+                };
+                pushLog(`[${event.service}] ${detail}`, succeeded ? 'success' : 'error');
+                if (!succeeded && Array.isArray(event.logs)) {
+                    event.logs.slice(-5).forEach(line => {
+                        pushLog(`[${event.service}] ${stripAnsi(line)}`, 'error');
+                    });
+                }
+            }
+
+            if (event.type === 'idle') {
+                pushLog('Scheduler idle.');
+                isRunningTab = false;
+            }
+
+            const allComplete = Object.keys(jobs).length > 0 && Object.values(jobs).every(job => ['succeeded', 'failed'].includes(job.status));
+            if (allComplete) {
+                isRunningTab = false;
+            }
+
+            return {
+                ...current,
+                jobs,
+                logs,
+                queueSize,
+                capacity,
+                isRunning: isRunningTab,
+                lastUpdated: now,
+                lastServices
+            };
+        });
+        if (event.type === 'capacity' && typeof event.limit === 'number') {
+            pushMessage({ level: 'info', text: `Scheduler capacity updated to ${event.limit}` });
         }
-    }, [pushMessage, updateJob]);
+    }, [pushMessage, updateTabState]);
 
     const execute = useCallback(async () => {
         if (isRunning) return;
@@ -258,14 +420,16 @@ const BuildQueueManager = ({ isActive, createReporter, pushMessage }) => {
         }
 
         setIsRunning(true);
-        setJobState({});
+        const headlineServices = selectedValues.join(', ');
+        const headline = headlineServices ? `${operation === 'build' ? 'Starting build' : operation === 'push' ? 'Starting push' : 'Starting pull'} for ${headlineServices}` : '';
+        initializeTabRun(operation, selectedValues, headline);
         const reporter = createReporter();
         try {
             if (operation === 'build') {
                 const result = await buildServices(selectedValues, {
                     useNoCache,
                     reporter,
-                    onProgress: handleProgress
+                    onProgress: event => handleProgress('build', event)
                 });
                 if (!result.ok) {
                     pushMessage({ level: 'warn', text: 'One or more builds reported failures. Review activity log for details.' });
@@ -273,24 +437,24 @@ const BuildQueueManager = ({ isActive, createReporter, pushMessage }) => {
             } else if (operation === 'push') {
                 await pushServices(selectedValues, {
                     reporter,
-                    onProgress: handleProgress
+                    onProgress: event => handleProgress('push', event)
                 });
             } else if (operation === 'pull') {
                 await pullServices(selectedValues, {
                     reporter,
-                    onProgress: handleProgress
+                    onProgress: event => handleProgress('pull', event)
                 });
             }
         } catch (error) {
             pushMessage({ level: 'error', text: `${operation} operation failed: ${error.message}` });
         } finally {
             setIsRunning(false);
+            finalizeTabRun(operation);
         }
-    }, [createReporter, handleProgress, isRunning, operation, pushMessage, selectedValues, useNoCache]);
+    }, [createReporter, finalizeTabRun, handleProgress, initializeTabRun, isRunning, operation, pushMessage, selectedValues, useNoCache]);
 
     const toggleOperation = useCallback(next => {
         setOperation(next);
-        setJobState({});
     }, []);
 
     useInput((input, key) => {
@@ -323,50 +487,109 @@ const BuildQueueManager = ({ isActive, createReporter, pushMessage }) => {
             ? 'Push selected services'
             : 'Pull selected services';
 
+    const currentTabState = tabState[operation] || createTabSnapshot();
+    const servicesForDisplay = currentTabState.lastServices.length > 0
+        ? currentTabState.lastServices
+        : selectedValues;
+    const logsToRender = currentTabState.logs.slice(-15);
+    const statusPalette = {
+        pending: 'gray',
+        queued: 'yellow',
+        running: 'cyan',
+        succeeded: 'green',
+        failed: 'red'
+    };
+    const logPalette = {
+        info: undefined,
+        warn: 'yellow',
+        error: 'red',
+        success: 'green'
+    };
+
     return (
         <ViewContainer title="Build Queue Manager">
-            <Box flexDirection="column">
-                <Text>Select services (↑/↓ to move, space to toggle). Press g to run {actionLabel.toLowerCase()}.</Text>
-                <Box flexDirection="column" marginTop={1}>
-                    {serviceList.map((service, index) => {
-                        const isSelected = selectedValues.includes(service);
-                        const isHighlighted = index === cursor;
-                        return (
-                            <Text key={service} color={isHighlighted ? 'cyan' : undefined}>
-                                {isHighlighted ? '▸' : ' '} [{isSelected ? 'x' : ' '}] {service}
-                            </Text>
-                        );
-                    })}
-                </Box>
-                <Box marginTop={1} flexDirection="column">
-                    <Text>Operation: {operation === 'build' ? 'Build images' : operation === 'push' ? 'Push to registry' : 'Pull from registry'}</Text>
-                    {operation === 'build' && (
-                        <Text>Clean build: {useNoCache ? 'enabled' : 'disabled'} (press c to toggle)</Text>
-                    )}
-                    <Text dimColor>Shortcuts: ↑/↓ move · space toggle · b build · p push · l pull · g execute · a select all · n clear selection</Text>
-                </Box>
-                {isRunning && (
-                    <Text color="cyan"><Spinner type="dots" /> Running {actionLabel}…</Text>
-                )}
-                {Object.keys(jobState).length > 0 && (
+            <Box flexDirection="row">
+                <Box flexDirection="column" width={40} marginRight={2}>
+                    <Text>Select services (↑/↓ to move, space to toggle). Press g to run {actionLabel.toLowerCase()}.</Text>
+                    <Box flexDirection="column" marginTop={1}>
+                        {serviceList.map((service, index) => {
+                            const isSelected = selectedValues.includes(service);
+                            const isHighlighted = index === cursor;
+                            return (
+                                <Text key={service} color={isHighlighted ? 'cyan' : undefined}>
+                                    {isHighlighted ? '▸' : ' '} [{isSelected ? 'x' : ' '}] {service}
+                                </Text>
+                            );
+                        })}
+                    </Box>
                     <Box marginTop={1} flexDirection="column">
-                        {selectedValues.map(service => {
-                            const state = jobState[service];
+                        <Text>Operation: {operation === 'build' ? 'Build images' : operation === 'push' ? 'Push to registry' : 'Pull from registry'}</Text>
+                        {operation === 'build' && (
+                            <Text>Clean build: {useNoCache ? 'enabled' : 'disabled'} (press c to toggle)</Text>
+                        )}
+                        <Text dimColor>Shortcuts: ↑/↓ move · space toggle · b build · p push · l pull · g execute · a select all · n clear selection</Text>
+                    </Box>
+                </Box>
+                <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor="gray" padding={1}>
+                    <Text color="cyan" bold>Operation Activity</Text>
+                    <Box marginTop={1} flexDirection="row" flexWrap="wrap">
+                        {TAB_DEFINITIONS.map(tab => {
+                            const state = tabState[tab.id] || createTabSnapshot();
+                            const indicator = state.isRunning ? '●' : '○';
+                            const color = tab.id === operation
+                                ? 'green'
+                                : state.isRunning
+                                    ? 'yellow'
+                                    : 'gray';
+                            return (
+                                <Box key={tab.id} marginRight={1}>
+                                    <Text color={color}>{indicator} {tab.label}</Text>
+                                </Box>
+                            );
+                        })}
+                    </Box>
+                    {currentTabState.capacity ? (
+                        <Text dimColor>Scheduler capacity: {currentTabState.capacity}</Text>
+                    ) : null}
+                    {currentTabState.queueSize ? (
+                        <Text dimColor>Queue size: {currentTabState.queueSize}</Text>
+                    ) : null}
+                    <Box marginTop={1} flexDirection="column">
+                        <Text bold>Status by service</Text>
+                        {servicesForDisplay.length === 0 ? (
+                            <Text dimColor>No services have been queued yet.</Text>
+                        ) : servicesForDisplay.map(service => {
+                            const state = currentTabState.jobs[service];
                             if (!state) {
                                 return (
                                     <Text key={service} dimColor>{service}: pending…</Text>
                                 );
                             }
-                            const color = state.status === 'failed' ? 'red' : state.status === 'succeeded' ? 'green' : 'yellow';
+                            const color = statusPalette[state.status] || undefined;
                             return (
                                 <Text key={service} color={color}>
-                                    {state.status === 'running' && <Spinner type="dots" />} {service}: {state.message || state.status}
+                                    {state.status === 'running' && <Spinner type="dots" />} {service}: {state.message}
                                 </Text>
                             );
                         })}
                     </Box>
-                )}
+                    <Box marginTop={1} flexDirection="column">
+                        <Text bold>Logs</Text>
+                        {logsToRender.length === 0 ? (
+                            <Text dimColor>No logs yet for this tab.</Text>
+                        ) : logsToRender.map(entry => (
+                            <Text key={entry.id} color={logPalette[entry.level]}>
+                                [{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '—'}] {entry.text}
+                            </Text>
+                        ))}
+                    </Box>
+                </Box>
             </Box>
+            {isRunning && (
+                <Box marginTop={1}>
+                    <Text color="cyan"><Spinner type="dots" /> Running {actionLabel}…</Text>
+                </Box>
+            )}
         </ViewContainer>
     );
 };

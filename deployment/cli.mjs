@@ -21,6 +21,49 @@ const formatTable = (rows, columns) => {
   const body = sanitized.map(row => row.map((value, index) => value.padEnd(widths[index])).join('  ')).join('\n');
   return `${header}\n${separator}\n${body}`;
 };
+const LOG_HISTORY_LIMIT = 120;
+const appendLogEntry = (logs, entry) => {
+  if (!entry || !entry.text) {
+    return logs;
+  }
+  const text = stripAnsi(entry.text);
+  if (!text) {
+    return logs;
+  }
+  const normalized = {
+    id: entry.id || `${Date.now()}-${Math.random()}`,
+    level: entry.level || 'info',
+    text,
+    timestamp: entry.timestamp || Date.now()
+  };
+  const next = [...logs, normalized];
+  return next.slice(-LOG_HISTORY_LIMIT);
+};
+const TAB_DEFINITIONS = [{
+  id: 'build',
+  label: 'Build Images'
+}, {
+  id: 'push',
+  label: 'Push Images'
+}, {
+  id: 'pull',
+  label: 'Pull Images'
+}];
+const createTabSnapshot = () => ({
+  jobs: {},
+  logs: [],
+  queueSize: 0,
+  capacity: null,
+  isRunning: false,
+  lastServices: [],
+  lastUpdated: null
+});
+const createInitialTabState = () => {
+  return TAB_DEFINITIONS.reduce((acc, tab) => {
+    acc[tab.id] = createTabSnapshot();
+    return acc;
+  }, {});
+};
 const useMessageLog = () => {
   const [messages, setMessages] = useState([]);
   const pushMessage = useCallback(entry => {
@@ -266,48 +309,155 @@ const BuildQueueManager = ({
   const [operation, setOperation] = useState('build');
   const [useNoCache, setUseNoCache] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [jobState, setJobState] = useState({});
-  const updateJob = useCallback((service, data) => {
-    setJobState(prev => ({
+  const [tabState, setTabState] = useState(() => createInitialTabState());
+  const updateTabState = useCallback((tabId, updater) => {
+    setTabState(prev => {
+      const current = prev[tabId] || createTabSnapshot();
+      const nextTab = updater(current);
+      if (!nextTab || nextTab === current) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [tabId]: {
+          ...nextTab
+        }
+      };
+    });
+  }, []);
+  const initializeTabRun = useCallback((tabId, services, headline) => {
+    const normalized = Array.isArray(services) ? [...services] : [];
+    setTabState(prev => ({
       ...prev,
-      [service]: {
-        ...(prev[service] || {}),
-        ...data,
-        updatedAt: Date.now()
+      [tabId]: {
+        ...createTabSnapshot(),
+        isRunning: true,
+        lastUpdated: Date.now(),
+        lastServices: normalized,
+        jobs: normalized.reduce((acc, svc) => {
+          acc[svc] = {
+            status: 'pending',
+            message: 'Pending…'
+          };
+          return acc;
+        }, {}),
+        logs: headline ? appendLogEntry([], {
+          text: headline
+        }) : []
       }
     }));
   }, []);
-  const handleProgress = useCallback(event => {
-    if (!event || !event.service) return;
-    switch (event.type) {
-      case 'update':
-        updateJob(event.service, {
+  const finalizeTabRun = useCallback(tabId => {
+    updateTabState(tabId, current => ({
+      ...current,
+      isRunning: false,
+      lastUpdated: Date.now()
+    }));
+  }, [updateTabState]);
+  const handleProgress = useCallback((tabId, event) => {
+    if (!event) return;
+    const sanitizedMessage = event.message ? stripAnsi(event.message) : '';
+    updateTabState(tabId, current => {
+      const now = Date.now();
+      const jobs = {
+        ...current.jobs
+      };
+      let logs = [...current.logs];
+      let queueSize = current.queueSize;
+      let capacity = current.capacity;
+      let isRunningTab = current.isRunning;
+      let lastServices = current.lastServices || [];
+      const pushLog = (text, level = 'info') => {
+        if (!text) return;
+        logs = appendLogEntry(logs, {
+          text,
+          level,
+          timestamp: now
+        });
+      };
+      if (event.type === 'capacity' && typeof event.limit === 'number') {
+        capacity = event.limit;
+        pushLog(`Scheduler capacity set to ${event.limit}.`);
+      }
+      if (event.service) {
+        lastServices = Array.from(new Set([...lastServices, event.service]));
+      }
+      if (event.type === 'enqueue' && event.service) {
+        jobs[event.service] = {
+          status: 'queued',
+          message: `Queued (${event.queueSize ?? 'pending'} ahead)`
+        };
+        queueSize = event.queueSize ?? queueSize;
+        pushLog(`[${event.service}] queued for execution.`);
+        isRunningTab = true;
+      }
+      if ((event.type === 'log' || event.type === 'update') && event.service) {
+        const statusMessage = sanitizedMessage || 'Running…';
+        jobs[event.service] = {
           status: 'running',
-          message: stripAnsi(event.message || '')
-        });
-        break;
-      case 'log':
-        updateJob(event.service, {
+          message: statusMessage
+        };
+        pushLog(`[${event.service}] ${statusMessage}`, event.level || 'info');
+        isRunningTab = true;
+      }
+      if (event.type === 'start' && event.service) {
+        const statusMessage = sanitizedMessage || 'Starting…';
+        jobs[event.service] = {
           status: 'running',
-          message: stripAnsi(event.message || '')
-        });
-        break;
-      case 'capacity':
-        pushMessage({
-          level: 'info',
-          text: `Scheduler capacity updated to ${event.limit}`
-        });
-        break;
-      case 'complete':
-        updateJob(event.service, {
-          status: event.ok === false || event.status === 'rejected' ? 'failed' : 'succeeded',
-          message: event.error?.message || event.status || 'completed'
-        });
-        break;
-      default:
-        break;
+          message: statusMessage
+        };
+        pushLog(`[${event.service}] ${statusMessage}`);
+        isRunningTab = true;
+      }
+      if (event.type === 'error' && event.service) {
+        const errorMessage = sanitizedMessage || event.error?.message || 'Error reported.';
+        jobs[event.service] = {
+          status: 'failed',
+          message: errorMessage
+        };
+        pushLog(`[${event.service}] ${errorMessage}`, 'error');
+        isRunningTab = true;
+      }
+      if (event.type === 'complete' && event.service) {
+        const succeeded = event.status === 'fulfilled' || event.ok !== false && event.status !== 'rejected';
+        const detail = succeeded ? sanitizedMessage || 'Completed successfully.' : event.error?.message || sanitizedMessage || 'Failed.';
+        jobs[event.service] = {
+          status: succeeded ? 'succeeded' : 'failed',
+          message: detail
+        };
+        pushLog(`[${event.service}] ${detail}`, succeeded ? 'success' : 'error');
+        if (!succeeded && Array.isArray(event.logs)) {
+          event.logs.slice(-5).forEach(line => {
+            pushLog(`[${event.service}] ${stripAnsi(line)}`, 'error');
+          });
+        }
+      }
+      if (event.type === 'idle') {
+        pushLog('Scheduler idle.');
+        isRunningTab = false;
+      }
+      const allComplete = Object.keys(jobs).length > 0 && Object.values(jobs).every(job => ['succeeded', 'failed'].includes(job.status));
+      if (allComplete) {
+        isRunningTab = false;
+      }
+      return {
+        ...current,
+        jobs,
+        logs,
+        queueSize,
+        capacity,
+        isRunning: isRunningTab,
+        lastUpdated: now,
+        lastServices
+      };
+    });
+    if (event.type === 'capacity' && typeof event.limit === 'number') {
+      pushMessage({
+        level: 'info',
+        text: `Scheduler capacity updated to ${event.limit}`
+      });
     }
-  }, [pushMessage, updateJob]);
+  }, [pushMessage, updateTabState]);
   const execute = useCallback(async () => {
     if (isRunning) return;
     if (selectedValues.length === 0) {
@@ -318,14 +468,16 @@ const BuildQueueManager = ({
       return;
     }
     setIsRunning(true);
-    setJobState({});
+    const headlineServices = selectedValues.join(', ');
+    const headline = headlineServices ? `${operation === 'build' ? 'Starting build' : operation === 'push' ? 'Starting push' : 'Starting pull'} for ${headlineServices}` : '';
+    initializeTabRun(operation, selectedValues, headline);
     const reporter = createReporter();
     try {
       if (operation === 'build') {
         const result = await buildServices(selectedValues, {
           useNoCache,
           reporter,
-          onProgress: handleProgress
+          onProgress: event => handleProgress('build', event)
         });
         if (!result.ok) {
           pushMessage({
@@ -336,12 +488,12 @@ const BuildQueueManager = ({
       } else if (operation === 'push') {
         await pushServices(selectedValues, {
           reporter,
-          onProgress: handleProgress
+          onProgress: event => handleProgress('push', event)
         });
       } else if (operation === 'pull') {
         await pullServices(selectedValues, {
           reporter,
-          onProgress: handleProgress
+          onProgress: event => handleProgress('pull', event)
         });
       }
     } catch (error) {
@@ -351,11 +503,11 @@ const BuildQueueManager = ({
       });
     } finally {
       setIsRunning(false);
+      finalizeTabRun(operation);
     }
-  }, [createReporter, handleProgress, isRunning, operation, pushMessage, selectedValues, useNoCache]);
+  }, [createReporter, finalizeTabRun, handleProgress, initializeTabRun, isRunning, operation, pushMessage, selectedValues, useNoCache]);
   const toggleOperation = useCallback(next => {
     setOperation(next);
-    setJobState({});
   }, []);
   useInput((input, key) => {
     if (!isActive) return;
@@ -379,60 +531,136 @@ const BuildQueueManager = ({
     if (input === 'n') setSelectedValues([]);
   });
   const actionLabel = operation === 'build' ? `Build selected services${useNoCache ? ' (clean)' : ''}` : operation === 'push' ? 'Push selected services' : 'Pull selected services';
-  return /*#__PURE__*/_jsx(ViewContainer, {
+  const currentTabState = tabState[operation] || createTabSnapshot();
+  const servicesForDisplay = currentTabState.lastServices.length > 0 ? currentTabState.lastServices : selectedValues;
+  const logsToRender = currentTabState.logs.slice(-15);
+  const statusPalette = {
+    pending: 'gray',
+    queued: 'yellow',
+    running: 'cyan',
+    succeeded: 'green',
+    failed: 'red'
+  };
+  const logPalette = {
+    info: undefined,
+    warn: 'yellow',
+    error: 'red',
+    success: 'green'
+  };
+  return /*#__PURE__*/_jsxs(ViewContainer, {
     title: "Build Queue Manager",
-    children: /*#__PURE__*/_jsxs(Box, {
-      flexDirection: "column",
-      children: [/*#__PURE__*/_jsxs(Text, {
-        children: ["Select services (\u2191/\u2193 to move, space to toggle). Press g to run ", actionLabel.toLowerCase(), "."]
-      }), /*#__PURE__*/_jsx(Box, {
+    children: [/*#__PURE__*/_jsxs(Box, {
+      flexDirection: "row",
+      children: [/*#__PURE__*/_jsxs(Box, {
         flexDirection: "column",
-        marginTop: 1,
-        children: serviceList.map((service, index) => {
-          const isSelected = selectedValues.includes(service);
-          const isHighlighted = index === cursor;
-          return /*#__PURE__*/_jsxs(Text, {
-            color: isHighlighted ? 'cyan' : undefined,
-            children: [isHighlighted ? '▸' : ' ', " [", isSelected ? 'x' : ' ', "] ", service]
-          }, service);
-        })
-      }), /*#__PURE__*/_jsxs(Box, {
-        marginTop: 1,
-        flexDirection: "column",
+        width: 40,
+        marginRight: 2,
         children: [/*#__PURE__*/_jsxs(Text, {
-          children: ["Operation: ", operation === 'build' ? 'Build images' : operation === 'push' ? 'Push to registry' : 'Pull from registry']
-        }), operation === 'build' && /*#__PURE__*/_jsxs(Text, {
-          children: ["Clean build: ", useNoCache ? 'enabled' : 'disabled', " (press c to toggle)"]
-        }), /*#__PURE__*/_jsx(Text, {
-          dimColor: true,
-          children: "Shortcuts: \u2191/\u2193 move \xB7 space toggle \xB7 b build \xB7 p push \xB7 l pull \xB7 g execute \xB7 a select all \xB7 n clear selection"
+          children: ["Select services (\u2191/\u2193 to move, space to toggle). Press g to run ", actionLabel.toLowerCase(), "."]
+        }), /*#__PURE__*/_jsx(Box, {
+          flexDirection: "column",
+          marginTop: 1,
+          children: serviceList.map((service, index) => {
+            const isSelected = selectedValues.includes(service);
+            const isHighlighted = index === cursor;
+            return /*#__PURE__*/_jsxs(Text, {
+              color: isHighlighted ? 'cyan' : undefined,
+              children: [isHighlighted ? '▸' : ' ', " [", isSelected ? 'x' : ' ', "] ", service]
+            }, service);
+          })
+        }), /*#__PURE__*/_jsxs(Box, {
+          marginTop: 1,
+          flexDirection: "column",
+          children: [/*#__PURE__*/_jsxs(Text, {
+            children: ["Operation: ", operation === 'build' ? 'Build images' : operation === 'push' ? 'Push to registry' : 'Pull from registry']
+          }), operation === 'build' && /*#__PURE__*/_jsxs(Text, {
+            children: ["Clean build: ", useNoCache ? 'enabled' : 'disabled', " (press c to toggle)"]
+          }), /*#__PURE__*/_jsx(Text, {
+            dimColor: true,
+            children: "Shortcuts: \u2191/\u2193 move \xB7 space toggle \xB7 b build \xB7 p push \xB7 l pull \xB7 g execute \xB7 a select all \xB7 n clear selection"
+          })]
         })]
-      }), isRunning && /*#__PURE__*/_jsxs(Text, {
+      }), /*#__PURE__*/_jsxs(Box, {
+        flexDirection: "column",
+        flexGrow: 1,
+        borderStyle: "round",
+        borderColor: "gray",
+        padding: 1,
+        children: [/*#__PURE__*/_jsx(Text, {
+          color: "cyan",
+          bold: true,
+          children: "Operation Activity"
+        }), /*#__PURE__*/_jsx(Box, {
+          marginTop: 1,
+          flexDirection: "row",
+          flexWrap: "wrap",
+          children: TAB_DEFINITIONS.map(tab => {
+            const state = tabState[tab.id] || createTabSnapshot();
+            const indicator = state.isRunning ? '●' : '○';
+            const color = tab.id === operation ? 'green' : state.isRunning ? 'yellow' : 'gray';
+            return /*#__PURE__*/_jsx(Box, {
+              marginRight: 1,
+              children: /*#__PURE__*/_jsxs(Text, {
+                color: color,
+                children: [indicator, " ", tab.label]
+              })
+            }, tab.id);
+          })
+        }), currentTabState.capacity ? /*#__PURE__*/_jsxs(Text, {
+          dimColor: true,
+          children: ["Scheduler capacity: ", currentTabState.capacity]
+        }) : null, currentTabState.queueSize ? /*#__PURE__*/_jsxs(Text, {
+          dimColor: true,
+          children: ["Queue size: ", currentTabState.queueSize]
+        }) : null, /*#__PURE__*/_jsxs(Box, {
+          marginTop: 1,
+          flexDirection: "column",
+          children: [/*#__PURE__*/_jsx(Text, {
+            bold: true,
+            children: "Status by service"
+          }), servicesForDisplay.length === 0 ? /*#__PURE__*/_jsx(Text, {
+            dimColor: true,
+            children: "No services have been queued yet."
+          }) : servicesForDisplay.map(service => {
+            const state = currentTabState.jobs[service];
+            if (!state) {
+              return /*#__PURE__*/_jsxs(Text, {
+                dimColor: true,
+                children: [service, ": pending\u2026"]
+              }, service);
+            }
+            const color = statusPalette[state.status] || undefined;
+            return /*#__PURE__*/_jsxs(Text, {
+              color: color,
+              children: [state.status === 'running' && /*#__PURE__*/_jsx(Spinner, {
+                type: "dots"
+              }), " ", service, ": ", state.message]
+            }, service);
+          })]
+        }), /*#__PURE__*/_jsxs(Box, {
+          marginTop: 1,
+          flexDirection: "column",
+          children: [/*#__PURE__*/_jsx(Text, {
+            bold: true,
+            children: "Logs"
+          }), logsToRender.length === 0 ? /*#__PURE__*/_jsx(Text, {
+            dimColor: true,
+            children: "No logs yet for this tab."
+          }) : logsToRender.map(entry => /*#__PURE__*/_jsxs(Text, {
+            color: logPalette[entry.level],
+            children: ["[", entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '—', "] ", entry.text]
+          }, entry.id))]
+        })]
+      })]
+    }), isRunning && /*#__PURE__*/_jsx(Box, {
+      marginTop: 1,
+      children: /*#__PURE__*/_jsxs(Text, {
         color: "cyan",
         children: [/*#__PURE__*/_jsx(Spinner, {
           type: "dots"
         }), " Running ", actionLabel, "\u2026"]
-      }), Object.keys(jobState).length > 0 && /*#__PURE__*/_jsx(Box, {
-        marginTop: 1,
-        flexDirection: "column",
-        children: selectedValues.map(service => {
-          const state = jobState[service];
-          if (!state) {
-            return /*#__PURE__*/_jsxs(Text, {
-              dimColor: true,
-              children: [service, ": pending\u2026"]
-            }, service);
-          }
-          const color = state.status === 'failed' ? 'red' : state.status === 'succeeded' ? 'green' : 'yellow';
-          return /*#__PURE__*/_jsxs(Text, {
-            color: color,
-            children: [state.status === 'running' && /*#__PURE__*/_jsx(Spinner, {
-              type: "dots"
-            }), " ", service, ": ", state.message || state.status]
-          }, service);
-        })
-      })]
-    })
+      })
+    })]
   });
 };
 const ContainerStatusBoard = ({
