@@ -15,6 +15,7 @@ import dockerHost, {
     pushImage,
     pullImage,
     DockerHost,
+    normalizeDockerfilePath,
 } from './dockerHost.mjs';
 import { defaultDockerSocketDetector } from '../utilities/etc/dockerSockets.mjs';
 import { Readable } from 'node:stream';
@@ -57,6 +58,14 @@ test('buildImage forwards options to Docker and surfaces warnings', async () => 
     assert.ok(result.ok);
     assert.deepEqual(result.warnings, ['warning: cached layer']);
     assert.equal(fake.followedStream, 'build-stream');
+});
+
+test('normalizeDockerfilePath converts Windows style paths to posix relative paths', () => {
+    const context = 'C:' + String.raw`\repo`;
+    const dockerfile = 'C:' + String.raw`\repo\deployment\service.Dockerfile`;
+    const normalized = normalizeDockerfilePath(context, dockerfile);
+
+    assert.equal(normalized, 'deployment/service.Dockerfile');
 });
 
 test('DockerHost normalizes Windows pipe style DOCKER_HOST values', () => {

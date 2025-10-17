@@ -2,7 +2,7 @@ import Docker from 'dockerode';
 import { pack } from 'tar-fs';
 import ignore from 'ignore';
 import { access, readFile } from 'fs/promises';
-import { dirname, join, relative, resolve } from 'path';
+import { dirname, join, relative, resolve, posix } from 'path';
 import {
     normalizeDockerSocket,
     defaultDockerSocketDetector,
@@ -73,6 +73,20 @@ const createBuildContext = async (contextPath, dockerfile) => {
             return ig.ignores(relativePath);
         }
     });
+};
+
+export const normalizeDockerfilePath = (contextPath, dockerfilePath) => {
+    if (!dockerfilePath) {
+        return dockerfilePath;
+    }
+
+    const normalizedContext = contextPath ? contextPath.replace(/\\/g, '/') : contextPath;
+    const normalizedDockerfile = dockerfilePath.replace(/\\/g, '/');
+    const relativePath = normalizedContext
+        ? posix.relative(normalizedContext, normalizedDockerfile)
+        : '';
+    const candidate = relativePath && relativePath.length > 0 ? relativePath : normalizedDockerfile;
+    return candidate;
 };
 
 const generateRemediation = (name, url) => {
@@ -203,7 +217,7 @@ export class DockerHost {
         try {
             const buildStream = await this.docker.buildImage(await createBuildContext(context, dockerfile), {
                 t: tag,
-                dockerfile: relative(context, dockerfile) || dockerfile,
+                dockerfile: normalizeDockerfilePath(context, dockerfile),
                 buildargs: buildArgs,
                 nocache: noCache
             });
