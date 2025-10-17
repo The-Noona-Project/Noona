@@ -3,7 +3,11 @@ import { pack } from 'tar-fs';
 import ignore from 'ignore';
 import { access, readFile } from 'fs/promises';
 import { dirname, join, relative, resolve } from 'path';
-import { normalizeDockerSocket } from '../utilities/etc/dockerSockets.mjs';
+import {
+    normalizeDockerSocket,
+    defaultDockerSocketDetector,
+    isWindowsPipePath,
+} from '../utilities/etc/dockerSockets.mjs';
 
 const DEFAULT_SOCKET = '/var/run/docker.sock';
 
@@ -86,34 +90,95 @@ const generateRemediation = (name, url) => {
 
 export class DockerHost {
     constructor(options = {}) {
-        const { createDocker = (cfg) => new Docker(cfg), ...dockerOptions } = options;
+        const {
+            createDocker = (cfg) => new Docker(cfg),
+            detectDockerSockets = defaultDockerSocketDetector,
+            ...dockerOptions
+        } = options;
         const hasOwn = (key) => Object.prototype.hasOwnProperty.call(dockerOptions, key);
 
-        const config = { socketPath: DEFAULT_SOCKET, ...dockerOptions };
+        const config = { ...dockerOptions };
+        const removeTcpFields = () => {
+            delete config.host;
+            delete config.port;
+            delete config.protocol;
+        };
 
-        if (typeof config.socketPath === 'string') {
-            const normalized = normalizeDockerSocket(config.socketPath);
-            if (normalized) {
-                config.socketPath = normalized;
+        const adoptSocketPath = (candidate) => {
+            if (typeof candidate !== 'string') {
+                return false;
+            }
+
+            const normalized = normalizeDockerSocket(candidate);
+            if (!normalized) {
+                return false;
+            }
+
+            config.socketPath = normalized;
+
+            if (isWindowsPipePath(normalized) || (
+                !hasOwn('host') &&
+                !hasOwn('port') &&
+                !hasOwn('protocol')
+            )) {
+                removeTcpFields();
+            }
+
+            return true;
+        };
+
+        let usingSocket = false;
+
+        if (hasOwn('socketPath')) {
+            usingSocket = adoptSocketPath(config.socketPath);
+            if (!usingSocket) {
+                delete config.socketPath;
             }
         }
 
-        if (process.env.DOCKER_HOST && !hasOwn('host') && !hasOwn('socketPath')) {
-            const host = process.env.DOCKER_HOST;
-            const normalizedSocket = normalizeDockerSocket(host);
+        const dockerHostEnv = process.env.DOCKER_HOST;
 
-            if (normalizedSocket) {
-                config.socketPath = normalizedSocket;
-                delete config.host;
-                delete config.port;
-                delete config.protocol;
+        if (!usingSocket && dockerHostEnv && !hasOwn('host')) {
+            if (adoptSocketPath(dockerHostEnv)) {
+                usingSocket = true;
             } else {
-                const url = new URL(host);
+                const url = new URL(dockerHostEnv);
                 config.host = url.hostname;
                 config.port = url.port || 2375;
                 config.protocol = url.protocol.replace(':', '');
                 delete config.socketPath;
             }
+        }
+
+        const shouldDetectSockets =
+            !usingSocket &&
+            !dockerHostEnv &&
+            !config.socketPath &&
+            !hasOwn('socketPath') &&
+            !hasOwn('host') &&
+            !hasOwn('port') &&
+            !hasOwn('protocol') &&
+            !config.host &&
+            !config.port &&
+            !config.protocol;
+
+        if (shouldDetectSockets) {
+            const detected = typeof detectDockerSockets === 'function'
+                ? detectDockerSockets({ env: process.env })
+                : [];
+            const firstSocket = Array.isArray(detected)
+                ? detected.find((entry) => typeof entry === 'string' && entry.trim().length > 0)
+                : null;
+
+            usingSocket = adoptSocketPath(firstSocket);
+
+            if (!usingSocket) {
+                usingSocket = adoptSocketPath(DEFAULT_SOCKET);
+            }
+        }
+
+        if (!usingSocket && !config.host && !config.socketPath) {
+            config.socketPath = DEFAULT_SOCKET;
         }
 
         this.docker = createDocker(config);
