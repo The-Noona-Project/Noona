@@ -4,6 +4,11 @@ import { dirname, resolve } from 'path';
 import { chmod, readFile, writeFile } from 'fs/promises';
 import util from 'util';
 import {
+    defaultDockerSocketDetector,
+    isWindowsPipePath,
+    normalizeDockerSocket,
+} from '../utilities/etc/dockerSockets.mjs';
+import {
     buildImage,
     pushImage,
     pullImage,
@@ -30,6 +35,61 @@ const BUILD_CONFIG_PATH = resolve(__dirname, 'build.config.json');
 let cachedDeploymentConfig = null;
 const HISTORY_FILE = resolve(__dirname, 'lifecycleHistory.json');
 const MAX_HISTORY_ENTRIES = 50;
+const DOCKER_SOCKET_TARGET = '/var/run/docker.sock';
+
+let cachedHostDockerSocket = null;
+
+const collectDetectedSockets = detectionResult => {
+    const rawCandidates = Array.isArray(detectionResult)
+        ? detectionResult
+        : (typeof detectionResult === 'undefined' ? [] : [detectionResult]);
+
+    return rawCandidates
+        .map(candidate => normalizeDockerSocket(candidate))
+        .filter(candidate => typeof candidate === 'string' && candidate.trim().length > 0);
+};
+
+export const resolveDockerSocketBinding = ({
+    detectSockets = defaultDockerSocketDetector,
+    platform = process.platform,
+} = {}) => {
+    let detectedSockets = [];
+
+    if (typeof detectSockets === 'function') {
+        try {
+            detectedSockets = detectSockets({ env: process.env, process: { platform } }) ?? [];
+        } catch (error) {
+            detectedSockets = [];
+        }
+    }
+
+    const candidates = collectDetectedSockets(detectedSockets);
+    const isWindows = platform === 'win32';
+
+    const preferred = candidates.find(candidate =>
+        isWindows ? isWindowsPipePath(candidate) : !isWindowsPipePath(candidate)
+    );
+
+    if (preferred) {
+        return preferred;
+    }
+
+    if (!isWindows) {
+        const unixCandidate = candidates.find(candidate => candidate.startsWith('/'));
+        if (unixCandidate) {
+            return unixCandidate;
+        }
+    }
+
+    return isWindows ? '//./pipe/docker_engine' : DOCKER_SOCKET_TARGET;
+};
+
+const getDefaultDockerSocketBinding = () => {
+    if (!cachedHostDockerSocket) {
+        cachedHostDockerSocket = resolveDockerSocketBinding();
+    }
+    return cachedHostDockerSocket;
+};
 
 const colors = {
     reset: '\x1b[0m', bold: '\x1b[1m',
@@ -574,7 +634,10 @@ const ensureExecutables = async service => {
     }
 };
 
-const createContainerOptions = (service, image, envVars = {}) => {
+export const createContainerOptions = (service, image, envVars = {}, {
+    detectDockerSockets,
+    platform,
+} = {}) => {
     const entries = Object.entries(envVars)
         .filter(([, value]) => typeof value === 'string' && value.trim() !== '');
 
@@ -584,8 +647,12 @@ const createContainerOptions = (service, image, envVars = {}) => {
     }
 
     const containerName = normalizedEnv.SERVICE_NAME;
+    const hostDockerSocket =
+        typeof detectDockerSockets === 'function' || typeof platform === 'string'
+            ? resolveDockerSocketBinding({ detectSockets: detectDockerSockets, platform })
+            : getDefaultDockerSocketBinding();
     const hostConfig = {
-        Binds: ['/var/run/docker.sock:/var/run/docker.sock']
+        Binds: [`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`]
     };
     const exposedPorts = {};
 
