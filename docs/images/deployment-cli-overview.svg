@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Noona deployment TUI overview</title>
+  <desc id="desc">A representation of the redesigned deployment terminal interface showing navigation, overview metrics, and activity log.</desc>
+  <rect width="960" height="540" fill="#0b0e15" rx="16" ry="16" />
+  <g font-family="'Fira Mono', 'Courier New', monospace" font-size="18" fill="#e8f1ff">
+    <text x="40" y="60" fill="#7dd3fc">Views</text>
+    <text x="40" y="100" fill="#34d399">▸ 1. Overview Dashboard</text>
+    <text x="40" y="136" fill="#94a3b8">  2. Build Queue Manager</text>
+    <text x="40" y="172" fill="#94a3b8">  3. Container Status Board</text>
+    <text x="40" y="208" fill="#94a3b8">  4. Settings &amp; Defaults</text>
+    <text x="40" y="260" fill="#64748b">←/→ or 1-4 to switch views</text>
+    <text x="40" y="292" fill="#64748b">Press q to exit</text>
+  </g>
+  <g font-family="'Fira Mono', 'Courier New', monospace" font-size="18" fill="#e8f1ff">
+    <rect x="300" y="40" width="600" height="320" fill="none" stroke="#22d3ee" stroke-width="2" rx="12" ry="12" />
+    <text x="324" y="74" fill="#22d3ee">Overview</text>
+    <text x="324" y="114" fill="#34d399">Build Scheduler</text>
+    <text x="324" y="146">Worker threads: 4   Subprocesses: 2</text>
+    <text x="324" y="190" fill="#34d399">Defaults</text>
+    <text x="324" y="222">DEBUG level: false</text>
+    <text x="324" y="254">Boot mode: minimal</text>
+    <text x="324" y="298" fill="#34d399">Container Status</text>
+    <text x="324" y="330">2 running / 6 tracked containers</text>
+    <text x="324" y="362">warden        · running    · localhost:4001 → 4001/tcp</text>
+    <text x="324" y="394" fill="#64748b">Press r to refresh data</text>
+  </g>
+  <g font-family="'Fira Mono', 'Courier New', monospace" font-size="18" fill="#e8f1ff">
+    <rect x="40" y="360" width="860" height="130" fill="none" stroke="#475569" stroke-width="2" rx="12" ry="12" />
+    <text x="60" y="394" fill="#22d3ee">Activity</text>
+    <text x="60" y="428" fill="#34d399">✔ build: warden completed in 18.2s</text>
+    <text x="60" y="460" fill="#facc15">⚠ scheduler capacity updated to 8</text>
+    <text x="60" y="492" fill="#f87171">✖ health-check timeout for raven</text>
+  </g>
+</svg>
