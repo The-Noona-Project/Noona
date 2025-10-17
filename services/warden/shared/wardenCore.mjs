@@ -269,8 +269,11 @@ export function createWarden(options = {}) {
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
-    const DEBUG = env.DEBUG ?? 'false';
-    const SUPER_MODE = DEBUG === 'super';
+    const rawBootMode = typeof env.BOOT_MODE === 'string' ? env.BOOT_MODE.trim().toLowerCase() : null;
+    const rawDebug = typeof env.DEBUG === 'string' ? env.DEBUG.trim().toLowerCase() : 'false';
+    const BOOT_MODE = rawBootMode === 'super' ? 'super' : 'minimal';
+    const DEBUG = rawBootMode === 'super' ? 'super' : (rawDebug || 'false');
+    const SUPER_MODE = BOOT_MODE === 'super' || DEBUG === 'super';
     const hostServiceBase = env.HOST_SERVICE_URL ?? 'http://localhost';
     const bootOrder = superBootOrderOption || [
         'noona-redis',
@@ -890,6 +893,7 @@ export function createWarden(options = {}) {
         networkName,
         DEBUG,
         SUPER_MODE,
+        BOOT_MODE,
     };
 
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
