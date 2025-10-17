@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { render, Box, Text, useApp, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
+import { spawn } from 'child_process';
 import {
     SERVICES,
     buildServices,
@@ -16,7 +17,10 @@ import {
     getDeploymentSettings,
     updateBuildConcurrencyDefaults,
     updateDebugDefaults,
-    listManagedContainers
+    listManagedContainers,
+    appendDeploymentLogEntry,
+    getActiveDeploymentLogFile,
+    LOG_DIR
 } from './deploy.mjs';
 
 const stripAnsi = input => typeof input === 'string'
@@ -95,19 +99,36 @@ const createInitialTabState = () => {
 const useMessageLog = () => {
     const [messages, setMessages] = useState([]);
 
-    const pushMessage = useCallback((entry) => {
+    useEffect(() => {
+        getActiveDeploymentLogFile().catch(() => {});
+    }, []);
+
+    const pushMessage = useCallback((entry, options = {}) => {
+        const normalized = {
+            id: entry?.id || `${Date.now()}-${Math.random()}`,
+            level: entry?.level || 'info',
+            text: stripAnsi(entry?.text ?? ''),
+            timestamp: entry?.timestamp || Date.now()
+        };
+
         setMessages(prev => {
-            const next = [...prev, { ...entry, id: `${Date.now()}-${Math.random()}` }];
+            const next = [...prev, normalized];
             return next.slice(-50);
         });
+
+        if (!options.skipLogWrite) {
+            appendDeploymentLogEntry(normalized.level, normalized.text).catch(() => {});
+        }
+
+        return normalized;
     }, []);
 
     const createReporter = useCallback(() => ({
-        info: message => pushMessage({ level: 'info', text: stripAnsi(message) }),
-        warn: message => pushMessage({ level: 'warn', text: stripAnsi(message) }),
-        error: message => pushMessage({ level: 'error', text: stripAnsi(message) }),
-        success: message => pushMessage({ level: 'success', text: stripAnsi(message) }),
-        table: (data, columns) => pushMessage({ level: 'table', text: formatTable(data, columns) })
+        info: message => pushMessage({ level: 'info', text: stripAnsi(message) }, { skipLogWrite: true }),
+        warn: message => pushMessage({ level: 'warn', text: stripAnsi(message) }, { skipLogWrite: true }),
+        error: message => pushMessage({ level: 'error', text: stripAnsi(message) }, { skipLogWrite: true }),
+        success: message => pushMessage({ level: 'success', text: stripAnsi(message) }, { skipLogWrite: true }),
+        table: (data, columns) => pushMessage({ level: 'table', text: formatTable(data, columns) }, { skipLogWrite: true })
     }), [pushMessage]);
 
     return { messages, pushMessage, createReporter };
@@ -816,6 +837,44 @@ const SettingsPanel = ({ isActive, createReporter, pushMessage }) => {
         }
     }, [createReporter, load, resetMode]);
 
+    const handleOpenLogDirectory = useCallback(async () => {
+        let logFilePath = null;
+        try {
+            logFilePath = await getActiveDeploymentLogFile();
+        } catch (error) {
+            pushMessage({ level: 'error', text: `Unable to prepare log folder: ${error.message}` });
+            return;
+        }
+
+        if (process.platform !== 'win32') {
+            pushMessage({ level: 'info', text: `Logs are stored at ${LOG_DIR}. Latest file: ${logFilePath}` });
+            return;
+        }
+
+        try {
+            const child = spawn('explorer.exe', [LOG_DIR], { detached: true, stdio: 'ignore' });
+            child.once('error', error => {
+                pushMessage({ level: 'error', text: `Failed to open log folder: ${error.message}` });
+            });
+            child.once('spawn', () => {
+                pushMessage({ level: 'success', text: `Opened log folder in Explorer (${LOG_DIR}). Latest file: ${logFilePath}` });
+            });
+            if (typeof child.unref === 'function') {
+                child.unref();
+            }
+        } catch (error) {
+            pushMessage({ level: 'error', text: `Failed to open log folder: ${error.message}` });
+        }
+    }, [pushMessage]);
+
+    const handleMenuSelect = useCallback((item) => {
+        if (item.value === 'openLogDir') {
+            handleOpenLogDirectory();
+            return;
+        }
+        setMode(item.value);
+    }, [handleOpenLogDirectory]);
+
     useInput((input, key) => {
         if (!isActive) return;
         if (mode !== 'menu' && key.escape) {
@@ -836,7 +895,8 @@ const SettingsPanel = ({ isActive, createReporter, pushMessage }) => {
             { label: 'Adjust worker threads', value: 'workers' },
             { label: 'Adjust subprocesses per worker', value: 'subprocessesPerWorker' },
             { label: 'Set default DEBUG level', value: 'debugLevel' },
-            { label: 'Set default boot mode', value: 'bootMode' }
+            { label: 'Set default boot mode', value: 'bootMode' },
+            { label: 'Open deployment log folder', value: 'openLogDir' }
         ];
         return (
             <ViewContainer title="Settings & Defaults">
@@ -848,12 +908,13 @@ const SettingsPanel = ({ isActive, createReporter, pushMessage }) => {
                     <Text>Defaults:</Text>
                     <Text>DEBUG level: {settings.defaults.debugLevel}</Text>
                     <Text>Boot mode: {settings.defaults.bootMode}</Text>
+                    <Text>Logs directory: {LOG_DIR}</Text>
                 </Box>
                 <Box marginTop={1} flexDirection="column">
                     <Text>Select a setting to update:</Text>
                     <SelectInput
                         items={menuItems}
-                        onSelect={item => setMode(item.value)}
+                        onSelect={handleMenuSelect}
                         focus={isActive}
                     />
                     <Text dimColor>Press esc to cancel any edit.</Text>
