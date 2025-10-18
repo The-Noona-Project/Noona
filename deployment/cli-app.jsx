@@ -157,6 +157,7 @@ const useTerminalLayout = () => {
 const DeploymentContext = React.createContext(null);
 const TickerContext = React.createContext(null);
 const LayoutContext = React.createContext(null);
+const PersistentLogContext = React.createContext(null);
 
 const useDeployment = () => {
     const ctx = useContext(DeploymentContext);
@@ -362,29 +363,92 @@ const TopNavBar = React.memo(({ mission, activeViewId, activeViewLabel, navigati
     );
 });
 
-const StatusBar = () => {
+const LogPane = () => {
     const layout = useLayout();
     const ticker = useContext(TickerContext);
-    const entry = useSyncExternalStore(ticker.subscribe, ticker.getSnapshot);
+    const logStore = useContext(PersistentLogContext);
+    const [page, setPage] = useState(0);
+
     const palette = {
         info: undefined,
         success: 'green',
         warn: 'yellow',
         error: 'red'
     };
+
+    const tickerEntry = useSyncExternalStore(ticker.subscribe, ticker.getSnapshot);
+    const entries = useSyncExternalStore(
+        logStore ? logStore.subscribe : () => () => {},
+        logStore ? logStore.getSnapshot : () => []
+    );
+
+    const pageSize = layout.isTall ? 12 : layout.isCompact ? 6 : 8;
+    const totalEntries = entries.length;
+    const totalPages = Math.max(1, Math.ceil(totalEntries / pageSize));
+
+    useEffect(() => {
+        setPage(prev => Math.min(prev, totalPages - 1));
+    }, [totalPages]);
+
+    const activePage = Math.min(page, totalPages - 1);
+    const end = totalEntries - activePage * pageSize;
+    const start = Math.max(0, end - pageSize);
+    const visibleEntries = entries.slice(start, end);
+
+    const rangeStart = totalEntries === 0 ? 0 : start + 1;
+    const rangeEnd = totalEntries === 0 ? 0 : end;
+
+    useInput((input) => {
+        if (input === '[') {
+            setPage(prev => Math.min(totalPages - 1, prev + 1));
+        }
+        if (input === ']') {
+            setPage(prev => Math.max(0, prev - 1));
+        }
+        if (input === '0') {
+            setPage(0);
+        }
+    }, [totalPages]);
+
+    const formatTime = useCallback((value, withDate = false) => {
+        if (!value) return '—';
+        const date = new Date(value);
+        return withDate ? date.toLocaleString() : date.toLocaleTimeString();
+    }, []);
+
     return (
-        <Box
-            borderStyle="round"
-            borderColor="gray"
-            paddingX={layout.isTiny ? 0 : 1}
-            paddingY={0}
-            marginTop={1}
-        >
-            <Text color={palette[entry.level]}>
-                [{new Date(entry.timestamp).toLocaleTimeString()}] {entry.text || 'Ready'}
-            </Text>
-            <Text dimColor> · F1 for help · Ctrl+Space Command Palette</Text>
-        </Box>
+        <Pane title="Deployment Log" grow={layout.isTall ? 1 : 0}>
+            <Box flexDirection="column" flexGrow={1}>
+                <Text color={palette[tickerEntry.level]}>
+                    [{formatTime(tickerEntry.timestamp)}] {tickerEntry.text || 'Ready'}
+                </Text>
+                <Box marginTop={1} flexDirection="column" flexGrow={1}>
+                    {visibleEntries.length === 0 ? (
+                        <Text dimColor>No log entries captured yet.</Text>
+                    ) : (
+                        visibleEntries.map(entry => (
+                            <Text key={entry.id} color={palette[entry.level]}>
+                                [{formatTime(entry.timestamp, true)}] {entry.text}
+                            </Text>
+                        ))
+                    )}
+                </Box>
+                <Box
+                    marginTop={1}
+                    flexDirection={layout.isNarrow ? 'column' : 'row'}
+                    justifyContent="space-between"
+                >
+                    <Text dimColor>
+                        {totalEntries === 0
+                            ? 'Awaiting events…'
+                            : `Showing ${rangeStart}-${rangeEnd} of ${totalEntries} (${activePage === 0 ? 'latest' : `page ${activePage + 1} of ${totalPages}`})`}
+                    </Text>
+                    <Text dimColor>
+                        Shortcuts: [ older · ] newer · 0 latest · F1 help · Ctrl+Space Command Palette
+                    </Text>
+                </Box>
+            </Box>
+        </Pane>
     );
 };
 
@@ -433,6 +497,32 @@ const createLogBuffer = (limit = 200) => ({
         }
     }
 });
+
+const createObservableLogBuffer = (limit = 200) => {
+    const buffer = createLogBuffer(limit);
+    const listeners = new Set();
+
+    return {
+        push(entry) {
+            if (!entry || !entry.text) return;
+            buffer.push(entry);
+            listeners.forEach(listener => {
+                try {
+                    listener();
+                } catch {
+                    // ignore subscriber failures
+                }
+            });
+        },
+        getSnapshot() {
+            return buffer.entries.slice();
+        },
+        subscribe(listener) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+        }
+    };
+};
 
 const TAB_DEFINITIONS = [
     { id: 'build', label: 'Build Images' },
@@ -1305,6 +1395,7 @@ const openLogsDirectory = () => {
 const DeploymentLayout = () => {
     const { exit } = useApp();
     const ticker = useEventTicker();
+    const logStore = useMemo(() => createObservableLogBuffer(400), []);
     const persistLog = usePersistentLog();
     const layout = useTerminalLayout();
     const [activeView, setActiveView] = useState('overview');
@@ -1325,12 +1416,13 @@ const DeploymentLayout = () => {
         if (!normalized.text) {
             return normalized;
         }
+        logStore.push(normalized);
         ticker.push(normalized);
         if (!options.skipPersist) {
             persist(normalized);
         }
         return normalized;
-    }, [persist, ticker]);
+    }, [logStore, persist, ticker]);
 
     const createReporter = useCallback(() => ({
         info: message => pushMessage({ level: 'info', text: stripAnsi(message) }, { skipPersist: true }),
@@ -1457,27 +1549,29 @@ const DeploymentLayout = () => {
 
     return (
         <TickerContext.Provider value={ticker}>
-            <LayoutContext.Provider value={layout}>
-                <DeploymentContext.Provider value={contextValue}>
-                    <Box flexDirection="column" paddingX={layout.isTiny ? 0 : 1}>
-                        <TopNavBar
-                            mission={mission}
-                            activeViewId={activeView}
-                            activeViewLabel={activeViewLabel}
-                            navigationItems={NAVIGATION_ITEMS}
-                        />
-                        <BuildOperationsView isActive={activeView === 'builds'} ref={buildRef} />
-                        <Box flexDirection="column" flexGrow={1}>
-                            <RunningContainersSection isActive={activeView === 'containers'} />
+            <PersistentLogContext.Provider value={logStore}>
+                <LayoutContext.Provider value={layout}>
+                    <DeploymentContext.Provider value={contextValue}>
+                        <Box flexDirection="column" paddingX={layout.isTiny ? 0 : 1}>
+                            <TopNavBar
+                                mission={mission}
+                                activeViewId={activeView}
+                                activeViewLabel={activeViewLabel}
+                                navigationItems={NAVIGATION_ITEMS}
+                            />
+                            <BuildOperationsView isActive={activeView === 'builds'} ref={buildRef} />
                             <Box flexDirection="column" flexGrow={1}>
-                                {canvas}
+                                <RunningContainersSection isActive={activeView === 'containers'} />
+                                <LogPane />
+                                <Box flexDirection="column" flexGrow={1}>
+                                    {canvas}
+                                </Box>
+                                <CommandPalette visible={paletteOpen} />
                             </Box>
-                            <CommandPalette visible={paletteOpen} />
                         </Box>
-                        <StatusBar />
-                    </Box>
-                </DeploymentContext.Provider>
-            </LayoutContext.Provider>
+                    </DeploymentContext.Provider>
+                </LayoutContext.Provider>
+            </PersistentLogContext.Provider>
         </TickerContext.Provider>
     );
 };
