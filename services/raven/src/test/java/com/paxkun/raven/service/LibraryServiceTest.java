@@ -158,6 +158,11 @@ class LibraryServiceTest {
             com.google.gson.Gson gson = new com.google.gson.Gson();
             return gson.fromJson(gson.toJson(docs), type);
         });
+        doAnswer(invocation -> {
+            NewTitle passedTitle = invocation.getArgument(0);
+            assertThat(passedTitle.getTitleName()).isEqualTo("The Beginning After The End");
+            return null;
+        }).when(downloadService).downloadSingleChapter(any(NewTitle.class), anyString());
         when(vaultService.fetchLatestChapterFromSource("http://tbate")).thenReturn("24");
 
         List<NewTitle> titles = libraryService.getAllTitleObjects();
