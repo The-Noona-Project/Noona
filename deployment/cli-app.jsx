@@ -11,7 +11,7 @@ import React, {
     useImperativeHandle,
     useContext
 } from 'react';
-import { render, Box, Text, useApp, useInput, Static, useStdoutDimensions } from 'ink';
+import { Box, Text, useApp, useInput, Static, useStdoutDimensions } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { spawn } from 'child_process';
@@ -1576,4 +1576,3 @@ const DeploymentLayout = () => {
     );
 };
 
-render(<DeploymentLayout />);
