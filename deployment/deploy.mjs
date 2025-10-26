@@ -1,5 +1,5 @@
 // deploy.mjs - Noona Docker Manager (Node.js version)
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { appendFile, chmod, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
 import util from 'util';
@@ -1199,14 +1199,4 @@ export const listManagedContainers = async ({ includeStopped = true } = {}) => {
         createdAt: info.Created ? new Date(info.Created * 1000).toISOString() : null
     }));
 };
-
-if (process.argv[1]) {
-    const entryUrl = pathToFileURL(process.argv[1]).href;
-    if (import.meta.url === entryUrl) {
-        // Launch the Ink-based CLI when this module is executed directly.
-        // eslint-disable-next-line promise/catch-or-return
-        import('./cli.mjs');
-    }
-}
-
 
