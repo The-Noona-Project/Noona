@@ -1,65 +1,55 @@
-# Deployment Interface (TUI)
+# Deployment Control Panel
 
-The deployment utilities now ship with an interactive terminal UI built on [Ink](https://github.com/vadimdemedes/ink). The experience replaces the legacy readline prompts with navigable views, live Docker feedback, and keyboard-accessible controls.
+The deployment tooling is now driven entirely from the lightweight Express server in `deployment/webServer.mjs`. It exposes the same Docker workflows that previously powered the Ink CLI, but the interface now lives in a static HTML page served at `/`.
 
-Run the interface with either command:
+## Getting Started
 
-```bash
-npm install # only required once to pull Ink + React runtime
-node deployment/cli.mjs
-```
+1. Install the shared dependencies (only required once):
+   ```bash
+   npm install
+   ```
+2. Start the deployment server:
+   ```bash
+   npm run deploy:server
+   ```
+3. Open [http://localhost:4300](http://localhost:4300) in your browser. The server automatically serves `deployment/control-panel.html`, so no additional build steps are required.
 
-![Deployment TUI overview](./images/deployment-cli-overview.svg)
+## Controls at a Glance
 
-## Views &amp; Controls
+The page is organised into cards. Each card writes NDJSON responses into the streaming log so you can follow progress without leaving the browser.
 
-### Overview Dashboard
-* Summarises build concurrency defaults, debug/boot defaults, container counts, and the five most recent lifecycle events.
-* Keyboard: `r` refreshes the data snapshot.
+### Services
+* **Refresh status** calls `/api/services` and prints the latest container inventory and lifecycle history.
+* **Load settings** requests `/api/settings` and hydrates the JSON editor with the current defaults.
 
-### Build Queue Manager
-* Multi-select (`space`) one or more services (`a` selects all, `n` clears selection).
-* Choose operation via shortcuts: `b` build, `p` push, `l` pull.
-* Toggle clean builds with `c` (applies `--no-cache`).
-* Execute queued work with `g`. Per-service progress appears inline while structured logs stream into the activity panel.
+### Build
+* Provide a comma-separated list of services or leave the field blank to target the entire stack.
+* Toggle **Use --no-cache** to force a clean Docker build.
+* Optionally set a JSON concurrency override (for example `{"workers":2}`) to mirror CLI behaviour.
 
-### Container Status Board
-* Lists discovered `noona-*` containers with state and exposed ports.
-* Keyboard shortcuts: `r` refresh, `k` stop all containers, `w` boot the Warden orchestrator, `x` clean selected services, `d` delete all managed Docker resources (with confirmation prompt).
+### Registry (Push / Pull)
+* Enter services to scope the registry operation, or leave blank to act on every managed image.
+* Use **Push images** or **Pull images** to relay to `/api/push` or `/api/pull` respectively.
 
-### Settings &amp; Defaults
-* Adjust worker thread/subprocess capacity or update default `DEBUG`/boot-mode values.
-* Navigation is fully keyboard driven (`↑/↓` select menu item, `enter` apply, `esc` cancel).
-* Updates persist to `deployment/build.config.json` so future sessions inherit new defaults.
-* Access the deployment log directory (and launch Windows Explorer when available) via the settings menu.
+### Start / Stop
+* Choose services to boot, pick the debug level, and set the boot mode (`standard` or `super`).
+* The **Start services** button dispatches `/api/start`; the **Stop all** button stops every managed container via `/api/stop`.
 
-## Live Feedback &amp; Accessibility
+### Cleanup
+* **Remove selected resources** invokes `/api/clean` for specific services.
+* **Delete all Noona Docker resources** posts to `/api/delete` and requires the confirmation checkbox.
 
-* All Docker operations stream success/failure toasts into the activity log while builds emit incremental status lines.
-* Spinner indicators and high-contrast colour palettes keep long-running jobs visible.
-* Every interaction is keyboard accessible: view switching (`←/→`, `1-4`), operation shortcuts, and `q`/`Ctrl+C` to exit.
-* The terminal layout is screen-reader friendly—landmarks use semantic ordering and announcements surface through the shared activity log.
+### Settings
+* Paste raw JSON updates into the editor to patch deployment defaults.
+* Click **Update settings** to send the payload to `/api/settings` via `PATCH`.
 
-## Deployment logs
+## Streaming Output
 
-Each CLI session writes structured output to timestamped files under `deployment/logs/`. The tool automatically keeps the three most recent files and prunes older entries on startup. Non-reporter activity feed messages are now persisted alongside build/push/pull output, so the Activity panel mirrors the log history. Use the new "Open deployment log folder" option in **Settings &amp; Defaults** to jump into the directory (launches `explorer.exe` on Windows, reports the location on other platforms).
+* Every operation streams NDJSON responses that are rendered in the terminal-style log area at the bottom of the page.
+* Log entries differentiate structured tables, container log tail output, reporter log levels, and generic progress events.
+* The log retains the 500 most recent entries and auto-scrolls so long-running jobs stay visible.
 
-## Batch Operations
+## Keyboard & Accessibility Notes
 
-The TUI supports batching across services:
-
-* Build/push/pull multiple images concurrently via the Build Queue Manager.
-* Clean targeted services or delete all stack resources from the Container Status Board.
-* Scheduler telemetry (capacity changes, per-service completion) is relayed through the shared reporters in `deployment/dockerManager.mjs`, so additional automation can subscribe to the same hooks if needed.
-
-Refer to the on-screen hints within each view for up-to-date shortcuts and status indicators.
-
-## Windows Docker hosts
-
-The deployment CLI now shares Warden's Windows detection logic. `DOCKER_HOST` or CLI config entries using `npipe://` endpoints are normalized to the `//./pipe/...` path before creating the Dockerode client. When running on Windows, the tool also queries available Docker pipes via:
-
-```powershell
-Get-ChildItem -Path '\\.\pipe\' -Filter '*docker*' | Select -ExpandProperty FullName
-```
-
-This allows the same build and install workflows to operate against Docker Desktop named pipes without requiring manual socket adjustments.
+* Buttons and inputs follow the browser's default keyboard navigation order.
+* Screen readers announce log updates thanks to `aria-live` attributes on the stream and status panes.

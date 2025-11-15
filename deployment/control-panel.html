@@ -133,6 +133,7 @@
     }
 
     .status-ok { color: #34d399; }
+    .status-info { color: #93c5fd; }
     .status-error { color: #f87171; }
     .status-warn { color: #fbbf24; }
 
@@ -144,6 +145,40 @@
 
     .inline-group > * {
       flex: 1 1 140px;
+    }
+
+    .log-entry {
+      display: flex;
+      gap: 0.65rem;
+      align-items: flex-start;
+      margin-bottom: 0.4rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .log-entry:last-child {
+      margin-bottom: 0;
+    }
+
+    .log-context {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(148, 163, 184, 0.75);
+      flex: 0 0 auto;
+    }
+
+    .log-message {
+      flex: 1 1 auto;
+    }
+
+    .log-entry pre {
+      margin: 0;
+      border-radius: 0.75rem;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.65);
     }
   </style>
 </head>
@@ -267,6 +302,8 @@
     const streamOutput = document.getElementById('stream-output');
     const settingsOutput = document.getElementById('settings-output');
 
+    const LOG_LIMIT = 500;
+
     const formatJSON = (value) => {
       try {
         return JSON.stringify(value, null, 2);
@@ -275,16 +312,91 @@
       }
     };
 
-    const appendStreamLine = (payload) => {
-      const line = document.createElement('div');
-      line.textContent = `[${payload.action ?? 'event'}] ${payload.type ?? 'message'}: ${JSON.stringify(payload)}`;
-      if (payload.type === 'error') line.classList.add('status-error');
-      if (payload.type === 'log') {
-        if (payload.level === 'warn') line.classList.add('status-warn');
-        if (payload.level === 'error') line.classList.add('status-error');
-        if (payload.level === 'success') line.classList.add('status-ok');
+    const formatTable = (rows = [], columns) => {
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return '—';
       }
-      streamOutput.appendChild(line);
+      const resolvedColumns = Array.isArray(columns) && columns.length
+        ? columns
+        : Array.from(new Set(rows.flatMap((row) => Object.keys(row || {}))));
+      const normalized = rows.map((row) => {
+        const source = row && typeof row === 'object' ? row : {};
+        return resolvedColumns.map((column) => String(source[column] ?? ''));
+      });
+      const widths = resolvedColumns.map((column, columnIndex) => {
+        return Math.max(
+          column.length,
+          ...normalized.map((row) => row[columnIndex].length)
+        );
+      });
+      const header = resolvedColumns
+        .map((column, index) => column.padEnd(widths[index]))
+        .join('  ');
+      const separator = widths.map((width) => '─'.repeat(width)).join('  ');
+      const body = normalized
+        .map((row) => row.map((value, index) => value.padEnd(widths[index])).join('  '))
+        .join('\n');
+      return `${header}\n${separator}\n${body}`;
+    };
+
+    const formatProgressEvent = (event = {}) => {
+      const { type, service, step, status, message } = event;
+      const parts = [];
+      if (type) parts.push(type);
+      if (service) parts.push(`service: ${service}`);
+      if (step) parts.push(`step: ${step}`);
+      if (status) parts.push(`status: ${status}`);
+      if (message) parts.push(message);
+      if (parts.length === 0) {
+        return JSON.stringify(event);
+      }
+      return parts.join(' • ');
+    };
+
+    const appendStreamLine = (payload = {}) => {
+      const entry = document.createElement('div');
+      entry.classList.add('log-entry');
+      const context = document.createElement('span');
+      context.classList.add('log-context');
+      context.textContent = `[${payload.action ?? 'event'}]`;
+      entry.appendChild(context);
+
+      const messageNode = document.createElement(payload.type === 'table' ? 'pre' : 'span');
+      messageNode.classList.add('log-message');
+
+      if (payload.type === 'log') {
+        const level = payload.level || 'info';
+        const levelClass =
+          level === 'success'
+            ? 'status-ok'
+            : ['warn', 'error', 'info'].includes(level)
+              ? `status-${level}`
+              : 'status-info';
+        entry.classList.add(levelClass);
+        messageNode.textContent = payload.message ?? '';
+      } else if (payload.type === 'error') {
+        entry.classList.add('status-error');
+        messageNode.textContent = payload.message ?? JSON.stringify(payload);
+      } else if (payload.type === 'container-log') {
+        const { service, line } = payload.event || {};
+        messageNode.textContent = service ? `${service}: ${line ?? ''}` : line ?? '';
+      } else if (payload.type === 'progress') {
+        messageNode.textContent = formatProgressEvent(payload.event);
+      } else if (payload.type === 'table') {
+        messageNode.textContent = formatTable(payload.data, payload.columns);
+      } else if (typeof payload.message === 'string') {
+        messageNode.textContent = payload.message;
+      } else {
+        messageNode.textContent = JSON.stringify(payload);
+      }
+
+      entry.appendChild(messageNode);
+
+      if (streamOutput.children.length >= LOG_LIMIT) {
+        streamOutput.removeChild(streamOutput.firstChild);
+      }
+
+      streamOutput.appendChild(entry);
       streamOutput.scrollTop = streamOutput.scrollHeight;
     };
 
@@ -294,7 +406,11 @@
     };
 
     const parseServicesInput = (value) => {
-      return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+      if (!value) return [];
+      return value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
     };
 
     const safeParseJSON = (value) => {
@@ -342,11 +458,17 @@
 
     const invokeStreamEndpoint = async (action, url, payload) => {
       clearStream(action);
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload ?? {})
-      });
+      let response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload ?? {})
+        });
+      } catch (error) {
+        appendStreamLine({ action, type: 'error', message: error.message });
+        return;
+      }
       if (!response.ok && response.status !== 207) {
         appendStreamLine({ action, type: 'error', message: `Request failed: ${response.status}` });
         return;
@@ -363,7 +485,12 @@
         }
         const payload = await response.json();
         const statusLabel = payload.ok ? 'status-ok' : 'status-warn';
-        servicesOutput.innerHTML = `<span class="${statusLabel}">${payload.ok ? 'Healthy' : 'Partial'}</span>\n${formatJSON(payload)}`;
+        servicesOutput.innerHTML = '';
+        const statusNode = document.createElement('span');
+        statusNode.className = statusLabel;
+        statusNode.textContent = payload.ok ? 'Healthy' : 'Partial';
+        servicesOutput.appendChild(statusNode);
+        servicesOutput.appendChild(document.createTextNode(`\n${formatJSON(payload)}`));
       },
       'load-settings': async () => {
         const response = await fetch('/api/settings');
@@ -379,9 +506,11 @@
         const services = parseServicesInput(document.getElementById('build-services').value);
         const concurrency = document.getElementById('build-concurrency').value;
         const payload = {
-          services: services.length ? services : undefined,
           useNoCache: document.getElementById('build-nocache').checked
         };
+        if (services.length) {
+          payload.services = services;
+        }
         if (concurrency.trim()) {
           payload.concurrency = safeParseJSON(concurrency);
         }
@@ -389,26 +518,41 @@
       },
       push: async () => {
         const services = parseServicesInput(document.getElementById('registry-services').value);
-        await invokeStreamEndpoint('push', '/api/push', { services });
+        const payload = {};
+        if (services.length) {
+          payload.services = services;
+        }
+        await invokeStreamEndpoint('push', '/api/push', payload);
       },
       pull: async () => {
         const services = parseServicesInput(document.getElementById('registry-services').value);
-        await invokeStreamEndpoint('pull', '/api/pull', { services });
+        const payload = {};
+        if (services.length) {
+          payload.services = services;
+        }
+        await invokeStreamEndpoint('pull', '/api/pull', payload);
       },
       start: async () => {
         const services = parseServicesInput(document.getElementById('start-services').value);
-        await invokeStreamEndpoint('start', '/api/start', {
-          services,
+        const payload = {
           debugLevel: document.getElementById('start-debug').value || undefined,
           bootMode: document.getElementById('start-boot').value || undefined
-        });
+        };
+        if (services.length) {
+          payload.services = services;
+        }
+        await invokeStreamEndpoint('start', '/api/start', payload);
       },
       stop: async () => {
         await invokeStreamEndpoint('stop', '/api/stop');
       },
       clean: async () => {
         const services = parseServicesInput(document.getElementById('clean-services').value);
-        await invokeStreamEndpoint('clean', '/api/clean', { services });
+        const payload = {};
+        if (services.length) {
+          payload.services = services;
+        }
+        await invokeStreamEndpoint('clean', '/api/clean', payload);
       },
       delete: async () => {
         const confirmDelete = document.getElementById('delete-confirm').checked;

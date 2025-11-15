@@ -55,7 +55,7 @@ This design allows you to keep the core management stack on a primary machine wh
 - **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
 - **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
 
-The `deployment/` directory contains Dockerfiles for single-service containers. The `dockerManager.mjs` module now centralizes build, registry, and lifecycle helpers for the CLI (`deployment/cli.mjs`) and deployment control server (`deployment/webServer.mjs`). The server also serves the browser control panel (`deployment/control-panel.html`) so you can trigger the same NDJSON-streamed operations without leaving your browser. By default, builds reuse Docker's cache; choose the clean build option when prompted—or run the CLI with `--clean-build`—to force a `--no-cache` rebuild. Pass `--cached-build` to skip the prompt while keeping cached layers.
+The `deployment/` directory contains Dockerfiles for single-service containers. The `dockerManager.mjs` module centralizes build, registry, and lifecycle helpers that back the deployment control server (`deployment/webServer.mjs`). Launch the server with `npm run deploy:server` and open the static control panel (`deployment/control-panel.html`) to trigger NDJSON-streamed build, push, pull, start, stop, clean, and delete workflows. Form controls let you choose individual services, toggle clean builds, and override debug/boot options; leave service inputs blank to target the full stack.
 
 ## Roadmap & Vision
 
