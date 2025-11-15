@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "docs": "node scripts/generate-docs.mjs",
-    "deploy:server": "node deployment/server.mjs"
+    "deploy:server": "node deployment/webServer.mjs"
   },
   "devDependencies": {
     "@babel/cli": "^7.26.0",

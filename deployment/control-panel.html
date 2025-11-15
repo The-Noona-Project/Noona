@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Noona Deployment Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 1.5rem 2rem 1rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(15, 23, 42, 0.9);
+      backdrop-filter: blur(12px);
+    }
+
+    header h1 {
+      margin: 0 0 0.25rem;
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    header p {
+      margin: 0;
+      color: rgba(226, 232, 240, 0.75);
+      max-width: 60ch;
+    }
+
+    main {
+      flex: 1;
+      padding: 2rem;
+      display: grid;
+      gap: 1.5rem;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      align-content: start;
+    }
+
+    section {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 16px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      box-shadow: 0 24px 64px rgba(15, 23, 42, 0.45);
+    }
+
+    section h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    fieldset {
+      border: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: rgba(226, 232, 240, 0.65);
+    }
+
+    input, select, textarea {
+      padding: 0.5rem 0.75rem;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.6);
+      color: inherit;
+      font: inherit;
+      resize: vertical;
+    }
+
+    button {
+      padding: 0.6rem 1rem;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, #6366f1, #7c3aed);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 24px rgba(99, 102, 241, 0.35);
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .stream-panel {
+      grid-column: 1 / -1;
+      min-height: 200px;
+    }
+
+    #stream-output {
+      background: rgba(2, 6, 23, 0.85);
+      border-radius: 12px;
+      padding: 1rem;
+      font-family: "Fira Code", "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.85rem;
+      height: 280px;
+      overflow-y: auto;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+    }
+
+    .status-ok { color: #34d399; }
+    .status-error { color: #f87171; }
+    .status-warn { color: #fbbf24; }
+
+    .inline-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .inline-group > * {
+      flex: 1 1 140px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Warden Deployment Console</h1>
+    <p>Invoke Docker orchestration commands directly from your browser. Streaming responses mirror the CLI&apos;s NDJSON feed.</p>
+  </header>
+  <main>
+    <section>
+      <h2>Services</h2>
+      <div class="controls">
+        <button type="button" data-action="list-services">Refresh status</button>
+        <button type="button" data-action="load-settings">Load settings</button>
+      </div>
+      <pre id="services-output" aria-live="polite">Click “Refresh status” to load deployment information.</pre>
+    </section>
+
+    <section>
+      <h2>Build</h2>
+      <fieldset>
+        <div class="inline-group">
+          <label>
+            Services (comma separated)
+            <input id="build-services" placeholder="warden,portal,sage" autocomplete="off" />
+          </label>
+          <label>
+            Concurrency override
+            <input id="build-concurrency" placeholder="{""workers"":2}" autocomplete="off" />
+          </label>
+        </div>
+        <label>
+          <input type="checkbox" id="build-nocache" /> Use --no-cache
+        </label>
+      </fieldset>
+      <button type="button" data-action="build">Start build</button>
+    </section>
+
+    <section>
+      <h2>Push / Pull</h2>
+      <fieldset>
+        <label>
+          Services (comma separated)
+          <input id="registry-services" placeholder="warden,portal" autocomplete="off" />
+        </label>
+      </fieldset>
+      <div class="controls">
+        <button type="button" data-action="push">Push images</button>
+        <button type="button" data-action="pull">Pull images</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Start / Stop</h2>
+      <fieldset>
+        <div class="inline-group">
+          <label>
+            Services (comma separated)
+            <input id="start-services" placeholder="warden" autocomplete="off" />
+          </label>
+          <label>
+            Debug level
+            <select id="start-debug">
+              <option value="auto">auto</option>
+              <option value="info">info</option>
+              <option value="debug">debug</option>
+              <option value="super">super</option>
+            </select>
+          </label>
+          <label>
+            Boot mode
+            <select id="start-boot">
+              <option value="standard">standard</option>
+              <option value="super">super</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+      <div class="controls">
+        <button type="button" data-action="start">Start services</button>
+        <button type="button" data-action="stop">Stop all</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Cleanup</h2>
+      <fieldset>
+        <label>
+          Services (comma separated for clean)
+          <input id="clean-services" placeholder="warden" autocomplete="off" />
+        </label>
+        <label>
+          <input type="checkbox" id="delete-confirm" /> Confirm full Docker prune
+        </label>
+      </fieldset>
+      <div class="controls">
+        <button type="button" data-action="clean">Remove selected resources</button>
+        <button type="button" data-action="delete">Delete all Noona Docker resources</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Settings</h2>
+      <fieldset>
+        <label>
+          Raw JSON payload
+          <textarea id="settings-json" rows="6" placeholder='{"defaults":{"debugLevel":"debug"}}'></textarea>
+        </label>
+      </fieldset>
+      <button type="button" data-action="update-settings">Update settings</button>
+      <pre id="settings-output" aria-live="polite">Settings output will appear here.</pre>
+    </section>
+
+    <section class="stream-panel">
+      <h2>Streaming Output</h2>
+      <div id="stream-output" aria-live="polite"></div>
+    </section>
+  </main>
+  <script>
+    const servicesOutput = document.getElementById('services-output');
+    const streamOutput = document.getElementById('stream-output');
+    const settingsOutput = document.getElementById('settings-output');
+
+    const formatJSON = (value) => {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (error) {
+        return String(value);
+      }
+    };
+
+    const appendStreamLine = (payload) => {
+      const line = document.createElement('div');
+      line.textContent = `[${payload.action ?? 'event'}] ${payload.type ?? 'message'}: ${JSON.stringify(payload)}`;
+      if (payload.type === 'error') line.classList.add('status-error');
+      if (payload.type === 'log') {
+        if (payload.level === 'warn') line.classList.add('status-warn');
+        if (payload.level === 'error') line.classList.add('status-error');
+        if (payload.level === 'success') line.classList.add('status-ok');
+      }
+      streamOutput.appendChild(line);
+      streamOutput.scrollTop = streamOutput.scrollHeight;
+    };
+
+    const clearStream = (label) => {
+      streamOutput.textContent = '';
+      appendStreamLine({ action: label, type: 'start', message: 'Request dispatched' });
+    };
+
+    const parseServicesInput = (value) => {
+      return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+    };
+
+    const safeParseJSON = (value) => {
+      if (!value.trim()) return null;
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        throw new Error('Invalid JSON payload: ' + error.message);
+      }
+    };
+
+    const readNDJSON = async (response, action) => {
+      const reader = response.body?.getReader();
+      if (!reader) {
+        appendStreamLine({ action, type: 'error', message: 'Streaming unsupported in this browser.' });
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const payload = JSON.parse(line);
+            appendStreamLine(payload);
+          } catch (error) {
+            appendStreamLine({ action, type: 'error', message: 'Malformed stream payload', raw: line });
+          }
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          appendStreamLine(JSON.parse(buffer));
+        } catch (error) {
+          appendStreamLine({ action, type: 'error', message: 'Malformed stream payload', raw: buffer });
+        }
+      }
+    };
+
+    const invokeStreamEndpoint = async (action, url, payload) => {
+      clearStream(action);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload ?? {})
+      });
+      if (!response.ok && response.status !== 207) {
+        appendStreamLine({ action, type: 'error', message: `Request failed: ${response.status}` });
+        return;
+      }
+      await readNDJSON(response, action);
+    };
+
+    const actions = {
+      'list-services': async () => {
+        const response = await fetch('/api/services?includeStopped=true');
+        if (!response.ok && response.status !== 207) {
+          servicesOutput.textContent = `Failed to load services (${response.status})`;
+          return;
+        }
+        const payload = await response.json();
+        const statusLabel = payload.ok ? 'status-ok' : 'status-warn';
+        servicesOutput.innerHTML = `<span class="${statusLabel}">${payload.ok ? 'Healthy' : 'Partial'}</span>\n${formatJSON(payload)}`;
+      },
+      'load-settings': async () => {
+        const response = await fetch('/api/settings');
+        if (!response.ok) {
+          settingsOutput.textContent = `Failed to load settings (${response.status})`;
+          return;
+        }
+        const payload = await response.json();
+        settingsOutput.textContent = formatJSON(payload);
+        document.getElementById('settings-json').value = JSON.stringify(payload, null, 2);
+      },
+      build: async () => {
+        const services = parseServicesInput(document.getElementById('build-services').value);
+        const concurrency = document.getElementById('build-concurrency').value;
+        const payload = {
+          services: services.length ? services : undefined,
+          useNoCache: document.getElementById('build-nocache').checked
+        };
+        if (concurrency.trim()) {
+          payload.concurrency = safeParseJSON(concurrency);
+        }
+        await invokeStreamEndpoint('build', '/api/build', payload);
+      },
+      push: async () => {
+        const services = parseServicesInput(document.getElementById('registry-services').value);
+        await invokeStreamEndpoint('push', '/api/push', { services });
+      },
+      pull: async () => {
+        const services = parseServicesInput(document.getElementById('registry-services').value);
+        await invokeStreamEndpoint('pull', '/api/pull', { services });
+      },
+      start: async () => {
+        const services = parseServicesInput(document.getElementById('start-services').value);
+        await invokeStreamEndpoint('start', '/api/start', {
+          services,
+          debugLevel: document.getElementById('start-debug').value || undefined,
+          bootMode: document.getElementById('start-boot').value || undefined
+        });
+      },
+      stop: async () => {
+        await invokeStreamEndpoint('stop', '/api/stop');
+      },
+      clean: async () => {
+        const services = parseServicesInput(document.getElementById('clean-services').value);
+        await invokeStreamEndpoint('clean', '/api/clean', { services });
+      },
+      delete: async () => {
+        const confirmDelete = document.getElementById('delete-confirm').checked;
+        if (!confirmDelete) {
+          alert('Please enable the confirmation checkbox before deleting resources.');
+          return;
+        }
+        await invokeStreamEndpoint('delete', '/api/delete', { confirm: true });
+      },
+      'update-settings': async () => {
+        try {
+          const payload = safeParseJSON(document.getElementById('settings-json').value || '{}');
+          const response = await fetch('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {})
+          });
+          if (!response.ok) {
+            settingsOutput.textContent = `Failed to update settings (${response.status})`;
+            return;
+          }
+          const body = await response.json();
+          settingsOutput.textContent = formatJSON(body);
+        } catch (error) {
+          settingsOutput.textContent = error.message;
+        }
+      }
+    };
+
+    document.body.addEventListener('click', async (event) => {
+      const action = event.target?.dataset?.action;
+      if (!action || !actions[action]) return;
+      event.preventDefault();
+      try {
+        await actions[action]();
+      } catch (error) {
+        appendStreamLine({ action, type: 'error', message: error.message });
+      }
+    });
+  </script>
+</body>
+</html>
