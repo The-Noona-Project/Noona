@@ -3,7 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const WINDOWS_PIPE_PREFIX = '//./pipe/';
-const WINDOWS_PIPE_PATTERN = /^(?:\\\\\.\\pipe\\|\/\/\.\/pipe\/)/i;
+const WINDOWS_PIPE_PATTERN = /^(?:\.\/|[\\/]+\.?)*pipe(?:[\\/]|$)/i;
 
 function normalizeWindowsPipePath(value) {
     if (typeof value !== 'string') {
@@ -11,27 +11,41 @@ function normalizeWindowsPipePath(value) {
     }
 
     const replaced = value.replace(/\\/g, '/');
-    const segments = replaced.split('/').map((part) => part.trim()).filter(Boolean);
+
+    if (!WINDOWS_PIPE_PATTERN.test(replaced)) {
+        return null;
+    }
+
+    const segments = replaced
+        .split('/')
+        .map((part) => part.trim())
+        .filter(Boolean);
 
     if (!segments.length) {
         return null;
     }
 
-    // Remove optional leading dot segment produced by patterns like //./pipe or .\pipe
-    if (segments[0] === '.') {
+    while (segments[0] === '.') {
         segments.shift();
     }
 
-    // Normalise any lingering '." prefix (e.g. .\pipe after trimming)
     if (segments[0]?.startsWith('.')) {
         segments[0] = segments[0].replace(/^\.+/, '');
+        if (!segments[0]) {
+            segments.shift();
+        }
     }
 
-    if (segments[0]?.toLowerCase() !== 'pipe') {
-        segments.unshift('pipe');
+    if (!segments.length || segments[0]?.toLowerCase() !== 'pipe') {
+        return null;
     }
 
-    return `${WINDOWS_PIPE_PREFIX}${segments.slice(1).join('/')}`;
+    const suffix = segments.slice(1).join('/');
+    if (!suffix) {
+        return WINDOWS_PIPE_PREFIX.slice(0, -1);
+    }
+
+    return `${WINDOWS_PIPE_PREFIX}${suffix}`;
 }
 
 export function normalizeDockerSocket(candidate) {
@@ -57,8 +71,9 @@ export function normalizeDockerSocket(candidate) {
         return normalizeWindowsPipePath(remainder);
     }
 
-    if (WINDOWS_PIPE_PATTERN.test(trimmed)) {
-        return normalizeWindowsPipePath(trimmed);
+    const normalizedPipe = normalizeWindowsPipePath(trimmed);
+    if (normalizedPipe) {
+        return normalizedPipe;
     }
 
     return trimmed;
@@ -70,7 +85,7 @@ export function isWindowsPipePath(candidate) {
     }
 
     const normalized = candidate.replace(/\\/g, '/');
-    return normalized.toLowerCase().startsWith(WINDOWS_PIPE_PREFIX);
+    return WINDOWS_PIPE_PATTERN.test(normalized);
 }
 
 export function defaultDockerSocketDetector({

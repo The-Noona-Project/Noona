@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import dockerManager from './dockerManager.mjs';
 
-const { createContainerOptions, resolveDockerSocketBinding } = dockerManager.__internals;
+const {
+    createContainerOptions,
+    normalizeHostDockerSocketOverride,
+    resolveDockerSocketBinding
+} = dockerManager.__internals;
 
 const TEST_IMAGE = 'example';
 
@@ -17,6 +21,30 @@ test('createContainerOptions binds Windows Docker pipe when on win32', () => {
     assert.ok(options.hostConfig);
     assert.deepEqual(options.hostConfig.Binds, ['//./pipe/docker_engine:/var/run/docker.sock']);
     assert.ok(options.hostConfig.Binds.every(entry => entry.endsWith(':/var/run/docker.sock')));
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, '//./pipe/docker_engine,/var/run/docker.sock');
+    assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
+});
+
+test('normalizeHostDockerSocketOverride canonicalizes Windows pipe overrides without dot segment', () => {
+    assert.equal(
+        normalizeHostDockerSocketOverride('//pipe/docker_engine'),
+        '//./pipe/docker_engine'
+    );
+    assert.equal(
+        normalizeHostDockerSocketOverride('\\\\pipe\\docker_engine'),
+        '//./pipe/docker_engine'
+    );
+});
+
+test('createContainerOptions binds canonical Windows pipe override when dot is omitted', () => {
+    const options = createContainerOptions('warden', TEST_IMAGE, buildEnv('warden'), {
+        detectDockerSockets: () => ['/var/run/docker.sock'],
+        platform: 'win32',
+        hostDockerSocketOverride: '//pipe/docker_engine'
+    });
+
+    assert.ok(options.hostConfig);
+    assert.deepEqual(options.hostConfig.Binds, ['//./pipe/docker_engine:/var/run/docker.sock']);
     assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, '//./pipe/docker_engine,/var/run/docker.sock');
     assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
 });

@@ -2105,6 +2105,7 @@ const dockerManager = Object.freeze({
         waitForHealth,
         stopContainer,
         removeResources,
+        normalizeHostDockerSocketOverride,
         inspectNetwork,
         createNetwork,
         listContainers,
