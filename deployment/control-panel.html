@@ -83,6 +83,15 @@
       color: rgba(226, 232, 240, 0.65);
     }
 
+    .help-text {
+      display: block;
+      margin-top: 0.35rem;
+      font-size: 0.7rem;
+      text-transform: none;
+      letter-spacing: 0;
+      color: rgba(226, 232, 240, 0.6);
+    }
+
     input, select, textarea {
       padding: 0.5rem 0.75rem;
       border-radius: 10px;
@@ -202,8 +211,9 @@
       <fieldset>
         <div class="inline-group">
           <label>
-            Services (comma separated)
-            <input id="build-services" placeholder="warden,portal,sage" autocomplete="off" />
+            Services to build
+            <select id="build-services" multiple size="6" aria-describedby="build-services-help"></select>
+            <span id="build-services-help" class="help-text">Select one or more services, or choose “All services” to build the entire stack.</span>
           </label>
           <label>
             Concurrency override
@@ -301,8 +311,12 @@
     const servicesOutput = document.getElementById('services-output');
     const streamOutput = document.getElementById('stream-output');
     const settingsOutput = document.getElementById('settings-output');
+    const buildServicesSelect = document.getElementById('build-services');
 
     const LOG_LIMIT = 500;
+    const SERVICES_ENDPOINT = '/api/services?includeStopped=true';
+    const ALL_SERVICES_OPTION_VALUE = 'all';
+    let buildServicesSelectionSnapshot = new Set();
 
     const formatJSON = (value) => {
       try {
@@ -413,6 +427,117 @@
         .filter(Boolean);
     };
 
+    const extractServiceNames = (services) => {
+      if (!Array.isArray(services)) return [];
+      const seen = new Set();
+      const names = [];
+      for (const service of services) {
+        const candidate =
+          typeof service === 'string'
+            ? service
+            : typeof service?.name === 'string'
+              ? service.name
+              : typeof service?.id === 'string'
+                ? service.id
+                : undefined;
+        if (!candidate) continue;
+        const normalized = candidate.trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        names.push(normalized);
+      }
+      return names;
+    };
+
+    const populateBuildServices = (serviceNames = []) => {
+      if (!buildServicesSelect) return;
+      const previousSelection = new Set(
+        Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
+      );
+      const shouldSelectAllByDefault = previousSelection.size === 0;
+      buildServicesSelect.innerHTML = '';
+
+      const allOption = document.createElement('option');
+      allOption.value = ALL_SERVICES_OPTION_VALUE;
+      allOption.textContent = 'All services';
+      if (previousSelection.has(ALL_SERVICES_OPTION_VALUE) || shouldSelectAllByDefault) {
+        allOption.selected = true;
+      }
+      buildServicesSelect.appendChild(allOption);
+
+      for (const name of serviceNames) {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        if (previousSelection.has(name)) {
+          option.selected = true;
+        }
+        buildServicesSelect.appendChild(option);
+      }
+
+      buildServicesSelectionSnapshot = new Set(
+        Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
+      );
+    };
+
+    if (buildServicesSelect) {
+      buildServicesSelect.addEventListener('change', () => {
+        const currentValues = Array.from(buildServicesSelect.selectedOptions || []).map(
+          (option) => option.value
+        );
+        const currentSet = new Set(currentValues);
+        const added = currentValues.filter((value) => !buildServicesSelectionSnapshot.has(value));
+        const removed = [...buildServicesSelectionSnapshot].filter((value) => !currentSet.has(value));
+        const lastAdded = added.length ? added[added.length - 1] : undefined;
+        const lastRemoved = removed.length ? removed[removed.length - 1] : undefined;
+        const lastChanged = lastAdded ?? lastRemoved ?? null;
+
+        if (currentSet.has(ALL_SERVICES_OPTION_VALUE) && currentSet.size > 1) {
+          if (lastChanged === ALL_SERVICES_OPTION_VALUE) {
+            for (const option of buildServicesSelect.options) {
+              option.selected = option.value === ALL_SERVICES_OPTION_VALUE;
+            }
+          } else {
+            for (const option of buildServicesSelect.options) {
+              if (option.value === ALL_SERVICES_OPTION_VALUE) {
+                option.selected = false;
+                break;
+              }
+            }
+          }
+        }
+
+        buildServicesSelectionSnapshot = new Set(
+          Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
+        );
+      });
+    }
+
+    const fetchBuildServicesOptions = async () => {
+      if (!buildServicesSelect) return;
+      try {
+        const response = await fetch(SERVICES_ENDPOINT);
+        if (!response.ok && response.status !== 207) {
+          return;
+        }
+        const payload = await response.json();
+        populateBuildServices(extractServiceNames(payload?.services));
+      } catch (error) {
+        console.warn('Failed to load services for build selection', error);
+      }
+    };
+
+    const readBuildServicesSelection = () => {
+      if (!buildServicesSelect) return [];
+      const values = Array.from(buildServicesSelect.selectedOptions || [])
+        .map((option) => option.value)
+        .filter(Boolean);
+      if (values.includes(ALL_SERVICES_OPTION_VALUE)) {
+        return ALL_SERVICES_OPTION_VALUE;
+      }
+      return values;
+    };
+
     const safeParseJSON = (value) => {
       if (!value.trim()) return null;
       try {
@@ -478,12 +603,19 @@
 
     const actions = {
       'list-services': async () => {
-        const response = await fetch('/api/services?includeStopped=true');
+        let response;
+        try {
+          response = await fetch(SERVICES_ENDPOINT);
+        } catch (error) {
+          servicesOutput.textContent = `Failed to load services (${error.message})`;
+          return;
+        }
         if (!response.ok && response.status !== 207) {
           servicesOutput.textContent = `Failed to load services (${response.status})`;
           return;
         }
         const payload = await response.json();
+        populateBuildServices(extractServiceNames(payload?.services));
         const statusLabel = payload.ok ? 'status-ok' : 'status-warn';
         servicesOutput.innerHTML = '';
         const statusNode = document.createElement('span');
@@ -503,12 +635,14 @@
         document.getElementById('settings-json').value = JSON.stringify(payload, null, 2);
       },
       build: async () => {
-        const services = parseServicesInput(document.getElementById('build-services').value);
+        const services = readBuildServicesSelection();
         const concurrency = document.getElementById('build-concurrency').value;
         const payload = {
           useNoCache: document.getElementById('build-nocache').checked
         };
-        if (services.length) {
+        if (services === ALL_SERVICES_OPTION_VALUE) {
+          payload.services = 'all';
+        } else if (Array.isArray(services) && services.length) {
           payload.services = services;
         }
         if (concurrency.trim()) {
@@ -592,6 +726,9 @@
         appendStreamLine({ action, type: 'error', message: error.message });
       }
     });
+
+    populateBuildServices();
+    fetchBuildServicesOptions();
   </script>
 </body>
 </html>
