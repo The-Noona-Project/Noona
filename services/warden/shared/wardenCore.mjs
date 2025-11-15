@@ -17,6 +17,11 @@ import {
 } from '../docker/dockerUtilties.mjs';
 import { log, warn } from '../../../utilities/etc/logger.mjs';
 import {
+    normalizeDockerSocket as normalizeSocketPath,
+    isWindowsPipePath,
+    defaultDockerSocketDetector,
+} from '../../../utilities/etc/dockerSockets.mjs';
+import {
     createWizardStateClient,
     createWizardStatePublisher,
 } from '../../sage/shared/wizardStateClient.mjs';
@@ -45,109 +50,6 @@ function createDefaultLogger(loggerOption = {}) {
         warn,
         ...loggerOption,
     };
-}
-
-function normalizeSocketPath(candidate) {
-    if (!candidate || typeof candidate !== 'string') {
-        return null;
-    }
-
-    const trimmed = candidate.trim();
-
-    if (!trimmed) {
-        return null;
-    }
-
-    if (trimmed.startsWith('unix://')) {
-        return trimmed.slice('unix://'.length);
-    }
-
-    if (trimmed.startsWith('tcp://')) {
-        return null;
-    }
-
-    return trimmed;
-}
-
-function defaultDockerSocketDetector({ env = process.env, fs: fsModule = fs } = {}) {
-    const sockets = new Set();
-
-    const envCandidates = [env?.NOONA_HOST_DOCKER_SOCKETS, env?.HOST_DOCKER_SOCKETS]
-        .filter(value => typeof value === 'string' && value.trim().length > 0)
-        .flatMap(value => value.split(',').map(entry => normalizeSocketPath(entry)));
-
-    for (const candidate of envCandidates) {
-        if (candidate) {
-            sockets.add(candidate);
-        }
-    }
-
-    const dockerHost = normalizeSocketPath(env?.DOCKER_HOST);
-    if (dockerHost) {
-        sockets.add(dockerHost);
-    }
-
-    const defaultCandidates = [
-        '/var/run/docker.sock',
-        '/var/run/docker/docker.sock',
-        '/run/docker.sock',
-        '/run/docker/docker.sock',
-        '/var/run/podman/podman.sock',
-        '/run/podman/podman.sock',
-    ];
-
-    for (const candidate of defaultCandidates) {
-        const normalized = normalizeSocketPath(candidate);
-        if (normalized) {
-            sockets.add(normalized);
-        }
-    }
-
-    if (typeof fsModule?.readdirSync === 'function') {
-        const directories = [
-            '/var/run',
-            '/run',
-            '/var/run/docker',
-            '/run/docker',
-            '/var/run/podman',
-            '/run/podman',
-        ];
-
-        for (const directory of directories) {
-            try {
-                const entries = fsModule.readdirSync(directory, { withFileTypes: true });
-
-                for (const entry of entries) {
-                    if (!entry) {
-                        continue;
-                    }
-
-                    const isSocket = typeof entry.isSocket === 'function' && entry.isSocket();
-                    const isFile = typeof entry.isFile === 'function' && entry.isFile();
-
-                    if (!isSocket && !isFile) {
-                        continue;
-                    }
-
-                    const name = entry.name;
-                    if (!name || !name.toLowerCase().includes('sock')) {
-                        continue;
-                    }
-
-                    if (!/(docker|podman)/i.test(name)) {
-                        continue;
-                    }
-
-                    const fullPath = path.posix.join(directory, name);
-                    sockets.add(fullPath);
-                }
-            } catch (error) {
-                // Ignore inaccessible directories.
-            }
-        }
-    }
-
-    return Array.from(sockets);
 }
 
 function createServiceCatalog(services) {
@@ -269,8 +171,11 @@ export function createWarden(options = {}) {
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
-    const DEBUG = env.DEBUG ?? 'false';
-    const SUPER_MODE = DEBUG === 'super';
+    const rawBootMode = typeof env.BOOT_MODE === 'string' ? env.BOOT_MODE.trim().toLowerCase() : null;
+    const rawDebug = typeof env.DEBUG === 'string' ? env.DEBUG.trim().toLowerCase() : 'false';
+    const BOOT_MODE = rawBootMode === 'super' ? 'super' : 'minimal';
+    const DEBUG = rawBootMode === 'super' ? 'super' : (rawDebug || 'false');
+    const SUPER_MODE = BOOT_MODE === 'super' || DEBUG === 'super';
     const hostServiceBase = env.HOST_SERVICE_URL ?? 'http://localhost';
     const bootOrder = superBootOrderOption || [
         'noona-redis',
@@ -776,13 +681,16 @@ export function createWarden(options = {}) {
             }
 
             for (const candidate of hostDockerSockets) {
-                if (!candidate || visitedSockets.has(candidate)) {
+                const normalizedCandidate = normalizeSocketPath(candidate);
+                if (!normalizedCandidate || visitedSockets.has(normalizedCandidate)) {
                     continue;
                 }
 
-                if (typeof fsModule?.existsSync === 'function') {
+                const candidateIsPipe = isWindowsPipePath(normalizedCandidate);
+
+                if (!candidateIsPipe && typeof fsModule?.existsSync === 'function') {
                     try {
-                        if (!fsModule.existsSync(candidate)) {
+                        if (!fsModule.existsSync(normalizedCandidate)) {
                             continue;
                         }
                     } catch {
@@ -790,9 +698,9 @@ export function createWarden(options = {}) {
                     }
                 }
 
-                if (typeof fsModule?.statSync === 'function') {
+                if (!candidateIsPipe && typeof fsModule?.statSync === 'function') {
                     try {
-                        const stats = fsModule.statSync(candidate);
+                        const stats = fsModule.statSync(normalizedCandidate);
                         if (typeof stats?.isSocket === 'function' && !stats.isSocket()) {
                             continue;
                         }
@@ -802,10 +710,10 @@ export function createWarden(options = {}) {
                 }
 
                 try {
-                    const client = dockerFactory(candidate);
+                    const client = dockerFactory(normalizedCandidate);
                     if (client) {
-                        contexts.push({ client, socketPath: candidate, label: `socket ${candidate}` });
-                        visitedSockets.add(candidate);
+                        contexts.push({ client, socketPath: normalizedCandidate, label: `socket ${normalizedCandidate}` });
+                        visitedSockets.add(normalizedCandidate);
                     }
                 } catch (error) {
                     logger.warn(`[Warden] Failed to initialize Docker client for socket ${candidate}: ${error.message}`);
@@ -890,6 +798,7 @@ export function createWarden(options = {}) {
         networkName,
         DEBUG,
         SUPER_MODE,
+        BOOT_MODE,
     };
 
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
@@ -2353,3 +2262,4 @@ export function createWarden(options = {}) {
 }
 
 export default createWarden;
+export { defaultDockerSocketDetector };

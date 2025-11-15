@@ -1,0 +1,222 @@
+[
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "failed",
+    "details": {
+      "step": "health-check",
+      "health": {
+        "operation": "waitForHealth",
+        "message": "fetch failed",
+        "code": null,
+        "reason": null,
+        "context": {
+          "name": "noona-warden",
+          "url": "http://localhost:4001/health",
+          "attempts": 60,
+          "timeout": 120000,
+          "remediation": "Ensure the Warden container can bind the configured host port (default 4001). Verify the Docker socket volume (/var/run/docker.sock) is mounted so Warden can inspect other containers. Confirm the health endpoint http://localhost:4001/health is reachable from the host. Inspect the Warden logs for startup or dependency errors.",
+          "lastError": "fetch failed"
+        },
+        "stack": "TypeError: fetch failed\n    at node:internal/deps/undici/undici:15445:13\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async DockerHost.waitForHealth (file:///C:/Users/nohea/IdeaProjects/Cappax-Noona/deployment/dockerHost.mjs:373:34)\n    at async file:///C:/Users/nohea/IdeaProjects/Cappax-Noona/deployment/deploy.mjs:1004:38\n    at async withReporter (file:///C:/Users/nohea/IdeaProjects/Cappax-Noona/deployment/deploy.mjs:158:16)\n    at async file:///C:/Users/nohea/IdeaProjects/Cappax-Noona/deployment/cli.mjs:546:7"
+      },
+      "logs": [
+        "\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0015> warden@2.0.0 start",
+        "\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0016> node initWarden.mjs",
+        "\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0001",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000&node:internal/modules/esm/resolve:274",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000$    throw new ERR_MODULE_NOT_FOUND(",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000\f          ^",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000\u0001",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000�Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/app/Noona/services/sage/shared/wizardStateClient.mjs' imported from /app/Noona/services/warden/shared/wardenCore.mjs",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000E    at finalizeResolution (node:internal/modules/esm/resolve:274:11)",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000@    at moduleResolve (node:internal/modules/esm/resolve:864:10)",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000A    at defaultResolve (node:internal/modules/esm/resolve:990:11)",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000G    at #cachedDefaultResolve (node:internal/modules/esm/loader:757:20)",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000F    at ModuleLoader.resolve (node:internal/modules/esm/loader:734:38)",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000T    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:317:38)",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000=    at #link (node:internal/modules/esm/module_job:208:49) {",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000   code: 'ERR_MODULE_NOT_FOUND',",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000F  url: 'file:///app/Noona/services/sage/shared/wizardStateClient.mjs'",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000\u0002}",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000\u0001",
+        "\u0002\u0000\u0000\u0000\u0000\u0000\u0000\u0011Node.js v24.10.0"
+      ]
+    },
+    "timestamp": "2025-10-17T13:22:45.203Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "minimal",
+        "debugLevel": "false",
+        "requestedDebug": "false"
+      }
+    },
+    "timestamp": "2025-10-17T14:19:58.420Z"
+  },
+  {
+    "action": "clean",
+    "service": "moon",
+    "status": "success",
+    "details": {
+      "removed": {
+        "containers": [],
+        "images": [
+          "captainpax/noona-moon:latest"
+        ],
+        "volumes": [],
+        "networks": [],
+        "errors": []
+      }
+    },
+    "timestamp": "2025-10-17T14:44:32.353Z"
+  },
+  {
+    "action": "clean",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "removed": {
+        "containers": [],
+        "images": [
+          "captainpax/noona-warden:latest"
+        ],
+        "volumes": [],
+        "networks": [],
+        "errors": []
+      }
+    },
+    "timestamp": "2025-10-17T14:44:32.703Z"
+  },
+  {
+    "action": "clean",
+    "service": "raven",
+    "status": "success",
+    "details": {
+      "removed": {
+        "containers": [],
+        "images": [
+          "captainpax/noona-raven:latest"
+        ],
+        "volumes": [],
+        "networks": [],
+        "errors": []
+      }
+    },
+    "timestamp": "2025-10-17T14:44:33.412Z"
+  },
+  {
+    "action": "clean",
+    "service": "sage",
+    "status": "success",
+    "details": {
+      "removed": {
+        "containers": [],
+        "images": [
+          "captainpax/noona-sage:latest"
+        ],
+        "volumes": [],
+        "networks": [],
+        "errors": []
+      }
+    },
+    "timestamp": "2025-10-17T14:44:33.790Z"
+  },
+  {
+    "action": "clean",
+    "service": "vault",
+    "status": "success",
+    "details": {
+      "removed": {
+        "containers": [],
+        "images": [
+          "captainpax/noona-vault:latest"
+        ],
+        "volumes": [],
+        "networks": [],
+        "errors": []
+      }
+    },
+    "timestamp": "2025-10-17T14:44:34.112Z"
+  },
+  {
+    "action": "clean",
+    "service": "portal",
+    "status": "success",
+    "details": {
+      "removed": {
+        "containers": [],
+        "images": [
+          "captainpax/noona-portal:latest"
+        ],
+        "volumes": [],
+        "networks": [],
+        "errors": []
+      }
+    },
+    "timestamp": "2025-10-17T14:44:34.829Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "failed",
+    "details": {
+      "step": "start-service",
+      "error": {
+        "operation": "runContainer",
+        "message": "No such image: captainpax/noona-warden:latest",
+        "code": 404,
+        "reason": "no such container",
+        "context": {
+          "name": "noona-warden",
+          "image": "captainpax/noona-warden:latest"
+        },
+        "stack": "Error: (HTTP code 404) no such container - No such image: captainpax/noona-warden:latest \n    at C:\\Users\\nohea\\IdeaProjects\\Cappax-Noona\\node_modules\\docker-modem\\lib\\modem.js:383:17\n    at getCause (C:\\Users\\nohea\\IdeaProjects\\Cappax-Noona\\node_modules\\docker-modem\\lib\\modem.js:418:7)\n    at Modem.buildPayload (C:\\Users\\nohea\\IdeaProjects\\Cappax-Noona\\node_modules\\docker-modem\\lib\\modem.js:379:5)\n    at IncomingMessage.<anonymous> (C:\\Users\\nohea\\IdeaProjects\\Cappax-Noona\\node_modules\\docker-modem\\lib\\modem.js:347:16)\n    at IncomingMessage.emit (node:events:520:35)\n    at endReadableNT (node:internal/streams/readable:1701:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)"
+      }
+    },
+    "timestamp": "2025-10-17T14:44:45.340Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "minimal",
+        "debugLevel": "false",
+        "requestedDebug": "false"
+      }
+    },
+    "timestamp": "2025-10-18T01:04:29.276Z"
+  }
+]

@@ -3,10 +3,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "docs": "node scripts/generate-docs.mjs"
+    "docs": "node scripts/generate-docs.mjs",
+    "deploy:server": "node deployment/server.mjs"
   },
   "devDependencies": {
+    "@babel/cli": "^7.26.0",
+    "@babel/core": "^7.26.0",
+    "@babel/preset-react": "^7.26.3",
     "docdash": "^2.0.1",
     "jsdoc": "^4.0.3"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.9",
+    "express": "^4.21.1",
+    "ignore": "^7.0.5",
+    "tar-fs": "^3.1.1"
   }
 }
