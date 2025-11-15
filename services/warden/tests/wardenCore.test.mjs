@@ -5,15 +5,38 @@ import assert from 'node:assert/strict';
 import { createWarden, defaultDockerSocketDetector } from '../shared/wardenCore.mjs';
 import { attachSelfToNetwork } from '../docker/dockerUtilties.mjs';
 
+function createStubDocker(overrides = {}) {
+    return {
+        ping: async () => {},
+        listContainers: async () => [],
+        modem: { socketPath: '/var/run/docker.sock' },
+        ...overrides,
+    };
+}
+
+function buildWarden(options = {}) {
+    const {
+        dockerInstance = createStubDocker(),
+        hostDockerSockets = [],
+        ...rest
+    } = options;
+
+    return createWarden({
+        dockerInstance,
+        hostDockerSockets,
+        ...rest,
+    });
+}
+
 test('resolveHostServiceUrl prefers explicit hostServiceUrl', () => {
-    const warden = createWarden({ services: { addon: {}, core: {} }, hostDockerSockets: [] });
+    const warden = buildWarden({ services: { addon: {}, core: {} }, hostDockerSockets: [] });
     const service = { hostServiceUrl: 'http://custom.local' };
 
     assert.equal(warden.resolveHostServiceUrl(service), 'http://custom.local');
 });
 
 test('resolveHostServiceUrl falls back to HOST_SERVICE_URL and port', () => {
-    const warden = createWarden({
+    const warden = buildWarden({
         services: { addon: {}, core: {} },
         env: { HOST_SERVICE_URL: 'http://host.example' },
         hostDockerSockets: [],
@@ -27,17 +50,32 @@ test('startService pulls, runs, waits, and captures history when container is ab
     const pullCalls = [];
     const runCalls = [];
     const waitCalls = [];
+    const containerExistsOptions = [];
+    const dockerInstance = createStubDocker();
     const dockerUtils = {
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
-        containerExists: async () => false,
+        containerExists: async (_name, options = {}) => {
+            containerExistsOptions.push(options?.dockerInstance);
+            return false;
+        },
         pullImageIfNeeded: async (image, options) => {
-            pullCalls.push({ image, hasProgress: typeof options?.onProgress === 'function' });
+            pullCalls.push({
+                image,
+                hasProgress: typeof options?.onProgress === 'function',
+                dockerInstance: options?.dockerInstance,
+            });
             options?.onProgress?.({ status: 'Downloading', detail: 'layer 1' });
         },
         runContainerWithLogs: async (service, networkName, trackedContainers, debug, options) => {
             trackedContainers.add(service.name);
-            runCalls.push({ service: service.name, networkName, debug, hasLog: typeof options?.onLog === 'function' });
+            runCalls.push({
+                service: service.name,
+                networkName,
+                debug,
+                hasLog: typeof options?.onLog === 'function',
+                dockerInstance: options?.dockerInstance,
+            });
             options?.onLog?.('line one\nline two', { level: 'info' });
         },
         waitForHealthyStatus: async (name, url) => {
@@ -45,7 +83,8 @@ test('startService pulls, runs, waits, and captures history when container is ab
         },
     };
     const logs = [];
-    const warden = createWarden({
+    const warden = buildWarden({
+        dockerInstance,
         dockerUtils,
         services: { addon: {}, core: {} },
         logger: { log: (message) => logs.push(message), warn: () => {} },
@@ -56,8 +95,12 @@ test('startService pulls, runs, waits, and captures history when container is ab
     const service = { name: 'noona-test', image: 'noona/test:latest', port: 1234 };
     await warden.startService(service, 'http://health.local');
 
-    assert.deepEqual(pullCalls, [{ image: 'noona/test:latest', hasProgress: true }]);
-    assert.deepEqual(runCalls, [{ service: 'noona-test', networkName: 'noona-network', debug: 'true', hasLog: true }]);
+    assert.deepEqual(containerExistsOptions, [dockerInstance]);
+    assert.deepEqual(pullCalls, [{ image: 'noona/test:latest', hasProgress: true, dockerInstance }]);
+    assert.deepEqual(
+        runCalls,
+        [{ service: 'noona-test', networkName: 'noona-network', debug: 'true', hasLog: true, dockerInstance }],
+    );
     assert.deepEqual(waitCalls, [{ name: 'noona-test', url: 'http://health.local' }]);
     assert.ok(warden.trackedContainers.has('noona-test'));
     assert.ok(logs.some(line => line.includes('host_service_url: http://host:1234')));
@@ -69,10 +112,14 @@ test('startService pulls, runs, waits, and captures history when container is ab
 });
 
 test('startService skips pull and run when container already exists', async () => {
+    const dockerInstance = createStubDocker();
     const dockerUtils = {
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
-        containerExists: async () => true,
+        containerExists: async (_name, options = {}) => {
+            assert.equal(options?.dockerInstance, dockerInstance);
+            return true;
+        },
         pullImageIfNeeded: async () => {
             throw new Error('pullImageIfNeeded should not be called');
         },
@@ -82,7 +129,8 @@ test('startService skips pull and run when container already exists', async () =
         waitForHealthyStatus: async () => {},
     };
     const logs = [];
-    const warden = createWarden({
+    const warden = buildWarden({
+        dockerInstance,
         dockerUtils,
         services: { addon: {}, core: {} },
         logger: { log: (message) => logs.push(message), warn: () => {} },
@@ -101,14 +149,17 @@ test('startService skips pull and run when container already exists', async () =
 
 test('listServices returns sorted metadata with host URLs and install state', async () => {
     const containerChecks = [];
+    const dockerInstance = createStubDocker();
     const dockerUtils = {
-        containerExists: async (name) => {
+        containerExists: async (name, options = {}) => {
+            assert.equal(options?.dockerInstance, dockerInstance);
             containerChecks.push(name);
             return name === 'noona-redis';
         },
     };
     const warnings = [];
-    const warden = createWarden({
+    const warden = buildWarden({
+        dockerInstance,
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001, description: 'Cache' },
@@ -184,7 +235,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
 });
 
 test('installServices returns per-service results with errors', async () => {
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
@@ -263,7 +314,7 @@ test('installServices returns per-service results with errors', async () => {
 
 test('installServices publishes wizard state transitions', async () => {
     const events = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis' },
@@ -277,7 +328,7 @@ test('installServices publishes wizard state transitions', async () => {
         dockerUtils: {
             ensureNetwork: async () => {},
             attachSelfToNetwork: async () => {},
-            containerExists: async () => false,
+            containerExists: async (_name, _options = {}) => false,
             pullImageIfNeeded: async () => {},
             runContainerWithLogs: async () => {},
             waitForHealthyStatus: async () => {},
@@ -325,7 +376,7 @@ test('installServices publishes wizard state transitions', async () => {
 
 test('installServices publishes wizard errors when installs fail', async () => {
     const events = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis' },
@@ -339,7 +390,7 @@ test('installServices publishes wizard errors when installs fail', async () => {
         dockerUtils: {
             ensureNetwork: async () => {},
             attachSelfToNetwork: async () => {},
-            containerExists: async () => false,
+            containerExists: async (_name, _options = {}) => false,
             pullImageIfNeeded: async () => {},
             runContainerWithLogs: async () => {},
             waitForHealthyStatus: async () => {},
@@ -379,7 +430,7 @@ test('installServices publishes wizard errors when installs fail', async () => {
 });
 
 test('installServices merges environment overrides before starting services', async () => {
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -417,7 +468,7 @@ test('installServices merges environment overrides before starting services', as
 });
 
 test('installServices reports invalid environment overrides', async () => {
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -439,7 +490,7 @@ test('installServices reports invalid environment overrides', async () => {
 });
 
 test('installService installs required vault dependencies before target service', async () => {
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
@@ -465,7 +516,7 @@ test('installService installs required vault dependencies before target service'
 });
 
 test('installServices installs vault and dependencies when selected explicitly', async () => {
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {
                 'noona-redis': { name: 'noona-redis', image: 'redis', port: 8001 },
@@ -550,7 +601,7 @@ test('installService injects Kavita mount for Raven when detected', async () => 
         },
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
@@ -601,7 +652,7 @@ test('installService handles missing Kavita mount for Raven gracefully', async (
         },
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
@@ -641,7 +692,7 @@ test('installServices wires manual Raven overrides when Kavita detection fails',
         },
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
@@ -690,7 +741,7 @@ test('installServices defaults Raven container mount path when only host path is
         },
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
@@ -757,7 +808,7 @@ test('installService inspects alternate docker sockets when primary is missing K
         statSync: () => ({ isSocket: () => true }),
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services,
         logger: { log: () => {}, warn: () => {} },
@@ -794,7 +845,7 @@ test('installation progress and service histories track install lifecycle', asyn
     const dockerUtils = {
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
-        containerExists: async () => false,
+        containerExists: async (_name, _options = {}) => false,
         pullImageIfNeeded: async (image, options) => {
             const layerId = `layer-${image}`;
             options?.onProgress?.({
@@ -814,7 +865,7 @@ test('installation progress and service histories track install lifecycle', asyn
         waitForHealthyStatus: async () => {},
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerUtils,
         env: { HOST_SERVICE_URL: 'http://localhost' },
         services: {
@@ -858,7 +909,7 @@ test('installation progress and service histories track install lifecycle', asyn
 
 test('testService prefers host health URL when resolveHostServiceUrl can produce one', async () => {
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -894,7 +945,7 @@ test('testService prefers host health URL when resolveHostServiceUrl can produce
 
 test('testService falls back to container health URL when host is unavailable', async () => {
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -932,7 +983,7 @@ test('testService falls back to container health URL when host is unavailable', 
 
 test('testService aggregates errors when all health candidates fail', async () => {
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -965,7 +1016,7 @@ test('testService aggregates errors when all health candidates fail', async () =
 
 test('testService runs Vault health check against custom path', async () => {
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -996,7 +1047,7 @@ test('testService runs Vault health check against custom path', async () => {
 
 test('testService checks Redis health root endpoint', async () => {
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {
                 'noona-redis': {
@@ -1027,7 +1078,7 @@ test('testService checks Redis health root endpoint', async () => {
 
 test('testService exercises Raven health endpoint', async () => {
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -1057,7 +1108,7 @@ test('testService exercises Raven health endpoint', async () => {
 });
 
 test('testService inspects Mongo container state', async () => {
-    const dockerInstance = {
+    const dockerInstance = createStubDocker({
         getContainer: () => ({
             inspect: async () => ({
                 State: {
@@ -1067,9 +1118,9 @@ test('testService inspects Mongo container state', async () => {
                 },
             }),
         }),
-    };
+    });
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services: {
             addon: {
@@ -1090,15 +1141,15 @@ test('testService inspects Mongo container state', async () => {
 });
 
 test('testService reports Mongo inspection failures', async () => {
-    const dockerInstance = {
+    const dockerInstance = createStubDocker({
         getContainer: () => ({
             inspect: async () => {
                 throw new Error('boom');
             },
         }),
-    };
+    });
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services: {
             addon: {
@@ -1123,7 +1174,7 @@ test('detectKavitaMount logs detection attempts and returns result', async () =>
         modem: { socketPath: null },
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services: { addon: {}, core: {} },
         hostDockerSockets: [],
@@ -1161,7 +1212,7 @@ test('detectKavitaMount initialises Docker clients for normalized Windows pipes'
     };
 
     const dockerFactoryCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         services: { addon: {}, core: {} },
         hostDockerSockets: ['npipe:////./pipe/docker_engine_alt'],
@@ -1190,7 +1241,7 @@ test('detectKavitaMount initialises Docker clients for normalized Windows pipes'
 test('getServiceHealth returns Raven health and records wizard detail', async () => {
     const wizardCalls = [];
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -1239,7 +1290,7 @@ test('getServiceHealth returns Raven health and records wizard detail', async ()
 test('getServiceHealth aggregates failures and records Raven error', async () => {
     const wizardCalls = [];
     const fetchCalls = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         services: {
             addon: {},
             core: {
@@ -1283,13 +1334,13 @@ test('bootFull launches services in super boot order with correct health URLs', 
     const dockerUtils = {
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
-        containerExists: async () => true,
+        containerExists: async (_name, _options = {}) => true,
         pullImageIfNeeded: async () => {},
         runContainerWithLogs: async () => {},
         waitForHealthyStatus: async () => {},
     };
     const warnings = [];
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerUtils,
         services: {
             addon: {
@@ -1329,7 +1380,7 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
     const dockerUtils = {
         ensureNetwork: async () => events.push('ensure'),
         attachSelfToNetwork: async () => events.push('attach'),
-        containerExists: async () => {
+        containerExists: async (_name, _options = {}) => {
             throw new Error('containerExists should not be invoked when startService is stubbed');
         },
         pullImageIfNeeded: async () => {},
@@ -1340,7 +1391,7 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
         log: (message) => events.push(message),
         warn: (message) => events.push(`warn:${message}`),
     };
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerUtils,
         services: {
             addon: {
@@ -1370,6 +1421,85 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
     assert.ok(events.includes('✅ Warden is ready.'));
 });
 
+test('init falls back to alternate docker socket when default ping fails', async () => {
+    const failingDocker = createStubDocker({
+        ping: async () => {
+            const error = new Error('connect ECONNREFUSED /var/run/docker.sock');
+            error.code = 'ECONNREFUSED';
+            throw error;
+        },
+    });
+
+    const successfulDocker = createStubDocker({
+        ping: async () => {},
+        modem: { socketPath: '/remote/docker.sock' },
+    });
+
+    const ensureClients = [];
+    const attachClients = [];
+    const containerExistsClients = [];
+    const pullClients = [];
+    const runClients = [];
+    const dockerFactoryCalls = [];
+
+    const dockerUtils = {
+        ensureNetwork: async (client) => ensureClients.push(client),
+        attachSelfToNetwork: async (client) => attachClients.push(client),
+        containerExists: async (_name, options = {}) => {
+            containerExistsClients.push(options?.dockerInstance);
+            return false;
+        },
+        pullImageIfNeeded: async (_image, options = {}) => {
+            pullClients.push(options?.dockerInstance);
+        },
+        runContainerWithLogs: async (service, _network, trackedContainers, _debug, options = {}) => {
+            trackedContainers.add(service.name);
+            runClients.push(options?.dockerInstance);
+        },
+        waitForHealthyStatus: async () => {},
+    };
+
+    const warnings = [];
+    const warden = buildWarden({
+        dockerInstance: failingDocker,
+        dockerFactory: (socketPath) => {
+            dockerFactoryCalls.push(socketPath);
+            if (socketPath === '/remote/docker.sock') {
+                return successfulDocker;
+            }
+            throw new Error(`Unexpected socket request: ${socketPath}`);
+        },
+        fs: {
+            existsSync: (candidate) => candidate === '/remote/docker.sock',
+            statSync: () => ({ isSocket: () => true }),
+        },
+        dockerUtils,
+        logger: { log: () => {}, warn: (message) => warnings.push(message) },
+        hostDockerSockets: ['/remote/docker.sock'],
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': { name: 'noona-sage', image: 'sage', hostServiceUrl: 'http://sage' },
+                'noona-moon': { name: 'noona-moon', image: 'moon', hostServiceUrl: 'http://moon' },
+            },
+        },
+    });
+
+    await warden.init();
+
+    assert.deepEqual(dockerFactoryCalls, ['/remote/docker.sock']);
+    assert.deepEqual(ensureClients, [successfulDocker]);
+    assert.deepEqual(attachClients, [successfulDocker]);
+    assert.deepEqual(containerExistsClients, [successfulDocker, successfulDocker]);
+    assert.deepEqual(pullClients, [successfulDocker, successfulDocker]);
+    assert.deepEqual(runClients, [successfulDocker, successfulDocker]);
+    assert.ok(
+        warnings.some((message) =>
+            message.includes('Docker check failed for socket /var/run/docker.sock'),
+        ),
+    );
+});
+
 test('shutdownAll stops, removes, clears tracked containers and exits with code 0', async () => {
     const operations = [];
     const containers = {
@@ -1382,15 +1512,15 @@ test('shutdownAll stops, removes, clears tracked containers and exits with code 
             remove: async () => operations.push('remove:svc-2'),
         },
     };
-    const dockerInstance = {
+    const dockerInstance = createStubDocker({
         getContainer: (name) => containers[name],
-    };
+    });
     const trackedContainers = new Set(['svc-1', 'svc-2']);
     let exitCode = null;
     const dockerUtils = {
         ensureNetwork: async () => {},
         attachSelfToNetwork: async () => {},
-        containerExists: async () => true,
+        containerExists: async (_name, _options = {}) => true,
         pullImageIfNeeded: async () => {},
         runContainerWithLogs: async () => {},
         waitForHealthyStatus: async () => {},
@@ -1400,7 +1530,7 @@ test('shutdownAll stops, removes, clears tracked containers and exits with code 
         warn: (message) => operations.push(`warn:${message}`),
     };
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         trackedContainers,
         dockerUtils,
@@ -1414,6 +1544,7 @@ test('shutdownAll stops, removes, clears tracked containers and exits with code 
 
     assert.deepEqual(operations, [
         'warn:Shutting down all containers...',
+        '[noona-warden] 🐳 Docker connection established via socket /var/run/docker.sock.',
         'stop:svc-1',
         'remove:svc-1',
         'Stopped & removed svc-1',
@@ -1439,7 +1570,7 @@ test('init falls back to SERVICE_NAME when HOSTNAME lookup fails', async () => {
     };
 
     const connections = [];
-    const dockerInstance = {
+    const dockerInstance = createStubDocker({
         getContainer(id) {
             return {
                 async inspect() {
@@ -1464,14 +1595,14 @@ test('init falls back to SERVICE_NAME when HOSTNAME lookup fails', async () => {
                 },
             };
         },
-    };
+    });
 
-    const warden = createWarden({
+    const warden = buildWarden({
         dockerInstance,
         dockerUtils: {
             ensureNetwork: async () => {},
             attachSelfToNetwork,
-            containerExists: async () => false,
+            containerExists: async (_name, _options = {}) => false,
             pullImageIfNeeded: async () => {},
             runContainerWithLogs: async () => {},
             waitForHealthyStatus: async () => {},

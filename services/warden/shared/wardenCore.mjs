@@ -199,6 +199,187 @@ export function createWarden(options = {}) {
         .map(normalizeSocketPath)
         .filter(Boolean)));
 
+    const initialSocketPath = normalizeSocketPath(
+        dockerInstance?.modem?.socketPath || env?.DOCKER_HOST || null,
+    );
+
+    let activeDockerInstance = dockerInstance;
+    let activeDockerContext = {
+        client: dockerInstance,
+        socketPath: initialSocketPath,
+        label: initialSocketPath ? `socket ${initialSocketPath}` : 'default Docker instance',
+    };
+    let dockerConnectionVerified = false;
+
+    const describeDockerContext = (context = {}) => {
+        if (context.socketPath) {
+            return `socket ${context.socketPath}`;
+        }
+
+        if (context.label) {
+            return context.label;
+        }
+
+        return 'Docker client';
+    };
+
+    const buildDockerContexts = () => {
+        const contexts = [];
+        const visited = new Set();
+
+        const pushContext = (context) => {
+            if (!context?.client) {
+                return;
+            }
+
+            const normalized = context.socketPath ? normalizeSocketPath(context.socketPath) : null;
+            const key = normalized || context.label;
+            if (key && visited.has(key)) {
+                return;
+            }
+
+            contexts.push({
+                client: context.client,
+                socketPath: normalized,
+                label: context.label ?? null,
+            });
+
+            if (key) {
+                visited.add(key);
+            }
+        };
+
+        pushContext(activeDockerContext);
+
+        for (const candidate of hostDockerSockets) {
+            const normalizedCandidate = normalizeSocketPath(candidate);
+            if (!normalizedCandidate || visited.has(normalizedCandidate)) {
+                continue;
+            }
+
+            const candidateIsPipe = isWindowsPipePath(normalizedCandidate);
+
+            if (!candidateIsPipe && typeof fsModule?.existsSync === 'function') {
+                try {
+                    if (!fsModule.existsSync(normalizedCandidate)) {
+                        continue;
+                    }
+                } catch {
+                    continue;
+                }
+            }
+
+            if (!candidateIsPipe && typeof fsModule?.statSync === 'function') {
+                try {
+                    const stats = fsModule.statSync(normalizedCandidate);
+                    if (typeof stats?.isSocket === 'function' && !stats.isSocket()) {
+                        continue;
+                    }
+                } catch {
+                    continue;
+                }
+            }
+
+            try {
+                const client = dockerFactory(normalizedCandidate);
+                if (client) {
+                    pushContext({
+                        client,
+                        socketPath: normalizedCandidate,
+                        label: `socket ${normalizedCandidate}`,
+                    });
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn?.(
+                    `[${serviceName}] ⚠️ Failed to initialize Docker client for socket ${candidate}: ${message}`,
+                );
+            }
+        }
+
+        return contexts;
+    };
+
+    const verifyDockerContext = async (context) => {
+        const client = context?.client;
+        if (!client) {
+            throw new Error('Docker client unavailable');
+        }
+
+        if (typeof client.ping === 'function') {
+            await client.ping();
+            return;
+        }
+
+        if (typeof client.version === 'function') {
+            await client.version();
+            return;
+        }
+
+        if (typeof client.listContainers === 'function') {
+            await client.listContainers({ limit: 1 });
+            return;
+        }
+
+        throw new Error('Docker client does not expose ping, version, or listContainers');
+    };
+
+    const ensureDockerConnection = async () => {
+        if (dockerConnectionVerified && activeDockerInstance) {
+            return activeDockerInstance;
+        }
+
+        const contexts = buildDockerContexts();
+        const errors = [];
+
+        for (const context of contexts) {
+            try {
+                await verifyDockerContext(context);
+                activeDockerInstance = context.client;
+                activeDockerContext = {
+                    client: context.client,
+                    socketPath: context.socketPath ?? null,
+                    label: describeDockerContext(context),
+                };
+                dockerConnectionVerified = true;
+
+                const description = describeDockerContext(context);
+                logger.log?.(`[${serviceName}] 🐳 Docker connection established via ${description}.`);
+                return activeDockerInstance;
+            } catch (error) {
+                dockerConnectionVerified = false;
+                const message = error instanceof Error ? error.message : String(error);
+                const description = describeDockerContext(context);
+                logger.warn?.(`[${serviceName}] ⚠️ Docker check failed for ${description}: ${message}`);
+                errors.push({ description, message });
+            }
+        }
+
+        const attempted = contexts.length ? contexts.map(describeDockerContext).join(', ') : 'none';
+        const errorDetails = errors.length
+            ? ` Errors: ${errors.map(({ description, message }) => `${description}: ${message}`).join('; ')}`
+            : '';
+
+        const failure = new Error(
+            `Unable to connect to Docker using any configured socket (${attempted}).${errorDetails}`,
+        );
+        failure.code = 'DOCKER_CONNECTION_FAILED';
+        throw failure;
+    };
+
+    const markDockerConnectionStale = (error) => {
+        if (!error) {
+            return;
+        }
+
+        const code = error.code || error.errno || null;
+        const message = typeof error.message === 'string' ? error.message : '';
+
+        if (code === 'ECONNREFUSED' || code === 'ENOENT' || /ECONNREFUSED|ENOENT/.test(message)) {
+            dockerConnectionVerified = false;
+        }
+    };
+
     const resolvedLogLimit = (() => {
         if (typeof logLimitOption === 'number' && Number.isFinite(logLimitOption) && logLimitOption > 0) {
             return Math.floor(logLimitOption);
@@ -663,78 +844,27 @@ export function createWarden(options = {}) {
 
     async function detectKavitaDataMount() {
         try {
-            const contexts = [];
-            const visitedSockets = new Set();
-
-            const primarySocketPath = normalizeSocketPath(
-                dockerInstance?.modem?.socketPath || env?.DOCKER_HOST || null,
-            );
-
-            contexts.push({
-                client: dockerInstance,
-                socketPath: primarySocketPath,
-                label: 'default Docker instance',
-            });
-
-            if (primarySocketPath) {
-                visitedSockets.add(primarySocketPath);
-            }
-
-            for (const candidate of hostDockerSockets) {
-                const normalizedCandidate = normalizeSocketPath(candidate);
-                if (!normalizedCandidate || visitedSockets.has(normalizedCandidate)) {
-                    continue;
-                }
-
-                const candidateIsPipe = isWindowsPipePath(normalizedCandidate);
-
-                if (!candidateIsPipe && typeof fsModule?.existsSync === 'function') {
-                    try {
-                        if (!fsModule.existsSync(normalizedCandidate)) {
-                            continue;
-                        }
-                    } catch {
-                        continue;
-                    }
-                }
-
-                if (!candidateIsPipe && typeof fsModule?.statSync === 'function') {
-                    try {
-                        const stats = fsModule.statSync(normalizedCandidate);
-                        if (typeof stats?.isSocket === 'function' && !stats.isSocket()) {
-                            continue;
-                        }
-                    } catch {
-                        continue;
-                    }
-                }
-
-                try {
-                    const client = dockerFactory(normalizedCandidate);
-                    if (client) {
-                        contexts.push({ client, socketPath: normalizedCandidate, label: `socket ${normalizedCandidate}` });
-                        visitedSockets.add(normalizedCandidate);
-                    }
-                } catch (error) {
-                    logger.warn(`[Warden] Failed to initialize Docker client for socket ${candidate}: ${error.message}`);
-                }
-            }
-
+            const contexts = buildDockerContexts();
             let foundContainer = false;
 
             for (const context of contexts) {
-                const contextLabel = context.socketPath ? `socket ${context.socketPath}` : context.label;
+                const client = context?.client;
+                if (!client) {
+                    continue;
+                }
+
+                const contextLabel = describeDockerContext(context);
 
                 try {
-                    const containers = await context.client.listContainers({ all: true });
-                    const kavitaContainer = containers.find(container => {
+                    const containers = await client.listContainers({ all: true });
+                    const kavitaContainer = containers.find((container) => {
                         const image = typeof container?.Image === 'string' ? container.Image.toLowerCase() : '';
                         if (image.includes('kavita')) {
                             return true;
                         }
 
                         const names = Array.isArray(container?.Names) ? container.Names : [];
-                        return names.some(name => typeof name === 'string' && name.toLowerCase().includes('kavita'));
+                        return names.some((name) => typeof name === 'string' && name.toLowerCase().includes('kavita'));
                     });
 
                     if (!kavitaContainer) {
@@ -743,11 +873,9 @@ export function createWarden(options = {}) {
 
                     foundContainer = true;
 
-                    const inspected = await context.client
-                        .getContainer(kavitaContainer.Id)
-                        .inspect();
+                    const inspected = await client.getContainer(kavitaContainer.Id).inspect();
                     const mounts = inspected?.Mounts || [];
-                    const dataMount = mounts.find(mount => mount?.Destination === '/data');
+                    const dataMount = mounts.find((mount) => mount?.Destination === '/data');
 
                     if (dataMount?.Source) {
                         const rawName = Array.isArray(kavitaContainer?.Names)
@@ -767,7 +895,7 @@ export function createWarden(options = {}) {
 
                         const suffix = details.length ? ` (${details.join(', ')})` : '';
 
-                        logger.log(`[Warden] Kavita data mount detected at ${dataMount.Source}${suffix}.`);
+                        logger.log?.(`[${serviceName}] Kavita data mount detected at ${dataMount.Source}${suffix}.`);
 
                         return {
                             mountPath: dataMount.Source,
@@ -777,17 +905,21 @@ export function createWarden(options = {}) {
                         };
                     }
 
-                    logger.warn(`[Warden] Kavita container found on ${contextLabel} but /data mount was not detected.`);
+                    logger.warn?.(
+                        `[${serviceName}] Kavita container found on ${contextLabel} but /data mount was not detected.`,
+                    );
                 } catch (error) {
-                    logger.warn(`[Warden] Failed to query Docker on ${contextLabel}: ${error.message}`);
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.warn?.(`[${serviceName}] ⚠️ Failed to inspect Docker via ${contextLabel}: ${message}`);
                 }
             }
 
             if (!foundContainer) {
-                logger.warn('[Warden] Kavita container not found while detecting data mount.');
+                logger.warn?.(`[${serviceName}] Kavita container not found while detecting data mount.`);
             }
         } catch (error) {
-            logger.warn(`[Warden] Failed to detect Kavita data mount: ${error.message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] ⚠️ Failed to detect Kavita data mount: ${message}`);
         }
 
         return null;
@@ -834,12 +966,14 @@ export function createWarden(options = {}) {
             detail: null,
         });
 
+        const dockerClient = await ensureDockerConnection();
         const hostServiceUrl = api.resolveHostServiceUrl(service);
         let alreadyRunning = false;
 
         try {
-            alreadyRunning = await dockerUtils.containerExists(serviceName);
+            alreadyRunning = await dockerUtils.containerExists(serviceName, { dockerInstance: dockerClient });
         } catch (error) {
+            markDockerConnectionStale(error);
             const message = error instanceof Error ? error.message : String(error);
             appendHistoryEntry(serviceName, {
                 type: 'error',
@@ -859,61 +993,67 @@ export function createWarden(options = {}) {
                 detail: service.image,
             });
 
-            await dockerUtils.pullImageIfNeeded(service.image, {
-                onProgress: (event = {}) => {
-                    const explicitLayerId =
-                        event.layerId != null ? String(event.layerId).trim() : '';
-                    const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
-                    const layerId = explicitLayerId || fallbackLayerId || null;
-                    const phase =
-                        typeof event.phase === 'string' && event.phase.trim()
-                            ? event.phase.trim()
-                            : null;
-                    const rawStatus = event.status || phase || 'progress';
-                    const status =
-                        typeof rawStatus === 'string'
-                            ? rawStatus.trim() || 'progress'
-                            : String(rawStatus ?? 'progress');
-                    const detail = event.detail != null ? String(event.detail).trim() : '';
-                    const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
-                    const message =
-                        explicitMessage ||
-                        formatDockerProgressMessage({
-                            layerId,
-                            phase,
+            try {
+                await dockerUtils.pullImageIfNeeded(service.image, {
+                    dockerInstance: dockerClient,
+                    onProgress: (event = {}) => {
+                        const explicitLayerId =
+                            event.layerId != null ? String(event.layerId).trim() : '';
+                        const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
+                        const layerId = explicitLayerId || fallbackLayerId || null;
+                        const phase =
+                            typeof event.phase === 'string' && event.phase.trim()
+                                ? event.phase.trim()
+                                : null;
+                        const rawStatus = event.status || phase || 'progress';
+                        const status =
+                            typeof rawStatus === 'string'
+                                ? rawStatus.trim() || 'progress'
+                                : String(rawStatus ?? 'progress');
+                        const detail = event.detail != null ? String(event.detail).trim() : '';
+                        const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
+                        const message =
+                            explicitMessage ||
+                            formatDockerProgressMessage({
+                                layerId,
+                                phase,
+                                status,
+                                detail,
+                            }) ||
+                            status;
+
+                        const meta = {};
+
+                        if (layerId) {
+                            meta.layerId = layerId;
+                        }
+
+                        if (phase) {
+                            meta.phase = phase;
+                        }
+
+                        if (event.progressDetail && typeof event.progressDetail === 'object') {
+                            meta.progressDetail = cloneMeta(event.progressDetail);
+                        }
+
+                        if (explicitMessage) {
+                            meta.message = explicitMessage;
+                        }
+
+                        const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
+                        appendHistoryEntry(serviceName, {
+                            type: 'progress',
                             status,
-                            detail,
-                        }) ||
-                        status;
-
-                    const meta = {};
-
-                    if (layerId) {
-                        meta.layerId = layerId;
-                    }
-
-                    if (phase) {
-                        meta.phase = phase;
-                    }
-
-                    if (event.progressDetail && typeof event.progressDetail === 'object') {
-                        meta.progressDetail = cloneMeta(event.progressDetail);
-                    }
-
-                    if (explicitMessage) {
-                        meta.message = explicitMessage;
-                    }
-
-                    const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
-                    appendHistoryEntry(serviceName, {
-                        type: 'progress',
-                        status,
-                        message,
-                        detail: detail || null,
-                        ...(metaPayload ? { meta: metaPayload } : {}),
-                    });
-                },
-            });
+                            message,
+                            detail: detail || null,
+                            ...(metaPayload ? { meta: metaPayload } : {}),
+                        });
+                    },
+                });
+            } catch (error) {
+                markDockerConnectionStale(error);
+                throw error;
+            }
 
             appendHistoryEntry(serviceName, {
                 type: 'status',
@@ -922,17 +1062,23 @@ export function createWarden(options = {}) {
                 detail: null,
             });
 
-            await dockerUtils.runContainerWithLogs(
-                service,
-                networkName,
-                trackedContainers,
-                DEBUG,
-                {
-                    onLog: (raw, context = {}) => {
-                        recordContainerOutput(serviceName, raw, context);
+            try {
+                await dockerUtils.runContainerWithLogs(
+                    service,
+                    networkName,
+                    trackedContainers,
+                    DEBUG,
+                    {
+                        dockerInstance: dockerClient,
+                        onLog: (raw, context = {}) => {
+                            recordContainerOutput(serviceName, raw, context);
+                        },
                     },
-                },
-            );
+                );
+            } catch (error) {
+                markDockerConnectionStale(error);
+                throw error;
+            }
 
             appendHistoryEntry(serviceName, {
                 type: 'status',
@@ -968,6 +1114,7 @@ export function createWarden(options = {}) {
                     detail: healthUrl,
                 });
             } catch (error) {
+                markDockerConnectionStale(error);
                 const message = error instanceof Error ? error.message : String(error);
                 appendHistoryEntry(serviceName, {
                     type: 'error',
@@ -1016,16 +1163,28 @@ export function createWarden(options = {}) {
             }))
             .sort((a, b) => a.name.localeCompare(b.name));
 
+        let dockerClient = null;
+        try {
+            dockerClient = await ensureDockerConnection();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] ⚠️ Unable to establish Docker connection for listServices: ${message}`);
+        }
+
         const entries = await Promise.all(
             formatted.map(async (service) => {
                 let installed = false;
 
-                try {
-                    installed = await dockerUtils.containerExists(service.name);
-                } catch (error) {
-                    logger.warn?.(
-                        `[Warden] Failed to determine install status for ${service.name}: ${error.message}`,
-                    );
+                if (dockerClient) {
+                    try {
+                        installed = await dockerUtils.containerExists(service.name, { dockerInstance: dockerClient });
+                    } catch (error) {
+                        markDockerConnectionStale(error);
+                        const message = error instanceof Error ? error.message : String(error);
+                        logger.warn?.(
+                            `[${serviceName}] Failed to determine install status for ${service.name}: ${message}`,
+                        );
+                    }
                 }
 
                 return { ...service, installed };
@@ -2137,7 +2296,8 @@ export function createWarden(options = {}) {
             });
 
             try {
-                const container = dockerInstance.getContainer(trimmedName);
+                const dockerClient = await ensureDockerConnection();
+                const container = dockerClient.getContainer(trimmedName);
                 const inspection = await container.inspect();
                 const state = inspection?.State || {};
                 const running = state.Running === true;
@@ -2167,6 +2327,7 @@ export function createWarden(options = {}) {
                     error: running ? undefined : detailMessage,
                 };
             } catch (error) {
+                markDockerConnectionStale(error);
                 const message = error instanceof Error ? error.message : String(error);
                 appendHistoryEntry(trimmedName, {
                     type: 'error',
@@ -2227,14 +2388,29 @@ export function createWarden(options = {}) {
 
     api.shutdownAll = async function shutdownAll() {
         logger.warn(`Shutting down all containers...`);
+        let dockerClient = null;
+
+        try {
+            dockerClient = await ensureDockerConnection();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] ⚠️ Unable to establish Docker connection for shutdown: ${message}`);
+        }
+
         for (const name of trackedContainers) {
             try {
-                const container = dockerInstance.getContainer(name);
+                if (!dockerClient) {
+                    continue;
+                }
+
+                const container = dockerClient.getContainer(name);
                 await container.stop();
                 await container.remove();
                 logger.log(`Stopped & removed ${name}`);
             } catch (err) {
-                logger.warn(`Error stopping ${name}: ${err.message}`);
+                markDockerConnectionStale(err);
+                const message = err instanceof Error ? err.message : String(err);
+                logger.warn(`Error stopping ${name}: ${message}`);
             }
         }
 
@@ -2243,8 +2419,9 @@ export function createWarden(options = {}) {
     };
 
     api.init = async function init() {
-        await dockerUtils.ensureNetwork(dockerInstance, networkName);
-        await dockerUtils.attachSelfToNetwork(dockerInstance, networkName);
+        const dockerClient = await ensureDockerConnection();
+        await dockerUtils.ensureNetwork(dockerClient, networkName);
+        await dockerUtils.attachSelfToNetwork(dockerClient, networkName);
 
         if (SUPER_MODE) {
             logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');

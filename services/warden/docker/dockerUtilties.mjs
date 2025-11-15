@@ -246,6 +246,7 @@ export async function runContainerWithLogs(
     DEBUG,
     options = {},
 ) {
+    const { dockerInstance = docker, onLog } = options;
     const binds = service.volumes || [];
 
     // Avoid double-injecting SERVICE_NAME
@@ -260,7 +261,7 @@ export async function runContainerWithLogs(
     const debugValue = (DEBUG || '').toString().toLowerCase();
     const shouldStreamLogs = ['true', '1', 'yes', 'super'].includes(debugValue);
 
-    const container = await docker.createContainer({
+    const container = await dockerInstance.createContainer({
         name: service.name,
         Image: service.image,
         Env: envVars,
@@ -278,8 +279,6 @@ export async function runContainerWithLogs(
 
     trackedContainers.add(service.name);
     await container.start();
-
-    const { onLog } = options;
 
     try {
         const logs = await container.logs({
