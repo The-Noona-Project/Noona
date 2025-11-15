@@ -102,6 +102,10 @@
       resize: vertical;
     }
 
+    [hidden] {
+      display: none !important;
+    }
+
     button {
       padding: 0.6rem 1rem;
       border-radius: 999px;
@@ -231,8 +235,9 @@
       <h2>Push / Pull</h2>
       <fieldset>
         <label>
-          Services (comma separated)
-          <input id="registry-services" placeholder="warden,portal" autocomplete="off" />
+          Services
+          <select id="registry-services" multiple size="6" aria-describedby="registry-services-help"></select>
+          <span id="registry-services-help" class="help-text">Select one or more services, or choose “All services”.</span>
         </label>
       </fieldset>
       <div class="controls">
@@ -246,8 +251,9 @@
       <fieldset>
         <div class="inline-group">
           <label>
-            Services (comma separated)
-            <input id="start-services" placeholder="warden" autocomplete="off" />
+            Services
+            <select id="start-services" multiple size="6" aria-describedby="start-services-help"></select>
+            <span id="start-services-help" class="help-text">Select one or more services, or choose “All services”.</span>
           </label>
           <label>
             Debug level
@@ -266,6 +272,10 @@
             </select>
           </label>
         </div>
+        <label data-role="warden-socket-toggle" hidden>
+          <input type="checkbox" id="start-use-host-socket" /> Use configured host Docker socket override
+          <span class="help-text">Mounts the override path defined in Settings when starting Warden.</span>
+        </label>
       </fieldset>
       <div class="controls">
         <button type="button" data-action="start">Start services</button>
@@ -277,8 +287,9 @@
       <h2>Cleanup</h2>
       <fieldset>
         <label>
-          Services (comma separated for clean)
-          <input id="clean-services" placeholder="warden" autocomplete="off" />
+          Services
+          <select id="clean-services" multiple size="6" aria-describedby="clean-services-help"></select>
+          <span id="clean-services-help" class="help-text">Select one or more services, or choose “All services”.</span>
         </label>
         <label>
           <input type="checkbox" id="delete-confirm" /> Confirm full Docker prune
@@ -293,6 +304,11 @@
     <section>
       <h2>Settings</h2>
       <fieldset>
+        <label>
+          Host Docker socket override
+          <input id="settings-host-socket" placeholder="/var/run/docker.sock" autocomplete="off" />
+          <span class="help-text">Optional host socket path to bind when starting Warden. Leave blank to auto-detect.</span>
+        </label>
         <label>
           Raw JSON payload
           <textarea id="settings-json" rows="6" placeholder='{"defaults":{"debugLevel":"debug"}}'></textarea>
@@ -312,11 +328,193 @@
     const streamOutput = document.getElementById('stream-output');
     const settingsOutput = document.getElementById('settings-output');
     const buildServicesSelect = document.getElementById('build-services');
+    const startServicesSelect = document.getElementById('start-services');
+    const registryServicesSelect = document.getElementById('registry-services');
+    const cleanServicesSelect = document.getElementById('clean-services');
+    const settingsHostSocketInput = document.getElementById('settings-host-socket');
+    const startDockerSocketContainer = document.querySelector('[data-role="warden-socket-toggle"]');
+    const startDockerSocketCheckbox = document.getElementById('start-use-host-socket');
 
     const LOG_LIMIT = 500;
     const SERVICES_ENDPOINT = '/api/services?includeStopped=true';
     const ALL_SERVICES_OPTION_VALUE = 'all';
-    let buildServicesSelectionSnapshot = new Set();
+    let startDockerSocketCheckboxTouched = false;
+
+    const updateStartDockerSocketVisibility = (selection = new Set()) => {
+      if (!startDockerSocketContainer) return;
+      const selectionSet = selection instanceof Set ? selection : new Set(selection);
+      const includesWarden = selectionSet.has('warden') || selectionSet.has(ALL_SERVICES_OPTION_VALUE);
+      if (includesWarden) {
+        startDockerSocketContainer.hidden = false;
+        const hasOverride = Boolean(settingsHostSocketInput?.value.trim());
+        if (startDockerSocketCheckbox) {
+          startDockerSocketCheckbox.disabled = !hasOverride;
+          if (!hasOverride) {
+            startDockerSocketCheckbox.checked = false;
+            startDockerSocketCheckboxTouched = false;
+          } else if (!startDockerSocketCheckboxTouched) {
+            startDockerSocketCheckbox.checked = true;
+          }
+        }
+      } else {
+        startDockerSocketContainer.hidden = true;
+        if (startDockerSocketCheckbox) {
+          startDockerSocketCheckbox.checked = false;
+        }
+        startDockerSocketCheckboxTouched = false;
+      }
+    };
+
+    const createServiceSelectController = (select, { includeAllOption = false, defaultToAll = false } = {}) => {
+      if (!select) return null;
+      let snapshot = new Set();
+
+      const readValuesFromDom = () =>
+        Array.from(select.selectedOptions || []).map((option) => option.value).filter(Boolean);
+
+      const applySelection = (selectionSet) => {
+        for (const option of select.options) {
+          option.selected = selectionSet.has(option.value);
+        }
+      };
+
+      const controller = {
+        element: select,
+        includeAllOption,
+        populate(serviceNames = []) {
+          const previous = new Set(snapshot);
+          const desired = previous.size
+            ? previous
+            : defaultToAll && includeAllOption
+              ? new Set([ALL_SERVICES_OPTION_VALUE])
+              : new Set();
+          select.innerHTML = '';
+
+          if (includeAllOption) {
+            const allOption = document.createElement('option');
+            allOption.value = ALL_SERVICES_OPTION_VALUE;
+            allOption.textContent = 'All services';
+            select.appendChild(allOption);
+          }
+
+          for (const name of serviceNames) {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+          }
+
+          const valid = new Set(
+            [...desired].filter((value) => value === ALL_SERVICES_OPTION_VALUE || serviceNames.includes(value))
+          );
+
+          if (valid.size === 0 && defaultToAll && includeAllOption) {
+            valid.add(ALL_SERVICES_OPTION_VALUE);
+          }
+
+          snapshot = valid;
+          applySelection(snapshot);
+          controller.onChange?.(new Set(snapshot));
+        },
+        read() {
+          if (!snapshot.size) return [];
+          if (includeAllOption && snapshot.has(ALL_SERVICES_OPTION_VALUE)) {
+            return ALL_SERVICES_OPTION_VALUE;
+          }
+          return Array.from(snapshot);
+        },
+        get snapshot() {
+          return new Set(snapshot);
+        },
+        onChange: null
+      };
+
+      select.addEventListener('change', () => {
+        const previous = new Set(snapshot);
+        const currentValues = readValuesFromDom();
+        const currentSet = new Set(currentValues);
+        const added = currentValues.filter((value) => !previous.has(value));
+        const removed = [...previous].filter((value) => !currentSet.has(value));
+        const lastChanged = added.length
+          ? added[added.length - 1]
+          : removed.length
+            ? removed[removed.length - 1]
+            : null;
+
+        if (includeAllOption && currentSet.has(ALL_SERVICES_OPTION_VALUE) && currentSet.size > 1) {
+          if (lastChanged === ALL_SERVICES_OPTION_VALUE) {
+            snapshot = new Set([ALL_SERVICES_OPTION_VALUE]);
+          } else {
+            currentSet.delete(ALL_SERVICES_OPTION_VALUE);
+            snapshot = currentSet;
+          }
+        } else {
+          snapshot = currentSet;
+        }
+
+        applySelection(snapshot);
+        controller.onChange?.(new Set(snapshot));
+      });
+
+      return controller;
+    };
+
+    const serviceSelectControllers = {
+      build: createServiceSelectController(buildServicesSelect, { includeAllOption: true, defaultToAll: true }),
+      start: createServiceSelectController(startServicesSelect, { includeAllOption: true }),
+      registry: createServiceSelectController(registryServicesSelect, { includeAllOption: true }),
+      clean: createServiceSelectController(cleanServicesSelect, { includeAllOption: true })
+    };
+
+    if (serviceSelectControllers.start) {
+      serviceSelectControllers.start.onChange = (selection) => {
+        updateStartDockerSocketVisibility(selection);
+      };
+    }
+
+    if (startDockerSocketCheckbox) {
+      startDockerSocketCheckbox.addEventListener('change', () => {
+        startDockerSocketCheckboxTouched = true;
+      });
+    }
+
+    if (settingsHostSocketInput) {
+      settingsHostSocketInput.addEventListener('input', () => {
+        const snapshot = serviceSelectControllers.start?.snapshot ?? new Set();
+        updateStartDockerSocketVisibility(snapshot);
+      });
+    }
+
+    const updateServiceSelectOptions = (serviceNames = []) => {
+      for (const controller of Object.values(serviceSelectControllers)) {
+        controller?.populate(serviceNames);
+      }
+      const snapshot = serviceSelectControllers.start?.snapshot ?? new Set();
+      updateStartDockerSocketVisibility(snapshot);
+    };
+
+    const readServiceSelection = (controller) => {
+      if (!controller) return [];
+      return controller.read();
+    };
+
+    const applyServicesSelectionToPayload = (payload, selection) => {
+      if (!payload) return;
+      if (selection === ALL_SERVICES_OPTION_VALUE) {
+        payload.services = 'all';
+        return;
+      }
+      if (Array.isArray(selection) && selection.length) {
+        payload.services = selection;
+      }
+    };
+
+    const hasWardenSelection = (selection) => {
+      if (selection === ALL_SERVICES_OPTION_VALUE) {
+        return true;
+      }
+      return Array.isArray(selection) && selection.includes('warden');
+    };
 
     const formatJSON = (value) => {
       try {
@@ -419,14 +617,6 @@
       appendStreamLine({ action: label, type: 'start', message: 'Request dispatched' });
     };
 
-    const parseServicesInput = (value) => {
-      if (!value) return [];
-      return value
-        .split(',')
-        .map((entry) => entry.trim())
-        .filter(Boolean);
-    };
-
     const extractServiceNames = (services) => {
       if (!Array.isArray(services)) return [];
       const seen = new Set();
@@ -449,94 +639,20 @@
       return names;
     };
 
-    const populateBuildServices = (serviceNames = []) => {
-      if (!buildServicesSelect) return;
-      const previousSelection = new Set(
-        Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
-      );
-      const shouldSelectAllByDefault = previousSelection.size === 0;
-      buildServicesSelect.innerHTML = '';
-
-      const allOption = document.createElement('option');
-      allOption.value = ALL_SERVICES_OPTION_VALUE;
-      allOption.textContent = 'All services';
-      if (previousSelection.has(ALL_SERVICES_OPTION_VALUE) || shouldSelectAllByDefault) {
-        allOption.selected = true;
-      }
-      buildServicesSelect.appendChild(allOption);
-
-      for (const name of serviceNames) {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        if (previousSelection.has(name)) {
-          option.selected = true;
-        }
-        buildServicesSelect.appendChild(option);
-      }
-
-      buildServicesSelectionSnapshot = new Set(
-        Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
-      );
-    };
-
-    if (buildServicesSelect) {
-      buildServicesSelect.addEventListener('change', () => {
-        const currentValues = Array.from(buildServicesSelect.selectedOptions || []).map(
-          (option) => option.value
-        );
-        const currentSet = new Set(currentValues);
-        const added = currentValues.filter((value) => !buildServicesSelectionSnapshot.has(value));
-        const removed = [...buildServicesSelectionSnapshot].filter((value) => !currentSet.has(value));
-        const lastAdded = added.length ? added[added.length - 1] : undefined;
-        const lastRemoved = removed.length ? removed[removed.length - 1] : undefined;
-        const lastChanged = lastAdded ?? lastRemoved ?? null;
-
-        if (currentSet.has(ALL_SERVICES_OPTION_VALUE) && currentSet.size > 1) {
-          if (lastChanged === ALL_SERVICES_OPTION_VALUE) {
-            for (const option of buildServicesSelect.options) {
-              option.selected = option.value === ALL_SERVICES_OPTION_VALUE;
-            }
-          } else {
-            for (const option of buildServicesSelect.options) {
-              if (option.value === ALL_SERVICES_OPTION_VALUE) {
-                option.selected = false;
-                break;
-              }
-            }
-          }
-        }
-
-        buildServicesSelectionSnapshot = new Set(
-          Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
-        );
-      });
-    }
-
-    const fetchBuildServicesOptions = async () => {
-      if (!buildServicesSelect) return;
+    const fetchServicesOptions = async () => {
       try {
         const response = await fetch(SERVICES_ENDPOINT);
         if (!response.ok && response.status !== 207) {
           return;
         }
         const payload = await response.json();
-        populateBuildServices(extractServiceNames(payload?.services));
+        updateServiceSelectOptions(extractServiceNames(payload?.services));
       } catch (error) {
-        console.warn('Failed to load services for build selection', error);
+        console.warn('Failed to load services for selection controls', error);
       }
     };
 
-    const readBuildServicesSelection = () => {
-      if (!buildServicesSelect) return [];
-      const values = Array.from(buildServicesSelect.selectedOptions || [])
-        .map((option) => option.value)
-        .filter(Boolean);
-      if (values.includes(ALL_SERVICES_OPTION_VALUE)) {
-        return ALL_SERVICES_OPTION_VALUE;
-      }
-      return values;
-    };
+    const readBuildServicesSelection = () => readServiceSelection(serviceSelectControllers.build);
 
     const safeParseJSON = (value) => {
       if (!value.trim()) return null;
@@ -615,7 +731,7 @@
           return;
         }
         const payload = await response.json();
-        populateBuildServices(extractServiceNames(payload?.services));
+        updateServiceSelectOptions(extractServiceNames(payload?.services));
         const statusLabel = payload.ok ? 'status-ok' : 'status-warn';
         servicesOutput.innerHTML = '';
         const statusNode = document.createElement('span');
@@ -633,59 +749,70 @@
         const payload = await response.json();
         settingsOutput.textContent = formatJSON(payload);
         document.getElementById('settings-json').value = JSON.stringify(payload, null, 2);
+        if (settingsHostSocketInput) {
+          const value = Object.prototype.hasOwnProperty.call(payload || {}, 'hostDockerSocketOverride')
+            ? payload.hostDockerSocketOverride
+            : '';
+          settingsHostSocketInput.value = value ?? '';
+          const snapshot = serviceSelectControllers.start?.snapshot ?? new Set();
+          updateStartDockerSocketVisibility(snapshot);
+        }
       },
       build: async () => {
-        const services = readBuildServicesSelection();
+        const servicesSelection = readBuildServicesSelection();
         const concurrency = document.getElementById('build-concurrency').value;
         const payload = {
           useNoCache: document.getElementById('build-nocache').checked
         };
-        if (services === ALL_SERVICES_OPTION_VALUE) {
-          payload.services = 'all';
-        } else if (Array.isArray(services) && services.length) {
-          payload.services = services;
-        }
+        applyServicesSelectionToPayload(payload, servicesSelection);
         if (concurrency.trim()) {
           payload.concurrency = safeParseJSON(concurrency);
         }
         await invokeStreamEndpoint('build', '/api/build', payload);
       },
       push: async () => {
-        const services = parseServicesInput(document.getElementById('registry-services').value);
+        const servicesSelection = readServiceSelection(serviceSelectControllers.registry);
         const payload = {};
-        if (services.length) {
-          payload.services = services;
-        }
+        applyServicesSelectionToPayload(payload, servicesSelection);
         await invokeStreamEndpoint('push', '/api/push', payload);
       },
       pull: async () => {
-        const services = parseServicesInput(document.getElementById('registry-services').value);
+        const servicesSelection = readServiceSelection(serviceSelectControllers.registry);
         const payload = {};
-        if (services.length) {
-          payload.services = services;
-        }
+        applyServicesSelectionToPayload(payload, servicesSelection);
         await invokeStreamEndpoint('pull', '/api/pull', payload);
       },
       start: async () => {
-        const services = parseServicesInput(document.getElementById('start-services').value);
+        const servicesSelection = readServiceSelection(serviceSelectControllers.start);
         const payload = {
           debugLevel: document.getElementById('start-debug').value || undefined,
           bootMode: document.getElementById('start-boot').value || undefined
         };
-        if (services.length) {
-          payload.services = services;
+        applyServicesSelectionToPayload(payload, servicesSelection);
+
+        if (
+          hasWardenSelection(servicesSelection) &&
+          startDockerSocketCheckbox &&
+          !startDockerSocketCheckbox.disabled &&
+          startDockerSocketCheckbox.checked
+        ) {
+          const overrideValue = settingsHostSocketInput?.value?.trim?.() ?? '';
+          if (overrideValue) {
+            payload.hostDockerSocketOverride = overrideValue;
+          } else if (settingsHostSocketInput) {
+            payload.hostDockerSocketOverride = null;
+          }
         }
+
         await invokeStreamEndpoint('start', '/api/start', payload);
       },
       stop: async () => {
         await invokeStreamEndpoint('stop', '/api/stop');
       },
       clean: async () => {
-        const services = parseServicesInput(document.getElementById('clean-services').value);
+        const servicesSelection = readServiceSelection(serviceSelectControllers.clean);
         const payload = {};
-        if (services.length) {
-          payload.services = services;
-        }
+        applyServicesSelectionToPayload(payload, servicesSelection);
         await invokeStreamEndpoint('clean', '/api/clean', payload);
       },
       delete: async () => {
@@ -698,7 +825,15 @@
       },
       'update-settings': async () => {
         try {
-          const payload = safeParseJSON(document.getElementById('settings-json').value || '{}');
+          const parsedPayload = safeParseJSON(document.getElementById('settings-json').value || '{}');
+          const payload = (parsedPayload && typeof parsedPayload === 'object') ? parsedPayload : {};
+          if (payload && typeof payload === 'object' && payload.defaults && Object.prototype.hasOwnProperty.call(payload.defaults, 'hostDockerSocketOverride')) {
+            delete payload.defaults.hostDockerSocketOverride;
+          }
+          if (settingsHostSocketInput) {
+            const overrideValue = settingsHostSocketInput.value.trim();
+            payload.hostDockerSocketOverride = overrideValue ? overrideValue : null;
+          }
           const response = await fetch('/api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -710,6 +845,15 @@
           }
           const body = await response.json();
           settingsOutput.textContent = formatJSON(body);
+          if (settingsHostSocketInput) {
+            const value = Object.prototype.hasOwnProperty.call(body || {}, 'hostDockerSocketOverride')
+              ? body.hostDockerSocketOverride
+              : '';
+            settingsHostSocketInput.value = value ?? '';
+            const snapshot = serviceSelectControllers.start?.snapshot ?? new Set();
+            updateStartDockerSocketVisibility(snapshot);
+          }
+          document.getElementById('settings-json').value = JSON.stringify(body, null, 2);
         } catch (error) {
           settingsOutput.textContent = error.message;
         }
@@ -727,8 +871,8 @@
       }
     });
 
-    populateBuildServices();
-    fetchBuildServicesOptions();
+    updateServiceSelectOptions();
+    fetchServicesOptions();
   </script>
 </body>
 </html>

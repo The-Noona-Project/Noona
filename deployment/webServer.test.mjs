@@ -140,3 +140,71 @@ test('POST /api/build streams structured events', async () => {
     assert.equal(calls[0].useNoCache, true);
     assert.deepEqual(calls[0].services, ['warden']);
 });
+
+test('POST /api/start forwards override from request body', async () => {
+    const receivedOverrides = [];
+    let fetchSettingsCalls = 0;
+
+    await withServer({
+        services: ['warden'],
+        fetchSettings: async () => {
+            fetchSettingsCalls += 1;
+            return { ok: true, settings: { hostDockerSocketOverride: '/settings.sock' } };
+        },
+        start: async ({ hostDockerSocketOverride, reporter }) => {
+            receivedOverrides.push(hostDockerSocketOverride);
+            reporter?.info?.('start invoked');
+            return { ok: true };
+        }
+    }, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/start`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ services: ['warden'], hostDockerSocketOverride: '/request.sock' })
+        });
+
+        assert.equal(response.status, 200);
+        const text = await response.text();
+        const lines = text.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        const complete = lines.at(-1);
+        assert.equal(complete.type, 'complete');
+        assert.equal(complete.ok, true);
+    });
+
+    assert.deepEqual(receivedOverrides, ['/request.sock']);
+    assert.equal(fetchSettingsCalls, 0);
+});
+
+test('POST /api/start falls back to settings override when not provided', async () => {
+    const receivedOverrides = [];
+    let fetchSettingsCalls = 0;
+
+    await withServer({
+        services: ['warden'],
+        fetchSettings: async () => {
+            fetchSettingsCalls += 1;
+            return { ok: true, settings: { hostDockerSocketOverride: '/settings.sock' } };
+        },
+        start: async ({ hostDockerSocketOverride, reporter }) => {
+            receivedOverrides.push(hostDockerSocketOverride);
+            reporter?.info?.('start invoked');
+            return { ok: true };
+        }
+    }, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/start`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ services: ['warden'] })
+        });
+
+        assert.equal(response.status, 200);
+        const text = await response.text();
+        const lines = text.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        const complete = lines.at(-1);
+        assert.equal(complete.type, 'complete');
+        assert.equal(complete.ok, true);
+    });
+
+    assert.equal(fetchSettingsCalls, 1);
+    assert.deepEqual(receivedOverrides, ['/settings.sock']);
+});
