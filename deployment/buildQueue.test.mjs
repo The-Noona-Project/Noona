@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BuildQueue } from './buildQueue.mjs';
+import dockerManager from './dockerManager.mjs';
+
+const { BuildQueue } = dockerManager.__internals;
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 

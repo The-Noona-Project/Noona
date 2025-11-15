@@ -15,24 +15,40 @@ import { Box, Text, useApp, useInput, Static, useStdoutDimensions } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { spawn } from 'child_process';
-import {
-    SERVICES,
-    buildServices,
-    pushServices,
-    pullServices,
-    startServices,
-    stopAllContainers,
-    cleanServices,
-    deleteDockerResources,
-    readLifecycleHistory,
-    getDeploymentSettings,
-    updateBuildConcurrencyDefaults,
-    updateDebugDefaults,
-    listManagedContainers,
-    appendDeploymentLogEntry,
-    getActiveDeploymentLogFile,
-    LOG_DIR
-} from './deploy.mjs';
+import dockerManager, {
+    build as buildOperation,
+    push as pushOperation,
+    pull as pullOperation,
+    start as startOperation,
+    stop as stopOperation,
+    clean as cleanOperation,
+    deleteResources as deleteOperation,
+    fetchSettings,
+    updateSettings
+} from './dockerManager.mjs';
+
+const SERVICES = dockerManager.services;
+const LOG_DIR = dockerManager.logs.directory;
+const readLifecycleHistory = () => dockerManager.history.read();
+const listManagedContainers = (options) => dockerManager.containers.list(options);
+const appendDeploymentLogEntry = (level, message) => dockerManager.logs.append(level, message);
+const getActiveDeploymentLogFile = () => dockerManager.logs.getActiveFile();
+const getDeploymentSettings = async () => {
+    const result = await fetchSettings();
+    if (result?.ok) {
+        return result.settings;
+    }
+    throw new Error(result?.error?.message || 'Unable to load settings');
+};
+const updateBuildConcurrencyDefaults = (updates) => updateSettings({ concurrency: updates });
+const updateDebugDefaults = (updates) => updateSettings({ defaults: updates });
+const buildServices = (services, options = {}) => buildOperation({ services, ...options });
+const pushServices = (services, options = {}) => pushOperation({ services, ...options });
+const pullServices = (services, options = {}) => pullOperation({ services, ...options });
+const startServices = (services, options = {}) => startOperation({ services, ...options });
+const stopAllContainers = (options = {}) => stopOperation(options);
+const cleanServices = (services, options = {}) => cleanOperation({ services, ...options });
+const deleteDockerResources = (options = {}) => deleteOperation(options);
 
 const stripAnsi = input => typeof input === 'string'
     ? input.replace(/\u001B\[[0-9;]*m/g, '')
@@ -105,7 +121,7 @@ const usePersistentLog = () => {
     const readyRef = useRef(false);
 
     useEffect(() => {
-        getActiveDeploymentLogFile()
+        dockerManager.logs.getActiveFile()
             .then(() => {
                 readyRef.current = true;
             })
@@ -120,10 +136,10 @@ const usePersistentLog = () => {
             return normalized;
         }
         if (!readyRef.current) {
-            appendDeploymentLogEntry(normalized.level, normalized.text).catch(() => {});
+            dockerManager.logs.append(normalized.level, normalized.text).catch(() => {});
             return normalized;
         }
-        appendDeploymentLogEntry(normalized.level, normalized.text).catch(() => {});
+        dockerManager.logs.append(normalized.level, normalized.text).catch(() => {});
         return normalized;
     }, []);
 };
@@ -731,7 +747,7 @@ const ActiveBuildsSection = ({
 
 const BuildOperationsView = React.memo(forwardRef(({ isActive }, ref) => {
     const { pushMessage, createReporter, updateMission } = useDeployment();
-    const services = useMemo(() => [...SERVICES], []);
+    const services = useMemo(() => [...dockerManager.services], []);
     const [cursor, setCursor] = useState(0);
     const [selection, setSelection] = useState(() => [...services]);
     const [operation, setOperation] = useState('build');
@@ -1035,7 +1051,7 @@ const OverviewDashboard = React.memo(({ isActive }) => {
 
 const RunningContainersSection = React.memo(({ isActive }) => {
     const { pushMessage, createReporter, updateMission } = useDeployment();
-    const serviceList = useMemo(() => [...SERVICES], []);
+    const serviceList = useMemo(() => [...dockerManager.services], []);
     const [containers, setContainers] = useState([]);
     const [selectedValues, setSelectedValues] = useState(() => [...serviceList]);
     const [cursor, setCursor] = useState(0);
@@ -1382,7 +1398,7 @@ const openLogsDirectory = () => {
             ? 'explorer'
             : 'xdg-open';
     try {
-        const child = spawn(opener, [LOG_DIR], {
+        const child = spawn(opener, [dockerManager.logs.directory], {
             stdio: 'ignore',
             detached: true
         });
@@ -1515,9 +1531,9 @@ const DeploymentLayout = () => {
                 setPaletteOpen(false);
                 try {
                     openLogsDirectory();
-                    pushMessage({ level: 'info', text: `Opened logs directory at ${LOG_DIR}` });
+                    pushMessage({ level: 'info', text: `Opened logs directory at ${dockerManager.logs.directory}` });
                 } catch (error) {
-                    pushMessage({ level: 'warn', text: `Unable to open logs directory automatically. Path: ${LOG_DIR}` });
+                    pushMessage({ level: 'warn', text: `Unable to open logs directory automatically. Path: ${dockerManager.logs.directory}` });
                 }
                 return;
             }

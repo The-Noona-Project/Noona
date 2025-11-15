@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createContainerOptions, resolveDockerSocketBinding } from './deploy.mjs';
+import dockerManager from './dockerManager.mjs';
+
+const { createContainerOptions, resolveDockerSocketBinding } = dockerManager.__internals;
 
 const TEST_IMAGE = 'example';
 

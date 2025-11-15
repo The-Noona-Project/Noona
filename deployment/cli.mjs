@@ -4,7 +4,17 @@ import { render, Box, Text, useApp, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { spawn } from 'child_process';
-import { SERVICES, buildServices, pushServices, pullServices, startServices, stopAllContainers, cleanServices, deleteDockerResources, readLifecycleHistory, getDeploymentSettings, updateBuildConcurrencyDefaults, updateDebugDefaults, listManagedContainers, appendDeploymentLogEntry, getActiveDeploymentLogFile, LOG_DIR } from './deploy.mjs';
+import dockerManager, {
+  build as buildServices,
+  push as pushServices,
+  pull as pullServices,
+  start as startServices,
+  stop as stopAllContainers,
+  clean as cleanServices,
+  deleteResources as deleteDockerResources,
+  fetchSettings,
+  updateSettings
+} from './dockerManager.mjs';
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 const stripAnsi = input => typeof input === 'string' ? input.replace(/\u001B\[[0-9;]*m/g, '') : String(input ?? '');
 const formatTable = (rows, columns) => {
@@ -68,7 +78,7 @@ const createInitialTabState = () => {
 const useMessageLog = () => {
   const [messages, setMessages] = useState([]);
   useEffect(() => {
-    getActiveDeploymentLogFile().catch(() => {});
+    dockerManager.logs.getActiveFile().catch(() => {});
   }, []);
   const pushMessage = useCallback((entry, options = {}) => {
     const normalized = {
@@ -82,7 +92,7 @@ const useMessageLog = () => {
       return next.slice(-50);
     });
     if (!options.skipLogWrite) {
-      appendDeploymentLogEntry(normalized.level, normalized.text).catch(() => {});
+      dockerManager.logs.append(normalized.level, normalized.text).catch(() => {});
     }
     return normalized;
   }, []);
@@ -224,10 +234,14 @@ const OverviewDashboard = ({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [settingsData, containersData, historyData] = await Promise.all([getDeploymentSettings(), listManagedContainers({
+      const [settingsResult, containersData, historyData] = await Promise.all([fetchSettings(), dockerManager.containers.list({
         includeStopped: true
-      }), readLifecycleHistory()]);
-      setSettings(settingsData);
+      }), dockerManager.history.read()]);
+      if (settingsResult?.ok) {
+        setSettings(settingsResult.settings);
+      } else {
+        throw new Error(settingsResult?.error?.message || 'Unable to load settings');
+      }
       setContainers(containersData);
       setHistory(Array.isArray(historyData) ? historyData.slice(-5).reverse() : []);
     } catch (error) {
@@ -324,7 +338,7 @@ const BuildQueueManager = ({
   createReporter,
   pushMessage
 }) => {
-  const serviceList = useMemo(() => [...SERVICES], []);
+  const serviceList = useMemo(() => [...dockerManager.services], []);
   const [selectedValues, setSelectedValues] = useState(() => [...serviceList]);
   const [cursor, setCursor] = useState(0);
   const [operation, setOperation] = useState('build');
@@ -495,7 +509,8 @@ const BuildQueueManager = ({
     const reporter = createReporter();
     try {
       if (operation === 'build') {
-        const result = await buildServices(selectedValues, {
+        const result = await buildServices({
+          services: selectedValues,
           useNoCache,
           reporter,
           onProgress: event => handleProgress('build', event)
@@ -507,12 +522,14 @@ const BuildQueueManager = ({
           });
         }
       } else if (operation === 'push') {
-        await pushServices(selectedValues, {
+        await pushServices({
+          services: selectedValues,
           reporter,
           onProgress: event => handleProgress('push', event)
         });
       } else if (operation === 'pull') {
-        await pullServices(selectedValues, {
+        await pullServices({
+          services: selectedValues,
           reporter,
           onProgress: event => handleProgress('pull', event)
         });
@@ -689,7 +706,7 @@ const RunningContainersSection = ({
   createReporter,
   pushMessage
 }) => {
-  const serviceList = useMemo(() => [...SERVICES], []);
+  const serviceList = useMemo(() => [...dockerManager.services], []);
   const [containers, setContainers] = useState([]);
   const [selectedValues, setSelectedValues] = useState(() => [...serviceList]);
   const [cursor, setCursor] = useState(0);
@@ -699,7 +716,7 @@ const RunningContainersSection = ({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await listManagedContainers({
+      const data = await dockerManager.containers.list({
         includeStopped: true
       });
       setContainers(data);
@@ -776,7 +793,8 @@ const RunningContainersSection = ({
     setOperating(true);
     const reporter = createReporter();
     try {
-      await cleanServices(selectedValues, {
+      await cleanServices({
+        services: selectedValues,
         reporter
       });
       await load();
@@ -793,7 +811,8 @@ const RunningContainersSection = ({
     setOperating(true);
     const reporter = createReporter();
     try {
-      await startServices(['warden'], {
+      await startServices({
+        services: ['warden'],
         reporter,
         onProgress: event => {
           if (!event) return;
@@ -925,8 +944,12 @@ const SettingsPanel = ({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getDeploymentSettings();
-      setSettings(data);
+      const result = await fetchSettings();
+      if (result?.ok) {
+        setSettings(result.settings);
+      } else {
+        throw new Error(result?.error?.message || 'Unable to load settings');
+      }
     } catch (error) {
       pushMessage({
         level: 'error',
@@ -943,8 +966,10 @@ const SettingsPanel = ({
   const handleUpdateConcurrency = useCallback(async (key, value) => {
     const reporter = createReporter();
     try {
-      await updateBuildConcurrencyDefaults({
-        [key]: value
+      await updateSettings({
+        concurrency: {
+          [key]: value
+        }
       });
       await load();
       reporter.success(`Updated ${key} to ${value}.`);
@@ -957,7 +982,9 @@ const SettingsPanel = ({
   const handleUpdateDebug = useCallback(async updates => {
     const reporter = createReporter();
     try {
-      await updateDebugDefaults(updates);
+      await updateSettings({
+        defaults: updates
+      });
       await load();
       reporter.success('Updated default debug configuration.');
     } catch (error) {
@@ -969,7 +996,7 @@ const SettingsPanel = ({
   const handleOpenLogDirectory = useCallback(async () => {
     let logFilePath = null;
     try {
-      logFilePath = await getActiveDeploymentLogFile();
+      logFilePath = await dockerManager.logs.getActiveFile();
     } catch (error) {
       pushMessage({
         level: 'error',
@@ -980,12 +1007,12 @@ const SettingsPanel = ({
     if (process.platform !== 'win32') {
       pushMessage({
         level: 'info',
-        text: `Logs are stored at ${LOG_DIR}. Latest file: ${logFilePath}`
+        text: `Logs are stored at ${dockerManager.logs.directory}. Latest file: ${logFilePath}`
       });
       return;
     }
     try {
-      const child = spawn('explorer.exe', [LOG_DIR], {
+      const child = spawn('explorer.exe', [dockerManager.logs.directory], {
         detached: true,
         stdio: 'ignore'
       });
@@ -998,7 +1025,7 @@ const SettingsPanel = ({
       child.once('spawn', () => {
         pushMessage({
           level: 'success',
-          text: `Opened log folder in Explorer (${LOG_DIR}). Latest file: ${logFilePath}`
+          text: `Opened log folder in Explorer (${dockerManager.logs.directory}). Latest file: ${logFilePath}`
         });
       });
       if (typeof child.unref === 'function') {
@@ -1070,7 +1097,7 @@ const SettingsPanel = ({
         }), /*#__PURE__*/_jsxs(Text, {
           children: ["Boot mode: ", settings.defaults.bootMode]
         }), /*#__PURE__*/_jsxs(Text, {
-          children: ["Logs directory: ", LOG_DIR]
+          children: ["Logs directory: ", dockerManager.logs.directory]
         })]
       }), /*#__PURE__*/_jsxs(Box, {
         marginTop: 1,

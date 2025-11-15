@@ -1,32 +1,769 @@
-// deploy.mjs - Noona Docker Manager (Node.js version)
+// dockerManager.mjs - consolidated Noona Docker Manager
 import { fileURLToPath } from 'url';
-import { dirname, resolve } from 'path';
-import { appendFile, chmod, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
+import { dirname, resolve, join, relative, posix } from 'path';
+import { access, appendFile, chmod, mkdir, readFile, readdir, stat, unlink, writeFile } from 'fs/promises';
 import util from 'util';
+import { EventEmitter } from 'node:events';
+import Docker from 'dockerode';
+import { pack } from 'tar-fs';
+import ignore from 'ignore';
 import {
     defaultDockerSocketDetector,
     isWindowsPipePath,
     normalizeDockerSocket,
 } from '../utilities/etc/dockerSockets.mjs';
-import {
-    buildImage,
-    pushImage,
-    pullImage,
-    startService,
-    streamLogs,
-    waitForHealth,
-    stopContainer,
-    removeResources,
-    inspectNetwork,
-    createNetwork,
-    listContainers
-} from './dockerHost.mjs';
-import { BuildQueue } from './buildQueue.mjs';
+const noop = () => {};
+
+const pickLoggerMethod = (logger, candidates) => {
+    for (const method of candidates) {
+        if (logger && typeof logger[method] === 'function') {
+            return logger[method].bind(logger);
+        }
+    }
+    return noop;
+};
+
+class BuildQueue extends EventEmitter {
+    constructor({ workerThreads = 4, subprocessesPerWorker = 2, logger = console } = {}) {
+        super();
+        if (!Number.isInteger(workerThreads) || workerThreads < 1) {
+            throw new TypeError('workerThreads must be a positive integer');
+        }
+        if (!Number.isInteger(subprocessesPerWorker) || subprocessesPerWorker < 1) {
+            throw new TypeError('subprocessesPerWorker must be a positive integer');
+        }
+
+        this.workerThreads = workerThreads;
+        this.subprocessesPerWorker = subprocessesPerWorker;
+        this.logger = {
+            info: pickLoggerMethod(logger, ['info', 'log']),
+            warn: pickLoggerMethod(logger, ['warn', 'info', 'log']),
+            error: pickLoggerMethod(logger, ['error', 'warn', 'log'])
+        };
+
+        this.queue = [];
+        this.active = 0;
+        this.limit = workerThreads;
+        this.completed = [];
+        this.jobCounter = 0;
+    }
+
+    useBaseCapacity() {
+        this.limit = this.workerThreads;
+        this.emit('capacityChange', { limit: this.limit });
+        this.#process();
+        return this.limit;
+    }
+
+    useMaxCapacity() {
+        this.limit = this.workerThreads * this.subprocessesPerWorker;
+        this.emit('capacityChange', { limit: this.limit });
+        this.#process();
+        return this.limit;
+    }
+
+    getCurrentCapacity() {
+        return this.limit;
+    }
+
+    enqueue({ name, run }) {
+        if (typeof run !== 'function') {
+            throw new TypeError('enqueue requires a run() function');
+        }
+
+        const id = name || `job-${++this.jobCounter}`;
+        return new Promise((resolve, reject) => {
+            this.queue.push({ id, run, resolve, reject });
+            this.emit('enqueued', { id, size: this.queue.length });
+            setImmediate(() => this.#process());
+        });
+    }
+
+    async drain() {
+        if (this.active === 0 && this.queue.length === 0) {
+            return;
+        }
+
+        return new Promise(resolve => {
+            const handleIdle = () => {
+                this.off('idle', handleIdle);
+                resolve();
+            };
+            this.on('idle', handleIdle);
+        });
+    }
+
+    getResults() {
+        return this.completed.map(entry => ({
+            ...entry,
+            logs: [...entry.logs]
+        }));
+    }
+
+    #process() {
+        while (this.active < this.limit && this.queue.length > 0) {
+            this.#runNext();
+        }
+    }
+
+    #runNext() {
+        const job = this.queue.shift();
+        if (!job) return;
+
+        const { id, run, resolve, reject } = job;
+        const startedAt = Date.now();
+        const logs = [];
+        this.active += 1;
+
+        const logLine = (level, message) => {
+            if (!message) return;
+            const text = `[${id}] ${message}`;
+            logs.push(text);
+            switch (level) {
+                case 'error':
+                    this.logger.error(text);
+                    break;
+                case 'warn':
+                    this.logger.warn(text);
+                    break;
+                default:
+                    this.logger.info(text);
+                    break;
+            }
+            this.emit('log', { id, level, message, text });
+        };
+
+        logLine('info', `started (active ${this.active}/${this.limit})`);
+
+        const report = entry => {
+            if (!entry) return;
+            const normalized = typeof entry === 'string'
+                ? { level: 'info', message: entry }
+                : { level: entry.level || 'info', message: entry.message || '' };
+            if (!normalized.message) return;
+            logLine(normalized.level, normalized.message);
+        };
+
+        const finalize = (status, payload) => {
+            const finishedAt = Date.now();
+            const duration = finishedAt - startedAt;
+            if (status === 'fulfilled') {
+                logLine('info', `completed in ${duration}ms`);
+                this.completed.push({ id, status, value: payload, logs: [...logs], startedAt, finishedAt, duration });
+            } else {
+                const error = payload instanceof Error ? payload : new Error(String(payload));
+                const reason = error.message || 'Unknown error';
+                logLine('error', `failed after ${duration}ms: ${reason}`);
+                if (Array.isArray(error.records)) {
+                    for (const record of error.records) {
+                        if (typeof record === 'string' && record.trim()) {
+                            logLine('error', record.trim());
+                        }
+                    }
+                }
+                this.completed.push({ id, status, error, logs: [...logs], startedAt, finishedAt, duration });
+            }
+        };
+
+        Promise.resolve()
+            .then(() => run(report))
+            .then(result => {
+                finalize('fulfilled', result);
+                job.resolve(result);
+            })
+            .catch(error => {
+                finalize('rejected', error);
+                job.reject(error);
+            })
+            .finally(() => {
+                this.active = Math.max(0, this.active - 1);
+                if (this.active === 0 && this.queue.length === 0) {
+                    this.emit('idle');
+                } else {
+                    this.#process();
+                }
+            });
+    }
+}
+
+const success = (data = null, warnings = []) => ({ ok: true, data, warnings });
+
+const failure = (operation, error, context = {}) => {
+    const normalized = {
+        message: error?.json?.message || error?.message || 'Unknown error',
+        code: error?.statusCode || error?.code || null,
+        reason: error?.reason || null,
+        context
+    };
+
+    if (error?.stack) {
+        normalized.stack = error.stack;
+    }
+
+    return {
+        ok: false,
+        error: {
+            operation,
+            ...normalized
+        }
+    };
+};
+
+const readDockerIgnore = async (context, dockerfile) => {
+    const ig = ignore().add(['.git', 'node_modules', 'dist', 'build']);
+    const candidatePaths = new Set([join(context, '.dockerignore')]);
+    if (dockerfile) {
+        const dockerDir = dirname(dockerfile);
+        if (dockerDir.startsWith(context)) {
+            candidatePaths.add(join(dockerDir, '.dockerignore'));
+        }
+    }
+
+    for (const filePath of candidatePaths) {
+        try {
+            await access(filePath);
+            const contents = await readFile(filePath, 'utf8');
+            const entries = contents
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#'));
+            if (entries.length) {
+                ig.add(entries);
+            }
+        } catch {
+            // ignore missing file
+        }
+    }
+    return ig;
+};
+
+const createBuildContext = async (contextPath, dockerfile) => {
+    const absoluteContext = resolve(contextPath);
+    const ig = await readDockerIgnore(absoluteContext, dockerfile);
+    return pack(absoluteContext, {
+        ignore: (name) => {
+            if (!name) return false;
+            const relativePath = relative(absoluteContext, name);
+            if (!relativePath) return false;
+            return ig.ignores(relativePath);
+        }
+    });
+};
+
+const normalizeDockerfilePath = (contextPath, dockerfilePath) => {
+    if (!dockerfilePath) {
+        return dockerfilePath;
+    }
+
+    const normalizedContext = contextPath ? contextPath.replace(/\\/g, '/') : contextPath;
+    const normalizedDockerfile = dockerfilePath.replace(/\\/g, '/');
+    const relativePath = normalizedContext
+        ? posix.relative(normalizedContext, normalizedDockerfile)
+        : '';
+    const candidate = relativePath && relativePath.length > 0 ? relativePath : normalizedDockerfile;
+    return candidate;
+};
+
+const generateRemediation = (name, url) => {
+    if (name && /warden/i.test(name)) {
+        return [
+            'Ensure the Warden container can bind the configured host port (default 4001).',
+            'Verify the Docker socket volume (/var/run/docker.sock) is mounted so Warden can inspect other containers.',
+            `Confirm the health endpoint ${url} is reachable from the host.`,
+            'Inspect the Warden logs for startup or dependency errors.'
+        ].join(' ');
+    }
+
+    return 'Inspect the container logs and verify the Docker network configuration for the service.';
+};
+
+class DockerHost {
+    constructor(options = {}) {
+        const {
+            createDocker = (cfg) => new Docker(cfg),
+            detectDockerSockets = defaultDockerSocketDetector,
+            ...dockerOptions
+        } = options;
+        const hasOwn = (key) => Object.prototype.hasOwnProperty.call(dockerOptions, key);
+
+        const config = { ...dockerOptions };
+        const removeTcpFields = () => {
+            delete config.host;
+            delete config.port;
+            delete config.protocol;
+        };
+
+        const adoptSocketPath = (candidate) => {
+            if (typeof candidate !== 'string') {
+                return false;
+            }
+
+            const normalized = normalizeDockerSocket(candidate);
+            if (!normalized) {
+                return false;
+            }
+
+            config.socketPath = normalized;
+
+            if (isWindowsPipePath(normalized) || (
+                !hasOwn('host') &&
+                !hasOwn('port') &&
+                !hasOwn('protocol')
+            )) {
+                removeTcpFields();
+            }
+
+            return true;
+        };
+
+        let usingSocket = false;
+
+        if (hasOwn('socketPath')) {
+            usingSocket = adoptSocketPath(config.socketPath);
+            if (!usingSocket) {
+                delete config.socketPath;
+            }
+        }
+
+        const dockerHostEnv = process.env.DOCKER_HOST;
+
+        if (!usingSocket && dockerHostEnv && !hasOwn('host')) {
+            if (adoptSocketPath(dockerHostEnv)) {
+                usingSocket = true;
+            } else {
+                const url = new URL(dockerHostEnv);
+                config.host = url.hostname;
+                config.port = url.port || 2375;
+                config.protocol = url.protocol.replace(':', '');
+                delete config.socketPath;
+            }
+        }
+
+        const shouldDetectSockets =
+            !usingSocket &&
+            !dockerHostEnv &&
+            !config.socketPath &&
+            !hasOwn('socketPath') &&
+            !hasOwn('host') &&
+            !hasOwn('port') &&
+            !hasOwn('protocol') &&
+            !config.host &&
+            !config.port &&
+            !config.protocol;
+
+        if (shouldDetectSockets) {
+            const detected = typeof detectDockerSockets === 'function'
+                ? detectDockerSockets({ env: process.env })
+                : [];
+            const firstSocket = Array.isArray(detected)
+                ? detected.find((entry) => typeof entry === 'string' && entry.trim().length > 0)
+                : null;
+
+            usingSocket = adoptSocketPath(firstSocket);
+
+            if (!usingSocket) {
+                usingSocket = adoptSocketPath('/var/run/docker.sock');
+            }
+        }
+
+        if (!usingSocket && !config.host && !config.socketPath) {
+            config.socketPath = '/var/run/docker.sock';
+        }
+
+        this.docker = createDocker(config);
+    }
+
+    async _collectStream(stream) {
+        return new Promise((resolvePromise, rejectPromise) => {
+            const records = [];
+            this.docker.modem.followProgress(stream, (err, res) => {
+                if (err) {
+                    rejectPromise(err);
+                    return;
+                }
+                resolvePromise({ records, response: res });
+            }, evt => {
+                records.push(evt);
+            });
+        });
+    }
+
+    async buildImage({ context, dockerfile, tag, buildArgs = {}, noCache = false }) {
+        try {
+            const buildStream = await this.docker.buildImage(await createBuildContext(context, dockerfile), {
+                t: tag,
+                dockerfile: normalizeDockerfilePath(context, dockerfile),
+                buildargs: buildArgs,
+                nocache: noCache
+            });
+            const { records } = await this._collectStream(buildStream);
+            const warnings = records.filter(entry => entry?.stream?.toLowerCase().includes('warning'));
+            return success({ records }, warnings.map(entry => entry.stream));
+        } catch (error) {
+            return failure('buildImage', error, { context, dockerfile, tag, noCache });
+        }
+    }
+
+    async pushImage({ reference }) {
+        try {
+            const image = this.docker.getImage(reference);
+            const stream = await image.push({});
+            const { records } = await this._collectStream(stream);
+            return success({ records });
+        } catch (error) {
+            return failure('pushImage', error, { reference });
+        }
+    }
+
+    async pullImage({ reference }) {
+        try {
+            const stream = await this.docker.pull(reference);
+            const { records } = await this._collectStream(stream);
+            return success({ records });
+        } catch (error) {
+            return failure('pullImage', error, { reference });
+        }
+    }
+
+    async runContainer({ name, image, env = {}, network, hostConfig = {}, exposedPorts = {} }) {
+        try {
+            const Env = Object.entries(env).map(([key, value]) => `${key}=${value}`);
+            const baseHostConfig = { AutoRemove: true, NetworkMode: network, ...hostConfig };
+            const container = await this.docker.createContainer({
+                name,
+                Image: image,
+                Env,
+                Hostname: name,
+                HostConfig: baseHostConfig,
+                NetworkingConfig: network ? { EndpointsConfig: { [network]: {} } } : undefined,
+                ExposedPorts: Object.keys(exposedPorts).length ? exposedPorts : undefined
+            });
+            await container.start();
+            return success({ id: container.id });
+        } catch (error) {
+            return failure('runContainer', error, { name, image });
+        }
+    }
+
+    async startService({ name, healthCheck, ...options }) {
+        const result = await this.runContainer({ name, ...options });
+        if (!result.ok) {
+            return result;
+        }
+
+        try {
+            const container = this.docker.getContainer(name);
+            const inspection = await container.inspect();
+            const networks = Object.keys(inspection?.NetworkSettings?.Networks || {});
+            const attached = options.network ? networks.includes(options.network) : true;
+            if (!attached) {
+                const error = new Error(`Container is not attached to network ${options.network}`);
+                return failure('startService', error, {
+                    name,
+                    requestedNetwork: options.network,
+                    networks,
+                    networkAttached: false,
+                    inspection
+                });
+            }
+
+            if (healthCheck?.url) {
+                const { url, interval, timeout, expectedStatus } = healthCheck;
+                const healthResult = await this.waitForHealth({
+                    name,
+                    url,
+                    interval,
+                    timeout,
+                    expectedStatus
+                });
+                if (!healthResult.ok) {
+                    return {
+                        ...healthResult,
+                        error: {
+                            ...healthResult.error,
+                            context: {
+                                ...healthResult.error.context,
+                                inspection
+                            }
+                        }
+                    };
+                }
+
+                return success({
+                    id: result.data.id,
+                    inspection,
+                    health: healthResult.data
+                });
+            }
+
+            return success({ id: result.data.id, inspection });
+        } catch (error) {
+            return failure('startService', error, { name, network: options.network });
+        }
+    }
+
+    async streamLogs({
+        name,
+        follow = true,
+        stdout = true,
+        stderr = true,
+        tail = 50,
+        since,
+        onData
+    }) {
+        try {
+            const container = this.docker.getContainer(name);
+            const stream = await container.logs({
+                follow,
+                stdout,
+                stderr,
+                tail,
+                since,
+                timestamps: false
+            });
+
+            if (onData) {
+                stream.on('data', chunk => {
+                    const text = chunk?.toString?.('utf8') || '';
+                    if (!text) return;
+                    const lines = text.split(/\r?\n/).filter(Boolean);
+                    lines.forEach(line => onData(line));
+                });
+            }
+
+            return success({ stream });
+        } catch (error) {
+            return failure('streamLogs', error, { name, follow, tail, since });
+        }
+    }
+
+    async waitForHealth({ name, url, interval = 2000, timeout = 60000, expectedStatus }) {
+        const deadline = Date.now() + timeout;
+        let attempts = 0;
+        let lastError = null;
+
+        while (Date.now() <= deadline) {
+            attempts += 1;
+            try {
+                const response = await fetch(url);
+                const statusOk = expectedStatus ? response.status === expectedStatus : response.ok;
+                if (statusOk) {
+                    return success({ attempts, status: response.status });
+                }
+                lastError = new Error(`Unexpected status code: ${response.status}`);
+            } catch (error) {
+                lastError = error;
+            }
+
+            if (Date.now() + interval > deadline) {
+                break;
+            }
+            await new Promise(resolve => setTimeout(resolve, interval));
+        }
+
+        const context = {
+            name,
+            url,
+            attempts,
+            timeout,
+            remediation: generateRemediation(name, url)
+        };
+        if (lastError?.message) {
+            context.lastError = lastError.message;
+        }
+        return failure('waitForHealth', lastError || new Error('Health check timed out'), context);
+    }
+
+    async stopContainer({ name, timeout = 10 }) {
+        try {
+            const container = this.docker.getContainer(name);
+            await container.stop({ t: timeout });
+            return success({ name });
+        } catch (error) {
+            if (error?.statusCode === 304 || error?.statusCode === 404) {
+                return success({ name, skipped: true });
+            }
+            return failure('stopContainer', error, { name });
+        }
+    }
+
+    async removeResources({
+        containers = {},
+        images = {},
+        volumes = {},
+        networks = {}
+    } = {}) {
+        const summary = {
+            containers: [],
+            images: [],
+            volumes: [],
+            networks: [],
+            errors: []
+        };
+
+        const collectError = (operation, target, error) => {
+            summary.errors.push({ operation, target, message: error?.message, code: error?.statusCode || error?.code });
+        };
+
+        try {
+            if (containers?.names?.length || containers?.filters || containers?.match) {
+                const listOptions = {
+                    all: true,
+                    ...(containers.filters ? { filters: containers.filters } : {})
+                };
+                if (!containers.filters && containers.names?.length) {
+                    listOptions.filters = { name: containers.names };
+                }
+                const listed = await this.docker.listContainers(listOptions);
+                for (const info of listed) {
+                    const ref = this.docker.getContainer(info.Id);
+                    try {
+                        if (containers.match && !info.Names?.some(name => containers.match(name.replace(/^\//, '')))) {
+                            continue;
+                        }
+                        await ref.remove({ force: true, v: Boolean(containers.removeVolumes) });
+                        summary.containers.push(info.Names?.[0] || info.Id);
+                    } catch (error) {
+                        collectError('removeContainer', info.Names?.[0] || info.Id, error);
+                    }
+                }
+            }
+        } catch (error) {
+            collectError('listContainers', 'containers', error);
+        }
+
+        try {
+            if (images?.references?.length || images?.filters || images?.match) {
+                const listed = await this.docker.listImages(images.filters ? { filters: images.filters } : {});
+                const matched = listed.filter(img => {
+                    const repoTags = img.RepoTags || [];
+                    if (images.references?.length) {
+                        return repoTags.some(tag => images.references.includes(tag));
+                    }
+                    if (images.match) {
+                        return repoTags.some(tag => images.match(tag));
+                    }
+                    return false;
+                });
+                for (const img of matched) {
+                    const tag = (img.RepoTags && img.RepoTags[0]) || img.Id;
+                    try {
+                        await this.docker.getImage(img.Id).remove({ force: true, noprune: false });
+                        summary.images.push(tag);
+                    } catch (error) {
+                        collectError('removeImage', tag, error);
+                    }
+                }
+            }
+        } catch (error) {
+            collectError('listImages', 'images', error);
+        }
+
+        try {
+            if (volumes?.filters) {
+                const { Volumes = [] } = await this.docker.listVolumes({ filters: volumes.filters });
+                for (const volume of Volumes) {
+                    try {
+                        await this.docker.getVolume(volume.Name).remove({ force: true });
+                        summary.volumes.push(volume.Name);
+                    } catch (error) {
+                        collectError('removeVolume', volume.Name, error);
+                    }
+                }
+            }
+        } catch (error) {
+            collectError('listVolumes', 'volumes', error);
+        }
+
+        try {
+            if (networks?.names?.length || networks?.filters) {
+                const listed = await this.docker.listNetworks(networks.filters ? { filters: networks.filters } : {});
+                const matched = listed.filter(net => {
+                    if (networks.names?.length) {
+                        return networks.names.includes(net.Name);
+                    }
+                    return true;
+                });
+                for (const net of matched) {
+                    try {
+                        await this.docker.getNetwork(net.Id).remove();
+                        summary.networks.push(net.Name);
+                    } catch (error) {
+                        collectError('removeNetwork', net.Name, error);
+                    }
+                }
+            }
+        } catch (error) {
+            collectError('listNetworks', 'networks', error);
+        }
+
+        if (summary.errors.length) {
+            return {
+                ok: false,
+                data: summary,
+                error: {
+                    operation: 'removeResources',
+                    message: 'Some resources could not be removed',
+                    details: summary.errors
+                }
+            };
+        }
+
+        return success(summary);
+    }
+
+    async inspectNetwork(name) {
+        try {
+            const network = this.docker.getNetwork(name);
+            const details = await network.inspect();
+            return success(details);
+        } catch (error) {
+            if (error?.statusCode === 404) {
+                return failure('inspectNetwork', error, { name, notFound: true });
+            }
+            return failure('inspectNetwork', error, { name });
+        }
+    }
+
+    async createNetwork({ name, options = {} }) {
+        try {
+            const network = await this.docker.createNetwork({ Name: name, ...options });
+            return success(await network.inspect());
+        } catch (error) {
+            return failure('createNetwork', error, { name });
+        }
+    }
+
+    async listContainers(options = {}) {
+        try {
+            const containers = await this.docker.listContainers(options);
+            return success(containers);
+        } catch (error) {
+            return failure('listContainers', error, options);
+        }
+    }
+}
+
+const dockerHost = new DockerHost();
+
+const buildImage = options => dockerHost.buildImage(options);
+const pushImage = options => dockerHost.pushImage(options);
+const pullImage = options => dockerHost.pullImage(options);
+const runContainer = options => dockerHost.runContainer(options);
+const startService = options => dockerHost.startService(options);
+const streamLogs = options => dockerHost.streamLogs(options);
+const waitForHealth = options => dockerHost.waitForHealth(options);
+const stopContainer = options => dockerHost.stopContainer(options);
+const removeResources = options => dockerHost.removeResources(options);
+const inspectNetwork = name => dockerHost.inspectNetwork(name);
+const createNetwork = options => dockerHost.createNetwork(options);
+const listContainers = options => dockerHost.listContainers(options);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(__dirname, '..');
-export const LOG_DIR = resolve(__dirname, 'logs');
+const LOG_DIR = resolve(__dirname, 'logs');
 const DOCKERHUB_USER = 'captainpax';
-export const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault', 'portal'];
+const SERVICES = ['moon', 'warden', 'raven', 'sage', 'vault', 'portal'];
 const NETWORK_NAME = 'noona-network';
 const DEFAULT_WORKER_THREADS = 4;
 const DEFAULT_SUBPROCESSES_PER_WORKER = 2;
@@ -102,7 +839,7 @@ const createTimestampedLogFile = async () => {
 
 let activeLogFilePath = null;
 
-export const getActiveDeploymentLogFile = async () => {
+const getActiveDeploymentLogFile = async () => {
     if (!activeLogFilePath) {
         try {
             activeLogFilePath = await createTimestampedLogFile();
@@ -114,7 +851,7 @@ export const getActiveDeploymentLogFile = async () => {
     return activeLogFilePath;
 };
 
-export const appendDeploymentLogEntry = async (level = 'info', message = '') => {
+const appendDeploymentLogEntry = async (level = 'info', message = '') => {
     const text = stripAnsi(String(message ?? ''));
     if (!text.trim()) {
         return;
@@ -138,7 +875,7 @@ const collectDetectedSockets = detectionResult => {
         .filter(candidate => typeof candidate === 'string' && candidate.trim().length > 0);
 };
 
-export const resolveDockerSocketBinding = ({
+const resolveDockerSocketBinding = ({
     detectSockets = defaultDockerSocketDetector,
     platform = process.platform,
 } = {}) => {
@@ -268,7 +1005,7 @@ const emitThroughReporter = (kind, fallback, message) => {
     fallback(message);
 };
 
-export const readLifecycleHistory = async () => {
+const readLifecycleHistory = async () => {
     try {
         const raw = await readFile(HISTORY_FILE, 'utf8');
         const parsed = JSON.parse(raw);
@@ -464,21 +1201,23 @@ const saveDeploymentConfig = async updater => {
     return normalized;
 };
 
-export const getDeploymentSettings = async () => loadDeploymentConfig();
+const fetchSettings = async () => loadDeploymentConfig();
 
-export const updateBuildConcurrencyDefaults = async ({ workerThreads, subprocessesPerWorker }) => {
+const updateSettings = async (updates = {}) => {
+    const concurrencySource = updates.concurrency || updates.buildScheduler || updates;
+    const defaultsSource = updates.defaults || updates;
+
+    const workerThreads = concurrencySource.workerThreads ?? updates.workerThreads;
+    const subprocessesPerWorker = concurrencySource.subprocessesPerWorker ?? updates.subprocessesPerWorker;
+    const debugLevel = defaultsSource.debugLevel ?? updates.debugLevel;
+    const bootMode = defaultsSource.bootMode ?? updates.bootMode;
+
     return saveDeploymentConfig(config => ({
         ...config,
         buildScheduler: {
             workerThreads: workerThreads ?? config.buildScheduler.workerThreads,
             subprocessesPerWorker: subprocessesPerWorker ?? config.buildScheduler.subprocessesPerWorker
-        }
-    }));
-};
-
-export const updateDebugDefaults = async ({ debugLevel, bootMode }) => {
-    return saveDeploymentConfig(config => ({
-        ...config,
+        },
         defaults: {
             debugLevel: debugLevel ?? config.defaults.debugLevel,
             bootMode: bootMode ?? config.defaults.bootMode
@@ -729,7 +1468,7 @@ const ensureExecutables = async service => {
     }
 };
 
-export const createContainerOptions = (service, image, envVars = {}, {
+const createContainerOptions = (service, image, envVars = {}, {
     detectDockerSockets,
     platform,
 } = {}) => {
@@ -801,7 +1540,7 @@ const ensureNetwork = async () => {
     throw new Error(inspection.error?.message || 'Unable to inspect network');
 };
 
-export const stopAllContainers = async ({ reporter } = {}) => {
+const stopAllContainers = async ({ reporter } = {}) => {
     return withReporter(reporter, async () => {
         console.log(`${colors.yellow}⏹ Stopping all running Noona containers...${colors.reset}`);
         const results = await listContainers({ filters: { name: ['noona-'] } });
@@ -880,7 +1619,7 @@ if (services === 'all') return [...SERVICES];
         .filter(value => SERVICES.includes(value));
 };
 
-export const cleanServices = async (services, { reporter } = {}) => {
+const cleanServices = async (services, { reporter } = {}) => {
     const targets = normalizeServices(services);
     if (!targets.length) {
         return { ok: false, results: [] };
@@ -917,7 +1656,7 @@ export const cleanServices = async (services, { reporter } = {}) => {
     });
 };
 
-export const deleteDockerResources = async ({ reporter, confirm = false } = {}) => {
+const deleteDockerResources = async ({ reporter, confirm = false } = {}) => {
     return withReporter(reporter, async () => {
         if (!confirm) {
             print.error('Delete aborted.');
@@ -943,7 +1682,7 @@ export const deleteDockerResources = async ({ reporter, confirm = false } = {}) 
     });
 };
 
-export const buildServices = async (services, options = {}) => {
+const buildServices = async (services, options = {}) => {
     const targets = normalizeServices(services);
     if (!targets.length) {
         print.error('No services selected for build.');
@@ -994,7 +1733,7 @@ const runRegistryOperation = async ({
     });
 };
 
-export const pushServices = async (services, { reporter, onProgress } = {}) => {
+const pushServices = async (services, { reporter, onProgress } = {}) => {
     return runRegistryOperation({
         services,
         operation: pushImage,
@@ -1004,7 +1743,7 @@ export const pushServices = async (services, { reporter, onProgress } = {}) => {
     });
 };
 
-export const pullServices = async (services, { reporter, onProgress } = {}) => {
+const pullServices = async (services, { reporter, onProgress } = {}) => {
     return runRegistryOperation({
         services,
         operation: pullImage,
@@ -1022,7 +1761,7 @@ const resolveDebugDefaults = async ({ debugLevel, bootMode } = {}) => {
     return { bootMode: resolvedBoot, debugLevel: effectiveDebug, requestedDebug: resolvedDebug };
 };
 
-export const startServices = async (services, {
+const startServices = async (services, {
     reporter,
     debugLevel,
     bootMode,
@@ -1182,7 +1921,7 @@ export const startServices = async (services, {
     });
 };
 
-export const listManagedContainers = async ({ includeStopped = true } = {}) => {
+const listManagedContainers = async ({ includeStopped = true } = {}) => {
     const filters = { name: ['noona-'] };
     const result = await listContainers({ filters, all: includeStopped });
     if (!result.ok) {
@@ -1198,5 +1937,143 @@ export const listManagedContainers = async ({ includeStopped = true } = {}) => {
         ports: formatPorts(info.Ports),
         createdAt: info.Created ? new Date(info.Created * 1000).toISOString() : null
     }));
+};
+
+const listServices = async ({ includeContainers = false, includeHistory = false, includeStopped = true } = {}) => {
+    const payload = {
+        services: [...SERVICES]
+    };
+    const errors = [];
+
+    if (includeContainers) {
+        try {
+            payload.containers = await listManagedContainers({ includeStopped });
+        } catch (error) {
+            errors.push({ scope: 'containers', message: error?.message || 'Unable to list containers' });
+        }
+    }
+
+    if (includeHistory) {
+        try {
+            payload.history = await readLifecycleHistory();
+        } catch (error) {
+            errors.push({ scope: 'history', message: error?.message || 'Unable to read lifecycle history' });
+        }
+    }
+
+    if (errors.length) {
+        payload.errors = errors;
+    }
+
+    return {
+        ok: errors.length === 0,
+        ...payload
+    };
+};
+
+const build = async ({ services, useNoCache = false, concurrency = {}, reporter, onProgress } = {}) => {
+    return buildServices(services, { useNoCache, concurrency, reporter, onProgress });
+};
+
+const push = async ({ services, reporter, onProgress } = {}) => {
+    return pushServices(services, { reporter, onProgress });
+};
+
+const pull = async ({ services, reporter, onProgress } = {}) => {
+    return pullServices(services, { reporter, onProgress });
+};
+
+const start = async ({ services, reporter, debugLevel, bootMode, onProgress, onLog } = {}) => {
+    return startServices(services, { reporter, debugLevel, bootMode, onProgress, onLog });
+};
+
+const stop = async ({ reporter } = {}) => {
+    return stopAllContainers({ reporter });
+};
+
+const clean = async ({ services, reporter } = {}) => {
+    return cleanServices(services, { reporter });
+};
+
+const deleteResources = async ({ reporter, confirm = false } = {}) => {
+    return deleteDockerResources({ reporter, confirm });
+};
+
+const fetchSettingsResult = async () => {
+    const settings = await fetchSettings();
+    return { ok: true, settings };
+};
+
+const updateSettingsResult = async (updates = {}) => {
+    const settings = await updateSettings(updates);
+    return { ok: true, settings };
+};
+
+const dockerManager = Object.freeze({
+    services: Object.freeze([...SERVICES]),
+    get logDirectory() {
+        return LOG_DIR;
+    },
+    logs: {
+        directory: LOG_DIR,
+        getActiveFile: () => getActiveDeploymentLogFile(),
+        append: (level, message) => appendDeploymentLogEntry(level, message)
+    },
+    history: {
+        read: () => readLifecycleHistory()
+    },
+    containers: {
+        list: (options) => listManagedContainers(options)
+    },
+    listServices,
+    build,
+    push,
+    pull,
+    start,
+    stop,
+    clean,
+    deleteResources,
+    fetchSettings: fetchSettingsResult,
+    updateSettings: updateSettingsResult,
+    __internals: {
+        BuildQueue,
+        DockerHost,
+        normalizeDockerfilePath,
+        resolveDockerSocketBinding,
+        createContainerOptions,
+        buildImage,
+        pushImage,
+        pullImage,
+        runContainer,
+        startService,
+        streamLogs,
+        waitForHealth,
+        stopContainer,
+        removeResources,
+        inspectNetwork,
+        createNetwork,
+        listContainers,
+        dockerHost,
+        getActiveDeploymentLogFile,
+        appendDeploymentLogEntry,
+        readLifecycleHistory,
+        listManagedContainers,
+        fetchSettings,
+        updateSettings
+    }
+});
+
+export default dockerManager;
+export {
+    listServices,
+    build,
+    push,
+    pull,
+    start,
+    stop,
+    clean,
+    deleteResources,
+    fetchSettingsResult as fetchSettings,
+    updateSettingsResult as updateSettings
 };
 
