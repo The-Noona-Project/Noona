@@ -1499,6 +1499,7 @@ const createContainerOptions = (service, image, envVars = {}, {
     detectDockerSockets,
     platform,
     hostDockerSocketOverride,
+    bindHostDockerSocket = true,
 } = {}) => {
     const entries = Object.entries(envVars)
         .filter(([, value]) => typeof value === 'string' && value.trim() !== '');
@@ -1509,26 +1510,32 @@ const createContainerOptions = (service, image, envVars = {}, {
     }
 
     const containerName = normalizedEnv.SERVICE_NAME;
-    const normalizedOverride = hostDockerSocketOverride !== undefined
-        ? normalizeHostDockerSocketOverride(hostDockerSocketOverride)
-        : null;
-
-    let hostDockerSocket = normalizedOverride;
-    if (!hostDockerSocket) {
-        hostDockerSocket =
-            typeof detectDockerSockets === 'function' || typeof platform === 'string'
-                ? resolveDockerSocketBinding({ detectSockets: detectDockerSockets, platform })
-                : getDefaultDockerSocketBinding();
-    }
-
-    const hostConfig = {
-        Binds: [`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`]
-    };
+    const hostConfig = { Binds: [] };
     const socketCandidates = new Set();
-    if (typeof hostDockerSocket === 'string' && hostDockerSocket.trim()) {
-        socketCandidates.add(hostDockerSocket.trim());
+
+    if (bindHostDockerSocket) {
+        const normalizedOverride = hostDockerSocketOverride !== undefined
+            ? normalizeHostDockerSocketOverride(hostDockerSocketOverride)
+            : null;
+
+        let hostDockerSocket = normalizedOverride;
+        if (!hostDockerSocket) {
+            hostDockerSocket =
+                typeof detectDockerSockets === 'function' || typeof platform === 'string'
+                    ? resolveDockerSocketBinding({ detectSockets: detectDockerSockets, platform })
+                    : getDefaultDockerSocketBinding();
+        }
+
+        if (typeof hostDockerSocket === 'string' && hostDockerSocket.trim()) {
+            hostConfig.Binds.push(`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`);
+            socketCandidates.add(hostDockerSocket.trim());
+        } else if (hostDockerSocket) {
+            hostConfig.Binds.push(`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`);
+        }
+
+        socketCandidates.add(DOCKER_SOCKET_TARGET);
     }
-    socketCandidates.add(DOCKER_SOCKET_TARGET);
+
     const exposedPorts = {};
 
     if (service === 'warden') {
@@ -1537,10 +1544,10 @@ const createContainerOptions = (service, image, envVars = {}, {
         hostConfig.PortBindings = { [portKey]: [{ HostPort: apiPort }] };
         exposedPorts[portKey] = {};
 
-        if (!normalizedEnv.NOONA_HOST_DOCKER_SOCKETS) {
+        if (bindHostDockerSocket && !normalizedEnv.NOONA_HOST_DOCKER_SOCKETS && socketCandidates.size > 0) {
             normalizedEnv.NOONA_HOST_DOCKER_SOCKETS = Array.from(socketCandidates).join(',');
         }
-        if (!normalizedEnv.HOST_DOCKER_SOCKETS) {
+        if (bindHostDockerSocket && !normalizedEnv.HOST_DOCKER_SOCKETS && socketCandidates.size > 0) {
             normalizedEnv.HOST_DOCKER_SOCKETS = normalizedEnv.NOONA_HOST_DOCKER_SOCKETS;
         }
     }
@@ -1803,7 +1810,8 @@ const startServices = async (services, {
     bootMode,
     onProgress,
     onLog,
-    hostDockerSocketOverride
+    hostDockerSocketOverride,
+    bindHostDockerSocket = true
 } = {}) => {
     const targets = normalizeServices(services);
     if (!targets.length) {
@@ -1814,9 +1822,11 @@ const startServices = async (services, {
     return withReporter(reporter, async () => {
         const results = [];
         const config = await loadDeploymentConfig();
-        const resolvedHostDockerSocketOverride = hostDockerSocketOverride !== undefined
-            ? hostDockerSocketOverride
-            : config.hostDockerSocketOverride;
+        const resolvedHostDockerSocketOverride = bindHostDockerSocket
+            ? (hostDockerSocketOverride !== undefined
+                ? hostDockerSocketOverride
+                : config.hostDockerSocketOverride)
+            : undefined;
 
         for (const svc of targets) {
             if (svc !== 'warden') {
@@ -1841,7 +1851,8 @@ const startServices = async (services, {
                     DEBUG: settings.debugLevel,
                     BOOT_MODE: settings.bootMode
                 }, {
-                    hostDockerSocketOverride: resolvedHostDockerSocketOverride
+                    hostDockerSocketOverride: resolvedHostDockerSocketOverride,
+                    bindHostDockerSocket
                 });
 
                 const cleanup = await removeResources({ containers: { names: [options.name] } });
@@ -2027,8 +2038,8 @@ const pull = async ({ services, reporter, onProgress } = {}) => {
     return pullServices(services, { reporter, onProgress });
 };
 
-const start = async ({ services, reporter, debugLevel, bootMode, onProgress, onLog, hostDockerSocketOverride } = {}) => {
-    return startServices(services, { reporter, debugLevel, bootMode, onProgress, onLog, hostDockerSocketOverride });
+const start = async ({ services, reporter, debugLevel, bootMode, onProgress, onLog, hostDockerSocketOverride, bindHostDockerSocket } = {}) => {
+    return startServices(services, { reporter, debugLevel, bootMode, onProgress, onLog, hostDockerSocketOverride, bindHostDockerSocket });
 };
 
 const stop = async ({ reporter } = {}) => {
