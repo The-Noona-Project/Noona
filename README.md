@@ -55,7 +55,27 @@ This design allows you to keep the core management stack on a primary machine wh
 - **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
 - **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
 
-The `deployment/` directory contains Dockerfiles for single-service containers. The `dockerManager.mjs` module centralizes build, registry, and lifecycle helpers that back the deployment control server (`deployment/webServer.mjs`). Launch the server with `npm run deploy:server` and open the static control panel (`deployment/control-panel.html`) to trigger NDJSON-streamed build, push, pull, start, stop, clean, and delete workflows. Form controls let you choose individual services, toggle clean builds, and override debug/boot options; leave service inputs blank to target the full stack.
+The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now replaces the retired Ink CLI.
+
+### Deployment control panel workflow
+
+1. Install dependencies (first run only):
+   ```bash
+   npm install
+   ```
+2. Start the deployment server:
+   ```bash
+   npm run deploy:server
+   ```
+3. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route serves `deployment/control-panel.html`, a static dashboard that streams newline-delimited JSON updates for every action.
+
+From the control panel you can:
+
+- Inspect current state via **Refresh status** (`GET /api/services`) and **Load settings** (`GET /api/settings`).
+- Trigger builds, pushes, pulls, starts, stops, cleans, and destructive deletes. Each card posts to the corresponding `/api/*` endpoint and renders NDJSON log output in real time, including container log tails.
+- Apply JSON patches to deployment defaults through the settings editor, which submits to `PATCH /api/settings`.
+
+Leave the service selection blank to operate on the full stack, or provide comma-separated names (or `all`) to target specific workloads. Debug level and boot mode overrides flow straight to the Docker helpers so you can reproduce production-like orchestrations locally.
 
 ## Roadmap & Vision
 
