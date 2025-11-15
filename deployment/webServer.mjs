@@ -52,24 +52,24 @@ const normalizeRequestedServices = (input) => {
     return undefined;
 };
 
-const normalizeContextServices = (input) => {
+const normalizeContextServices = (input, availableServices = dockerManager.services) => {
     if (!input) {
         return undefined;
     }
     if (input === 'all') {
-        return [...dockerManager.services];
+        return [...availableServices];
     }
     if (Array.isArray(input)) {
         if (input.some((name) => typeof name === 'string' && name.trim().toLowerCase() === 'all')) {
-            return [...dockerManager.services];
+            return [...availableServices];
         }
         return input
             .map((name) => (typeof name === 'string' ? name.trim().toLowerCase() : ''))
-            .filter((name) => dockerManager.services.includes(name));
+            .filter((name) => availableServices.includes(name));
     }
     if (typeof input === 'string') {
         const normalized = input.trim().toLowerCase();
-        return dockerManager.services.includes(normalized) ? [normalized] : [];
+        return availableServices.includes(normalized) ? [normalized] : [];
     }
     return [];
 };
@@ -143,196 +143,216 @@ const streamOperation = (res, { action, context, handler }) => {
     })();
 };
 
-export const app = express();
+const createApp = ({
+    services = dockerManager.services,
+    listServices: listServicesFn = listServices,
+    fetchSettings: fetchSettingsFn = fetchSettings,
+    updateSettings: updateSettingsFn = updateSettings,
+    build: buildFn = build,
+    start: startFn = start,
+    stop: stopFn = stop,
+    push: pushFn = push,
+    pull: pullFn = pull,
+    clean: cleanFn = clean,
+    deleteResources: deleteResourcesFn = deleteResources
+} = {}) => {
+    const app = express();
+    const availableServices = Array.isArray(services) ? services : dockerManager.services;
 
-app.use(express.json({ limit: '1mb' }));
+    app.use(express.json({ limit: '1mb' }));
 
-app.get('/health', (req, res) => {
-    res.json({ ok: true });
-});
+    app.get('/health', (req, res) => {
+        res.json({ ok: true });
+    });
 
-app.get('/', (req, res, next) => {
-    res.sendFile(CONTROL_PANEL_PATH, (error) => {
-        if (error) {
-            next(error);
+    app.get('/', (req, res, next) => {
+        res.sendFile(CONTROL_PANEL_PATH, (error) => {
+            if (error) {
+                next(error);
+            }
+        });
+    });
+
+    app.get('/api/services', async (req, res) => {
+        try {
+            const includeStopped = req.query.includeStopped !== 'false';
+            const result = await listServicesFn({
+                includeContainers: true,
+                includeHistory: true,
+                includeStopped
+            });
+
+            const payload = {
+                ok: result.ok,
+                services: result.services,
+                containers: result.containers || [],
+                history: result.history || []
+            };
+
+            if (result.errors) {
+                payload.errors = result.errors;
+            }
+
+            res.status(result.ok ? 200 : 207).json(payload);
+        } catch (error) {
+            res.status(500).json({ error: error?.message || 'Unable to list services' });
         }
     });
-});
 
-app.get('/api/services', async (req, res) => {
-    try {
-        const includeStopped = req.query.includeStopped !== 'false';
-        const result = await listServices({
-            includeContainers: true,
-            includeHistory: true,
-            includeStopped
-        });
+    app.get('/api/settings', async (req, res) => {
+        try {
+            const result = await fetchSettingsFn();
+            if (result?.ok) {
+                res.json(result.settings);
+                return;
+            }
+            res.status(500).json({ error: result?.error?.message || 'Unable to load settings' });
+        } catch (error) {
+            res.status(500).json({ error: error?.message || 'Unable to load settings' });
+        }
+    });
 
-        const payload = {
-            ok: result.ok,
-            services: result.services,
-            containers: result.containers || [],
-            history: result.history || []
+    app.patch('/api/settings', async (req, res) => {
+        try {
+            const result = await updateSettingsFn(req.body || {});
+            if (result?.ok) {
+                res.json(result.settings);
+                return;
+            }
+            res.status(500).json({ error: result?.error?.message || 'Unable to update settings' });
+        } catch (error) {
+            res.status(500).json({ error: error?.message || 'Unable to update settings' });
+        }
+    });
+
+    app.post('/api/build', (req, res) => {
+        const { services: requestedServices, useNoCache = false, concurrency = {} } = req.body || {};
+        const requested = normalizeRequestedServices(requestedServices);
+        const context = {
+            services: normalizeContextServices(requested || requestedServices, availableServices)
         };
 
-        if (result.errors) {
-            payload.errors = result.errors;
-        }
-
-        res.status(result.ok ? 200 : 207).json(payload);
-    } catch (error) {
-        res.status(500).json({ error: error?.message || 'Unable to list services' });
-    }
-});
-
-app.get('/api/settings', async (req, res) => {
-    try {
-        const result = await fetchSettings();
-        if (result?.ok) {
-            res.json(result.settings);
-            return;
-        }
-        res.status(500).json({ error: result?.error?.message || 'Unable to load settings' });
-    } catch (error) {
-        res.status(500).json({ error: error?.message || 'Unable to load settings' });
-    }
-});
-
-app.patch('/api/settings', async (req, res) => {
-    try {
-        const result = await updateSettings(req.body || {});
-        if (result?.ok) {
-            res.json(result.settings);
-            return;
-        }
-        res.status(500).json({ error: result?.error?.message || 'Unable to update settings' });
-    } catch (error) {
-        res.status(500).json({ error: error?.message || 'Unable to update settings' });
-    }
-});
-
-app.post('/api/build', (req, res) => {
-    const { services, useNoCache = false, concurrency = {} } = req.body || {};
-    const requested = normalizeRequestedServices(services);
-    const context = {
-        services: normalizeContextServices(requested || services)
-    };
-
-    streamOperation(res, {
-        action: 'build',
-        context,
-        handler: (channel) =>
-            build({
-                services: requested ?? services,
-                useNoCache,
-                concurrency,
-                reporter: channel.reporter,
-                onProgress: (event) => channel.write({ type: 'progress', event })
-            })
+        streamOperation(res, {
+            action: 'build',
+            context,
+            handler: (channel) =>
+                buildFn({
+                    services: requested ?? requestedServices,
+                    useNoCache,
+                    concurrency,
+                    reporter: channel.reporter,
+                    onProgress: (event) => channel.write({ type: 'progress', event })
+                })
+        });
     });
-});
 
-app.post('/api/start', (req, res) => {
-    const { services, debugLevel, bootMode } = req.body || {};
-    const requested = normalizeRequestedServices(services);
-    const context = {
-        services: normalizeContextServices(requested || services),
-        debugLevel,
-        bootMode
-    };
+    app.post('/api/start', (req, res) => {
+        const { services: requestedServices, debugLevel, bootMode } = req.body || {};
+        const requested = normalizeRequestedServices(requestedServices);
+        const context = {
+            services: normalizeContextServices(requested || requestedServices, availableServices),
+            debugLevel,
+            bootMode
+        };
 
-    streamOperation(res, {
-        action: 'start',
-        context,
-        handler: (channel) =>
-            start({
-                services: requested ?? services,
-                debugLevel,
-                bootMode,
-                reporter: channel.reporter,
-                onProgress: (event) => channel.write({ type: 'progress', event }),
-                onLog: (event) => channel.write({ type: 'container-log', event })
-            })
+        streamOperation(res, {
+            action: 'start',
+            context,
+            handler: (channel) =>
+                startFn({
+                    services: requested ?? requestedServices,
+                    debugLevel,
+                    bootMode,
+                    reporter: channel.reporter,
+                    onProgress: (event) => channel.write({ type: 'progress', event }),
+                    onLog: (event) => channel.write({ type: 'container-log', event })
+                })
+        });
     });
-});
 
-app.post('/api/stop', (req, res) => {
-    streamOperation(res, {
-        action: 'stop',
-        handler: (channel) => stop({ reporter: channel.reporter })
+    app.post('/api/stop', (req, res) => {
+        streamOperation(res, {
+            action: 'stop',
+            handler: (channel) => stopFn({ reporter: channel.reporter })
+        });
     });
-});
 
-app.post('/api/push', (req, res) => {
-    const { services } = req.body || {};
-    const requested = normalizeRequestedServices(services);
-    const context = {
-        services: normalizeContextServices(requested || services)
-    };
+    app.post('/api/push', (req, res) => {
+        const { services: requestedServices } = req.body || {};
+        const requested = normalizeRequestedServices(requestedServices);
+        const context = {
+            services: normalizeContextServices(requested || requestedServices, availableServices)
+        };
 
-    streamOperation(res, {
-        action: 'push',
-        context,
-        handler: (channel) =>
-            push({
-                services: requested ?? services,
-                reporter: channel.reporter,
-                onProgress: (event) => channel.write({ type: 'progress', event })
-            })
+        streamOperation(res, {
+            action: 'push',
+            context,
+            handler: (channel) =>
+                pushFn({
+                    services: requested ?? requestedServices,
+                    reporter: channel.reporter,
+                    onProgress: (event) => channel.write({ type: 'progress', event })
+                })
+        });
     });
-});
 
-app.post('/api/pull', (req, res) => {
-    const { services } = req.body || {};
-    const requested = normalizeRequestedServices(services);
-    const context = {
-        services: normalizeContextServices(requested || services)
-    };
+    app.post('/api/pull', (req, res) => {
+        const { services: requestedServices } = req.body || {};
+        const requested = normalizeRequestedServices(requestedServices);
+        const context = {
+            services: normalizeContextServices(requested || requestedServices, availableServices)
+        };
 
-    streamOperation(res, {
-        action: 'pull',
-        context,
-        handler: (channel) =>
-            pull({
-                services: requested ?? services,
-                reporter: channel.reporter,
-                onProgress: (event) => channel.write({ type: 'progress', event })
-            })
+        streamOperation(res, {
+            action: 'pull',
+            context,
+            handler: (channel) =>
+                pullFn({
+                    services: requested ?? requestedServices,
+                    reporter: channel.reporter,
+                    onProgress: (event) => channel.write({ type: 'progress', event })
+                })
+        });
     });
-});
 
-app.post('/api/clean', (req, res) => {
-    const { services } = req.body || {};
-    const requested = normalizeRequestedServices(services);
-    const context = {
-        services: normalizeContextServices(requested || services)
-    };
+    app.post('/api/clean', (req, res) => {
+        const { services: requestedServices } = req.body || {};
+        const requested = normalizeRequestedServices(requestedServices);
+        const context = {
+            services: normalizeContextServices(requested || requestedServices, availableServices)
+        };
 
-    streamOperation(res, {
-        action: 'clean',
-        context,
-        handler: (channel) =>
-            clean({
-                services: requested ?? services,
-                reporter: channel.reporter
-            })
+        streamOperation(res, {
+            action: 'clean',
+            context,
+            handler: (channel) =>
+                cleanFn({
+                    services: requested ?? requestedServices,
+                    reporter: channel.reporter
+                })
+        });
     });
-});
 
-app.post('/api/delete', (req, res) => {
-    const { confirm = false } = req.body || {};
-    const context = { confirm: Boolean(confirm) };
+    app.post('/api/delete', (req, res) => {
+        const { confirm = false } = req.body || {};
+        const context = { confirm: Boolean(confirm) };
 
-    streamOperation(res, {
-        action: 'delete',
-        context,
-        handler: (channel) =>
-            deleteResources({
-                reporter: channel.reporter,
-                confirm: Boolean(confirm)
-            })
+        streamOperation(res, {
+            action: 'delete',
+            context,
+            handler: (channel) =>
+                deleteResourcesFn({
+                    reporter: channel.reporter,
+                    confirm: Boolean(confirm)
+                })
+        });
     });
-});
+
+    return app;
+};
+
+export { createApp };
+export const app = createApp();
 
 const port = resolvePort();
 
