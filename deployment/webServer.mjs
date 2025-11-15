@@ -247,44 +247,64 @@ const createApp = ({
     });
 
     app.post('/api/start', (req, res) => {
-        const { services: requestedServices, debugLevel, bootMode } = req.body || {};
+        const {
+            services: requestedServices,
+            debugLevel,
+            bootMode,
+            useHostDockerSocket,
+            hostDockerSocketOverride: hostDockerSocketOverrideRequest
+        } = req.body || {};
         const requested = normalizeRequestedServices(requestedServices);
+        const bindHostDockerSocket = useHostDockerSocket !== false;
         const context = {
             services: normalizeContextServices(requested || requestedServices, availableServices),
             debugLevel,
-            bootMode
+            bootMode,
+            useHostDockerSocket: bindHostDockerSocket
         };
+
+        if (bindHostDockerSocket && hostDockerSocketOverrideRequest !== undefined) {
+            context.hostDockerSocketOverride = hostDockerSocketOverrideRequest;
+        }
 
         streamOperation(res, {
             action: 'start',
             context,
             handler: async (channel) => {
-                let hostDockerSocketOverride;
-                try {
-                    const settingsResult = await fetchSettingsFn();
-                    if (settingsResult?.ok === false) {
+                let hostDockerSocketOverride = bindHostDockerSocket ? hostDockerSocketOverrideRequest : undefined;
+
+                if (bindHostDockerSocket && hostDockerSocketOverride === undefined) {
+                    try {
+                        const settingsResult = await fetchSettingsFn();
+                        if (settingsResult?.ok === false) {
+                            channel.write({
+                                type: 'log',
+                                level: 'warn',
+                                message: 'Deployment settings unavailable; using defaults.'
+                            });
+                        }
+                        const resolvedSettings = settingsResult?.settings ?? settingsResult ?? {};
+                        if (resolvedSettings && Object.prototype.hasOwnProperty.call(resolvedSettings, 'hostDockerSocketOverride')) {
+                            hostDockerSocketOverride = resolvedSettings.hostDockerSocketOverride;
+                        }
+                    } catch (error) {
                         channel.write({
                             type: 'log',
                             level: 'warn',
-                            message: 'Deployment settings unavailable; using defaults.'
+                            message: `Unable to load deployment settings: ${error?.message || error || 'unknown error'}`
                         });
                     }
-                    const resolvedSettings = settingsResult?.settings ?? settingsResult ?? {};
-                    if (resolvedSettings && Object.prototype.hasOwnProperty.call(resolvedSettings, 'hostDockerSocketOverride')) {
-                        hostDockerSocketOverride = resolvedSettings.hostDockerSocketOverride;
-                    }
-                } catch (error) {
-                    channel.write({
-                        type: 'log',
-                        level: 'warn',
-                        message: `Unable to load deployment settings: ${error?.message || error || 'unknown error'}`
-                    });
+                }
+
+                if (bindHostDockerSocket) {
+                    context.hostDockerSocketOverride = hostDockerSocketOverride;
                 }
 
                 return startFn({
                     services: requested ?? requestedServices,
                     debugLevel,
                     bootMode,
+                    bindHostDockerSocket,
                     hostDockerSocketOverride,
                     reporter: channel.reporter,
                     onProgress: (event) => channel.write({ type: 'progress', event }),

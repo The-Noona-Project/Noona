@@ -156,6 +156,10 @@
       flex: 1 1 140px;
     }
 
+    .is-hidden {
+      display: none !important;
+    }
+
     .log-entry {
       display: flex;
       gap: 0.65rem;
@@ -231,8 +235,9 @@
       <h2>Push / Pull</h2>
       <fieldset>
         <label>
-          Services (comma separated)
-          <input id="registry-services" placeholder="warden,portal" autocomplete="off" />
+          Services
+          <select id="registry-services" multiple size="6" aria-describedby="registry-services-help"></select>
+          <span id="registry-services-help" class="help-text">Select one or more services, or choose “All services” to operate on every image.</span>
         </label>
       </fieldset>
       <div class="controls">
@@ -246,8 +251,9 @@
       <fieldset>
         <div class="inline-group">
           <label>
-            Services (comma separated)
-            <input id="start-services" placeholder="warden" autocomplete="off" />
+            Services
+            <select id="start-services" multiple size="6" aria-describedby="start-services-help"></select>
+            <span id="start-services-help" class="help-text">Select one or more services to launch, or choose “All services”.</span>
           </label>
           <label>
             Debug level
@@ -266,6 +272,10 @@
             </select>
           </label>
         </div>
+        <label id="start-docker-socket-field" class="is-hidden">
+          <input type="checkbox" id="start-docker-socket" checked /> Bind host Docker socket
+          <span class="help-text">Expose the host Docker socket when launching Warden. Override the socket path from the Settings panel if needed.</span>
+        </label>
       </fieldset>
       <div class="controls">
         <button type="button" data-action="start">Start services</button>
@@ -277,8 +287,9 @@
       <h2>Cleanup</h2>
       <fieldset>
         <label>
-          Services (comma separated for clean)
-          <input id="clean-services" placeholder="warden" autocomplete="off" />
+          Services
+          <select id="clean-services" multiple size="6" aria-describedby="clean-services-help"></select>
+          <span id="clean-services-help" class="help-text">Select specific services or choose “All services” to remove every resource.</span>
         </label>
         <label>
           <input type="checkbox" id="delete-confirm" /> Confirm full Docker prune
@@ -317,12 +328,17 @@
     const streamOutput = document.getElementById('stream-output');
     const settingsOutput = document.getElementById('settings-output');
     const buildServicesSelect = document.getElementById('build-services');
+    const registryServicesSelect = document.getElementById('registry-services');
+    const startServicesSelect = document.getElementById('start-services');
+    const cleanServicesSelect = document.getElementById('clean-services');
+    const startDockerSocketCheckbox = document.getElementById('start-docker-socket');
+    const startDockerSocketField = document.getElementById('start-docker-socket-field');
     const settingsHostSocketInput = document.getElementById('settings-host-socket');
 
     const LOG_LIMIT = 500;
     const SERVICES_ENDPOINT = '/api/services?includeStopped=true';
     const ALL_SERVICES_OPTION_VALUE = 'all';
-    let buildServicesSelectionSnapshot = new Set();
+    const serviceSelectControllers = [];
 
     const formatJSON = (value) => {
       try {
@@ -373,6 +389,65 @@
       return parts.join(' • ');
     };
 
+    const HOST_SERVICE_URL_PATTERN = /host_service_url="?([^"\s]+)"?/i;
+
+    const toLocalhostUrl = (value) => {
+      if (!value) return null;
+      const trimmed = value.trim();
+      const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed);
+      const candidate = hasProtocol ? trimmed : `http://${trimmed.replace(/^\/+/, '')}`;
+      try {
+        const url = new URL(candidate);
+        if (!url.hostname) return null;
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          return null;
+        }
+        url.hostname = 'localhost';
+        return url.toString();
+      } catch (error) {
+        return null;
+      }
+    };
+
+    const renderContainerLogEvent = ({ service, line } = {}) => {
+      const fragment = document.createDocumentFragment();
+      const prefix = service ? `${service}: ` : '';
+      if (prefix) {
+        fragment.append(document.createTextNode(prefix));
+      }
+
+      const text = typeof line === 'string' ? line : line ?? '';
+      const match = typeof text === 'string' ? text.match(HOST_SERVICE_URL_PATTERN) : null;
+
+      if (!match) {
+        fragment.append(document.createTextNode(text));
+        return fragment;
+      }
+
+      const [fullMatch, rawUrl] = match;
+      const before = text.slice(0, match.index);
+      const after = text.slice(match.index + fullMatch.length);
+
+      if (before) {
+        fragment.append(document.createTextNode(before));
+      }
+
+      const normalizedUrl = toLocalhostUrl(rawUrl);
+      const href = normalizedUrl || rawUrl;
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.textContent = normalizedUrl || rawUrl;
+      anchor.target = '_blank';
+      anchor.rel = 'noreferrer noopener';
+      fragment.append(anchor);
+
+      if (after) {
+        fragment.append(document.createTextNode(after));
+      }
+
+      return fragment;
+    };
+
     const appendStreamLine = (payload = {}) => {
       const entry = document.createElement('div');
       entry.classList.add('log-entry');
@@ -398,8 +473,7 @@
         entry.classList.add('status-error');
         messageNode.textContent = payload.message ?? JSON.stringify(payload);
       } else if (payload.type === 'container-log') {
-        const { service, line } = payload.event || {};
-        messageNode.textContent = service ? `${service}: ${line ?? ''}` : line ?? '';
+        messageNode.append(renderContainerLogEvent(payload.event || {}));
       } else if (payload.type === 'progress') {
         messageNode.textContent = formatProgressEvent(payload.event);
       } else if (payload.type === 'table') {
@@ -425,14 +499,6 @@
       appendStreamLine({ action: label, type: 'start', message: 'Request dispatched' });
     };
 
-    const parseServicesInput = (value) => {
-      if (!value) return [];
-      return value
-        .split(',')
-        .map((entry) => entry.trim())
-        .filter(Boolean);
-    };
-
     const extractServiceNames = (services) => {
       if (!Array.isArray(services)) return [];
       const seen = new Set();
@@ -455,56 +521,77 @@
       return names;
     };
 
-    const populateBuildServices = (serviceNames = []) => {
-      if (!buildServicesSelect) return;
-      const previousSelection = new Set(
-        Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
-      );
-      const shouldSelectAllByDefault = previousSelection.size === 0;
-      buildServicesSelect.innerHTML = '';
+    const createServiceSelectController = (select, { includeAllOption = false, defaultToAll = false } = {}) => {
+      if (!select) return null;
+      let selectionSnapshot = new Set();
 
-      const allOption = document.createElement('option');
-      allOption.value = ALL_SERVICES_OPTION_VALUE;
-      allOption.textContent = 'All services';
-      if (previousSelection.has(ALL_SERVICES_OPTION_VALUE) || shouldSelectAllByDefault) {
-        allOption.selected = true;
-      }
-      buildServicesSelect.appendChild(allOption);
-
-      for (const name of serviceNames) {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        if (previousSelection.has(name)) {
-          option.selected = true;
-        }
-        buildServicesSelect.appendChild(option);
-      }
-
-      buildServicesSelectionSnapshot = new Set(
-        Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
-      );
-    };
-
-    if (buildServicesSelect) {
-      buildServicesSelect.addEventListener('change', () => {
-        const currentValues = Array.from(buildServicesSelect.selectedOptions || []).map(
-          (option) => option.value
+      const updateSnapshot = () => {
+        selectionSnapshot = new Set(
+          Array.from(select.selectedOptions || []).map((option) => option.value)
         );
+      };
+
+      const applyOptions = (serviceNames = []) => {
+        const previousSelection = new Set(selectionSnapshot);
+        const shouldSelectAll = includeAllOption && (
+          previousSelection.has(ALL_SERVICES_OPTION_VALUE) ||
+          (previousSelection.size === 0 && defaultToAll)
+        );
+
+        select.innerHTML = '';
+
+        if (includeAllOption) {
+          const allOption = document.createElement('option');
+          allOption.value = ALL_SERVICES_OPTION_VALUE;
+          allOption.textContent = 'All services';
+          if (shouldSelectAll) {
+            allOption.selected = true;
+          }
+          select.appendChild(allOption);
+        }
+
+        for (const name of serviceNames) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          if (previousSelection.has(name)) {
+            option.selected = true;
+          }
+          select.appendChild(option);
+        }
+
+        if (includeAllOption && select.selectedOptions.length === 0 && shouldSelectAll) {
+          const allOption = select.querySelector(`option[value="${ALL_SERVICES_OPTION_VALUE}"]`);
+          if (allOption) {
+            allOption.selected = true;
+          }
+        }
+
+        updateSnapshot();
+      };
+
+      const handleChange = () => {
+        if (!includeAllOption) {
+          updateSnapshot();
+          return;
+        }
+
+        const previousSelection = new Set(selectionSnapshot);
+        const currentValues = Array.from(select.selectedOptions || []).map((option) => option.value);
         const currentSet = new Set(currentValues);
-        const added = currentValues.filter((value) => !buildServicesSelectionSnapshot.has(value));
-        const removed = [...buildServicesSelectionSnapshot].filter((value) => !currentSet.has(value));
-        const lastAdded = added.length ? added[added.length - 1] : undefined;
-        const lastRemoved = removed.length ? removed[removed.length - 1] : undefined;
-        const lastChanged = lastAdded ?? lastRemoved ?? null;
+        const added = currentValues.filter((value) => !previousSelection.has(value));
+        const removed = [...previousSelection].filter((value) => !currentSet.has(value));
+        const lastChanged = added.length
+          ? added[added.length - 1]
+          : (removed.length ? removed[removed.length - 1] : null);
 
         if (currentSet.has(ALL_SERVICES_OPTION_VALUE) && currentSet.size > 1) {
           if (lastChanged === ALL_SERVICES_OPTION_VALUE) {
-            for (const option of buildServicesSelect.options) {
+            for (const option of select.options) {
               option.selected = option.value === ALL_SERVICES_OPTION_VALUE;
             }
           } else {
-            for (const option of buildServicesSelect.options) {
+            for (const option of select.options) {
               if (option.value === ALL_SERVICES_OPTION_VALUE) {
                 option.selected = false;
                 break;
@@ -513,35 +600,96 @@
           }
         }
 
-        buildServicesSelectionSnapshot = new Set(
-          Array.from(buildServicesSelect.selectedOptions || []).map((option) => option.value)
-        );
-      });
+        updateSnapshot();
+      };
+
+      select.addEventListener('change', handleChange);
+
+      return {
+        element: select,
+        applyOptions,
+        getSelection: () => {
+          const values = Array.from(select.selectedOptions || []).map((option) => option.value);
+          if (includeAllOption && values.includes(ALL_SERVICES_OPTION_VALUE)) {
+            return ALL_SERVICES_OPTION_VALUE;
+          }
+          return values;
+        },
+        isSelected: (value) => {
+          const values = Array.from(select.selectedOptions || []).map((option) => option.value);
+          if (includeAllOption && values.includes(ALL_SERVICES_OPTION_VALUE)) {
+            return true;
+          }
+          return values.includes(value);
+        }
+      };
+    };
+
+    const registerServiceSelect = (select, options) => {
+      const controller = createServiceSelectController(select, options);
+      if (controller) {
+        serviceSelectControllers.push(controller);
+      }
+      return controller;
+    };
+
+    const buildServicesController = registerServiceSelect(buildServicesSelect, { includeAllOption: true, defaultToAll: true });
+    const registryServicesController = registerServiceSelect(registryServicesSelect, { includeAllOption: true });
+    const startServicesController = registerServiceSelect(startServicesSelect, { includeAllOption: true });
+    const cleanServicesController = registerServiceSelect(cleanServicesSelect, { includeAllOption: true });
+
+    const getSelectionForPayload = (controller) => controller?.getSelection?.() ?? [];
+
+    const resolveServicesForPayload = (selection) => {
+      if (!selection) return null;
+      if (selection === ALL_SERVICES_OPTION_VALUE) {
+        return 'all';
+      }
+      if (Array.isArray(selection) && selection.length) {
+        return selection;
+      }
+      return null;
+    };
+
+    const isWardenSelected = () => {
+      if (!startServicesController) return false;
+      const selection = startServicesController.getSelection?.();
+      if (!selection) return false;
+      if (selection === ALL_SERVICES_OPTION_VALUE) {
+        return true;
+      }
+      return Array.isArray(selection) && selection.includes('warden');
+    };
+
+    const updateStartDockerSocketVisibility = () => {
+      if (!startDockerSocketField || !startDockerSocketCheckbox) return;
+      const show = isWardenSelected();
+      startDockerSocketField.classList.toggle('is-hidden', !show);
+      startDockerSocketCheckbox.disabled = !show;
+    };
+
+    if (startServicesController?.element) {
+      startServicesController.element.addEventListener('change', updateStartDockerSocketVisibility);
     }
 
-    const fetchBuildServicesOptions = async () => {
-      if (!buildServicesSelect) return;
+    const populateServiceSelects = (serviceNames = []) => {
+      for (const controller of serviceSelectControllers) {
+        controller?.applyOptions?.(serviceNames);
+      }
+      updateStartDockerSocketVisibility();
+    };
+
+    const fetchServiceCatalog = async () => {
       try {
         const response = await fetch(SERVICES_ENDPOINT);
         if (!response.ok && response.status !== 207) {
           return;
         }
         const payload = await response.json();
-        populateBuildServices(extractServiceNames(payload?.services));
+        populateServiceSelects(extractServiceNames(payload?.services));
       } catch (error) {
-        console.warn('Failed to load services for build selection', error);
+        console.warn('Failed to load service catalog', error);
       }
-    };
-
-    const readBuildServicesSelection = () => {
-      if (!buildServicesSelect) return [];
-      const values = Array.from(buildServicesSelect.selectedOptions || [])
-        .map((option) => option.value)
-        .filter(Boolean);
-      if (values.includes(ALL_SERVICES_OPTION_VALUE)) {
-        return ALL_SERVICES_OPTION_VALUE;
-      }
-      return values;
     };
 
     const safeParseJSON = (value) => {
@@ -621,7 +769,7 @@
           return;
         }
         const payload = await response.json();
-        populateBuildServices(extractServiceNames(payload?.services));
+        populateServiceSelects(extractServiceNames(payload?.services));
         const statusLabel = payload.ok ? 'status-ok' : 'status-warn';
         servicesOutput.innerHTML = '';
         const statusNode = document.createElement('span');
@@ -647,14 +795,13 @@
         }
       },
       build: async () => {
-        const services = readBuildServicesSelection();
+        const selection = getSelectionForPayload(buildServicesController);
+        const services = resolveServicesForPayload(selection);
         const concurrency = document.getElementById('build-concurrency').value;
         const payload = {
           useNoCache: document.getElementById('build-nocache').checked
         };
-        if (services === ALL_SERVICES_OPTION_VALUE) {
-          payload.services = 'all';
-        } else if (Array.isArray(services) && services.length) {
+        if (services) {
           payload.services = services;
         }
         if (concurrency.trim()) {
@@ -663,29 +810,41 @@
         await invokeStreamEndpoint('build', '/api/build', payload);
       },
       push: async () => {
-        const services = parseServicesInput(document.getElementById('registry-services').value);
+        const selection = getSelectionForPayload(registryServicesController);
+        const services = resolveServicesForPayload(selection);
         const payload = {};
-        if (services.length) {
+        if (services) {
           payload.services = services;
         }
         await invokeStreamEndpoint('push', '/api/push', payload);
       },
       pull: async () => {
-        const services = parseServicesInput(document.getElementById('registry-services').value);
+        const selection = getSelectionForPayload(registryServicesController);
+        const services = resolveServicesForPayload(selection);
         const payload = {};
-        if (services.length) {
+        if (services) {
           payload.services = services;
         }
         await invokeStreamEndpoint('pull', '/api/pull', payload);
       },
       start: async () => {
-        const services = parseServicesInput(document.getElementById('start-services').value);
+        const selection = getSelectionForPayload(startServicesController);
+        const services = resolveServicesForPayload(selection);
+        const wardenSelected = startServicesController?.isSelected?.('warden') ?? false;
+        const shouldBindHostDockerSocket = Boolean(wardenSelected && startDockerSocketCheckbox?.checked);
         const payload = {
           debugLevel: document.getElementById('start-debug').value || undefined,
-          bootMode: document.getElementById('start-boot').value || undefined
+          bootMode: document.getElementById('start-boot').value || undefined,
+          useHostDockerSocket: shouldBindHostDockerSocket
         };
-        if (services.length) {
+        if (services) {
           payload.services = services;
+        }
+        if (shouldBindHostDockerSocket && settingsHostSocketInput) {
+          const overrideValue = settingsHostSocketInput.value.trim();
+          if (overrideValue) {
+            payload.hostDockerSocketOverride = overrideValue;
+          }
         }
         await invokeStreamEndpoint('start', '/api/start', payload);
       },
@@ -693,9 +852,10 @@
         await invokeStreamEndpoint('stop', '/api/stop');
       },
       clean: async () => {
-        const services = parseServicesInput(document.getElementById('clean-services').value);
+        const selection = getSelectionForPayload(cleanServicesController);
+        const services = resolveServicesForPayload(selection);
         const payload = {};
-        if (services.length) {
+        if (services) {
           payload.services = services;
         }
         await invokeStreamEndpoint('clean', '/api/clean', payload);
@@ -754,8 +914,8 @@
       }
     });
 
-    populateBuildServices();
-    fetchBuildServicesOptions();
+    populateServiceSelects();
+    fetchServiceCatalog();
   </script>
 </body>
 </html>
