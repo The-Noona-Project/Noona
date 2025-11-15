@@ -7,8 +7,6 @@ Run the interface with either command:
 ```bash
 npm install # only required once to pull Ink + React runtime
 node deployment/cli.mjs
-# or
-node deployment/deploy.mjs
 ```
 
 ![Deployment TUI overview](./images/deployment-cli-overview.svg)
@@ -52,7 +50,7 @@ The TUI supports batching across services:
 
 * Build/push/pull multiple images concurrently via the Build Queue Manager.
 * Clean targeted services or delete all stack resources from the Container Status Board.
-* Scheduler telemetry (capacity changes, per-service completion) is relayed through `deployment/deploy.mjs` reporters so additional automation can subscribe to the same hooks if needed.
+* Scheduler telemetry (capacity changes, per-service completion) is relayed through the shared reporters in `deployment/dockerManager.mjs`, so additional automation can subscribe to the same hooks if needed.
 
 Refer to the on-screen hints within each view for up-to-date shortcuts and status indicators.
 

@@ -2,15 +2,13 @@
 import express from 'express';
 import { pathToFileURL } from 'url';
 
-import {
-    SERVICES,
-    buildServices,
-    startServices,
-    stopAllContainers,
-    getDeploymentSettings,
-    listManagedContainers,
-    readLifecycleHistory
-} from './deploy.mjs';
+import dockerManager, {
+    build as buildServices,
+    start as startServices,
+    stop as stopAllContainers,
+    listServices as listServicesApi,
+    fetchSettings
+} from './dockerManager.mjs';
 
 const DEFAULT_PORT = 4300;
 
@@ -25,12 +23,12 @@ const normalizeContextServices = input => {
         return undefined;
     }
     if (input === 'all') {
-        return [...SERVICES];
+        return [...dockerManager.services];
     }
     if (Array.isArray(input)) {
-        return input;
+        return input.filter(name => dockerManager.services.includes(name));
     }
-    return [input];
+    return dockerManager.services.includes(input) ? [input] : [];
 };
 
 const createStreamingChannel = (res, { action, context } = {}) => {
@@ -108,12 +106,24 @@ app.get('/health', (req, res) => {
 app.get('/api/services', async (req, res) => {
     try {
         const includeStopped = req.query.includeStopped !== 'false';
-        const [containers, history] = await Promise.all([
-            listManagedContainers({ includeStopped }).catch(() => []),
-            readLifecycleHistory().catch(() => [])
-        ]);
+        const result = await listServicesApi({
+            includeContainers: true,
+            includeHistory: true,
+            includeStopped
+        });
 
-        res.json({ services: SERVICES, containers, history });
+        const payload = {
+            ok: result.ok,
+            services: result.services,
+            containers: result.containers || [],
+            history: result.history || []
+        };
+
+        if (result.errors) {
+            payload.errors = result.errors;
+        }
+
+        res.status(result.ok ? 200 : 207).json(payload);
     } catch (error) {
         res.status(500).json({ error: error?.message || 'Unable to list services' });
     }
@@ -121,8 +131,12 @@ app.get('/api/services', async (req, res) => {
 
 app.get('/api/settings', async (req, res) => {
     try {
-        const settings = await getDeploymentSettings();
-        res.json(settings);
+        const result = await fetchSettings();
+        if (result?.ok) {
+            res.json(result.settings);
+            return;
+        }
+        res.status(500).json({ error: result?.error?.message || 'Unable to load settings' });
     } catch (error) {
         res.status(500).json({ error: error?.message || 'Unable to load settings' });
     }
@@ -137,7 +151,8 @@ app.post('/api/build', (req, res) => {
     streamOperation(res, {
         action: 'build',
         context,
-        handler: channel => buildServices(services, {
+        handler: channel => buildServices({
+            services,
             useNoCache,
             concurrency,
             reporter: channel.reporter,
@@ -157,7 +172,8 @@ app.post('/api/start', (req, res) => {
     streamOperation(res, {
         action: 'start',
         context,
-        handler: channel => startServices(services, {
+        handler: channel => startServices({
+            services,
             debugLevel,
             bootMode,
             reporter: channel.reporter,

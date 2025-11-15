@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import dockerHost, {
+import dockerManager from './dockerManager.mjs';
+import { defaultDockerSocketDetector } from '../utilities/etc/dockerSockets.mjs';
+import { Readable } from 'node:stream';
+
+const {
+    dockerHost,
     buildImage,
     runContainer,
     startService,
@@ -15,10 +20,8 @@ import dockerHost, {
     pushImage,
     pullImage,
     DockerHost,
-    normalizeDockerfilePath,
-} from './dockerHost.mjs';
-import { defaultDockerSocketDetector } from '../utilities/etc/dockerSockets.mjs';
-import { Readable } from 'node:stream';
+    normalizeDockerfilePath
+} = dockerManager.__internals;
 
 const withFakeDocker = fake => {
     dockerHost.docker = fake;
