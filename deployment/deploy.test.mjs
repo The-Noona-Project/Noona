@@ -45,6 +45,19 @@ test('createContainerOptions keeps explicit host socket env overrides for warden
     assert.equal(options.env.HOST_DOCKER_SOCKETS, '/custom.sock');
 });
 
+test('createContainerOptions applies host socket override when provided', () => {
+    const options = createContainerOptions('warden', TEST_IMAGE, buildEnv('warden'), {
+        detectDockerSockets: () => ['/var/run/docker.sock'],
+        platform: 'linux',
+        hostDockerSocketOverride: 'unix:///custom/docker.sock'
+    });
+
+    assert.ok(options.hostConfig);
+    assert.deepEqual(options.hostConfig.Binds, ['/custom/docker.sock:/var/run/docker.sock']);
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, '/custom/docker.sock,/var/run/docker.sock');
+    assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
+});
+
 test('resolveDockerSocketBinding falls back to platform defaults when none detected', () => {
     const windowsBinding = resolveDockerSocketBinding({
         detectSockets: () => [],

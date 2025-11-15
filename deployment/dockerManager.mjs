@@ -1115,6 +1115,19 @@ const parsePositiveInteger = (value, fallback, { flag } = {}) => {
     return fallback;
 };
 
+const normalizeHostDockerSocketOverride = value => {
+    if (value === null) {
+        return null;
+    }
+
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const normalized = normalizeDockerSocket(value);
+    return normalized || null;
+};
+
 const defaultDeploymentConfig = () => ({
     buildScheduler: {
         workerThreads: DEFAULT_WORKER_THREADS,
@@ -1123,7 +1136,8 @@ const defaultDeploymentConfig = () => ({
     defaults: {
         debugLevel: DEFAULT_DEBUG_LEVEL,
         bootMode: DEFAULT_BOOT_MODE
-    }
+    },
+    hostDockerSocketOverride: null
 });
 
 const loadDeploymentConfig = async () => {
@@ -1162,6 +1176,10 @@ const loadDeploymentConfig = async () => {
                 };
             }
         }
+
+        if (Object.prototype.hasOwnProperty.call(parsed, 'hostDockerSocketOverride')) {
+            config.hostDockerSocketOverride = normalizeHostDockerSocketOverride(parsed.hostDockerSocketOverride);
+        }
     } catch (error) {
         if (error?.code !== 'ENOENT') {
             console.warn(`${colors.yellow}⚠️  Failed to read ${BUILD_CONFIG_PATH}: ${error.message}${colors.reset}`);
@@ -1193,7 +1211,8 @@ const saveDeploymentConfig = async updater => {
             bootMode: typeof next.defaults?.bootMode === 'string'
                 ? next.defaults.bootMode
                 : DEFAULT_BOOT_MODE
-        }
+        },
+        hostDockerSocketOverride: normalizeHostDockerSocketOverride(next.hostDockerSocketOverride ?? null)
     };
 
     cachedDeploymentConfig = normalized;
@@ -1211,6 +1230,11 @@ const updateSettings = async (updates = {}) => {
     const subprocessesPerWorker = concurrencySource.subprocessesPerWorker ?? updates.subprocessesPerWorker;
     const debugLevel = defaultsSource.debugLevel ?? updates.debugLevel;
     const bootMode = defaultsSource.bootMode ?? updates.bootMode;
+    const hostDockerSocketOverride = Object.prototype.hasOwnProperty.call(updates, 'hostDockerSocketOverride')
+        ? updates.hostDockerSocketOverride
+        : Object.prototype.hasOwnProperty.call(updates?.defaults ?? {}, 'hostDockerSocketOverride')
+            ? updates.defaults.hostDockerSocketOverride
+            : undefined;
 
     return saveDeploymentConfig(config => ({
         ...config,
@@ -1221,7 +1245,10 @@ const updateSettings = async (updates = {}) => {
         defaults: {
             debugLevel: debugLevel ?? config.defaults.debugLevel,
             bootMode: bootMode ?? config.defaults.bootMode
-        }
+        },
+        hostDockerSocketOverride: hostDockerSocketOverride !== undefined
+            ? hostDockerSocketOverride
+            : config.hostDockerSocketOverride
     }));
 };
 
@@ -1471,6 +1498,7 @@ const ensureExecutables = async service => {
 const createContainerOptions = (service, image, envVars = {}, {
     detectDockerSockets,
     platform,
+    hostDockerSocketOverride,
 } = {}) => {
     const entries = Object.entries(envVars)
         .filter(([, value]) => typeof value === 'string' && value.trim() !== '');
@@ -1481,10 +1509,18 @@ const createContainerOptions = (service, image, envVars = {}, {
     }
 
     const containerName = normalizedEnv.SERVICE_NAME;
-    const hostDockerSocket =
-        typeof detectDockerSockets === 'function' || typeof platform === 'string'
-            ? resolveDockerSocketBinding({ detectSockets: detectDockerSockets, platform })
-            : getDefaultDockerSocketBinding();
+    const normalizedOverride = hostDockerSocketOverride !== undefined
+        ? normalizeHostDockerSocketOverride(hostDockerSocketOverride)
+        : null;
+
+    let hostDockerSocket = normalizedOverride;
+    if (!hostDockerSocket) {
+        hostDockerSocket =
+            typeof detectDockerSockets === 'function' || typeof platform === 'string'
+                ? resolveDockerSocketBinding({ detectSockets: detectDockerSockets, platform })
+                : getDefaultDockerSocketBinding();
+    }
+
     const hostConfig = {
         Binds: [`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`]
     };
@@ -1753,10 +1789,10 @@ const pullServices = async (services, { reporter, onProgress } = {}) => {
     });
 };
 
-const resolveDebugDefaults = async ({ debugLevel, bootMode } = {}) => {
-    const config = await loadDeploymentConfig();
-    const resolvedBoot = (bootMode || config.defaults.bootMode || DEFAULT_BOOT_MODE).toLowerCase();
-    const resolvedDebug = (debugLevel || config.defaults.debugLevel || DEFAULT_DEBUG_LEVEL).toLowerCase();
+const resolveDebugDefaults = async ({ debugLevel, bootMode, config } = {}) => {
+    const sourceConfig = config || await loadDeploymentConfig();
+    const resolvedBoot = (bootMode || sourceConfig.defaults.bootMode || DEFAULT_BOOT_MODE).toLowerCase();
+    const resolvedDebug = (debugLevel || sourceConfig.defaults.debugLevel || DEFAULT_DEBUG_LEVEL).toLowerCase();
     const effectiveDebug = resolvedBoot === 'super' ? 'super' : resolvedDebug;
     return { bootMode: resolvedBoot, debugLevel: effectiveDebug, requestedDebug: resolvedDebug };
 };
@@ -1766,7 +1802,8 @@ const startServices = async (services, {
     debugLevel,
     bootMode,
     onProgress,
-    onLog
+    onLog,
+    hostDockerSocketOverride
 } = {}) => {
     const targets = normalizeServices(services);
     if (!targets.length) {
@@ -1776,6 +1813,11 @@ const startServices = async (services, {
 
     return withReporter(reporter, async () => {
         const results = [];
+        const config = await loadDeploymentConfig();
+        const resolvedHostDockerSocketOverride = hostDockerSocketOverride !== undefined
+            ? hostDockerSocketOverride
+            : config.hostDockerSocketOverride;
+
         for (const svc of targets) {
             if (svc !== 'warden') {
                 print.error(`Start is currently supported for the warden orchestrator. Skipping ${svc}.`);
@@ -1786,7 +1828,7 @@ const startServices = async (services, {
             console.log(`${colors.yellow}▶️  Starting ${svc}...${colors.reset}`);
             const logBuffer = [];
             let logStream;
-            const settings = await resolveDebugDefaults({ debugLevel, bootMode });
+            const settings = await resolveDebugDefaults({ debugLevel, bootMode, config });
 
             try {
                 await ensureNetwork();
@@ -1798,6 +1840,8 @@ const startServices = async (services, {
                 const options = createContainerOptions(svc, image, {
                     DEBUG: settings.debugLevel,
                     BOOT_MODE: settings.bootMode
+                }, {
+                    hostDockerSocketOverride: resolvedHostDockerSocketOverride
                 });
 
                 const cleanup = await removeResources({ containers: { names: [options.name] } });
@@ -1983,8 +2027,8 @@ const pull = async ({ services, reporter, onProgress } = {}) => {
     return pullServices(services, { reporter, onProgress });
 };
 
-const start = async ({ services, reporter, debugLevel, bootMode, onProgress, onLog } = {}) => {
-    return startServices(services, { reporter, debugLevel, bootMode, onProgress, onLog });
+const start = async ({ services, reporter, debugLevel, bootMode, onProgress, onLog, hostDockerSocketOverride } = {}) => {
+    return startServices(services, { reporter, debugLevel, bootMode, onProgress, onLog, hostDockerSocketOverride });
 };
 
 const stop = async ({ reporter } = {}) => {
