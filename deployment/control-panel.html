@@ -294,6 +294,11 @@
       <h2>Settings</h2>
       <fieldset>
         <label>
+          Host Docker socket override
+          <input id="settings-host-socket" placeholder="/var/run/docker.sock" autocomplete="off" />
+          <span class="help-text">Optional host socket path to bind when starting Warden. Leave blank to auto-detect.</span>
+        </label>
+        <label>
           Raw JSON payload
           <textarea id="settings-json" rows="6" placeholder='{"defaults":{"debugLevel":"debug"}}'></textarea>
         </label>
@@ -312,6 +317,7 @@
     const streamOutput = document.getElementById('stream-output');
     const settingsOutput = document.getElementById('settings-output');
     const buildServicesSelect = document.getElementById('build-services');
+    const settingsHostSocketInput = document.getElementById('settings-host-socket');
 
     const LOG_LIMIT = 500;
     const SERVICES_ENDPOINT = '/api/services?includeStopped=true';
@@ -633,6 +639,12 @@
         const payload = await response.json();
         settingsOutput.textContent = formatJSON(payload);
         document.getElementById('settings-json').value = JSON.stringify(payload, null, 2);
+        if (settingsHostSocketInput) {
+          const value = Object.prototype.hasOwnProperty.call(payload || {}, 'hostDockerSocketOverride')
+            ? payload.hostDockerSocketOverride
+            : '';
+          settingsHostSocketInput.value = value ?? '';
+        }
       },
       build: async () => {
         const services = readBuildServicesSelection();
@@ -698,7 +710,15 @@
       },
       'update-settings': async () => {
         try {
-          const payload = safeParseJSON(document.getElementById('settings-json').value || '{}');
+          const parsedPayload = safeParseJSON(document.getElementById('settings-json').value || '{}');
+          const payload = (parsedPayload && typeof parsedPayload === 'object') ? parsedPayload : {};
+          if (payload && typeof payload === 'object' && payload.defaults && Object.prototype.hasOwnProperty.call(payload.defaults, 'hostDockerSocketOverride')) {
+            delete payload.defaults.hostDockerSocketOverride;
+          }
+          if (settingsHostSocketInput) {
+            const overrideValue = settingsHostSocketInput.value.trim();
+            payload.hostDockerSocketOverride = overrideValue ? overrideValue : null;
+          }
           const response = await fetch('/api/settings', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -710,6 +730,13 @@
           }
           const body = await response.json();
           settingsOutput.textContent = formatJSON(body);
+          if (settingsHostSocketInput) {
+            const value = Object.prototype.hasOwnProperty.call(body || {}, 'hostDockerSocketOverride')
+              ? body.hostDockerSocketOverride
+              : '';
+            settingsHostSocketInput.value = value ?? '';
+          }
+          document.getElementById('settings-json').value = JSON.stringify(body, null, 2);
         } catch (error) {
           settingsOutput.textContent = error.message;
         }

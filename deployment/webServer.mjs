@@ -258,15 +258,39 @@ const createApp = ({
         streamOperation(res, {
             action: 'start',
             context,
-            handler: (channel) =>
-                startFn({
+            handler: async (channel) => {
+                let hostDockerSocketOverride;
+                try {
+                    const settingsResult = await fetchSettingsFn();
+                    if (settingsResult?.ok === false) {
+                        channel.write({
+                            type: 'log',
+                            level: 'warn',
+                            message: 'Deployment settings unavailable; using defaults.'
+                        });
+                    }
+                    const resolvedSettings = settingsResult?.settings ?? settingsResult ?? {};
+                    if (resolvedSettings && Object.prototype.hasOwnProperty.call(resolvedSettings, 'hostDockerSocketOverride')) {
+                        hostDockerSocketOverride = resolvedSettings.hostDockerSocketOverride;
+                    }
+                } catch (error) {
+                    channel.write({
+                        type: 'log',
+                        level: 'warn',
+                        message: `Unable to load deployment settings: ${error?.message || error || 'unknown error'}`
+                    });
+                }
+
+                return startFn({
                     services: requested ?? requestedServices,
                     debugLevel,
                     bootMode,
+                    hostDockerSocketOverride,
                     reporter: channel.reporter,
                     onProgress: (event) => channel.write({ type: 'progress', event }),
                     onLog: (event) => channel.write({ type: 'container-log', event })
-                })
+                });
+            }
         });
     });
 
