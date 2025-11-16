@@ -164,7 +164,7 @@ export function defaultDockerSocketDetector({
     const sockets = new Set();
 
     const addCandidate = (candidate) => {
-        const normalized = normalizeDockerSocket(candidate);
+        const normalized = normalizeDockerSocket(candidate, { allowRemote: true });
         if (normalized) {
             sockets.add(normalized);
         }
@@ -172,7 +172,7 @@ export function defaultDockerSocketDetector({
 
     const envCandidates = [env?.NOONA_HOST_DOCKER_SOCKETS, env?.HOST_DOCKER_SOCKETS]
         .filter(value => typeof value === 'string' && value.trim().length > 0)
-        .flatMap(value => value.split(',').map(entry => normalizeDockerSocket(entry)));
+        .flatMap(value => value.split(',').map(entry => normalizeDockerSocket(entry, { allowRemote: true })));
 
     for (const candidate of envCandidates) {
         if (candidate) {
@@ -180,9 +180,28 @@ export function defaultDockerSocketDetector({
         }
     }
 
-    const dockerHost = normalizeDockerSocket(env?.DOCKER_HOST);
+    const dockerHost = normalizeDockerSocket(env?.DOCKER_HOST, { allowRemote: true });
     if (dockerHost) {
         sockets.add(dockerHost);
+    }
+
+    const dockerDesktopSockets = [
+        '/var/run/docker.sock.raw',
+        '/var/run/docker/docker.sock.raw',
+    ];
+
+    if (typeof fsModule?.existsSync === 'function') {
+        for (const rawSocket of dockerDesktopSockets) {
+            try {
+                if (fsModule.existsSync(rawSocket)) {
+                    addCandidate(rawSocket);
+                }
+            } catch {
+                // Ignore existence probe errors; fall back to defaults below.
+            }
+        }
+    } else {
+        dockerDesktopSockets.forEach(addCandidate);
     }
 
     const unixSocketDefaults = [

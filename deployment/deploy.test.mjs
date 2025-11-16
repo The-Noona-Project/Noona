@@ -59,6 +59,17 @@ test('createContainerOptions binds Unix Docker socket on non-Windows platforms',
     assert.deepEqual(options.hostConfig.Binds, ['/var/run/docker.sock:/var/run/docker.sock']);
 });
 
+test('createContainerOptions prefers Docker Desktop raw socket when detected', () => {
+    const options = createContainerOptions('warden', TEST_IMAGE, buildEnv('warden'), {
+        detectDockerSockets: () => ['/var/run/docker.sock.raw', '/var/run/docker.sock'],
+        platform: 'linux',
+    });
+
+    assert.ok(options.hostConfig);
+    assert.deepEqual(options.hostConfig.Binds, ['/var/run/docker.sock.raw:/var/run/docker.sock']);
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, '/var/run/docker.sock.raw,/var/run/docker.sock');
+});
+
 test('createContainerOptions keeps explicit host socket env overrides for warden', () => {
     const options = createContainerOptions('warden', TEST_IMAGE, {
         ...buildEnv('warden'),
@@ -98,6 +109,20 @@ test('createContainerOptions propagates remote docker override without binding s
     assert.equal(options.env.DOCKER_HOST, 'tcp://docker-proxy:2375');
     assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, 'tcp://docker-proxy:2375');
     assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
+});
+
+test('createContainerOptions injects detected remote DOCKER_HOST endpoint for warden', () => {
+    const remoteHost = 'tcp://docker-remote.internal:2375';
+    const options = createContainerOptions('warden', TEST_IMAGE, buildEnv('warden'), {
+        detectDockerSockets: () => [remoteHost],
+        platform: 'linux'
+    });
+
+    assert.ok(options.hostConfig);
+    assert.deepEqual(options.hostConfig.Binds, []);
+    assert.equal(options.env.DOCKER_HOST, remoteHost);
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, remoteHost);
+    assert.equal(options.env.HOST_DOCKER_SOCKETS, remoteHost);
 });
 
 test('resolveDockerSocketBinding falls back to platform defaults when none detected', () => {
