@@ -86,6 +86,20 @@ test('createContainerOptions applies host socket override when provided', () => 
     assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
 });
 
+test('createContainerOptions propagates remote docker override without binding socket', () => {
+    const options = createContainerOptions('warden', TEST_IMAGE, buildEnv('warden'), {
+        detectDockerSockets: () => ['/var/run/docker.sock'],
+        platform: 'linux',
+        hostDockerSocketOverride: 'tcp://docker-proxy:2375'
+    });
+
+    assert.ok(options.hostConfig);
+    assert.deepEqual(options.hostConfig.Binds, []);
+    assert.equal(options.env.DOCKER_HOST, 'tcp://docker-proxy:2375');
+    assert.equal(options.env.NOONA_HOST_DOCKER_SOCKETS, 'tcp://docker-proxy:2375');
+    assert.equal(options.env.HOST_DOCKER_SOCKETS, options.env.NOONA_HOST_DOCKER_SOCKETS);
+});
+
 test('resolveDockerSocketBinding falls back to platform defaults when none detected', () => {
     const windowsBinding = resolveDockerSocketBinding({
         detectSockets: () => [],

@@ -4,6 +4,68 @@ import { spawnSync } from 'node:child_process';
 
 const WINDOWS_PIPE_PREFIX = '//./pipe/';
 const WINDOWS_PIPE_PATTERN = /^(?:\.\/|[\\/]+\.?)*pipe(?:[\\/]|$)/i;
+const TCP_PROTOCOL_PATTERN = /^(?:tcp|https?|http):\/\//i;
+
+function formatHostForUrl(hostname) {
+    if (typeof hostname !== 'string') {
+        return '';
+    }
+
+    if (hostname.includes(':') && !hostname.startsWith('[')) {
+        return `[${hostname}]`;
+    }
+
+    return hostname;
+}
+
+export function parseTcpDockerSocket(candidate) {
+    if (!candidate || typeof candidate !== 'string') {
+        return null;
+    }
+
+    const trimmed = candidate.trim();
+    if (!trimmed || !TCP_PROTOCOL_PATTERN.test(trimmed)) {
+        return null;
+    }
+
+    try {
+        const url = new URL(trimmed);
+        const rawProtocol = url.protocol.replace(':', '').toLowerCase();
+        if (!TCP_PROTOCOL_PATTERN.test(`${rawProtocol}://`)) {
+            return null;
+        }
+
+        const hostname = url.hostname?.trim();
+        if (!hostname) {
+            return null;
+        }
+
+        const normalizedHost = formatHostForUrl(hostname);
+        const protocol = rawProtocol === 'https' ? 'https' : 'http';
+        const defaultPort = protocol === 'https' ? 2376 : 2375;
+        const port = url.port ? Number.parseInt(url.port, 10) : defaultPort;
+        const normalizedPort = Number.isFinite(port) && port > 0 ? port : defaultPort;
+        const href = `${rawProtocol}://${normalizedHost}:${normalizedPort}`;
+
+        return {
+            host: hostname,
+            port: normalizedPort,
+            protocol,
+            rawProtocol,
+            href,
+        };
+    } catch {
+        return null;
+    }
+}
+
+export function isTcpDockerSocket(candidate) {
+    if (!candidate || typeof candidate !== 'string') {
+        return false;
+    }
+
+    return TCP_PROTOCOL_PATTERN.test(candidate.trim());
+}
 
 function normalizeWindowsPipePath(value) {
     if (typeof value !== 'string') {
@@ -48,7 +110,7 @@ function normalizeWindowsPipePath(value) {
     return `${WINDOWS_PIPE_PREFIX}${suffix}`;
 }
 
-export function normalizeDockerSocket(candidate) {
+export function normalizeDockerSocket(candidate, { allowRemote = false } = {}) {
     if (!candidate || typeof candidate !== 'string') {
         return null;
     }
@@ -62,8 +124,13 @@ export function normalizeDockerSocket(candidate) {
         return trimmed.slice('unix://'.length);
     }
 
-    if (trimmed.startsWith('tcp://')) {
-        return null;
+    if (TCP_PROTOCOL_PATTERN.test(trimmed)) {
+        if (!allowRemote) {
+            return null;
+        }
+
+        const parsed = parseTcpDockerSocket(trimmed);
+        return parsed?.href ?? null;
     }
 
     if (trimmed.startsWith('npipe://')) {
