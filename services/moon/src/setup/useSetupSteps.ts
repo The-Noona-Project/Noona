@@ -21,15 +21,18 @@ import {
   fetchVerificationStatus,
   runVerificationChecks as runVerificationChecksRequest,
   completeWizardSetup as completeWizardSetupRequest,
+  fetchWizardMetadata,
   type VerificationSummaryState,
   type VerificationHealthSummary,
   type WizardState,
   type WizardStateUpdate,
   type WizardStepStatus,
+  type WizardStepMetadata,
+  type WizardStepKey,
 } from './api.ts';
 import { useWizardState } from './useWizardState.ts';
 
-export type SetupStepId = 'foundation' | 'portal' | 'raven' | 'verification';
+export type SetupStepId = WizardStepKey;
 
 export type SetupStepStatus = 'current' | 'complete' | 'upcoming' | 'error';
 
@@ -38,6 +41,8 @@ export interface SetupStepDefinition {
   title: string;
   description: string;
   optional?: boolean;
+  icon?: string | null;
+  capabilities: string[];
   status: SetupStepStatus;
   error?: string | null;
 }
@@ -557,28 +562,124 @@ export interface UseSetupStepsResult {
   refreshWizard: () => Promise<void>;
 }
 
-const STEP_DEFINITIONS: Array<Omit<SetupStepDefinition, 'status' | 'error'>> = [
+type StepDefinitionBase = Omit<SetupStepDefinition, 'status' | 'error'>;
+
+const STEP_ID_SET: ReadonlySet<SetupStepId> = new Set<SetupStepId>([
+  'foundation',
+  'portal',
+  'raven',
+  'verification',
+]);
+
+const FALLBACK_STEP_METADATA: StepDefinitionBase[] = [
   {
     id: 'foundation',
     title: 'Foundation services',
     description: 'Configure core data services and bootstrap the stack.',
+    optional: false,
+    icon: 'foundation',
+    capabilities: ['foundation', 'environment', 'installation'],
   },
   {
     id: 'portal',
     title: 'Portal configuration',
     description: 'Provide Portal environment configuration and validate Discord access.',
+    optional: false,
+    icon: 'portal',
+    capabilities: ['portal', 'configuration', 'discord'],
   },
   {
     id: 'raven',
     title: 'Raven deployment',
     description: 'Launch Raven and monitor installer progress.',
+    optional: false,
+    icon: 'raven',
+    capabilities: ['raven', 'deployment', 'monitoring'],
   },
   {
     id: 'verification',
     title: 'Verification checks',
     description: 'Run health checks and confirm service readiness.',
+    optional: false,
+    icon: 'verification',
+    capabilities: ['verification', 'health', 'checks'],
   },
 ];
+
+const FALLBACK_STEP_MAP = new Map<SetupStepId, StepDefinitionBase>(
+  FALLBACK_STEP_METADATA.map((definition) => [definition.id, definition]),
+);
+
+function cloneStepDefinition(definition: StepDefinitionBase): StepDefinitionBase {
+  return {
+    ...definition,
+    capabilities: [...definition.capabilities],
+  };
+}
+
+function isSupportedStepId(id: unknown): id is SetupStepId {
+  if (typeof id !== 'string') {
+    return false;
+  }
+  return STEP_ID_SET.has(id as SetupStepId);
+}
+
+function normalizeStepCapabilities(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string') {
+      continue;
+    }
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    normalized.push(trimmed);
+    seen.add(trimmed);
+  }
+
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function normalizeStepMetadataList(steps: WizardStepMetadata[] | null | undefined): StepDefinitionBase[] {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return FALLBACK_STEP_METADATA.map(cloneStepDefinition);
+  }
+
+  const overrides = new Map<SetupStepId, StepDefinitionBase>();
+  for (const entry of steps) {
+    if (!entry || typeof entry !== 'object' || !isSupportedStepId(entry.id)) {
+      continue;
+    }
+
+    const fallback = FALLBACK_STEP_MAP.get(entry.id) ?? FALLBACK_STEP_METADATA[0];
+    const title = typeof entry.title === 'string' && entry.title.trim() ? entry.title.trim() : fallback.title;
+    const description =
+      typeof entry.description === 'string' && entry.description.trim()
+        ? entry.description.trim()
+        : fallback.description;
+    const icon =
+      typeof entry.icon === 'string' && entry.icon.trim() ? entry.icon.trim() : fallback.icon ?? null;
+    const optional = entry.optional ?? fallback.optional ?? false;
+    const capabilities = normalizeStepCapabilities(entry.capabilities, fallback.capabilities);
+
+    overrides.set(entry.id, {
+      id: entry.id,
+      title,
+      description,
+      optional,
+      icon,
+      capabilities,
+    });
+  }
+
+  return FALLBACK_STEP_METADATA.map((definition) => overrides.get(definition.id) ?? cloneStepDefinition(definition));
+}
 
 const PORTAL_SERVICE_NAME = 'noona-portal';
 const RAVEN_SERVICE_NAME = 'noona-raven';
@@ -795,8 +896,14 @@ export function useSetupSteps(): UseSetupStepsResult {
     refresh: refreshWizard,
     update: updateWizard,
   } = useWizardState();
-  const [currentStepId, setCurrentStepId] = useState<SetupStepId>('foundation');
+  const [currentStepId, setCurrentStepId] = useState<SetupStepId>(
+    FALLBACK_STEP_METADATA[0]?.id ?? 'foundation',
+  );
   const [maxVisitedIndex, setMaxVisitedIndex] = useState(0);
+  const [stepDefinitions, setStepDefinitions] = useState<StepDefinitionBase[]>(() =>
+    FALLBACK_STEP_METADATA.map(cloneStepDefinition),
+  );
+  const metadataLoadedRef = useRef(false);
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(DEFAULT_SELECTED_SERVICES),
   );
@@ -1238,6 +1345,38 @@ export function useSetupSteps(): UseSetupStepsResult {
   useEffect(() => {
     ensureLoaded().catch(() => {});
   }, [ensureLoaded]);
+
+  useEffect(() => {
+    if (metadataLoadedRef.current) {
+      return;
+    }
+    metadataLoadedRef.current = true;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const payload = await fetchWizardMetadata();
+        if (cancelled) {
+          return;
+        }
+        const nextDefinitions = normalizeStepMetadataList(payload?.steps ?? null);
+        setStepDefinitions(nextDefinitions);
+        setMaxVisitedIndex((prev) => Math.min(prev, Math.max(nextDefinitions.length - 1, 0)));
+        setCurrentStepId((prev) => {
+          if (nextDefinitions.some((definition) => definition.id === prev)) {
+            return prev;
+          }
+          return nextDefinitions[0]?.id ?? prev;
+        });
+      } catch (error) {
+        console.warn('[setup] Failed to load wizard metadata', error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setOverrides((prev) => {
@@ -1815,9 +1954,9 @@ export function useSetupSteps(): UseSetupStepsResult {
   }, []);
 
   const goNext = useCallback(async () => {
-    const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+    const currentIndex = stepDefinitions.findIndex((step) => step.id === currentStepId);
     const advance = (nextId: SetupStepId) => {
-      const nextIndex = STEP_DEFINITIONS.findIndex((step) => step.id === nextId);
+      const nextIndex = stepDefinitions.findIndex((step) => step.id === nextId);
       setCurrentStepId(nextId);
       setMaxVisitedIndex((prev) => Math.max(prev, nextIndex));
     };
@@ -2045,8 +2184,8 @@ export function useSetupSteps(): UseSetupStepsResult {
     }
 
     if (currentStepId === 'verification') {
-      if (currentIndex < STEP_DEFINITIONS.length - 1) {
-        advance(STEP_DEFINITIONS[currentIndex + 1].id);
+      if (currentIndex < stepDefinitions.length - 1) {
+        advance(stepDefinitions[currentIndex + 1].id);
       }
     }
   }, [
@@ -2065,17 +2204,18 @@ export function useSetupSteps(): UseSetupStepsResult {
     performRavenHealthCheck,
     install,
     triggerInstall,
+    stepDefinitions,
   ]);
 
   const goPrevious = useCallback(() => {
-    const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+    const currentIndex = stepDefinitions.findIndex((step) => step.id === currentStepId);
     if (currentIndex <= 0) {
       return;
     }
 
-    const previous = STEP_DEFINITIONS[currentIndex - 1];
+    const previous = stepDefinitions[currentIndex - 1];
     setCurrentStepId(previous.id);
-  }, [currentStepId]);
+  }, [currentStepId, stepDefinitions]);
 
   const canGoNext = useMemo(() => {
     switch (currentStepId) {
@@ -2125,7 +2265,7 @@ export function useSetupSteps(): UseSetupStepsResult {
 
   const selectStep = useCallback(
     (id: SetupStepId) => {
-      const index = STEP_DEFINITIONS.findIndex((step) => step.id === id);
+      const index = stepDefinitions.findIndex((step) => step.id === id);
       if (index === -1 || id === currentStepId) {
         return;
       }
@@ -2143,7 +2283,7 @@ export function useSetupSteps(): UseSetupStepsResult {
         return;
       }
 
-      const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+      const currentIndex = stepDefinitions.findIndex((step) => step.id === currentStepId);
       const isNextStep = index === currentIndex + 1;
       const hasVisited = index <= maxVisitedIndex;
 
@@ -2172,11 +2312,12 @@ export function useSetupSteps(): UseSetupStepsResult {
       ravenLaunchState.status,
       ravenDetection.status,
       ravenHealth.checking,
+      stepDefinitions,
     ],
   );
 
   const canGoPrevious = useMemo(() => {
-    const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+    const currentIndex = stepDefinitions.findIndex((step) => step.id === currentStepId);
     if (currentIndex <= 0) {
       return false;
     }
@@ -2184,12 +2325,12 @@ export function useSetupSteps(): UseSetupStepsResult {
       return false;
     }
     return true;
-  }, [currentStepId, install.installing]);
+  }, [currentStepId, install.installing, stepDefinitions]);
 
-  const currentIndex = STEP_DEFINITIONS.findIndex((step) => step.id === currentStepId);
+  const currentIndex = stepDefinitions.findIndex((step) => step.id === currentStepId);
 
   const steps = useMemo(() => {
-    return STEP_DEFINITIONS.map((definition, index) => {
+    return stepDefinitions.map((definition, index) => {
       let status: SetupStepStatus = 'upcoming';
       if (index < currentIndex) {
         status = 'complete';
@@ -2268,6 +2409,7 @@ export function useSetupSteps(): UseSetupStepsResult {
     });
   }, [
     currentIndex,
+    stepDefinitions,
     foundationState.error,
     foundationEnvErrors,
     envErrors,
@@ -2282,7 +2424,8 @@ export function useSetupSteps(): UseSetupStepsResult {
     portalError,
   ]);
 
-  const currentStep = steps[currentIndex] ?? steps[0];
+  const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+  const currentStep = steps[safeIndex] ?? steps[0];
 
   const ravenWizardDetailMessage = useMemo(() => {
     if (ravenDetail?.message && ravenDetail.message.trim()) {

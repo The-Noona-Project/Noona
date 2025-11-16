@@ -8,7 +8,7 @@ import { SetupValidationError } from './errors.mjs'
 import { createDiscordSetupClient } from './discordSetupClient.mjs'
 import { createRavenClient } from './ravenClient.mjs'
 import { createWizardStateClient } from './wizardStateClient.mjs'
-import { resolveWizardStateOperation } from './wizardStateSchema.mjs'
+import { normalizeWizardMetadata, resolveWizardStateOperation } from './wizardStateSchema.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
@@ -504,10 +504,10 @@ export const createSageApp = ({
     }
 
     const readVerificationSummary = (state) => parseVerificationSummary(state?.verification?.detail)
+    const wizardEnv = wizardOptions.env ?? process.env
     let wizardStateClient = wizardStateClientOverride || wizardOptions.client || null
 
     if (!wizardStateClient) {
-        const wizardEnv = wizardOptions.env ?? process.env
         const token =
             wizardOptions.token ??
             wizardEnv?.VAULT_API_TOKEN ??
@@ -543,6 +543,23 @@ export const createSageApp = ({
             logger.warn?.(`[${serviceName}] ⚠️ Missing Vault token for wizard state; endpoints will be disabled.`)
         }
     }
+
+    const wizardMetadataOverrides = wizardOptions.metadata ?? {}
+    const wizardMetadata = normalizeWizardMetadata({
+        steps: wizardMetadataOverrides.steps ?? wizardOptions.stepMetadata ?? wizardOptions.steps ?? null,
+        featureFlags:
+            wizardMetadataOverrides.featureFlags ??
+            wizardMetadataOverrides.features ??
+            wizardOptions.featureFlags ??
+            wizardOptions.features ??
+            wizardOptions.flags ??
+            wizardOptions.featureFlag ??
+            wizardEnv?.SETUP_FEATURE_FLAGS ??
+            wizardEnv?.SETUP_WIZARD_FEATURE_FLAGS ??
+            wizardEnv?.WIZARD_FEATURE_FLAGS ??
+            null,
+    })
+
     const app = express()
 
     app.use(cors())
@@ -634,6 +651,10 @@ export const createSageApp = ({
             logger.error(`[${serviceName}] ⚠️ Failed to load logs for ${name}: ${error.message}`)
             res.status(status).json({ error: message })
         }
+    })
+
+    app.get('/api/setup/wizard/metadata', (_req, res) => {
+        res.json(wizardMetadata)
     })
 
     app.get('/api/setup/wizard/state', async (_req, res) => {

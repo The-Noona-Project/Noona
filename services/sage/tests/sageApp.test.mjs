@@ -12,7 +12,7 @@ import {
     normalizeServiceInstallPayload,
     startSage,
 } from '../shared/sageApp.mjs'
-import { createDefaultWizardState } from '../shared/wizardStateSchema.mjs'
+import { createDefaultWizardState, DEFAULT_WIZARD_STEP_METADATA } from '../shared/wizardStateSchema.mjs'
 import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
@@ -191,6 +191,41 @@ test('GET /api/setup/wizard/state returns state from client', async (t) => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), wizardState)
     assert.deepEqual(calls, ['load'])
+})
+
+test('GET /api/setup/wizard/metadata returns metadata and feature flags', async (t) => {
+    const app = createSageApp({
+        wizard: {
+            metadata: {
+                steps: [
+                    {
+                        id: 'raven',
+                        title: 'Custom Raven deployment',
+                        description: 'Custom description',
+                        optional: true,
+                        icon: 'download',
+                        capabilities: ['raven', 'custom'],
+                    },
+                ],
+                featureFlags: { 'wizard.beta': true },
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/metadata`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(payload.features, { 'wizard.beta': true })
+    assert.equal(payload.steps.length, DEFAULT_WIZARD_STEP_METADATA.length)
+    const ravenEntry = payload.steps.find((step) => step.id === 'raven')
+    assert.ok(ravenEntry)
+    assert.equal(ravenEntry.title, 'Custom Raven deployment')
+    assert.equal(ravenEntry.optional, true)
+    assert.equal(ravenEntry.icon, 'download')
 })
 
 test('PUT /api/setup/wizard/state applies updates through client', async (t) => {

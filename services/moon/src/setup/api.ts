@@ -99,6 +99,20 @@ export interface WizardState {
 
 export type WizardStepKey = keyof Pick<WizardState, 'foundation' | 'portal' | 'raven' | 'verification'>;
 
+export interface WizardStepMetadata {
+  id: WizardStepKey;
+  title: string;
+  description: string;
+  optional?: boolean;
+  icon?: string | null;
+  capabilities?: string[];
+}
+
+export interface WizardMetadataResponse {
+  steps: WizardStepMetadata[];
+  features: Record<string, boolean>;
+}
+
 export interface WizardStateUpdate {
   step: WizardStepKey;
   status?: WizardStepStatus;
@@ -314,6 +328,19 @@ export async function fetchServiceLogs(
     options,
   );
   return await parseJson<InstallLogsResponse>(response, 'Unable to retrieve service logs.');
+}
+
+export async function fetchWizardMetadata(options?: FetchJsonOptions): Promise<WizardMetadataResponse> {
+  const response = await fetchWithTimeout('/api/setup/wizard/metadata', {
+    ...options,
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      ...(options?.headers ?? {}),
+    },
+  });
+
+  return await parseJson<WizardMetadataResponse>(response, 'Unable to load setup wizard metadata.');
 }
 
 export async function fetchWizardState(options?: FetchJsonOptions): Promise<WizardState> {
