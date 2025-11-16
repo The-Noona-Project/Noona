@@ -14,7 +14,7 @@ import {
   useBreakpointValue,
   VisuallyHidden,
 } from '@chakra-ui/react';
-import { CheckIcon, WarningTwoIcon } from '@chakra-ui/icons';
+import { AtSignIcon, CheckCircleIcon, CheckIcon, DownloadIcon, SettingsIcon, WarningTwoIcon } from '@chakra-ui/icons';
 import type { SetupStepDefinition, SetupStepId } from '../useSetupSteps.ts';
 
 const STATUS_COLOR: Record<SetupStepDefinition['status'], string> = {
@@ -22,6 +22,16 @@ const STATUS_COLOR: Record<SetupStepDefinition['status'], string> = {
   complete: 'green',
   upcoming: 'gray',
   error: 'red',
+};
+
+const STEP_ICON_MAP: Record<string, React.ElementType> = {
+  foundation: SettingsIcon,
+  settings: SettingsIcon,
+  portal: AtSignIcon,
+  raven: DownloadIcon,
+  download: DownloadIcon,
+  verification: CheckCircleIcon,
+  check: CheckCircleIcon,
 };
 
 interface SetupStepperProps {
@@ -72,6 +82,9 @@ export default function SetupStepper({ steps, currentStepId, onSelect }: SetupSt
           if (isError && step.error) {
             describedBy.push(errorId);
           }
+          const iconKey = step.icon ?? step.id;
+          const IconComponent =
+            (iconKey && STEP_ICON_MAP[iconKey]) || (STEP_ICON_MAP[step.id] ?? null);
 
           const indicatorBg = isError
             ? 'red.500'
@@ -128,6 +141,8 @@ export default function SetupStepper({ steps, currentStepId, onSelect }: SetupSt
                     <WarningTwoIcon boxSize={4} />
                   ) : isComplete ? (
                     <CheckIcon boxSize={3} />
+                  ) : IconComponent ? (
+                    <IconComponent boxSize={4} color={indicatorColor} aria-hidden="true" />
                   ) : (
                     <Text fontWeight="bold" color={indicatorColor}>
                       {index + 1}

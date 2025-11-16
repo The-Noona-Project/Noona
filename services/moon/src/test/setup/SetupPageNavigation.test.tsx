@@ -10,6 +10,7 @@ vi.mock('../../setup/api.ts', () => ({
   fetchInstallationLogs: vi.fn(async () => ({ entries: [] })),
   fetchServiceLogs: vi.fn(async () => ({ entries: [] })),
   installServices: vi.fn(async () => ({ results: [] })),
+  fetchWizardMetadata: vi.fn(async () => ({ steps: [], features: {} })),
   createPortalDiscordChannel: vi.fn(async () => ({})),
   createPortalDiscordRole: vi.fn(async () => ({})),
   detectRavenMount: vi.fn(async () => ({ detection: null })),

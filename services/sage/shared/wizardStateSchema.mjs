@@ -6,9 +6,44 @@ export const WIZARD_STATE_VERSION = 2
 export const WIZARD_STEP_KEYS = Object.freeze(['foundation', 'portal', 'raven', 'verification'])
 export const WIZARD_STATUS_VALUES = Object.freeze(['pending', 'in-progress', 'complete', 'error', 'skipped'])
 export const DEFAULT_WIZARD_STATE_KEY = 'noona:wizard:state'
+export const DEFAULT_WIZARD_STEP_METADATA = Object.freeze([
+    {
+        id: 'foundation',
+        title: 'Foundation services',
+        description: 'Configure core data services and bootstrap the stack.',
+        optional: false,
+        icon: 'foundation',
+        capabilities: Object.freeze(['foundation', 'environment', 'installation']),
+    },
+    {
+        id: 'portal',
+        title: 'Portal configuration',
+        description: 'Provide Portal environment configuration and validate Discord access.',
+        optional: false,
+        icon: 'portal',
+        capabilities: Object.freeze(['portal', 'configuration', 'discord']),
+    },
+    {
+        id: 'raven',
+        title: 'Raven deployment',
+        description: 'Launch Raven and monitor installer progress.',
+        optional: false,
+        icon: 'raven',
+        capabilities: Object.freeze(['raven', 'deployment', 'monitoring']),
+    },
+    {
+        id: 'verification',
+        title: 'Verification checks',
+        description: 'Run health checks and confirm service readiness.',
+        optional: false,
+        icon: 'verification',
+        capabilities: Object.freeze(['verification', 'health', 'checks']),
+    },
+])
 
 const STATUS_SET = new Set(WIZARD_STATUS_VALUES)
 const STEP_SET = new Set(WIZARD_STEP_KEYS)
+const DEFAULT_STEP_METADATA_MAP = new Map(DEFAULT_WIZARD_STEP_METADATA.map((entry) => [entry.id, entry]))
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -61,6 +96,197 @@ const normalizeBoolean = (value, fallback = false) => {
 
     return fallback
 }
+
+const normalizeWizardStepCapabilities = (value, fallback = []) => {
+    if (!Array.isArray(value)) {
+        return Array.isArray(fallback) ? [...fallback] : []
+    }
+
+    const normalized = []
+    const seen = new Set()
+    for (const entry of value) {
+        if (typeof entry !== 'string') {
+            continue
+        }
+        const trimmed = entry.trim()
+        if (!trimmed || seen.has(trimmed)) {
+            continue
+        }
+        normalized.push(trimmed)
+        seen.add(trimmed)
+    }
+
+    if (normalized.length === 0 && Array.isArray(fallback)) {
+        return [...fallback]
+    }
+
+    return normalized
+}
+
+const cloneStepMetadata = (step) => ({
+    ...step,
+    capabilities: Array.isArray(step?.capabilities) ? [...step.capabilities] : [],
+})
+
+export const normalizeWizardStepMetadataEntry = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') {
+        return null
+    }
+
+    const rawId = normalizeString(candidate.id)
+    if (!STEP_SET.has(rawId)) {
+        return null
+    }
+
+    const defaults = DEFAULT_STEP_METADATA_MAP.get(rawId) || {
+        id: rawId,
+        title: rawId,
+        description: rawId,
+        optional: false,
+        icon: null,
+        capabilities: [],
+    }
+
+    return {
+        id: rawId,
+        title: normalizeString(candidate.title) || defaults.title,
+        description: normalizeString(candidate.description) || defaults.description,
+        optional: normalizeBoolean(candidate.optional, defaults.optional ?? false),
+        icon: normalizeOptionalString(candidate.icon) ?? defaults.icon ?? null,
+        capabilities: normalizeWizardStepCapabilities(candidate.capabilities, defaults.capabilities ?? []),
+    }
+}
+
+const normalizeWizardStepMetadataList = (input) => {
+    const overrides = new Map()
+    if (Array.isArray(input)) {
+        for (const entry of input) {
+            const normalized = normalizeWizardStepMetadataEntry(entry)
+            if (normalized) {
+                overrides.set(normalized.id, normalized)
+            }
+        }
+    }
+
+    return WIZARD_STEP_KEYS.map((key) => {
+        const defaults = DEFAULT_STEP_METADATA_MAP.get(key)
+        const override = overrides.get(key)
+        if (!defaults && !override) {
+            return null
+        }
+
+        if (!override) {
+            return cloneStepMetadata(defaults)
+        }
+
+        const merged = {
+            ...cloneStepMetadata(defaults || override),
+            ...override,
+        }
+
+        if (!override.capabilities || override.capabilities.length === 0) {
+            merged.capabilities = cloneStepMetadata(defaults || { capabilities: [] }).capabilities
+        }
+
+        if (override.icon == null && defaults) {
+            merged.icon = defaults.icon ?? null
+        }
+
+        return merged
+    }).filter(Boolean)
+}
+
+const splitFeatureFlagEntries = (value) => {
+    if (typeof value !== 'string') {
+        return []
+    }
+
+    const trimmed = value.trim()
+    if (!trimmed) {
+        return []
+    }
+
+    return trimmed
+        .split(',')
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+}
+
+export const normalizeWizardFeatureFlags = (input) => {
+    if (input == null) {
+        return {}
+    }
+
+    if (typeof input === 'string') {
+        const trimmed = input.trim()
+        if (!trimmed) {
+            return {}
+        }
+
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            try {
+                const parsed = JSON.parse(trimmed)
+                return normalizeWizardFeatureFlags(parsed)
+            } catch {
+                return {}
+            }
+        }
+
+        const entries = splitFeatureFlagEntries(trimmed)
+        if (entries.length === 0) {
+            return {}
+        }
+
+        const flags = {}
+        for (const entry of entries) {
+            const [rawKey, rawValue] = entry.split(/[:=]/, 2)
+            const key = typeof rawKey === 'string' ? rawKey.trim() : ''
+            if (!key) {
+                continue
+            }
+            flags[key] = normalizeBoolean(rawValue ?? true, true)
+        }
+        return flags
+    }
+
+    if (typeof input === 'object') {
+        const flags = {}
+        for (const [rawKey, rawValue] of Object.entries(input)) {
+            if (typeof rawKey !== 'string') {
+                continue
+            }
+            const key = rawKey.trim()
+            if (!key) {
+                continue
+            }
+            flags[key] = normalizeBoolean(rawValue, true)
+        }
+        return flags
+    }
+
+    return {}
+}
+
+export const normalizeWizardMetadata = (input = {}) => {
+    const steps = normalizeWizardStepMetadataList(input?.steps ?? input?.definitions)
+    const featureSource =
+        input?.featureFlags ?? input?.features ?? input?.flags ?? input?.featureFlag ?? null
+    const features = normalizeWizardFeatureFlags(featureSource)
+
+    if (steps.length === 0) {
+        return {
+            steps: DEFAULT_WIZARD_STEP_METADATA.map(cloneStepMetadata),
+            features,
+        }
+    }
+
+    return { steps, features }
+}
+
+export const createDefaultWizardMetadata = () => ({
+    steps: DEFAULT_WIZARD_STEP_METADATA.map(cloneStepMetadata),
+    features: {},
+})
 
 export const normalizeWizardStatus = (status) => {
     if (typeof status !== 'string') {
@@ -280,13 +506,18 @@ export default {
     WIZARD_STEP_KEYS,
     WIZARD_STATUS_VALUES,
     DEFAULT_WIZARD_STATE_KEY,
+    DEFAULT_WIZARD_STEP_METADATA,
     createDefaultWizardState,
     createDefaultWizardStepState,
+    createDefaultWizardMetadata,
     normalizeWizardState,
     normalizeWizardStatus,
     normalizeWizardStepState,
     normalizeWizardStepUpdate,
     normalizeWizardStateUpdates,
+    normalizeWizardFeatureFlags,
+    normalizeWizardMetadata,
+    normalizeWizardStepMetadataEntry,
     applyWizardStateUpdates,
     resolveWizardStateOperation,
 }

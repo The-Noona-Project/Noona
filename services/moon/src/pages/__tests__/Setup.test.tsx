@@ -22,6 +22,7 @@ vi.mock('../../setup/api.ts', () => {
     fetchServiceLogs: vi.fn(async () => ({ entries: [], summary: {} })),
     fetchWizardState: vi.fn(),
     updateWizardState: vi.fn(),
+    fetchWizardMetadata: vi.fn(async () => ({ steps: [], features: {} })),
     validatePortalDiscordConfig: vi.fn(async () => ({ guild: { name: 'Test Guild' }, roles: [], channels: [] })),
     createPortalDiscordRole: vi.fn(async () => ({ role: { id: 'role-123' } })),
     createPortalDiscordChannel: vi.fn(async () => ({ channel: { id: 'chan-456' } })),
