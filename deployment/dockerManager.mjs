@@ -872,7 +872,7 @@ const collectDetectedSockets = detectionResult => {
         : (typeof detectionResult === 'undefined' ? [] : [detectionResult]);
 
     return rawCandidates
-        .map(candidate => normalizeDockerSocket(candidate))
+        .map(candidate => normalizeDockerSocket(candidate, { allowRemote: true }))
         .filter(candidate => typeof candidate === 'string' && candidate.trim().length > 0);
 };
 
