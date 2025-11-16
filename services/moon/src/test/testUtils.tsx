@@ -16,6 +16,9 @@ function createWizardStepState(overrides: Partial<WizardStepState> = {}): Wizard
     error: null,
     updatedAt: null,
     completedAt: null,
+    actor: null,
+    retries: 0,
+    timeline: [],
     ...overrides,
   } satisfies WizardStepState;
 }

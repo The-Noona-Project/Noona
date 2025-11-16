@@ -37,6 +37,7 @@ const services = [
 const wizardState = {
   version: 1,
   updatedAt: null,
+  completed: false,
   foundation: {
     status: 'complete' as const,
     detail: JSON.stringify({
@@ -49,10 +50,40 @@ const wizardState = {
     error: null,
     updatedAt: null,
     completedAt: null,
+    actor: null,
+    retries: 0,
+    timeline: [],
   },
-  portal: { status: 'pending' as const, detail: null, error: null, updatedAt: null, completedAt: null },
-  raven: { status: 'pending' as const, detail: null, error: null, updatedAt: null, completedAt: null },
-  verification: { status: 'pending' as const, detail: null, error: null, updatedAt: null, completedAt: null },
+  portal: {
+    status: 'pending' as const,
+    detail: null,
+    error: null,
+    updatedAt: null,
+    completedAt: null,
+    actor: null,
+    retries: 0,
+    timeline: [],
+  },
+  raven: {
+    status: 'pending' as const,
+    detail: null,
+    error: null,
+    updatedAt: null,
+    completedAt: null,
+    actor: null,
+    retries: 0,
+    timeline: [],
+  },
+  verification: {
+    status: 'pending' as const,
+    detail: null,
+    error: null,
+    updatedAt: null,
+    completedAt: null,
+    actor: null,
+    retries: 0,
+    timeline: [],
+  },
 };
 
 const api = vi.mocked(await import('../../setup/api.ts'));
