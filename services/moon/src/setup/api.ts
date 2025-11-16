@@ -79,12 +79,34 @@ export interface InstallLogsResponse {
 
 export type WizardStepStatus = 'pending' | 'in-progress' | 'complete' | 'error' | 'skipped';
 
+export interface WizardTimelineActor {
+  id: string | null;
+  type: string | null;
+  label: string | null;
+  avatarUrl: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface WizardTimelineEvent {
+  id: string | null;
+  timestamp: string;
+  status: string | null;
+  message: string | null;
+  detail: string | null;
+  code: string | null;
+  actor: WizardTimelineActor | null;
+  context?: Record<string, unknown> | null;
+}
+
 export interface WizardStepState {
   status: WizardStepStatus;
   detail: string | null;
   error: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+  actor: WizardTimelineActor | null;
+  retries: number;
+  timeline: WizardTimelineEvent[];
 }
 
 export interface WizardState {
@@ -120,6 +142,43 @@ export interface WizardStateUpdate {
   error?: string | null;
   completedAt?: string | null;
   updatedAt?: string | null;
+  actor?: WizardTimelineActor | null;
+  retries?: number;
+  timeline?: WizardTimelineEvent[];
+}
+
+export interface WizardStepHistoryResponse {
+  step: WizardStepKey;
+  events: WizardTimelineEvent[];
+}
+
+export interface WizardBroadcastResponse {
+  wizard: WizardState;
+  event: WizardTimelineEvent | null;
+  step: WizardStepKey;
+}
+
+export interface WizardBroadcastRequest {
+  message: string;
+  detail?: string | null;
+  status?: WizardStepStatus;
+  eventStatus?: string | null;
+  code?: string | null;
+  actor?: WizardTimelineActor | null;
+  limit?: number;
+  error?: string | null;
+  retries?: number;
+  completedAt?: string | null;
+  updatedAt?: string | null;
+  context?: Record<string, unknown> | null;
+}
+
+export interface WizardResetPayload {
+  actor?: WizardTimelineActor | null;
+  detail?: string | null;
+  message?: string | null;
+  limit?: number;
+  context?: Record<string, unknown> | null;
 }
 
 export interface VerificationHealthSummary {
@@ -369,6 +428,78 @@ export async function updateWizardState(
     body: JSON.stringify({ updates: payload }),
   });
   return await parseJson<WizardState>(response, 'Unable to update setup wizard state.');
+}
+
+export async function fetchWizardStepHistory(
+  step: WizardStepKey,
+  limit = 25,
+  options?: FetchJsonOptions,
+): Promise<WizardStepHistoryResponse> {
+  const query = Number.isFinite(limit) ? `?limit=${encodeURIComponent(String(limit))}` : '';
+  const response = await fetchWithTimeout(
+    `/api/setup/wizard/steps/${encodeURIComponent(step)}/history${query}`,
+    {
+      ...options,
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        ...(options?.headers ?? {}),
+      },
+    },
+  );
+  return await parseJson<WizardStepHistoryResponse>(
+    response,
+    'Unable to load wizard activity history.',
+  );
+}
+
+export async function resetWizardStep(
+  step: WizardStepKey,
+  payload?: WizardResetPayload,
+  options?: FetchJsonOptions,
+): Promise<WizardState> {
+  const response = await fetchWithTimeout(
+    `/api/setup/wizard/steps/${encodeURIComponent(step)}/reset`,
+    {
+      ...options,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers ?? {}),
+      },
+      body: JSON.stringify(payload ?? {}),
+    },
+  );
+
+  const result = await parseJson<{ wizard: WizardState }>(
+    response,
+    'Unable to reset wizard step.',
+  );
+  return result.wizard;
+}
+
+export async function broadcastWizardSummary(
+  step: WizardStepKey,
+  payload: WizardBroadcastRequest,
+  options?: FetchJsonOptions,
+): Promise<WizardBroadcastResponse> {
+  const response = await fetchWithTimeout(
+    `/api/setup/wizard/steps/${encodeURIComponent(step)}/broadcast`,
+    {
+      ...options,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers ?? {}),
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  return await parseJson<WizardBroadcastResponse>(
+    response,
+    'Unable to broadcast wizard summary.',
+  );
 }
 
 export interface PortalDiscordValidationPayload {

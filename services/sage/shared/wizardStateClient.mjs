@@ -4,6 +4,7 @@ import {
     DEFAULT_WIZARD_STATE_KEY,
     WIZARD_STEP_KEYS,
     applyWizardStateUpdates,
+    appendWizardStepHistoryEntries,
     createDefaultWizardState,
     normalizeWizardState,
     normalizeWizardStateUpdates,
@@ -230,10 +231,23 @@ export const createWizardStateClient = ({
 
     const replaceState = async (state) => writeState(state)
 
+    const appendHistoryEntries = async ({ step, entries, entry, limit } = {}) => {
+        const current = await loadState({ fallbackToDefault: true })
+        const result = appendWizardStepHistoryEntries(current, { step, entries, entry, limit })
+
+        if (!result.changed) {
+            return result
+        }
+
+        const persisted = await writeState(result.state)
+        return { state: persisted, changed: true }
+    }
+
     return {
         loadState,
         writeState: replaceState,
         applyUpdates: applyUpdatesOnState,
+        appendHistory: appendHistoryEntries,
         resolveOperation: resolveWizardStateOperation,
         defaults: createDefaultWizardState,
         key: redisKey,

@@ -8,7 +8,11 @@ import { SetupValidationError } from './errors.mjs'
 import { createDiscordSetupClient } from './discordSetupClient.mjs'
 import { createRavenClient } from './ravenClient.mjs'
 import { createWizardStateClient } from './wizardStateClient.mjs'
-import { normalizeWizardMetadata, resolveWizardStateOperation } from './wizardStateSchema.mjs'
+import {
+    normalizeWizardMetadata,
+    resolveWizardStateOperation,
+    WIZARD_STEP_KEYS,
+} from './wizardStateSchema.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
@@ -75,6 +79,38 @@ const resolveLogger = (overrides = {}) => ({
     info: log,
     ...overrides,
 })
+
+const WIZARD_STEP_SET = new Set(WIZARD_STEP_KEYS)
+
+const resolveWizardStepKey = (value) => {
+    if (typeof value !== 'string') {
+        return null
+    }
+
+    const normalized = value.trim()
+    if (!normalized) {
+        return null
+    }
+
+    return WIZARD_STEP_SET.has(normalized) ? normalized : null
+}
+
+const normalizeHistoryLimit = (value) => {
+    if (value == null) {
+        return null
+    }
+
+    if (Array.isArray(value)) {
+        return normalizeHistoryLimit(value[0])
+    }
+
+    const number = Number(value)
+    if (!Number.isFinite(number)) {
+        return null
+    }
+
+    return Math.max(1, Math.min(200, Math.floor(number)))
+}
 
 const VERIFICATION_SERVICES = Object.freeze([
     { name: 'noona-vault', label: 'Vault' },
@@ -672,6 +708,30 @@ export const createSageApp = ({
         }
     })
 
+    app.get('/api/setup/wizard/steps/:step/history', async (req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        const step = resolveWizardStepKey(req.params?.step)
+        if (!step) {
+            res.status(400).json({ error: 'Invalid wizard step.' })
+            return
+        }
+
+        try {
+            const state = await wizardStateClient.loadState({ fallbackToDefault: true })
+            const timeline = Array.isArray(state?.[step]?.timeline) ? state[step].timeline : []
+            const limit = normalizeHistoryLimit(req.query?.limit)
+            const events = limit ? timeline.slice(-limit) : [...timeline]
+            res.json({ step, events })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load ${step} history: ${error.message}`)
+            res.status(502).json({ error: 'Unable to load wizard activity history.' })
+        }
+    })
+
     app.put('/api/setup/wizard/state', async (req, res) => {
         if (!wizardStateClient) {
             res.status(503).json({ error: 'Wizard state storage is not configured.' })
@@ -697,6 +757,188 @@ export const createSageApp = ({
 
             logger.error(`[${serviceName}] ❌ Failed to update wizard state: ${error.message}`)
             res.status(502).json({ error: 'Unable to update setup wizard state.' })
+        }
+    })
+
+    app.post('/api/setup/wizard/steps/:step/reset', async (req, res) => {
+        if (!wizardStateClient) {
+            res.status(503).json({ error: 'Wizard state storage is not configured.' })
+            return
+        }
+
+        const step = resolveWizardStepKey(req.params?.step)
+        if (!step) {
+            res.status(400).json({ error: 'Invalid wizard step.' })
+            return
+        }
+
+        const body = req.body ?? {}
+        const limit = normalizeHistoryLimit(body.limit)
+        const timestamp = new Date().toISOString()
+
+        try {
+            const { state } = await wizardStateClient.applyUpdates([
+                {
+                    step,
+                    status: 'pending',
+                    detail: null,
+                    error: null,
+                    completedAt: null,
+                    updatedAt: timestamp,
+                    timeline: [],
+                    retries: 0,
+                    actor: null,
+                },
+            ])
+
+            let wizard = state
+            if (typeof wizardStateClient.appendHistory === 'function') {
+                const actor = body.actor && typeof body.actor === 'object' ? body.actor : null
+                const eventDetail =
+                    typeof body.detail === 'string' && body.detail.trim()
+                        ? body.detail.trim()
+                        : 'Cleared progress for this step.'
+                const eventMessage =
+                    typeof body.message === 'string' && body.message.trim()
+                        ? body.message.trim()
+                        : 'Step reset'
+                const context = body.context && typeof body.context === 'object' ? body.context : null
+
+                const { state: updated } = await wizardStateClient.appendHistory({
+                    step,
+                    entries: [
+                        {
+                            timestamp,
+                            status: 'info',
+                            code: 'step-reset',
+                            message: eventMessage,
+                            detail: eventDetail,
+                            actor,
+                            context,
+                        },
+                    ],
+                    limit: limit ?? undefined,
+                })
+
+                wizard = updated
+            }
+
+            res.json({ wizard, step })
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ❌ Failed to reset ${step}: ${error.message}`)
+            res.status(502).json({ error: 'Unable to reset wizard step.' })
+        }
+    })
+
+    app.post('/api/setup/wizard/steps/:step/broadcast', async (req, res) => {
+        if (!wizardStateClient || typeof wizardStateClient.appendHistory !== 'function') {
+            res.status(503).json({ error: 'Wizard history storage is not configured.' })
+            return
+        }
+
+        const step = resolveWizardStepKey(req.params?.step)
+        if (!step) {
+            res.status(400).json({ error: 'Invalid wizard step.' })
+            return
+        }
+
+        const body = req.body ?? {}
+        const message = typeof body.message === 'string' ? body.message.trim() : ''
+        if (!message) {
+            res.status(400).json({ error: 'Broadcast message is required.' })
+            return
+        }
+
+        const limit = normalizeHistoryLimit(body.limit)
+        const eventDetail = typeof body.detail === 'string' && body.detail.trim() ? body.detail.trim() : null
+        const eventStatus =
+            typeof body.eventStatus === 'string' && body.eventStatus.trim() ? body.eventStatus.trim() : null
+        const actor = body.actor && typeof body.actor === 'object' ? body.actor : null
+        const context = body.context && typeof body.context === 'object' ? body.context : null
+
+        try {
+            const historyResult = await wizardStateClient.appendHistory({
+                step,
+                entries: [
+                    {
+                        message,
+                        detail: eventDetail,
+                        status: eventStatus,
+                        code:
+                            typeof body.code === 'string' && body.code.trim()
+                                ? body.code.trim()
+                                : null,
+                        actor,
+                        context,
+                    },
+                ],
+                limit: limit ?? undefined,
+            })
+
+            let wizard = historyResult.state
+            const patch = { step }
+            let shouldUpdate = false
+
+            if (typeof body.status === 'string' && body.status.trim()) {
+                patch.status = body.status.trim()
+                shouldUpdate = true
+            }
+
+            if (Object.prototype.hasOwnProperty.call(body, 'detail')) {
+                patch.detail = eventDetail
+                shouldUpdate = true
+            } else {
+                patch.detail = message
+                shouldUpdate = true
+            }
+
+            if (Object.prototype.hasOwnProperty.call(body, 'error')) {
+                patch.error = typeof body.error === 'string' ? body.error : null
+                shouldUpdate = true
+            }
+
+            if (Object.prototype.hasOwnProperty.call(body, 'retries')) {
+                patch.retries = body.retries
+                shouldUpdate = true
+            }
+
+            if (actor) {
+                patch.actor = actor
+                shouldUpdate = true
+            }
+
+            if (Object.prototype.hasOwnProperty.call(body, 'completedAt')) {
+                patch.completedAt = body.completedAt
+                shouldUpdate = true
+            }
+
+            if (Object.prototype.hasOwnProperty.call(body, 'updatedAt')) {
+                patch.updatedAt = body.updatedAt
+                shouldUpdate = true
+            }
+
+            if (shouldUpdate) {
+                const { state } = await wizardStateClient.applyUpdates([patch])
+                wizard = state
+            }
+
+            const events = Array.isArray(wizard?.[step]?.timeline) ? wizard[step].timeline : []
+            const event = events[events.length - 1] || null
+
+            res.json({ wizard, event, step })
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ❌ Failed to broadcast ${step} summary: ${error.message}`)
+            res.status(502).json({ error: 'Unable to broadcast wizard summary.' })
         }
     })
 

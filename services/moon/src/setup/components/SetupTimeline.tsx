@@ -18,6 +18,25 @@ import {
 import type { SetupService } from '../useSetupSteps.ts';
 import type { WizardState, WizardStepState } from '../api.ts';
 
+function formatTimelineTimestamp(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 const WIZARD_STATUS_COLORS: Record<string, string> = {
   pending: 'gray',
   'in-progress': 'blue',
@@ -138,26 +157,64 @@ export default function SetupTimeline({
               <Spinner size="sm" />
             </HStack>
           ) : wizardState ? (
-            <Stack spacing={3} divider={<StackDivider borderColor="gray.100" />}> 
-              {wizardSteps.map((item) => (
-                <Stack key={item.key} spacing={1} data-testid={`wizard-step-${item.key}`}>
-                  <HStack justify="space-between" align="flex-start">
-                    <Text fontWeight="semibold">{item.label}</Text>
-                    <Badge colorScheme={WIZARD_STATUS_COLORS[item.state.status] ?? 'gray'} textTransform="capitalize">
-                      {item.state.status}
-                    </Badge>
-                  </HStack>
-                  {item.state.error ? (
-                    <Text fontSize="sm" color="red.500">
-                      {item.state.error}
-                    </Text>
-                  ) : item.state.detail ? (
-                    <Text fontSize="sm" color="gray.600">
-                      {item.state.detail}
-                    </Text>
-                  ) : null}
-                </Stack>
-              ))}
+            <Stack spacing={3} divider={<StackDivider borderColor="gray.100" />}>
+              {wizardSteps.map((item) => {
+                const timeline = Array.isArray(item.state.timeline) ? item.state.timeline : [];
+                const lastEntry = timeline.length > 0 ? timeline[timeline.length - 1] : null;
+                const actorLabel =
+                  lastEntry?.actor?.label || lastEntry?.actor?.id || lastEntry?.actor?.type || null;
+                const timestampLabel = formatTimelineTimestamp(lastEntry?.timestamp);
+
+                return (
+                  <Stack key={item.key} spacing={1} data-testid={`wizard-step-${item.key}`}>
+                    <HStack justify="space-between" align="flex-start">
+                      <Text fontWeight="semibold">{item.label}</Text>
+                      <Badge colorScheme={WIZARD_STATUS_COLORS[item.state.status] ?? 'gray'} textTransform="capitalize">
+                        {item.state.status}
+                      </Badge>
+                    </HStack>
+                    {item.state.error ? (
+                      <Text fontSize="sm" color="red.500">
+                        {item.state.error}
+                      </Text>
+                    ) : item.state.detail ? (
+                      <Text fontSize="sm" color="gray.600">
+                        {item.state.detail}
+                      </Text>
+                    ) : null}
+                    {lastEntry ? (
+                      <Stack
+                        spacing={0.5}
+                        fontSize="xs"
+                        color="gray.500"
+                        data-testid={`wizard-step-${item.key}-timeline`}
+                      >
+                        <Text>
+                          Last activity
+                          {actorLabel ? ` · ${actorLabel}` : ''}
+                          {timestampLabel ? ` · ${timestampLabel}` : ''}
+                        </Text>
+                        {lastEntry.message ? (
+                          <Text color="gray.600">{lastEntry.message}</Text>
+                        ) : null}
+                        {lastEntry.detail && lastEntry.detail !== lastEntry.message ? (
+                          <Text>{lastEntry.detail}</Text>
+                        ) : null}
+                      </Stack>
+                    ) : null}
+                    {item.state.retries > 0 ? (
+                      <Text
+                        fontSize="xs"
+                        color="orange.600"
+                        data-testid={`wizard-step-${item.key}-retries`}
+                      >
+                        Retried {item.state.retries}{' '}
+                        {item.state.retries === 1 ? 'time' : 'times'}
+                      </Text>
+                    ) : null}
+                  </Stack>
+                );
+              })}
             </Stack>
           ) : (
             <Text fontSize="sm" color="gray.600">

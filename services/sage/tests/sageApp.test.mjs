@@ -12,7 +12,12 @@ import {
     normalizeServiceInstallPayload,
     startSage,
 } from '../shared/sageApp.mjs'
-import { createDefaultWizardState, DEFAULT_WIZARD_STEP_METADATA } from '../shared/wizardStateSchema.mjs'
+import {
+    createDefaultWizardState,
+    DEFAULT_WIZARD_STEP_METADATA,
+    appendWizardStepHistoryEntries,
+    applyWizardStateUpdates,
+} from '../shared/wizardStateSchema.mjs'
 import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
@@ -193,6 +198,37 @@ test('GET /api/setup/wizard/state returns state from client', async (t) => {
     assert.deepEqual(calls, ['load'])
 })
 
+test('GET /api/setup/wizard/steps/:step/history returns timeline events', async (t) => {
+    const { state: wizardState } = appendWizardStepHistoryEntries(createDefaultWizardState(), {
+        step: 'foundation',
+        entries: [
+            { message: 'Queued install', detail: 'Starting services', status: 'info' },
+            { message: 'Awaiting credentials', detail: 'Waiting for admin token', status: 'pending' },
+        ],
+    })
+
+    const calls = []
+    const app = createSageApp({
+        wizardStateClient: {
+            async loadState() {
+                calls.push('load')
+                return wizardState
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/steps/foundation/history?limit=1`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.step, 'foundation')
+    assert.equal(payload.events.length, 1)
+    assert.equal(payload.events[0].message, 'Awaiting credentials')
+    assert.deepEqual(calls, ['load'])
+})
+
 test('GET /api/setup/wizard/metadata returns metadata and feature flags', async (t) => {
     const app = createSageApp({
         wizard: {
@@ -290,6 +326,99 @@ test('PUT /api/setup/wizard/state validates payload', async (t) => {
     assert.equal(response.status, 400)
     const payload = await response.json()
     assert.ok(typeof payload?.error === 'string' && payload.error.length > 0)
+})
+
+test('POST /api/setup/wizard/steps/:step/reset clears state and appends history', async (t) => {
+    const wizardState = createDefaultWizardState()
+    const updates = []
+    const historyCalls = []
+
+    const app = createSageApp({
+        wizardStateClient: {
+            async applyUpdates(changeSet) {
+                updates.push(...changeSet)
+                return { state: wizardState, changed: true }
+            },
+            async appendHistory(options) {
+                historyCalls.push(options)
+                return { state: wizardState, changed: true }
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/steps/raven/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor: { id: 'ops', label: 'Ops' }, detail: 'Operator requested reset' }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal(updates.length, 1)
+    assert.equal(updates[0].step, 'raven')
+    assert.deepEqual(updates[0].timeline, [])
+    assert.equal(updates[0].status, 'pending')
+    assert.equal(historyCalls.length, 1)
+    assert.equal(historyCalls[0].step, 'raven')
+    assert.equal(historyCalls[0].entries[0].message, 'Step reset')
+    assert.equal(historyCalls[0].entries[0].detail, 'Operator requested reset')
+})
+
+test('POST /api/setup/wizard/steps/:step/broadcast appends derived summaries', async (t) => {
+    let wizardState = createDefaultWizardState()
+    const historyCalls = []
+    const updates = []
+
+    const app = createSageApp({
+        wizardStateClient: {
+            async appendHistory(options) {
+                historyCalls.push(options)
+                const result = appendWizardStepHistoryEntries(wizardState, options)
+                if (result.changed) {
+                    wizardState = result.state
+                }
+                return { state: wizardState, changed: result.changed }
+            },
+            async applyUpdates(changeSet) {
+                updates.push(...changeSet)
+                const result = applyWizardStateUpdates(wizardState, changeSet)
+                wizardState = result.state
+                return { state: wizardState, changed: result.changed }
+            },
+            async loadState() {
+                return wizardState
+            },
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/wizard/steps/portal/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message: 'Awaiting credentials',
+            detail: 'Waiting for admin confirmation',
+            status: 'in-progress',
+            eventStatus: 'info',
+            actor: { id: 'moon', label: 'Moon UI' },
+        }),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.step, 'portal')
+    assert.equal(payload.event.message, 'Awaiting credentials')
+    assert.equal(payload.wizard.portal.detail, 'Waiting for admin confirmation')
+    assert.equal(payload.wizard.portal.status, 'in-progress')
+    assert.ok(Array.isArray(payload.wizard.portal.timeline))
+    const lastEvent = payload.wizard.portal.timeline[payload.wizard.portal.timeline.length - 1]
+    assert.equal(lastEvent.message, 'Awaiting credentials')
+    assert.equal(historyCalls.length, 1)
+    assert.ok(updates.some((entry) => entry.step === 'portal' && entry.status === 'in-progress'))
 })
 
 test('GET /api/setup/verification/status returns wizard summary and health', async (t) => {

@@ -6,6 +6,7 @@ export const WIZARD_STATE_VERSION = 2
 export const WIZARD_STEP_KEYS = Object.freeze(['foundation', 'portal', 'raven', 'verification'])
 export const WIZARD_STATUS_VALUES = Object.freeze(['pending', 'in-progress', 'complete', 'error', 'skipped'])
 export const DEFAULT_WIZARD_STATE_KEY = 'noona:wizard:state'
+export const DEFAULT_WIZARD_HISTORY_LIMIT = 50
 export const DEFAULT_WIZARD_STEP_METADATA = Object.freeze([
     {
         id: 'foundation',
@@ -45,6 +46,19 @@ const STATUS_SET = new Set(WIZARD_STATUS_VALUES)
 const STEP_SET = new Set(WIZARD_STEP_KEYS)
 const DEFAULT_STEP_METADATA_MAP = new Map(DEFAULT_WIZARD_STEP_METADATA.map((entry) => [entry.id, entry]))
 
+const clonePlainObject = (value) => {
+    if (!value || typeof value !== 'object') {
+        return null
+    }
+
+    const clone = {}
+    for (const [key, val] of Object.entries(value)) {
+        clone[key] = val
+    }
+
+    return clone
+}
+
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
         return ''
@@ -73,6 +87,93 @@ const normalizeIsoString = (value) => {
     }
 
     return trimmed
+}
+
+const normalizePositiveInteger = (value, fallback = 0) => {
+    const number = Number(value)
+    if (!Number.isFinite(number)) {
+        return fallback
+    }
+
+    const normalized = Math.max(0, Math.floor(number))
+    return Number.isFinite(normalized) ? normalized : fallback
+}
+
+const normalizeWizardActor = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') {
+        return null
+    }
+
+    const actor = {
+        id: normalizeOptionalString(candidate.id ?? candidate.actorId) ?? null,
+        type: normalizeOptionalString(candidate.type ?? candidate.kind) ?? null,
+        label:
+            normalizeOptionalString(
+                candidate.label ?? candidate.name ?? candidate.displayName ?? candidate.actorName,
+            ) ?? null,
+        avatarUrl: normalizeOptionalString(candidate.avatarUrl ?? candidate.avatar) ?? null,
+        metadata: null,
+    }
+
+    if (candidate.metadata && typeof candidate.metadata === 'object') {
+        actor.metadata = clonePlainObject(candidate.metadata)
+    }
+
+    if (!actor.id && !actor.type && !actor.label && !actor.avatarUrl && !actor.metadata) {
+        return null
+    }
+
+    return actor
+}
+
+const normalizeWizardTimelineEvent = (candidate, defaultTimestamp = null) => {
+    if (!candidate || typeof candidate !== 'object') {
+        return null
+    }
+
+    const timestamp = normalizeIsoString(candidate.timestamp) || defaultTimestamp || new Date().toISOString()
+    const code = normalizeOptionalString(candidate.code ?? candidate.event ?? candidate.type)
+    const detail = normalizeOptionalString(candidate.detail ?? candidate.description) ?? null
+    const message =
+        normalizeOptionalString(candidate.message ?? candidate.summary ?? candidate.body) ?? detail ?? code
+
+    if (!message && !detail && !code) {
+        return null
+    }
+
+    const event = {
+        id: normalizeOptionalString(candidate.id ?? candidate.eventId) ?? null,
+        timestamp,
+        status: normalizeOptionalString(candidate.status ?? candidate.level) ?? null,
+        message,
+        detail,
+        code,
+        actor: normalizeWizardActor(candidate.actor ?? candidate.source) ?? null,
+        context: null,
+    }
+
+    if (candidate.context && typeof candidate.context === 'object') {
+        event.context = clonePlainObject(candidate.context)
+    }
+
+    return event
+}
+
+const normalizeWizardTimelineEntries = (value) => {
+    if (!value) {
+        return []
+    }
+
+    const candidates = Array.isArray(value) ? value : [value]
+    const normalized = []
+    for (const candidate of candidates) {
+        const entry = normalizeWizardTimelineEvent(candidate)
+        if (entry) {
+            normalized.push(entry)
+        }
+    }
+
+    return normalized
 }
 
 const normalizeBoolean = (value, fallback = false) => {
@@ -306,6 +407,9 @@ export const normalizeWizardStepState = (candidate = {}) => {
         error: normalizeOptionalString(candidate?.error),
         updatedAt: normalizeIsoString(candidate?.updatedAt),
         completedAt: normalizeIsoString(candidate?.completedAt),
+        actor: normalizeWizardActor(candidate?.actor),
+        retries: normalizePositiveInteger(candidate?.retries ?? candidate?.retryCount ?? 0, 0),
+        timeline: normalizeWizardTimelineEntries(candidate?.timeline ?? candidate?.history ?? []),
     }
 }
 
@@ -315,6 +419,9 @@ export const createDefaultWizardStepState = () => ({
     error: null,
     updatedAt: null,
     completedAt: null,
+    actor: null,
+    retries: 0,
+    timeline: [],
 })
 
 export const normalizeWizardState = (candidate = {}) => {
@@ -344,6 +451,9 @@ export const createDefaultWizardState = () => {
         state[step].detail = null
         state[step].error = null
         state[step].completedAt = null
+        state[step].actor = null
+        state[step].retries = 0
+        state[step].timeline = []
     }
 
     return state
@@ -391,6 +501,27 @@ export const normalizeWizardStepUpdate = (input) => {
             throw new SetupValidationError('updatedAt must be an ISO date string or null.')
         }
         update.updatedAt = updatedAt
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'actor')) {
+        update.actor = normalizeWizardActor(input.actor)
+    }
+
+    if (
+        Object.prototype.hasOwnProperty.call(input, 'retries') ||
+        Object.prototype.hasOwnProperty.call(input, 'retryCount')
+    ) {
+        const retriesSource = Object.prototype.hasOwnProperty.call(input, 'retries')
+            ? input.retries
+            : input.retryCount
+        update.retries = normalizePositiveInteger(retriesSource, 0)
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'timeline') || Object.prototype.hasOwnProperty.call(input, 'history')) {
+        const timelineSource = Object.prototype.hasOwnProperty.call(input, 'timeline')
+            ? input.timeline
+            : input.history
+        update.timeline = normalizeWizardTimelineEntries(timelineSource)
     }
 
     return update
@@ -466,6 +597,21 @@ export const applyWizardStateUpdates = (state, updatesInput) => {
             current.updatedAt = now
         }
 
+        if (update.actor !== undefined && update.actor !== current.actor) {
+            current.actor = update.actor
+            stepChanged = true
+        }
+
+        if (update.retries !== undefined && update.retries !== current.retries) {
+            current.retries = update.retries
+            stepChanged = true
+        }
+
+        if (update.timeline !== undefined) {
+            current.timeline = Array.isArray(update.timeline) ? [...update.timeline] : []
+            stepChanged = true
+        }
+
         if (stepChanged) {
             changed = true
         }
@@ -476,6 +622,39 @@ export const applyWizardStateUpdates = (state, updatesInput) => {
     }
 
     return { state: changed ? next : base, changed }
+}
+
+export const appendWizardStepHistoryEntries = (stateInput, options = {}) => {
+    if (!options || typeof options !== 'object') {
+        throw new SetupValidationError('History append options are required.')
+    }
+
+    const base = normalizeWizardState(stateInput)
+    const step = normalizeString(options.step)
+    if (!STEP_SET.has(step)) {
+        throw new SetupValidationError('History updates must target a valid wizard step.')
+    }
+
+    const entriesSource = options.entries ?? (options.entry ? [options.entry] : null)
+    const entries = normalizeWizardTimelineEntries(entriesSource)
+    if (entries.length === 0) {
+        return { state: base, changed: false }
+    }
+
+    const limitCandidate = Number(options.limit)
+    const limit = Number.isFinite(limitCandidate) && limitCandidate > 0 ? Math.floor(limitCandidate) : DEFAULT_WIZARD_HISTORY_LIMIT
+    const next = { ...base }
+    next[step] = { ...base[step], timeline: [...base[step].timeline, ...entries] }
+
+    if (next[step].timeline.length > limit) {
+        next[step].timeline = next[step].timeline.slice(-limit)
+    }
+
+    const timestamp = new Date().toISOString()
+    next[step].updatedAt = timestamp
+    next.updatedAt = timestamp
+
+    return { state: next, changed: true }
 }
 
 export const resolveWizardStateOperation = (payload) => {
@@ -506,6 +685,7 @@ export default {
     WIZARD_STEP_KEYS,
     WIZARD_STATUS_VALUES,
     DEFAULT_WIZARD_STATE_KEY,
+    DEFAULT_WIZARD_HISTORY_LIMIT,
     DEFAULT_WIZARD_STEP_METADATA,
     createDefaultWizardState,
     createDefaultWizardStepState,
@@ -519,5 +699,6 @@ export default {
     normalizeWizardMetadata,
     normalizeWizardStepMetadataEntry,
     applyWizardStateUpdates,
+    appendWizardStepHistoryEntries,
     resolveWizardStateOperation,
 }
