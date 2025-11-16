@@ -11,6 +11,7 @@ import {
     defaultDockerSocketDetector,
     isWindowsPipePath,
     normalizeDockerSocket,
+    isTcpDockerSocket,
 } from '../utilities/etc/dockerSockets.mjs';
 const noop = () => {};
 
@@ -1124,7 +1125,7 @@ const normalizeHostDockerSocketOverride = value => {
         return null;
     }
 
-    const normalized = normalizeDockerSocket(value);
+    const normalized = normalizeDockerSocket(value, { allowRemote: true });
     return normalized || null;
 };
 
@@ -1527,13 +1528,23 @@ const createContainerOptions = (service, image, envVars = {}, {
         }
 
         if (typeof hostDockerSocket === 'string' && hostDockerSocket.trim()) {
-            hostConfig.Binds.push(`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`);
-            socketCandidates.add(hostDockerSocket.trim());
+            const trimmed = hostDockerSocket.trim();
+            const remoteSocket = isTcpDockerSocket(trimmed);
+
+            if (!remoteSocket) {
+                hostConfig.Binds.push(`${trimmed}:${DOCKER_SOCKET_TARGET}`);
+                socketCandidates.add(trimmed);
+                socketCandidates.add(DOCKER_SOCKET_TARGET);
+            } else {
+                socketCandidates.add(trimmed);
+                if (service === 'warden' && !normalizedEnv.DOCKER_HOST) {
+                    normalizedEnv.DOCKER_HOST = trimmed;
+                }
+            }
         } else if (hostDockerSocket) {
             hostConfig.Binds.push(`${hostDockerSocket}:${DOCKER_SOCKET_TARGET}`);
+            socketCandidates.add(DOCKER_SOCKET_TARGET);
         }
-
-        socketCandidates.add(DOCKER_SOCKET_TARGET);
     }
 
     const exposedPorts = {};

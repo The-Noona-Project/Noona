@@ -1500,6 +1500,73 @@ test('init falls back to alternate docker socket when default ping fails', async
     );
 });
 
+test('init inspects tcp DOCKER_HOST endpoint when default socket fails', async () => {
+    const failingDocker = createStubDocker({
+        ping: async () => {
+            const error = new Error('connect ECONNREFUSED /var/run/docker.sock');
+            error.code = 'ECONNREFUSED';
+            throw error;
+        },
+    });
+
+    const remoteDocker = createStubDocker({
+        ping: async () => {},
+        modem: { host: 'docker-proxy', port: 2375 },
+    });
+
+    const dockerFactoryCalls = [];
+    const fsStub = {
+        existsSync: (candidate) => {
+            if (candidate.startsWith('tcp://')) {
+                throw new Error('should not stat tcp endpoints');
+            }
+            return candidate === '/var/run/docker.sock';
+        },
+        statSync: (candidate) => {
+            if (candidate.startsWith('tcp://')) {
+                throw new Error('should not stat tcp endpoints');
+            }
+            return { isSocket: () => true };
+        },
+    };
+
+    const dockerUtils = {
+        ensureNetwork: async () => {},
+        attachSelfToNetwork: async () => {},
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {},
+        runContainerWithLogs: async (service, _network, trackedContainers) => {
+            trackedContainers.add(service.name);
+        },
+        waitForHealthyStatus: async () => {},
+    };
+
+    const warden = buildWarden({
+        dockerInstance: failingDocker,
+        dockerFactory: (endpoint) => {
+            dockerFactoryCalls.push(endpoint);
+            if (endpoint === 'tcp://docker-proxy:2375') {
+                return remoteDocker;
+            }
+            throw new Error(`Unexpected endpoint: ${endpoint}`);
+        },
+        fs: fsStub,
+        env: { DOCKER_HOST: 'tcp://docker-proxy:2375' },
+        dockerUtils,
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': { name: 'noona-sage', image: 'sage', hostServiceUrl: 'http://sage' },
+                'noona-moon': { name: 'noona-moon', image: 'moon', hostServiceUrl: 'http://moon' },
+            },
+        },
+    });
+
+    await warden.init();
+
+    assert.deepEqual(dockerFactoryCalls, ['tcp://docker-proxy:2375']);
+});
+
 test('shutdownAll stops, removes, clears tracked containers and exits with code 0', async () => {
     const operations = [];
     const containers = {

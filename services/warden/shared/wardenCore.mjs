@@ -20,11 +20,22 @@ import {
     normalizeDockerSocket as normalizeSocketPath,
     isWindowsPipePath,
     defaultDockerSocketDetector,
+    isTcpDockerSocket,
+    parseTcpDockerSocket,
 } from '../../../utilities/etc/dockerSockets.mjs';
 import {
     createWizardStateClient,
     createWizardStatePublisher,
 } from '../../sage/shared/wizardStateClient.mjs';
+
+const describeSocketReference = (value) => {
+    if (!value) {
+        return 'default Docker instance';
+    }
+
+    const prefix = isTcpDockerSocket(value) ? 'endpoint' : 'socket';
+    return `${prefix} ${value}`;
+};
 
 function normalizeServices(servicesOption = {}) {
     const { addon = addonDockers, core = noonaDockers } = servicesOption;
@@ -191,29 +202,61 @@ export function createWarden(options = {}) {
     const requiredServices = ['noona-mongo', 'noona-redis', 'noona-vault'];
     const requiredServiceSet = new Set(requiredServices);
 
-    const dockerFactory = dockerFactoryOption || ((socketPath) => new Docker({ socketPath }));
+    const dockerFactory = dockerFactoryOption || ((socketReference) => {
+        if (socketReference && isTcpDockerSocket(socketReference)) {
+            const parsed = parseTcpDockerSocket(socketReference);
+            if (!parsed) {
+                throw new Error(`Invalid Docker endpoint: ${socketReference}`);
+            }
 
-    const hostDockerSockets = Array.from(new Set((Array.isArray(hostDockerSocketsOption)
+            return new Docker({
+                protocol: parsed.protocol,
+                host: parsed.host,
+                port: parsed.port,
+            });
+        }
+
+        return new Docker({ socketPath: socketReference });
+    });
+
+    const baseSocketCandidates = Array.isArray(hostDockerSocketsOption)
         ? hostDockerSocketsOption
-        : dockerSocketDetector({ env, fs: fsModule }))
-        .map(normalizeSocketPath)
-        .filter(Boolean)));
+        : dockerSocketDetector({ env, fs: fsModule });
+
+    const normalizedHostDockerSockets = [];
+
+    for (const candidate of baseSocketCandidates) {
+        const normalized = normalizeSocketPath(candidate, { allowRemote: true });
+        if (normalized) {
+            normalizedHostDockerSockets.push(normalized);
+        }
+    }
+
+    if (typeof env?.DOCKER_HOST === 'string') {
+        const normalizedDockerHost = normalizeSocketPath(env.DOCKER_HOST, { allowRemote: true });
+        if (normalizedDockerHost) {
+            normalizedHostDockerSockets.push(normalizedDockerHost);
+        }
+    }
+
+    const hostDockerSockets = Array.from(new Set(normalizedHostDockerSockets));
 
     const initialSocketPath = normalizeSocketPath(
         dockerInstance?.modem?.socketPath || env?.DOCKER_HOST || null,
+        { allowRemote: true },
     );
 
     let activeDockerInstance = dockerInstance;
     let activeDockerContext = {
         client: dockerInstance,
         socketPath: initialSocketPath,
-        label: initialSocketPath ? `socket ${initialSocketPath}` : 'default Docker instance',
+        label: describeSocketReference(initialSocketPath),
     };
     let dockerConnectionVerified = false;
 
     const describeDockerContext = (context = {}) => {
         if (context.socketPath) {
-            return `socket ${context.socketPath}`;
+            return describeSocketReference(context.socketPath);
         }
 
         if (context.label) {
@@ -232,7 +275,9 @@ export function createWarden(options = {}) {
                 return;
             }
 
-            const normalized = context.socketPath ? normalizeSocketPath(context.socketPath) : null;
+            const normalized = context.socketPath
+                ? normalizeSocketPath(context.socketPath, { allowRemote: true })
+                : null;
             const key = normalized || context.label;
             if (key && visited.has(key)) {
                 return;
@@ -252,14 +297,15 @@ export function createWarden(options = {}) {
         pushContext(activeDockerContext);
 
         for (const candidate of hostDockerSockets) {
-            const normalizedCandidate = normalizeSocketPath(candidate);
+            const normalizedCandidate = normalizeSocketPath(candidate, { allowRemote: true });
             if (!normalizedCandidate || visited.has(normalizedCandidate)) {
                 continue;
             }
 
             const candidateIsPipe = isWindowsPipePath(normalizedCandidate);
+            const candidateIsRemote = isTcpDockerSocket(normalizedCandidate);
 
-            if (!candidateIsPipe && typeof fsModule?.existsSync === 'function') {
+            if (!candidateIsPipe && !candidateIsRemote && typeof fsModule?.existsSync === 'function') {
                 try {
                     if (!fsModule.existsSync(normalizedCandidate)) {
                         continue;
@@ -269,7 +315,7 @@ export function createWarden(options = {}) {
                 }
             }
 
-            if (!candidateIsPipe && typeof fsModule?.statSync === 'function') {
+            if (!candidateIsPipe && !candidateIsRemote && typeof fsModule?.statSync === 'function') {
                 try {
                     const stats = fsModule.statSync(normalizedCandidate);
                     if (typeof stats?.isSocket === 'function' && !stats.isSocket()) {
@@ -286,7 +332,7 @@ export function createWarden(options = {}) {
                     pushContext({
                         client,
                         socketPath: normalizedCandidate,
-                        label: `socket ${normalizedCandidate}`,
+                        label: describeSocketReference(normalizedCandidate),
                     });
                 }
             } catch (error) {
