@@ -30,7 +30,6 @@ import {
   type WizardStepMetadata,
   type WizardStepKey,
 } from './api.ts';
-import { useWizardState } from './useWizardState.ts';
 
 export type SetupStepId = WizardStepKey;
 
@@ -559,7 +558,7 @@ export interface UseSetupStepsResult {
   wizardState: WizardState | null;
   wizardLoading: boolean;
   wizardError: string | null;
-  refreshWizard: () => Promise<void>;
+  refreshWizard: () => Promise<WizardState | null>;
 }
 
 type StepDefinitionBase = Omit<SetupStepDefinition, 'status' | 'error'>;
@@ -888,14 +887,16 @@ function buildInstallPayload(
 }
 
 export function useSetupSteps(): UseSetupStepsResult {
-  const { services: serviceEntries, ensureLoaded, refresh } = useServiceInstallation();
   const {
-    state: wizardState,
-    loading: wizardLoading,
-    error: wizardError,
-    refresh: refreshWizard,
-    update: updateWizard,
-  } = useWizardState();
+    services: serviceEntries,
+    ensureLoaded,
+    refresh,
+    wizardState,
+    wizardLoading,
+    wizardError,
+    refreshWizard,
+    updateWizard,
+  } = useServiceInstallation();
   const [currentStepId, setCurrentStepId] = useState<SetupStepId>(
     FALLBACK_STEP_METADATA[0]?.id ?? 'foundation',
   );

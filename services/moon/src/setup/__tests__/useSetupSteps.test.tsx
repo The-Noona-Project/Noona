@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSetupSteps } from '../useSetupSteps.ts';
 import * as api from '../api.ts';
 import * as serviceInstallation from '../../state/serviceInstallationContext.tsx';
-import * as wizardStateHook from '../useWizardState.ts';
 import type { ServiceEntry } from '../../utils/serviceStatus.ts';
 
 vi.mock('../api.ts', () => ({
@@ -23,10 +22,6 @@ vi.mock('../api.ts', () => ({
 
 vi.mock('../../state/serviceInstallationContext.tsx', () => ({
   useServiceInstallation: vi.fn(),
-}));
-
-vi.mock('../useWizardState.ts', () => ({
-  useWizardState: vi.fn(),
 }));
 
 const defaultWizardState = {
@@ -124,15 +119,8 @@ describe('useSetupSteps', () => {
       ensureLoaded: vi.fn().mockResolvedValue(mockServices),
       refresh: vi.fn().mockResolvedValue(mockServices),
       refreshWizard: vi.fn().mockResolvedValue(defaultWizardState),
+      updateWizard: vi.fn().mockResolvedValue(defaultWizardState),
       isServiceInstalled: vi.fn().mockReturnValue(false),
-    });
-
-    vi.mocked(wizardStateHook.useWizardState).mockReturnValue({
-      state: defaultWizardState,
-      loading: false,
-      error: null,
-      refresh: vi.fn().mockResolvedValue(defaultWizardState),
-      update: vi.fn().mockResolvedValue(defaultWizardState),
     });
   });
 

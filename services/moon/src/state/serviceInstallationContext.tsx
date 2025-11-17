@@ -8,7 +8,12 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { fetchWizardState as fetchWizardStateRequest, type WizardState } from '../setup/api.ts';
+import {
+  fetchWizardState as fetchWizardStateRequest,
+  updateWizardState as updateWizardStateRequest,
+  type WizardState,
+  type WizardStateUpdate,
+} from '../setup/api.ts';
 import { normalizeServiceList, resolveServiceInstalled, type ServiceEntry } from '../utils/serviceStatus.ts';
 
 type FetchServicesFn = (force?: boolean) => Promise<ServiceEntry[]>;
@@ -96,10 +101,11 @@ export interface ServiceInstallationState {
   hasPendingSetup: boolean;
   wizardState: WizardState | null;
   wizardLoading: boolean;
-  wizardError: string;
+  wizardError: string | null;
   ensureLoaded: () => Promise<ServiceEntry[]>;
   refresh: () => Promise<ServiceEntry[]>;
   refreshWizard: () => Promise<WizardState | null>;
+  updateWizard: (updates: WizardStateUpdate | WizardStateUpdate[]) => Promise<WizardState | null>;
   isServiceInstalled: (name: string | null | undefined) => boolean;
 }
 
@@ -151,7 +157,7 @@ export function ServiceInstallationProvider({
     initialWizardStateProp ?? null,
   );
   const [wizardLoading, setWizardLoading] = useState(false);
-  const [wizardError, setWizardError] = useState('');
+  const [wizardError, setWizardError] = useState<string | null>(null);
 
   const servicesRef = useRef<ServiceEntry[]>(services);
   const loadPromiseRef = useRef<Promise<ServiceEntry[]> | null>(null);
@@ -190,7 +196,7 @@ export function ServiceInstallationProvider({
       setLoading(true);
       setWizardLoading(true);
       setError('');
-      setWizardError('');
+      setWizardError(null);
 
       const pending = (async () => {
         try {
@@ -219,7 +225,7 @@ export function ServiceInstallationProvider({
           setServices(normalized);
 
           if (!wizardResult.error) {
-            setWizardError('');
+            setWizardError(null);
           }
 
           setWizardState(wizardResult.state ?? null);
@@ -260,7 +266,7 @@ export function ServiceInstallationProvider({
 
   const refreshWizard = useCallback(async (): Promise<WizardState | null> => {
     setWizardLoading(true);
-    setWizardError('');
+    setWizardError(null);
     try {
       const state = await wizardFetcherRef.current(true);
       setWizardState(state ?? null);
@@ -277,6 +283,28 @@ export function ServiceInstallationProvider({
       setWizardLoading(false);
     }
   }, []);
+
+  const updateWizard = useCallback(
+    async (updates: WizardStateUpdate | WizardStateUpdate[]): Promise<WizardState | null> => {
+      setWizardLoading(true);
+      setWizardError(null);
+      try {
+        const state = await updateWizardStateRequest(updates);
+        setWizardState(state ?? null);
+        wizardStateRef.current = state ?? null;
+        wizardLoadedRef.current = true;
+        return state ?? null;
+      } catch (cause) {
+        const message =
+          cause instanceof Error ? cause.message : 'Failed to update wizard state';
+        setWizardError(message);
+        throw cause;
+      } finally {
+        setWizardLoading(false);
+      }
+    },
+    [],
+  );
 
   const installedServiceNames = useMemo(() => {
     const installed = new Set<string>();
@@ -326,6 +354,7 @@ export function ServiceInstallationProvider({
       ensureLoaded,
       refresh,
       refreshWizard,
+      updateWizard,
       isServiceInstalled,
     }),
     [
@@ -340,6 +369,7 @@ export function ServiceInstallationProvider({
       ensureLoaded,
       refresh,
       refreshWizard,
+      updateWizard,
       isServiceInstalled,
     ],
   );
