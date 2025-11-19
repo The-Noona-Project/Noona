@@ -1,5 +1,22 @@
 /* Global base styles for the Moon React shell */
 
+:root {
+  font-family: var(
+    --font-family-primary,
+    'Noto Sans',
+    'Inter',
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif
+  );
+  color: var(--color-text-bold, #1f2328);
+  background-color: var(--color-background, #ffffff);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
 *,
 *::before,
 *::after {
@@ -9,32 +26,49 @@
 html,
 body,
 #root {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  font-family: 'Inter', 'Segoe UI', Roboto, sans-serif;
-  background-color: #f5f5f5;
+  min-height: 100%;
 }
 
 body {
-  color: #1a202c;
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  color: var(--color-text-subtle, #374151);
+  background-color: var(--color-background-neutral-subtlest-default, #f8fafc);
+  line-height: 1.5;
+}
+
+#root {
+  isolation: isolate;
+}
+
+::selection {
+  background-color: var(--color-brand-20, rgba(153, 213, 237, 0.8));
+  color: var(--color-brand-80, #003c54);
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 0.5rem;
+  height: 0.5rem;
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
+  background-color: var(--color-border-subtle, rgba(2, 6, 23, 0.18));
+  border-radius: var(--space-75, 6px);
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
 }
 
 a {
-  color: inherit;
+  color: var(--color-link-regular-inactive, var(--color-brand-60, #0079a7));
   text-decoration: none;
+  transition: color 150ms ease;
 }
 
 a:hover,
 a:focus {
+  color: var(--color-link-regular-hover, var(--color-brand-70, #005b7d));
   text-decoration: underline;
 }
