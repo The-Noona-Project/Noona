@@ -61,3 +61,13 @@ The page is organised into cards. Each card writes NDJSON responses into the str
 
 * Buttons and inputs follow the browser's default keyboard navigation order.
 * Screen readers announce log updates thanks to `aria-live` attributes on the stream and status panes.
+
+## Moon Bundle Monitoring
+
+Moon's Vite build now emits three large vendor chunks so the ops team can track their cache characteristics and CDN behavior. Warden deployments should expect the following asset prefixes inside `services/moon/dist/assets/`:
+
+* `react-*.js` – React runtime shared by the dashboard and setup wizard.
+* `chakra-*.js` – Chakra UI plus the Emotion styling runtime that powers the design system components.
+* `oneui-*.js` – Textkernel OneUI widgets and theme bindings used across the control panel shell.
+
+If any of these bundles approaches the CDN alert thresholds, review the dependency graph for regressions before the next release.
