@@ -65,6 +65,18 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          chakra: ['@chakra-ui/react', '@emotion/react', '@emotion/styled'],
+          oneui: ['@textkernel/oneui'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 1400,
+  },
   test: {
     environment: 'jsdom',
     globals: true,
