@@ -41,6 +41,12 @@ interface RenderOptions {
   wizardState?: WizardState | null;
   fetchWizardState?: ServiceInstallationProviderProps['fetchWizardState'];
   initialEntries?: string[];
+  oneUI?: {
+    themeURL?: string;
+    ponyfillOptions?: Record<string, unknown>;
+    maxThemeWait?: number;
+    disableThemeInjection?: boolean;
+  };
 }
 
 export function renderWithProviders(
@@ -51,6 +57,7 @@ export function renderWithProviders(
     wizardState,
     fetchWizardState,
     initialEntries = ['/'],
+    oneUI,
   }: RenderOptions = {},
 ) {
   const providerFetch: ServiceInstallationProviderProps['fetchServices'] =
@@ -65,7 +72,7 @@ export function renderWithProviders(
     const wizardFetchProps = fetchWizardState ? { fetchWizardState } : {};
 
     return (
-      <OneUIProvider disableThemeInjection>
+      <OneUIProvider {...(oneUI ?? {})}>
         <ServiceInstallationProvider
           initialServices={services}
           fetchServices={providerFetch}

@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom/vitest';
+import '@textkernel/oneui/dist/oneui.min.css';
 import { vi } from 'vitest';
 
 if (!window.matchMedia) {

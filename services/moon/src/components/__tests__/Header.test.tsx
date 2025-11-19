@@ -4,6 +4,15 @@ import React from 'react';
 import Header from '../../components/Header.jsx';
 import { createMockWizardState, renderWithProviders } from '../../test/testUtils.tsx';
 
+async function ensureNavigationVisible(user: ReturnType<typeof userEvent.setup>) {
+  const toggleButton =
+    screen.queryByLabelText(/open navigation/i) ??
+    screen.queryByLabelText(/expand navigation/i);
+  if (toggleButton) {
+    await user.click(toggleButton);
+  }
+}
+
 describe('Header navigation', () => {
   it('renders the Raven navigation item when the service is installed', async () => {
     const user = userEvent.setup();
@@ -17,7 +26,7 @@ describe('Header navigation', () => {
       },
     );
 
-    await user.click(screen.getByLabelText(/open navigation/i));
+    await ensureNavigationVisible(user);
 
     const ravenButton = await screen.findByRole('button', { name: /raven/i });
     expect(ravenButton).toBeInTheDocument();
@@ -53,7 +62,7 @@ describe('Header navigation', () => {
       },
     );
 
-    await user.click(screen.getByLabelText(/open navigation/i));
+    await ensureNavigationVisible(user);
 
     expect(screen.queryByRole('button', { name: /setup/i })).not.toBeInTheDocument();
   });
@@ -79,7 +88,7 @@ describe('Header navigation', () => {
       },
     );
 
-    await user.click(screen.getByLabelText(/open navigation/i));
+    await ensureNavigationVisible(user);
 
     expect(screen.getByRole('button', { name: /setup/i })).toBeInTheDocument();
   });
