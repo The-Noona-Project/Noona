@@ -4,6 +4,8 @@ The deployment tooling is now driven entirely from the lightweight Express serve
 
 ## Getting Started
 
+> ⚠️ **Prerequisite:** The deployment panel proxies install/start/stop commands through the Warden API. Ensure `noona-warden` is listening on `http://localhost:4001` before launching the panel. You can either run `node initWarden.mjs` (minimal or `DEBUG=super`) or start the published container with `./scripts/run-warden.sh` / `pwsh ./scripts/run-warden.ps1`, which automatically creates the `noona-network` and exposes port `4001`.
+
 1. Install the shared dependencies (only required once):
    ```bash
    npm install

@@ -45,6 +45,24 @@ Launches **all services** in the correct dependency order:
 DEBUG=super node initWarden.mjs
 ```
 
+### 3. **Dockerized quick start**
+
+When you only need the public API (port `4001`) and do not want to clone the repo on the target host, run the pre-built image:
+
+```bash
+# macOS / Linux
+./scripts/run-warden.sh
+
+# Windows (PowerShell)
+pwsh ./scripts/run-warden.ps1
+```
+
+Both helpers:
+
+- Ensure the `noona-network` Docker network exists before starting the container.
+- Map your host Docker socket into the container. Override `DOCKER_SOCK_PATH` when Docker Desktop exposes a different pipe (for example `//./pipe/docker_engine`).
+- Respect `DEBUG`, `WARDEN_PORT` (default `4001`), and the other environment variables listed below, so you still control minimal vs. super boot order.
+
 ---
 
 ## 📝 Environment Variables

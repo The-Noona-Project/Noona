@@ -2,6 +2,8 @@
 
 Moon's setup wizard now runs inside the unified OneUI shell and surfaces every configurable environment variable per service before installation. When you select a service you land on a split layout: the OneUI navigation rail and header stay fixed on the left, while the main column renders the wizard with a stepper, context panel, and timeline. The shell also includes the new OneUI navigation buttons, mobile drawer, and color-mode toggle defined in `services/moon/src/components/Header.jsx`, so the docs below use OneUI terminology rather than the older Chakra labels.【F:services/moon/src/components/Header.jsx†L1-L139】
 
+> ℹ️ **Warden dependency:** The wizard pulls live service descriptors from the Warden API at `http://localhost:4001`. Start Warden via `node initWarden.mjs` (minimal or super) or use the Docker helpers (`./scripts/run-warden.sh` or `pwsh ./scripts/run-warden.ps1`) to launch the published `captainpax/noona-warden:latest` image with the required `noona-network` and Docker socket mount.
+
 ## OneUI layout and navigation cues
 
 - **Stepper row.** `services/moon/src/pages/Setup.tsx` renders a OneUI-styled progress bar (`SetupStepper`) across the top of the wizard column. Each step tile shows status chips (current, complete, error) and optional badges, replacing the previous Chakra stepper copy.【F:services/moon/src/pages/Setup.tsx†L1-L126】【F:services/moon/src/setup/components/SetupStepper.tsx†L1-L192】
