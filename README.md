@@ -57,6 +57,29 @@ This design allows you to keep the core management stack on a primary machine wh
 
 The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now replaces the retired Ink CLI and serves a React + OneUI panel that is bundled from `deployment/panel/`.
 
+### Warden bootstrap options
+
+The control panel, Moon setup wizard, and CLI utilities all call the Warden API on port `4001`, so make sure **noona-warden** is running before opening the UI:
+
+1. **Minimal mode (core services only)**
+   ```bash
+   DEBUG=false node initWarden.mjs
+   ```
+2. **Super mode (full stack)**
+   ```bash
+   DEBUG=super node initWarden.mjs
+   ```
+3. **Containerized helper** – start the published image without cloning the repo:
+   ```bash
+   # macOS / Linux
+   ./scripts/run-warden.sh
+
+   # Windows (PowerShell)
+   pwsh ./scripts/run-warden.ps1
+   ```
+
+   The wrapper scripts ensure the `noona-network` exists, publish the API on `4001:4001`, and mount your Docker socket. Override `DOCKER_SOCK_PATH` if Docker Desktop exposes a named pipe such as `//./pipe/docker_engine` so the container can reach your host daemon.
+
 ### Deployment control panel workflow
 
 1. Install dependencies (first run only):
