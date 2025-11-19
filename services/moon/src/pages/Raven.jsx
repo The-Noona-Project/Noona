@@ -1,30 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  AlertIcon,
-  AlertTitle,
-  Badge,
-  Box,
   Button,
-  FormControl,
-  FormLabel,
-  Heading,
-  Icon,
+  Callout,
   Input,
-  InputGroup,
-  InputLeftElement,
+  LoadingSpinner,
   Modal,
-  ModalBody,
-  ModalCloseButton,
-  ModalContent,
-  ModalFooter,
-  ModalHeader,
-  ModalOverlay,
-  Spinner,
-  Stack,
-  Text,
-  useDisclosure,
-} from '@chakra-ui/react';
+  StatusBadge,
+  Text as OneUIText,
+} from '@textkernel/oneui';
 import { getIconPath } from '../components/icons.js';
 import RavenLibraryGrid from '../components/raven/RavenLibraryGrid.jsx';
 import {
@@ -33,6 +16,7 @@ import {
   searchTitles,
   startDownload,
 } from '../utils/ravenClient.js';
+import useDisclosureState from '../utils/useDisclosureState.ts';
 
 const POLL_INTERVAL = 5000;
 
@@ -67,9 +51,11 @@ function statusKey(status) {
 
 function SearchIcon() {
   return (
-    <Icon viewBox="0 0 24 24">
-      <path fill="currentColor" d={getIconPath('mdi-magnify')} />
-    </Icon>
+    <span className="raven-input-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24">
+        <path fill="currentColor" d={getIconPath('mdi-magnify')} />
+      </svg>
+    </span>
   );
 }
 
@@ -92,7 +78,7 @@ export default function RavenPage() {
 
   const completedDownloads = useRef(new Set());
 
-  const { isOpen, onOpen, onClose } = useDisclosure();
+  const { isOpen, onOpen, onClose } = useDisclosureState(false);
 
   const resetDialogState = useCallback(() => {
     setSearchQuery('');
@@ -261,189 +247,174 @@ export default function RavenPage() {
   const activeDownloads = useMemo(() => downloads ?? [], [downloads]);
 
   return (
-    <Stack spacing={8} data-testid="raven-page">
-      <Box display="flex" justifyContent="space-between" alignItems="center">
-        <Heading size="lg">Raven Library</Heading>
-        <Button colorScheme="purple" onClick={openDialog} data-testid="open-add-dialog">
+    <div className="stack raven-page" data-testid="raven-page">
+      <div className="raven-page__header">
+        <h1>Raven Library</h1>
+        <Button context="primary" onClick={openDialog} data-testid="open-add-dialog">
           Add new title
         </Button>
-      </Box>
+      </div>
 
       {downloadsError && (
-        <Alert status="error" variant="subtle" borderRadius="md">
-          <AlertIcon />
-          <AlertTitle>{downloadsError}</AlertTitle>
-        </Alert>
+        <Callout context="critical">
+          <OneUIText isBold>{downloadsError}</OneUIText>
+        </Callout>
       )}
 
-      <Stack spacing={4}>
-        <Heading as="h2" size="md">
-          Library
-        </Heading>
+      <section className="stack raven-section">
+        <h2>Library</h2>
         {libraryLoading ? (
-          <Box py={16} textAlign="center">
-            <Spinner size="lg" />
-          </Box>
+          <div className="raven-loading">
+            <LoadingSpinner />
+          </div>
         ) : libraryError ? (
-          <Alert status="error" variant="subtle" borderRadius="md">
-            <AlertIcon />
-            <AlertTitle>{libraryError}</AlertTitle>
-          </Alert>
+          <Callout context="critical">
+            <OneUIText>{libraryError}</OneUIText>
+          </Callout>
         ) : library.length === 0 ? (
-          <Box textAlign="center" py={16} color="gray.500" data-testid="library-empty">
-            <Icon viewBox="0 0 24 24" boxSize="48px" color="purple.400" mb={4}>
+          <div className="raven-empty" data-testid="library-empty">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
               <path fill="currentColor" d={getIconPath('mdi-crow')} />
-            </Icon>
-            <Text fontSize="xl" fontWeight="semibold" mb={2}>
-              Your Raven library is empty.
-            </Text>
-            <Text>Start a search to download your first telemetry series.</Text>
-          </Box>
+            </svg>
+            <p className="raven-empty__title">Your Raven library is empty.</p>
+            <p>Start a search to download your first telemetry series.</p>
+          </div>
         ) : (
           <RavenLibraryGrid items={library} statuses={activeDownloads} />
         )}
-      </Stack>
+      </section>
 
       {activeDownloads.length > 0 && (
-        <Stack spacing={3}>
-          <Heading as="h2" size="md">
-            Active downloads
-          </Heading>
-          {activeDownloads.map((status) => {
-            const key = statusKey(status) ?? Math.random().toString(36);
-            return (
-              <Box
-                key={key}
-                borderWidth="1px"
-                borderRadius="md"
-                p={4}
-                bg="white"
-                _dark={{ bg: 'gray.800', borderColor: 'whiteAlpha.300' }}
-              >
-                <Text fontWeight="semibold">{status.title ?? 'Processing download'}</Text>
-                <Text fontSize="sm" color="gray.500">
-                  {status.message ?? 'Preparing files…'}
-                </Text>
-                {typeof status.progress === 'number' && (
-                  <Badge mt={2} colorScheme="purple">
-                    {Math.round(status.progress)}%
-                  </Badge>
-                )}
-              </Box>
-            );
-          })}
-        </Stack>
+        <section className="stack raven-section">
+          <h2>Active downloads</h2>
+          <div className="stack">
+            {activeDownloads.map((status) => {
+              const key = statusKey(status) ?? Math.random().toString(36);
+              return (
+                <div className="raven-download" key={key}>
+                  <p className="raven-download__title">{status.title ?? 'Processing download'}</p>
+                  <OneUIText size="small" context="neutral">
+                    {status.message ?? 'Preparing files…'}
+                  </OneUIText>
+                  {typeof status.progress === 'number' && (
+                    <StatusBadge context="info" variant="subtle">
+                      {Math.round(status.progress)}%
+                    </StatusBadge>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
       )}
 
-      <Modal isOpen={isOpen} onClose={closeDialog} size="lg">
-        <ModalOverlay />
-        <ModalContent data-testid="add-dialog">
-          <ModalHeader>Add a new title</ModalHeader>
-          <ModalCloseButton />
-          <ModalBody>
-            <form onSubmit={performSearch}>
-              <Stack spacing={4}>
-                <FormControl>
-                  <FormLabel htmlFor="raven-search-query">Search the Raven index</FormLabel>
-                  <InputGroup>
-                    <InputLeftElement pointerEvents="none">
-                      <SearchIcon />
-                    </InputLeftElement>
-                    <Input
-                      id="raven-search-query"
-                      value={searchQuery}
-                      onChange={(event) => setSearchQuery(event.target.value)}
-                      placeholder="Enter a series name or keyword"
-                      data-testid="search-query"
-                    />
-                  </InputGroup>
-                </FormControl>
-                <Button
-                  type="submit"
-                  colorScheme="purple"
-                  isLoading={searchLoading}
-                  loadingText="Searching"
-                  data-testid="submit-search"
-                >
-                  Search
-                </Button>
-              </Stack>
-            </form>
+      <Modal
+        isOpen={isOpen}
+        onRequestClose={closeDialog}
+        contentLabel="Add a new title"
+        className="raven-modal"
+        overlayClassName="app-modal__overlay"
+      >
+        <div className="stack" data-testid="add-dialog">
+          <div className="raven-modal__header">
+            <h2>Add a new title</h2>
+            <Button variant="ghost" context="secondary" onClick={closeDialog}>
+              Close
+            </Button>
+          </div>
+          <form className="stack" onSubmit={performSearch}>
+            <label htmlFor="raven-search-query" className="form-label">
+              Search the Raven index
+            </label>
+            <Input
+              id="raven-search-query"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Enter a series name or keyword"
+              data-testid="search-query"
+              leadingIcon={<SearchIcon />}
+            />
+            <Button
+              type="submit"
+              context="primary"
+              isLoading={searchLoading}
+              data-testid="submit-search"
+            >
+              Search
+            </Button>
+          </form>
 
-            {searchLoading && (
-              <Box py={8} textAlign="center">
-                <Spinner />
-              </Box>
-            )}
+          {searchLoading && (
+            <div className="raven-loading">
+              <LoadingSpinner />
+            </div>
+          )}
 
-            {searchError && !searchLoading && (
-              <Alert status="error" variant="subtle" borderRadius="md" mt={4} data-testid="search-error">
-                <AlertIcon />
-                <Text>{searchError}</Text>
-              </Alert>
-            )}
+          {searchError && !searchLoading && (
+            <Callout context="critical" data-testid="search-error">
+              <OneUIText>{searchError}</OneUIText>
+            </Callout>
+          )}
 
-            {searchResults.length > 0 && (
-              <Stack spacing={4} mt={6} data-testid="search-results">
-                {searchResults.map((result) => {
-                  const resultId = result.id ?? result.searchId;
-                  return (
-                    <Box key={resultId ?? Math.random().toString(36)} borderWidth="1px" borderRadius="md" p={4}>
-                      <Text fontWeight="semibold">{result.title ?? result.name}</Text>
-                      {result.description && (
-                        <Text fontSize="sm" color="gray.500" mt={1}>
-                          {result.description}
-                        </Text>
-                      )}
-                      <Stack direction="row" flexWrap="wrap" spacing={2} mt={3}>
-                        {(result.options ?? []).map((option, optionIndex) => (
-                          <Button
-                            key={optionIndex}
-                            variant={isSelected(resultId, optionIndex) ? 'solid' : 'outline'}
-                            colorScheme={isSelected(resultId, optionIndex) ? 'purple' : 'gray'}
-                            onClick={() => selectOption(resultId, optionIndex)}
-                            data-testid="search-option"
-                          >
-                            {option?.label ?? option?.name ?? `Option ${optionIndex + 1}`}
-                          </Button>
-                        ))}
-                      </Stack>
-                    </Box>
-                  );
-                })}
-              </Stack>
-            )}
+          {searchResults.length > 0 && (
+            <div className="stack" data-testid="search-results">
+              {searchResults.map((result) => {
+                const resultId = result.id ?? result.searchId;
+                return (
+                  <div className="raven-result" key={resultId ?? Math.random().toString(36)}>
+                    <p className="raven-result__title">{result.title ?? result.name}</p>
+                    {result.description && (
+                      <OneUIText size="small" context="neutral">
+                        {result.description}
+                      </OneUIText>
+                    )}
+                    <div className="stack stack--row stack--wrap raven-option-list">
+                      {(result.options ?? []).map((option, optionIndex) => (
+                        <Button
+                          key={optionIndex}
+                          variant={isSelected(resultId, optionIndex) ? 'filled' : 'outlined'}
+                          context={isSelected(resultId, optionIndex) ? 'primary' : 'secondary'}
+                          onClick={() => selectOption(resultId, optionIndex)}
+                          data-testid="search-option"
+                        >
+                          {option?.label ?? option?.name ?? `Option ${optionIndex + 1}`}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
-            {downloadError && (
-              <Alert status="error" variant="subtle" borderRadius="md" mt={4} data-testid="download-error">
-                <AlertIcon />
-                <Text>{downloadError}</Text>
-              </Alert>
-            )}
+          {downloadError && (
+            <Callout context="critical" data-testid="download-error">
+              <OneUIText>{downloadError}</OneUIText>
+            </Callout>
+          )}
 
-            {activeSelectionLabel && (
-              <Alert status="info" variant="subtle" borderRadius="md" mt={4} data-testid="selected-option">
-                <AlertIcon />
-                <Text>{activeSelectionLabel}</Text>
-              </Alert>
-            )}
-          </ModalBody>
-          <ModalFooter>
-            <Button variant="ghost" mr={3} onClick={closeDialog}>
+          {activeSelectionLabel && (
+            <Callout context="info" data-testid="selected-option">
+              <OneUIText>{activeSelectionLabel}</OneUIText>
+            </Callout>
+          )}
+
+          <div className="raven-modal__footer">
+            <Button variant="ghost" context="secondary" onClick={closeDialog}>
               Cancel
             </Button>
             <Button
-              colorScheme="purple"
+              context="primary"
               onClick={startDownloadFlow}
-              isDisabled={!selectedOption}
+              disabled={!selectedOption}
               isLoading={downloadLoading}
               data-testid="confirm-download"
             >
               Confirm download
             </Button>
-          </ModalFooter>
-        </ModalContent>
+          </div>
+        </div>
       </Modal>
-    </Stack>
+    </div>
   );
 }

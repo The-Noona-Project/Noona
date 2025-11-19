@@ -1,16 +1,5 @@
 import React, { useMemo } from 'react';
-import {
-  Badge,
-  Box,
-  Checkbox,
-  HStack,
-  Icon,
-  Link,
-  Stack,
-  Tag,
-  Text,
-  VStack,
-} from '@chakra-ui/react';
+import { Checkbox, StatusBadge } from '@textkernel/oneui';
 import { getIconPath } from './icons.js';
 
 function normalizeCategoryLabel(category) {
@@ -45,9 +34,9 @@ function categoryDescription(service) {
 function MdiIcon({ name }) {
   const path = getIconPath(name);
   return (
-    <Icon viewBox="0 0 24 24" boxSize="1rem">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
       <path fill="currentColor" d={path} />
-    </Icon>
+    </svg>
   );
 }
 
@@ -86,100 +75,94 @@ export default function SetupListItem({
     }
   };
 
+  const checkboxId = `setup-service-${service?.name ?? 'unknown'}`;
+
   return (
-    <Box
+    <div
       role="checkbox"
       aria-checked={selected}
       aria-disabled={isDisabled}
       aria-required={isLocked}
       aria-label={service?.name ?? 'Service option'}
       tabIndex={isDisabled ? -1 : 0}
-      borderWidth="1px"
-      borderRadius="lg"
-      p={4}
-      bg={selected ? 'purple.50' : 'white'}
-      _dark={{ bg: selected ? 'purple.900' : 'gray.800', borderColor: 'whiteAlpha.300' }}
-      cursor={isDisabled ? 'not-allowed' : 'pointer'}
-      opacity={isDisabled && !isLocked ? 0.75 : 1}
+      className={`setup-list-item${selected ? ' is-selected' : ''}${
+        isDisabled && !isLocked ? ' is-disabled' : ''
+      }`}
       onClick={handleToggle}
       onKeyDown={handleKeyDown}
-      transition="box-shadow 0.2s ease, transform 0.2s ease"
-      _hover={{
-        boxShadow: isDisabled ? undefined : 'lg',
-      }}
       data-testid={`setup-item-${service?.name ?? 'unknown'}`}
     >
-      <HStack align="flex-start" spacing={4} mb={3}>
+      <div className="setup-list-item__header">
         <Checkbox
-          isChecked={selected}
-          isDisabled={isDisabled}
+          id={checkboxId}
+          checked={selected}
+          disabled={isDisabled}
           onChange={(event) => {
             event.stopPropagation();
             handleToggle();
           }}
-          onClick={(event) => event.stopPropagation()}
-          size="lg"
           aria-label={service?.name ?? 'Service option'}
         />
-        <VStack align="flex-start" spacing={2} flex="1">
-          <HStack spacing={2} align="center" flexWrap="wrap">
-            <Text fontWeight="semibold" fontSize="lg">
-              {service?.name ?? 'Unknown service'}
-            </Text>
-            <Tag size="sm" colorScheme="purple" textTransform="uppercase">
+        <div className="setup-list-item__title-group">
+          <div className="setup-list-item__title-row">
+            <span className="setup-list-item__name">{service?.name ?? 'Unknown service'}</span>
+            <StatusBadge context="neutral" variant="subtle">
               {categoryLabel}
-            </Tag>
+            </StatusBadge>
             {isInstalled && (
-              <Tag size="sm" colorScheme="green" textTransform="uppercase">
-                <HStack spacing={1}>
-                  <MdiIcon name="mdi-check-circle-outline" />
-                  <Text>Installed</Text>
-                </HStack>
-              </Tag>
+              <StatusBadge context="success" variant="subtle">
+                <span className="setup-list-item__badge-content">
+                  <MdiIcon name="mdi-check-circle-outline" /> Installed
+                </span>
+              </StatusBadge>
             )}
             {isLocked && (
-              <Tag size="sm" colorScheme="red" textTransform="uppercase">
+              <StatusBadge context="critical" variant="bold">
                 Required
-              </Tag>
+              </StatusBadge>
             )}
-          </HStack>
-          <Text fontSize="sm" color="gray.600" _dark={{ color: 'gray.300' }}>
-            {descriptionText}
-          </Text>
-        </VStack>
-      </HStack>
+          </div>
+          <p className="setup-list-item__description">{descriptionText}</p>
+        </div>
+      </div>
 
-      <Stack spacing={1} fontSize="sm" color="gray.600" _dark={{ color: 'gray.300' }}>
-        <HStack>
-          <Text fontWeight="medium">Image:</Text>
-          <Text>{service?.image ?? 'Unknown'}</Text>
-        </HStack>
+      <dl className="setup-list-item__meta">
+        <div className="setup-list-item__meta-row">
+          <dt>Image</dt>
+          <dd>{service?.image ?? 'Unknown'}</dd>
+        </div>
         {service?.hostServiceUrl ? (
-          <HStack>
-            <Text fontWeight="medium">Host URL:</Text>
-            <Link href={service.hostServiceUrl} isExternal color="purple.500">
-              {service.hostServiceUrl}
-            </Link>
-          </HStack>
+          <div className="setup-list-item__meta-row">
+            <dt>Host URL</dt>
+            <dd>
+              <a href={service.hostServiceUrl} target="_blank" rel="noreferrer">
+                {service.hostServiceUrl}
+              </a>
+            </dd>
+          </div>
         ) : service?.port != null ? (
-          <HStack>
-            <Text fontWeight="medium">Port:</Text>
-            <Text>{service.port}</Text>
-          </HStack>
+          <div className="setup-list-item__meta-row">
+            <dt>Port</dt>
+            <dd>{service.port}</dd>
+          </div>
         ) : null}
         {service?.health && (
-          <HStack>
-            <Text fontWeight="medium">Health:</Text>
-            <Text>{service.health}</Text>
-          </HStack>
+          <div className="setup-list-item__meta-row">
+            <dt>Health</dt>
+            <dd>{service.health}</dd>
+          </div>
         )}
         {service?.status && (
-          <HStack>
-            <Text fontWeight="medium">Status:</Text>
-            <Badge colorScheme={isInstalled ? 'green' : 'gray'}>{service.status}</Badge>
-          </HStack>
+          <div className="setup-list-item__meta-row">
+            <dt>Status</dt>
+            <dd>
+              <StatusBadge context={isInstalled ? 'success' : 'info'} variant="subtle">
+                {service.status}
+              </StatusBadge>
+            </dd>
+          </div>
         )}
-      </Stack>
-    </Box>
+      </dl>
+    </div>
   );
 }

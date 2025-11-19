@@ -1,5 +1,4 @@
 import React, { useMemo } from 'react';
-import { SimpleGrid } from '@chakra-ui/react';
 import RavenLibraryCard from './RavenLibraryCard.jsx';
 
 function itemKey(item, index) {
@@ -59,10 +58,10 @@ export default function RavenLibraryGrid({ items = [], statuses = [] }) {
   }, [items, statusMap]);
 
   return (
-    <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} spacing={4}>
+    <div className="raven-grid">
       {combinedEntries.map((entry) => (
         <RavenLibraryCard key={entry.key} item={entry.item} status={entry.status} />
       ))}
-    </SimpleGrid>
+    </div>
   );
 }
