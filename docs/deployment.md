@@ -43,6 +43,7 @@ The page is organised into cards. Each card writes NDJSON responses into the str
 ### Cleanup
 * **Remove selected resources** invokes `/api/clean` for specific services.
 * **Delete all Noona Docker resources** posts to `/api/delete` and requires the confirmation checkbox.
+* Cleanup calls only target images in the `captainpax/noona-*` namespace (or entries on the internal allowlist) and lifecycle history now records the canonical image tag once per run so repeated digests do not clutter `deployment/lifecycleHistory.json`.
 
 ### Settings
 * Paste raw JSON updates into the editor to patch deployment defaults.

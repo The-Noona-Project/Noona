@@ -20,7 +20,8 @@ const {
     pushImage,
     pullImage,
     DockerHost,
-    normalizeDockerfilePath
+    normalizeDockerfilePath,
+    createImageMatcher
 } = dockerManager.__internals;
 
 const withFakeDocker = fake => {
@@ -136,7 +137,7 @@ test('defaultDockerSocketDetector prioritizes Windows pipe defaults', () => {
     const sockets = defaultDockerSocketDetector({
         env: {},
         process: { platform: 'win32' },
-        fs: { readdirSync: () => [] },
+        fs: { readdirSync: () => [], existsSync: () => false },
         spawnSync: () => ({ stdout: '' }),
     });
 
@@ -348,7 +349,7 @@ test('removeResources removes matched resources only', async () => {
 
     const result = await removeResources({
         containers: { filters: { name: ['noona-'] } },
-        images: { match: tag => tag.startsWith('captainpax/noona-') },
+        images: { match: createImageMatcher() },
         volumes: { filters: { name: ['noona-'] } },
         networks: { names: ['noona-network'] }
     });
@@ -360,6 +361,50 @@ test('removeResources removes matched resources only', async () => {
     assert.deepEqual(fake.removedVolumes, ['noona-vol']);
     assert.deepEqual(fake.removedNetworks, ['net1']);
     assert.deepEqual(result.data.containers, ['/noona-foo']);
+    assert.deepEqual(result.data.images, ['captainpax/noona-foo:latest']);
+});
+
+test('removeResources canonicalizes and deduplicates image tags', async () => {
+    const fake = {
+        modem: { followProgress: () => {} },
+        async listContainers() { return []; },
+        async listImages() {
+            return [
+                { Id: 'img1', RepoTags: ['captainpax/noona-foo:latest@sha256:abc', 'captainpax/noona-foo:latest'] },
+                { Id: 'img2', RepoTags: ['captainpax/noona-foo:latest'] },
+                { Id: 'img3', RepoTags: ['captainpax/noona-bar:dev'] },
+                { Id: 'img4', RepoTags: ['other/image:latest'] }
+            ];
+        }
+    };
+
+    fake.getImage = function getImage(id) {
+        return {
+            async remove() {
+                if (!fake.removedImages) fake.removedImages = [];
+                fake.removedImages.push(id);
+            }
+        };
+    };
+
+    withFakeDocker(fake);
+
+    const result = await removeResources({
+        images: { match: createImageMatcher() }
+    });
+
+    assert.ok(result.ok);
+    assert.deepEqual(fake.removedImages, ['img1', 'img2', 'img3']);
+    assert.deepEqual(result.data.images, ['captainpax/noona-foo:latest', 'captainpax/noona-bar:dev']);
+});
+
+test('createImageMatcher limits deletions to the managed namespace with allowlist overrides', () => {
+    const matcher = createImageMatcher({ allowlist: ['custom/noona-helper:1.0'] });
+
+    assert.equal(matcher('captainpax/noona-warden:latest@sha256:abc'), true);
+    assert.equal(matcher('custom/noona-helper:1.0@sha256:def'), true);
+    assert.equal(matcher('other/noona-warden:latest'), false);
+    assert.equal(matcher('noona-warden:latest'), false);
 });
 
 test('inspectNetwork returns structured error when not found', async () => {
