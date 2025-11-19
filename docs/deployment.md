@@ -1,6 +1,6 @@
 # Deployment Control Panel
 
-The deployment tooling is now driven entirely from the lightweight Express server in `deployment/webServer.mjs`. It exposes the same Docker workflows that previously powered the Ink CLI, but the interface now lives in a static HTML page served at `/`.
+The deployment tooling is now driven entirely from the lightweight Express server in `deployment/webServer.mjs`. It exposes the same Docker workflows that previously powered the Ink CLI, but the interface now lives in a React + OneUI experience that is bundled with Vite from `deployment/panel/` and emitted to `deployment/dist/`.
 
 ## Getting Started
 
@@ -8,11 +8,16 @@ The deployment tooling is now driven entirely from the lightweight Express serve
    ```bash
    npm install
    ```
-2. Start the deployment server:
+2. (Optional, but required whenever you change files inside `deployment/panel/`.) Build the React control panel:
+   ```bash
+   npm run deploy:panel:build
+   ```
+   For an iterative UI workflow you can run the Vite dev server instead: `npm run deploy:panel:dev`.
+3. Start the deployment server:
    ```bash
    npm run deploy:server
    ```
-3. Open [http://localhost:4300](http://localhost:4300) in your browser. The server automatically serves `deployment/control-panel.html`, so no additional build steps are required.
+4. Open [http://localhost:4300](http://localhost:4300) in your browser. The server automatically serves the bundled panel from `deployment/dist/index.html`.
 
 ## Controls at a Glance
 

@@ -4,19 +4,29 @@
   "type": "module",
   "scripts": {
     "docs": "node scripts/generate-docs.mjs",
-    "deploy:server": "node deployment/webServer.mjs"
+    "deploy:server": "node deployment/webServer.mjs",
+    "deploy:panel:dev": "vite --config deployment/panel/vite.config.ts",
+    "deploy:panel:build": "vite build --config deployment/panel/vite.config.ts",
+    "deploy:panel:preview": "vite preview --config deployment/panel/vite.config.ts"
   },
   "devDependencies": {
     "@babel/cli": "^7.26.0",
     "@babel/core": "^7.26.0",
     "@babel/preset-react": "^7.26.3",
+    "@types/react": "^19.2.6",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
     "docdash": "^2.0.1",
-    "jsdoc": "^4.0.3"
+    "jsdoc": "^4.0.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
   },
   "dependencies": {
     "dockerode": "^4.0.9",
     "express": "^4.21.1",
     "ignore": "^7.0.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "tar-fs": "^3.1.1"
   }
 }

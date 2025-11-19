@@ -18,7 +18,8 @@ import dockerManager, {
 
 const DEFAULT_PORT = 4300;
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONTROL_PANEL_PATH = resolve(__dirname, 'control-panel.html');
+const STATIC_ROOT = resolve(__dirname, 'dist');
+const INDEX_HTML_PATH = resolve(STATIC_ROOT, 'index.html');
 
 const resolvePort = () => {
     const raw = process.env.DEPLOY_SERVER_PORT || process.env.PORT || String(DEFAULT_PORT);
@@ -166,12 +167,14 @@ const createApp = ({
     });
 
     app.get('/', (req, res, next) => {
-        res.sendFile(CONTROL_PANEL_PATH, (error) => {
+        res.sendFile(INDEX_HTML_PATH, (error) => {
             if (error) {
                 next(error);
             }
         });
     });
+
+    app.use(express.static(STATIC_ROOT));
 
     app.get('/api/services', async (req, res) => {
         try {
