@@ -42,6 +42,22 @@ body {
   isolation: isolate;
 }
 
+.oneui-app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(
+    --color-background-neutral-subtlest-default,
+    var(--color-background, #ffffff)
+  );
+  color: var(--color-text-subtle, #374151);
+}
+
+.oneui-app-shell--dark {
+  background-color: var(--color-background-neutral-bolder-default, #0f172a);
+  color: var(--color-text-inverse, #f8fafc);
+}
+
 ::selection {
   background-color: var(--color-brand-20, rgba(153, 213, 237, 0.8));
   color: var(--color-brand-80, #003c54);

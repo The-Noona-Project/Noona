@@ -1,12 +1,11 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
-import { ChakraProvider } from '@chakra-ui/react';
 import { vi } from 'vitest';
 import VerificationPanel from '../VerificationPanel.tsx';
 import type { InstallState, VerificationState } from '../../useSetupSteps.ts';
 import { createMockWizardState } from '../../../test/testUtils.tsx';
-import theme from '../../../theme.js';
+import { OneUIProvider } from '../../../theme/index.jsx';
 
 describe('VerificationPanel', () => {
   const baseInstall: InstallState = {
@@ -74,9 +73,9 @@ describe('VerificationPanel', () => {
 
   const renderPanel = (props: Parameters<typeof VerificationPanel>[0]) =>
     render(
-      <ChakraProvider theme={theme}>
+      <OneUIProvider disableThemeInjection>
         <VerificationPanel {...props} />
-      </ChakraProvider>,
+      </OneUIProvider>,
     );
 
   it('renders verification health and check summaries', () => {

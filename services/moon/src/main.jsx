@@ -1,8 +1,7 @@
-import { ChakraProvider, ColorModeScript } from '@chakra-ui/react';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
-import AppTheme, { themeConfig } from './theme.js';
+import { OneUIProvider } from './theme/index.jsx';
 import router from './router.jsx';
 import { ServiceInstallationProvider } from './state/serviceInstallationContext.tsx';
 import './style.css';
@@ -16,11 +15,10 @@ const root = createRoot(container);
 
 root.render(
   <React.StrictMode>
-    <ColorModeScript initialColorMode={themeConfig.initialColorMode} />
-    <ChakraProvider theme={AppTheme}>
+    <OneUIProvider>
       <ServiceInstallationProvider>
         <RouterProvider router={router} />
       </ServiceInstallationProvider>
-    </ChakraProvider>
+    </OneUIProvider>
   </React.StrictMode>,
 );

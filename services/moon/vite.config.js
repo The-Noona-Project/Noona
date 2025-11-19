@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@oneui/tokens': path.resolve(__dirname, 'src/design-system/oneui-tokens.js'),
+      '@oneui/tokens': path.resolve(__dirname, 'src/theme/tokens.js'),
     },
   },
   css: {

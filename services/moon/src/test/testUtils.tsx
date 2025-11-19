@@ -1,8 +1,7 @@
 import React from 'react';
-import { ChakraProvider } from '@chakra-ui/react';
 import { MemoryRouter } from 'react-router-dom';
 import { render } from '@testing-library/react';
-import theme from '../theme.js';
+import { OneUIProvider } from '../theme/index.jsx';
 import {
   ServiceInstallationProvider,
   type ServiceInstallationProviderProps,
@@ -56,23 +55,26 @@ export function renderWithProviders(
 ) {
   const providerFetch: ServiceInstallationProviderProps['fetchServices'] =
     fetchServices ?? (async () => services ?? []);
-  const resolvedWizardState =
-    wizardState === undefined ? createMockWizardState() : wizardState;
-  const providerWizardFetch: ServiceInstallationProviderProps['fetchWizardState'] =
-    fetchWizardState ?? (async () => resolvedWizardState ?? createMockWizardState());
+  const hasWizardOverride = wizardState !== undefined;
+  const resolvedWizardState = hasWizardOverride ? wizardState : null;
 
   function Wrapper({ children }: { children: React.ReactNode }) {
+    const wizardProps = hasWizardOverride
+      ? { initialWizardState: resolvedWizardState ?? null }
+      : {};
+    const wizardFetchProps = fetchWizardState ? { fetchWizardState } : {};
+
     return (
-      <ChakraProvider theme={theme}>
+      <OneUIProvider disableThemeInjection>
         <ServiceInstallationProvider
           initialServices={services}
           fetchServices={providerFetch}
-          initialWizardState={resolvedWizardState ?? null}
-          fetchWizardState={providerWizardFetch}
+          {...wizardProps}
+          {...wizardFetchProps}
         >
           <MemoryRouter initialEntries={initialEntries}>{children}</MemoryRouter>
         </ServiceInstallationProvider>
-      </ChakraProvider>
+      </OneUIProvider>
     );
   }
 
