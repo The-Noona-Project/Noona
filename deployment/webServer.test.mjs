@@ -42,8 +42,8 @@ test('GET /health returns ok payload', async () => {
     });
 });
 
-test('GET / serves the control panel HTML', async () => {
-    const expected = await readFile(new URL('./control-panel.html', import.meta.url), 'utf8');
+test('GET / serves the built panel HTML', async () => {
+    const expected = await readFile(new URL('./dist/index.html', import.meta.url), 'utf8');
     await withServer(async (baseUrl) => {
         const response = await fetch(baseUrl);
         assert.equal(response.status, 200);

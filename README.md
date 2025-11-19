@@ -55,7 +55,7 @@ This design allows you to keep the core management stack on a primary machine wh
 - **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
 - **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
 
-The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now replaces the retired Ink CLI.
+The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now replaces the retired Ink CLI and serves a React + OneUI panel that is bundled from `deployment/panel/`.
 
 ### Deployment control panel workflow
 
@@ -63,11 +63,16 @@ The `deployment/` directory contains Dockerfiles for single-service containers a
    ```bash
    npm install
    ```
-2. Start the deployment server:
+2. Build the React control panel (required whenever `deployment/panel/` changes):
+   ```bash
+   npm run deploy:panel:build
+   ```
+   You can iterate on UI changes via `npm run deploy:panel:dev`, which starts Vite's dev server.
+3. Start the deployment server:
    ```bash
    npm run deploy:server
    ```
-3. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route serves `deployment/control-panel.html`, a static dashboard that streams newline-delimited JSON updates for every action.
+4. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route now serves the bundle in `deployment/dist/index.html`, a OneUI dashboard that streams newline-delimited JSON updates for every action.
 
 From the control panel you can:
 
