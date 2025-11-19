@@ -15,6 +15,53 @@ import {
 } from '../utilities/etc/dockerSockets.mjs';
 const noop = () => {};
 
+const DEFAULT_IMAGE_NAMESPACE = 'captainpax/noona-';
+
+const normalizeImageReference = reference => {
+    if (!reference || typeof reference !== 'string') {
+        return null;
+    }
+    const trimmed = reference.trim();
+    if (!trimmed || trimmed === '<none>:<none>') {
+        return null;
+    }
+    const [withoutDigest] = trimmed.split('@');
+    return withoutDigest;
+};
+
+const canonicalizeImageList = (references = []) => {
+    const seen = new Set();
+    const normalized = [];
+    for (const ref of references) {
+        const cleaned = normalizeImageReference(ref) || ref;
+        if (!cleaned || seen.has(cleaned)) {
+            continue;
+        }
+        seen.add(cleaned);
+        normalized.push(cleaned);
+    }
+    return normalized;
+};
+
+const createImageMatcher = ({ namespaces = [DEFAULT_IMAGE_NAMESPACE], allowlist = [] } = {}) => {
+    const normalizedAllowlist = canonicalizeImageList(allowlist);
+    const allowSet = new Set(normalizedAllowlist);
+    const namespaceList = (namespaces || [])
+        .map(ns => (typeof ns === 'string' ? ns.trim() : ''))
+        .filter(Boolean);
+
+    return candidate => {
+        const normalized = normalizeImageReference(candidate);
+        if (!normalized) {
+            return false;
+        }
+        if (allowSet.has(normalized)) {
+            return true;
+        }
+        return namespaceList.some(ns => normalized.startsWith(ns));
+    };
+};
+
 const pickLoggerMethod = (logger, candidates) => {
     for (const method of candidates) {
         if (logger && typeof logger[method] === 'function') {
@@ -601,6 +648,7 @@ class DockerHost {
             networks: [],
             errors: []
         };
+        const seenImageTags = new Set();
 
         const collectError = (operation, target, error) => {
             summary.errors.push({ operation, target, message: error?.message, code: error?.statusCode || error?.code });
@@ -642,16 +690,24 @@ class DockerHost {
                         return repoTags.some(tag => images.references.includes(tag));
                     }
                     if (images.match) {
-                        return repoTags.some(tag => images.match(tag));
+                        return repoTags.some(tag => images.match(normalizeImageReference(tag) || tag));
                     }
                     return false;
                 });
                 for (const img of matched) {
-                    const tag = (img.RepoTags && img.RepoTags[0]) || img.Id;
                     try {
                         await this.docker.getImage(img.Id).remove({ force: true, noprune: false });
-                        summary.images.push(tag);
+                        const tags = canonicalizeImageList(img.RepoTags || []);
+                        const targets = tags.length ? tags : [img.Id];
+                        for (const target of targets) {
+                            if (seenImageTags.has(target)) {
+                                continue;
+                            }
+                            seenImageTags.add(target);
+                            summary.images.push(target);
+                        }
                     } catch (error) {
+                        const tag = (img.RepoTags && img.RepoTags[0]) || img.Id;
                         collectError('removeImage', tag, error);
                     }
                 }
@@ -1019,10 +1075,30 @@ const readLifecycleHistory = async () => {
     }
 };
 
+const normalizeLifecycleEvent = event => {
+    if (!event || typeof event !== 'object') {
+        return event;
+    }
+    const normalized = { ...event };
+    if (event.details && typeof event.details === 'object') {
+        const details = { ...event.details };
+        if (details.removed && typeof details.removed === 'object') {
+            const removed = { ...details.removed };
+            if (Array.isArray(removed.images)) {
+                removed.images = canonicalizeImageList(removed.images);
+            }
+            details.removed = removed;
+        }
+        normalized.details = details;
+    }
+    return normalized;
+};
+
 const recordLifecycleEvent = async event => {
     try {
         const history = await readLifecycleHistory();
-        history.push({ ...event, timestamp: new Date().toISOString() });
+        const normalized = normalizeLifecycleEvent(event);
+        history.push({ ...normalized, timestamp: new Date().toISOString() });
         const trimmed = history.slice(-MAX_HISTORY_ENTRIES);
         await writeFile(HISTORY_FILE, JSON.stringify(trimmed, null, 2));
     } catch (error) {
@@ -1721,7 +1797,7 @@ const deleteDockerResources = async ({ reporter, confirm = false } = {}) => {
 
         const removal = await removeResources({
             containers: { filters: { name: ['noona-'] } },
-            images: { match: tag => tag.startsWith('captainpax/noona-') || tag.startsWith('noona-') },
+            images: { match: createImageMatcher() },
             volumes: { filters: { name: ['noona-'] } },
             networks: { filters: { name: ['noona-'] } }
         });
@@ -2116,6 +2192,9 @@ const dockerManager = Object.freeze({
         waitForHealth,
         stopContainer,
         removeResources,
+        createImageMatcher,
+        canonicalizeImageList,
+        normalizeImageReference,
         normalizeHostDockerSocketOverride,
         inspectNetwork,
         createNetwork,
