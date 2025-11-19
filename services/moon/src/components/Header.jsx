@@ -1,37 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Box,
-  Button,
-  Divider,
-  Drawer,
-  DrawerBody,
-  DrawerCloseButton,
-  DrawerContent,
-  DrawerHeader,
-  DrawerOverlay,
-  Flex,
-  Heading,
-  HStack,
-  Icon,
-  IconButton,
-  Image,
-  Stack,
-  Text,
-  useBreakpointValue,
-  useColorMode,
-  useDisclosure,
-} from '@chakra-ui/react';
-import { MoonIcon, SunIcon } from '@chakra-ui/icons';
+import { Button, IconButton, Modal, Text as OneUIText } from '@textkernel/oneui';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getIconPath } from './icons.js';
 import { useServiceInstallation } from '../state/serviceInstallationContext.tsx';
+import { useOneUITheme } from '../theme/index.jsx';
+import tokens from '../theme/tokens.js';
+import useBreakpointValue from '../utils/useBreakpointValue.ts';
+import useDisclosureState from '../utils/useDisclosureState.ts';
+import '../style.css';
 
 function NavigationIcon({ name }) {
   const path = getIconPath(name);
   return (
-    <Icon viewBox="0 0 24 24" boxSize="1.25rem">
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="app-nav__icon">
       <path fill="currentColor" d={path} />
-    </Icon>
+    </svg>
   );
 }
 
@@ -43,32 +26,31 @@ function NavigationList({ onNavigate, activePath }) {
   }, [ensureLoaded]);
 
   return (
-    <Stack spacing={1} role="navigation" aria-label="Moon navigation">
+    <div className="app-nav__list" role="navigation" aria-label="Moon navigation">
       {navigationItems.map((item) => {
         const isActive = activePath === item.path;
         return (
           <Button
             key={item.path}
             onClick={() => onNavigate(item.path)}
-            variant={isActive ? 'solid' : 'ghost'}
-            colorScheme={isActive ? 'purple' : undefined}
-            justifyContent="flex-start"
-            leftIcon={<NavigationIcon name={item.icon} />}
-            py={3}
-            px={3}
-            height="auto"
-            textAlign="left"
+            context={isActive ? 'primary' : 'secondary'}
+            variant={isActive ? 'filled' : 'ghost'}
+            isBlock
+            className="app-nav__button"
           >
-            <Box>
-              <Text fontWeight="semibold">{item.title}</Text>
-              <Text fontSize="sm" color="gray.500" noOfLines={2}>
-                {item.description}
-              </Text>
-            </Box>
+            <span className="app-nav__button-content">
+              <NavigationIcon name={item.icon} />
+              <span className="app-nav__text">
+                <span className="app-nav__title">{item.title}</span>
+                <OneUIText size="small" context="neutral" className="app-nav__description">
+                  {item.description}
+                </OneUIText>
+              </span>
+            </span>
           </Button>
         );
       })}
-    </Stack>
+    </div>
   );
 }
 
@@ -76,8 +58,8 @@ export default function Header({ title, children }) {
   const location = useLocation();
   const navigate = useNavigate();
   const isDesktop = useBreakpointValue({ base: false, lg: true }) ?? false;
-  const { colorMode, toggleColorMode } = useColorMode();
-  const { isOpen, onOpen, onClose } = useDisclosure();
+  const { colorMode, toggleColorMode } = useOneUITheme();
+  const { isOpen, onOpen, onClose } = useDisclosureState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window === 'undefined') {
       return true;
@@ -112,112 +94,107 @@ export default function Header({ title, children }) {
 
   const sidebarContent = useMemo(
     () => (
-      <Box px={3} py={4} role="menu">
-        <Stack spacing={4} height="100%">
-          <Box textAlign="center">
-            <Text fontSize="lg" fontWeight="bold">
-              Noona
-            </Text>
-            <Text fontSize="sm" color="gray.500">
-              Control your services
-            </Text>
-          </Box>
-          <Button
-            variant="ghost"
-            justifyContent="flex-start"
-            leftIcon={<NavigationIcon name="mdi-theme-light-dark" />}
-            onClick={toggleColorMode}
-          >
-            Toggle {colorMode === 'light' ? 'Dark' : 'Light'} Mode
-          </Button>
-          <Divider />
-          <NavigationList onNavigate={handleNavigate} activePath={location.pathname} />
-        </Stack>
-      </Box>
+      <div className="app-sidebar__content" role="menu">
+        <div className="app-sidebar__hero">
+          <p className="app-sidebar__title">Noona</p>
+          <p className="app-sidebar__subtitle">Control your services</p>
+        </div>
+        <Button
+          context="secondary"
+          variant="ghost"
+          isBlock
+          className="app-nav__button"
+          onClick={toggleColorMode}
+        >
+          <span className="app-nav__button-content">
+            <NavigationIcon name="mdi-theme-light-dark" />
+            <span className="app-nav__title">
+              Toggle {colorMode === 'light' ? 'Dark' : 'Light'} Mode
+            </span>
+          </span>
+        </Button>
+        <div className="app-sidebar__divider" />
+        <NavigationList onNavigate={handleNavigate} activePath={location.pathname} />
+      </div>
     ),
     [colorMode, handleNavigate, location.pathname, toggleColorMode],
   );
 
   return (
-    <Flex minH="100vh" bg="gray.50" _dark={{ bg: 'gray.900' }}>
+    <div className="app-shell" style={{ backgroundColor: tokens.colors.surfaceMuted }}>
       {isDesktop && sidebarOpen && (
-        <Box
-          as="aside"
-          width="320px"
-          borderRightWidth="1px"
-          borderColor="gray.200"
-          _dark={{ borderColor: 'whiteAlpha.300' }}
-          display="flex"
-        >
-          {sidebarContent}
-        </Box>
+        <aside className="app-sidebar">{sidebarContent}</aside>
       )}
-
-      <Flex direction="column" flex="1" minH="100vh">
-        <Flex
-          as="header"
-          align="center"
-          justify="space-between"
-          px={6}
-          py={4}
-          borderBottomWidth="1px"
-          borderColor="gray.200"
-          _dark={{ borderColor: 'whiteAlpha.300', bg: 'gray.800' }}
-          bg="white"
-          position="sticky"
-          top="0"
-          zIndex="docked"
-        >
-          <HStack spacing={4} align="center">
-            {!isDesktop && (
+      <div className="app-shell__content">
+        <header className="app-header">
+          <div className="app-header__left">
+            {!isDesktop ? (
               <IconButton
                 aria-label="Open navigation"
-                icon={
-                  <Icon viewBox="0 0 24 24">
-                    <path fill="currentColor" d={getIconPath('mdi-menu')} />
-                  </Icon>
-                }
+                context="secondary"
                 variant="ghost"
                 onClick={onOpen}
-              />
-            )}
-            {isDesktop && (
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="currentColor" d={getIconPath('mdi-menu')} />
+                </svg>
+              </IconButton>
+            ) : (
               <IconButton
                 aria-label={sidebarOpen ? 'Collapse navigation' : 'Expand navigation'}
-                icon={
-                  <Icon viewBox="0 0 24 24">
-                    <path fill="currentColor" d={getIconPath('mdi-menu')} />
-                  </Icon>
-                }
+                context="secondary"
                 variant="ghost"
                 onClick={() => setSidebarOpen((value) => !value)}
-              />
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="currentColor" d={getIconPath('mdi-menu')} />
+                </svg>
+              </IconButton>
             )}
-            <Image src="/logo.svg" alt="Noona logo" boxSize="40px" />
-            <Heading size="md">{title ?? 'Noona'}</Heading>
-          </HStack>
-
+            <img src="/logo.svg" alt="Noona logo" className="app-logo" />
+            <h1 className="app-heading">{title ?? 'Noona'}</h1>
+          </div>
           <IconButton
             aria-label="Toggle color mode"
-            icon={colorMode === 'light' ? <MoonIcon /> : <SunIcon />}
+            context="secondary"
             variant="ghost"
             onClick={toggleColorMode}
-          />
-        </Flex>
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d={getIconPath(colorMode === 'light' ? 'mdi-moon-waning-crescent' : 'mdi-weather-sunny')}
+              />
+            </svg>
+          </IconButton>
+        </header>
+        <main className="app-main">{children}</main>
+      </div>
 
-        <Box as="main" flex="1" px={{ base: 4, md: 6 }} py={{ base: 6, md: 8 }}>
-          {children}
-        </Box>
-      </Flex>
-
-      <Drawer placement="left" onClose={onClose} isOpen={!isDesktop && isOpen} size="xs">
-        <DrawerOverlay />
-        <DrawerContent>
-          <DrawerCloseButton />
-          <DrawerHeader borderBottomWidth="1px">Navigation</DrawerHeader>
-          <DrawerBody>{sidebarContent}</DrawerBody>
-        </DrawerContent>
-      </Drawer>
-    </Flex>
+      {!isDesktop && (
+        <Modal
+          isOpen={isOpen}
+          onRequestClose={onClose}
+          contentLabel="Navigation"
+          className="app-modal"
+          overlayClassName="app-modal__overlay"
+        >
+          <div className="app-modal__header">
+            <h2>Navigation</h2>
+            <IconButton
+              aria-label="Close navigation"
+              context="secondary"
+              variant="ghost"
+              onClick={onClose}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path fill="currentColor" d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" />
+              </svg>
+            </IconButton>
+          </div>
+          {sidebarContent}
+        </Modal>
+      )}
+    </div>
   );
 }

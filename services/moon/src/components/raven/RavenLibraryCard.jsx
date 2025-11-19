@@ -1,15 +1,6 @@
 import React, { useMemo } from 'react';
-import {
-  Badge,
-  Box,
-  Card,
-  CardBody,
-  CardFooter,
-  CardHeader,
-  Progress,
-  Stack,
-  Text,
-} from '@chakra-ui/react';
+import { ProgressBar, StatusBadge, Text as OneUIText } from '@textkernel/oneui';
+import tokens from '../../theme/tokens.js';
 
 function normalizeProgress(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -84,65 +75,47 @@ export default function RavenLibraryCard({ item, status }) {
     : statusState ?? 'Pending';
 
   return (
-    <Card data-testid="raven-library-card" height="100%" variant="outline">
+    <article className="raven-card" data-testid="raven-library-card">
       {hasCover && (
-        <Box
-          as="img"
-          src={item.coverImage}
-          alt={item.title ?? 'Series cover'}
-          height="160px"
-          objectFit="cover"
-          borderTopLeftRadius="md"
-          borderTopRightRadius="md"
-        />
+        <img className="raven-card__cover" src={item.coverImage} alt={item.title ?? 'Series cover'} />
       )}
-      <CardHeader pb={0}>
-        <Stack spacing={1}>
-          <Text fontWeight="bold" fontSize="lg">
-            {item?.title ?? 'Untitled series'}
-          </Text>
-          {subtitle ? (
-            <Text fontSize="sm" color="gray.500">
-              {subtitle}
-            </Text>
-          ) : null}
-        </Stack>
-      </CardHeader>
-      <CardBody>
-        <Stack spacing={3}>
-          {item?.description ? (
-            <Text fontSize="sm" color="gray.600" _dark={{ color: 'gray.300' }}>
-              {item.description}
-            </Text>
-          ) : null}
-          {statusState && (
-            <Badge colorScheme={statusColor} width="fit-content">
-              {statusLabel}
-            </Badge>
-          )}
-          {progressValue !== null && (
-            <Progress
-              value={progressValue}
-              size="sm"
-              colorScheme="purple"
-              borderRadius="full"
-              data-testid="download-progress"
-            />
-          )}
-          {statusMessage && (
-            <Text fontSize="sm" color={isFailed ? 'red.500' : 'gray.600'}>
-              {statusMessage}
-            </Text>
-          )}
-        </Stack>
-      </CardBody>
+      <div className="raven-card__header">
+        <p className="raven-card__title">{item?.title ?? 'Untitled series'}</p>
+        {subtitle ? <p className="raven-card__subtitle">{subtitle}</p> : null}
+      </div>
+      <div className="raven-card__body">
+        {item?.description ? (
+          <OneUIText size="small" className="raven-card__description">
+            {item.description}
+          </OneUIText>
+        ) : null}
+        {statusState && (
+          <StatusBadge context={statusColor === 'green' ? 'success' : statusColor === 'red' ? 'critical' : 'info'} variant="subtle">
+            {statusLabel}
+          </StatusBadge>
+        )}
+        {progressValue !== null && (
+          <ProgressBar
+            percentage={progressValue}
+            animated
+            small
+            data-testid="download-progress"
+            style={{ marginTop: tokens.spacing.sm }}
+          />
+        )}
+        {statusMessage && (
+          <OneUIText size="small" context={isFailed ? 'critical' : 'neutral'}>
+            {statusMessage}
+          </OneUIText>
+        )}
+      </div>
       {downloadedAtLabel && (
-        <CardFooter pt={0}>
-          <Text fontSize="xs" color="gray.500">
+        <div className="raven-card__footer">
+          <OneUIText size="small" context="neutral">
             Downloaded {downloadedAtLabel}
-          </Text>
-        </CardFooter>
+          </OneUIText>
+        </div>
       )}
-    </Card>
+    </article>
   );
 }

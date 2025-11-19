@@ -1,13 +1,12 @@
 import React from 'react';
-import { Heading, Stack, Text } from '@chakra-ui/react';
 
 export default function PortalPage() {
   return (
-    <Stack spacing={4} data-testid="portal-page">
-      <Heading size="lg">Portal</Heading>
-      <Text color="gray.600">
+    <div className="stack page" data-testid="portal-page">
+      <h1>Portal</h1>
+      <p className="page__text">
         Manage Discord integrations, configure webhooks, and bridge guild events into the Noona stack.
-      </Text>
-    </Stack>
+      </p>
+    </div>
   );
 }

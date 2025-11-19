@@ -1,17 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
-import {
-  Box,
-  Button,
-  Card,
-  CardBody,
-  CardFooter,
-  CardHeader,
-  Heading,
-  Icon,
-  SimpleGrid,
-  Stack,
-  Text,
-} from '@chakra-ui/react';
+import { Button } from '@textkernel/oneui';
 import { useNavigate } from 'react-router-dom';
 import { getIconPath } from '../components/icons.js';
 import {
@@ -103,61 +91,42 @@ export default function HomePage() {
   }, [isServiceInstalled, loading]);
 
   return (
-    <Stack spacing={12} align="center">
-      <Card maxW="xl" textAlign="center" py={10} px={8} shadow="xl">
-        <CardHeader pb={0}>
-          <Stack spacing={4} align="center">
-            <Box as="img" src="/logo.svg" alt="Noona" boxSize="100px" />
-            <Heading size="lg">Welcome to Noona</Heading>
-            <Text fontSize="md" color="gray.600">
-              Explore the control surfaces for every service or jump straight into the setup wizard.
-            </Text>
-          </Stack>
-        </CardHeader>
-        <CardFooter pt={6} justifyContent="center">
-          {hasPendingSetup && (
-            <Button
-              colorScheme="purple"
-              size="lg"
-              data-testid="launch-setup"
-              onClick={() => navigate('/setup')}
-            >
-              Launch Setup Wizard
-            </Button>
-          )}
-        </CardFooter>
-      </Card>
+    <div className="stack home-page">
+      <section className="home-hero">
+        <img src="/logo.svg" alt="Noona" className="home-hero__logo" />
+        <h1>Welcome to Noona</h1>
+        <p>Explore the control surfaces for every service or jump straight into the setup wizard.</p>
+        {hasPendingSetup && (
+          <Button context="primary" size="large" data-testid="launch-setup" onClick={() => navigate('/setup')}>
+            Launch Setup Wizard
+          </Button>
+        )}
+      </section>
 
-      <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={6} width="100%" maxW="6xl">
+      <div className="home-cards">
         {serviceCards.map((card) => (
-          <Card key={card.path} height="100%" display="flex" flexDirection="column" shadow="md">
-            <CardHeader>
-              <Stack spacing={4}>
-                <Icon viewBox="0 0 24 24" boxSize="48px" color="purple.400">
-                  <path fill="currentColor" d={getIconPath(card.icon)} />
-                </Icon>
-                <Heading size="md">{card.title}</Heading>
-              </Stack>
-            </CardHeader>
-            <CardBody flex="1">
-              <Text color="gray.600">{card.summary}</Text>
-            </CardBody>
-            <CardFooter pt={0}>
-              <Button
-                width="100%"
-                variant="outline"
-                colorScheme="purple"
-                isDisabled={card.disabled}
-                title={card.disabled ? card.tooltip : undefined}
-                data-testid={`service-link-${card.path}`}
-                onClick={() => !card.disabled && navigate(card.path)}
-              >
-                View {card.title}
-              </Button>
-            </CardFooter>
-          </Card>
+          <article className="home-card" key={card.path}>
+            <div className="home-card__header">
+              <svg className="home-card__icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path fill="currentColor" d={getIconPath(card.icon)} />
+              </svg>
+              <h3>{card.title}</h3>
+            </div>
+            <p className="home-card__body">{card.summary}</p>
+            <Button
+              variant="outlined"
+              context="primary"
+              isBlock
+              disabled={card.disabled}
+              title={card.disabled ? card.tooltip : undefined}
+              data-testid={`service-link-${card.path}`}
+              onClick={() => !card.disabled && navigate(card.path)}
+            >
+              View {card.title}
+            </Button>
+          </article>
         ))}
-      </SimpleGrid>
-    </Stack>
+      </div>
+    </div>
   );
 }
