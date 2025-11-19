@@ -5,7 +5,7 @@ import { Modal } from '@textkernel/oneui';
 import { OneUIProvider } from './theme/index.jsx';
 import router from './router.jsx';
 import { ServiceInstallationProvider } from './state/serviceInstallationContext.tsx';
-import '@textkernel/oneui/dist/oneui.min.css';
+import 'virtual:oneui-styles.css';
 import './style.css';
 
 if (typeof document !== 'undefined') {
