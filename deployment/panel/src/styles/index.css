@@ -73,6 +73,59 @@ body.oneui-shell {
     gap: 0.75rem;
 }
 
+.collapsible-card {
+    padding: 0;
+}
+
+.collapsible-card summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1.25rem 1.25rem 0.25rem;
+    list-style: none;
+}
+
+.collapsible-card summary::-webkit-details-marker {
+    display: none;
+}
+
+.collapsible-card summary h2 {
+    margin: 0;
+}
+
+.collapsible-spacer {
+    flex: 1 1 auto;
+}
+
+.collapsible-meta {
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+}
+
+.collapsible-indicator {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-right: 2px solid rgba(226, 232, 240, 0.7);
+    border-bottom: 2px solid rgba(226, 232, 240, 0.7);
+    transform: rotate(45deg);
+    transition: transform 0.2s ease;
+}
+
+.collapsible-card[open] .collapsible-indicator {
+    transform: rotate(225deg);
+}
+
+.collapsible-content {
+    padding: 0 1.25rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
 .oneui-card h2 {
     margin: 0;
     font-size: 1rem;
