@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import CollapsibleSection from './components/CollapsibleSection';
 import LogPanel from './components/LogPanel';
 import ServiceSelect, { ALL_SERVICES_OPTION } from './components/ServiceSelect';
 import { formatJSON } from './utils/formatters';
@@ -324,8 +325,11 @@ const App = () => {
                         <div className="alert">{errorMessage}</div>
                     </section>
                 )}
-                <section className="oneui-card">
-                    <h2>Services</h2>
+                <CollapsibleSection
+                    title="Services"
+                    defaultOpen
+                    meta={<div className={servicesStatusClass}>{servicesStatusLabel}</div>}
+                >
                     <div className="controls">
                         <button type="button" onClick={fetchServiceCatalog} disabled={servicesLoading}>
                             {servicesLoading ? 'Loading…' : 'Refresh status'}
@@ -334,12 +338,10 @@ const App = () => {
                             {settingsLoading ? 'Loading settings…' : 'Load settings'}
                         </button>
                     </div>
-                    <div className={servicesStatusClass}>{servicesStatusLabel}</div>
                     <pre id="services-output">{servicesOutput}</pre>
-                </section>
+                </CollapsibleSection>
 
-                <section className="oneui-card">
-                    <h2>Build</h2>
+                <CollapsibleSection title="Build">
                     <div className="inline-group">
                         <ServiceSelect
                             id="build-services"
@@ -372,10 +374,9 @@ const App = () => {
                     <button type="button" onClick={handleBuild} disabled={isStreaming}>
                         Start build
                     </button>
-                </section>
+                </CollapsibleSection>
 
-                <section className="oneui-card">
-                    <h2>Push / Pull</h2>
+                <CollapsibleSection title="Push / Pull">
                     <ServiceSelect
                         id="registry-services"
                         label="Services"
@@ -392,10 +393,9 @@ const App = () => {
                             Pull images
                         </button>
                     </div>
-                </section>
+                </CollapsibleSection>
 
-                <section className="oneui-card">
-                    <h2>Start / Stop</h2>
+                <CollapsibleSection title="Start / Stop" defaultOpen>
                     <div className="inline-group">
                         <ServiceSelect
                             id="start-services"
@@ -445,10 +445,9 @@ const App = () => {
                             Stop all
                         </button>
                     </div>
-                </section>
+                </CollapsibleSection>
 
-                <section className="oneui-card">
-                    <h2>Cleanup</h2>
+                <CollapsibleSection title="Cleanup">
                     <ServiceSelect
                         id="clean-services"
                         label="Services"
@@ -475,10 +474,9 @@ const App = () => {
                             Delete all Noona Docker resources
                         </button>
                     </div>
-                </section>
+                </CollapsibleSection>
 
-                <section className="oneui-card">
-                    <h2>Settings</h2>
+                <CollapsibleSection title="Settings">
                     <label className="oneui-field">
                         <span className="oneui-field__label">Host Docker socket override</span>
                         <input
@@ -507,12 +505,11 @@ const App = () => {
                         </button>
                     </div>
                     <pre id="settings-output">{settingsOutput}</pre>
-                </section>
+                </CollapsibleSection>
 
-                <section className="oneui-card stream-card">
-                    <h2>Streaming Output</h2>
+                <CollapsibleSection title="Streaming Output" defaultOpen className="stream-card">
                     <LogPanel entries={logEntries} />
-                </section>
+                </CollapsibleSection>
             </main>
         </div>
     );
