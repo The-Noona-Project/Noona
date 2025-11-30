@@ -218,5 +218,265 @@
       }
     },
     "timestamp": "2025-10-18T01:04:29.276Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-15T14:02:35.475Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-15T14:56:30.444Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-15T15:28:55.536Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-15T16:22:59.692Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-15T17:11:26.753Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-15T18:49:16.129Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-16T19:31:40.527Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-16T19:56:18.702Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-16T21:20:34.116Z"
+  },
+  {
+    "action": "start",
+    "service": "warden",
+    "status": "success",
+    "details": {
+      "container": {
+        "Name": "noona-warden",
+        "State": "running",
+        "Health": "n/a",
+        "Networks": "noona-network",
+        "Ports": "localhost:4001 → 4001/tcp, :::4001 → 4001/tcp",
+        "Note": "Health 200 after 2 attempt(s)"
+      },
+      "health": {
+        "attempts": 2,
+        "status": 200,
+        "url": "http://localhost:4001/health"
+      },
+      "settings": {
+        "bootMode": "standard",
+        "debugLevel": "auto",
+        "requestedDebug": "auto"
+      }
+    },
+    "timestamp": "2025-11-19T04:33:36.899Z"
   }
 ]
