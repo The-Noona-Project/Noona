@@ -2,6 +2,8 @@
 
 The deployment tooling is now driven entirely from the lightweight Express server in `deployment/webServer.mjs`. It exposes the same Docker workflows that previously powered the Ink CLI, but the interface now lives in a React + OnceUI experience that is bundled with Vite from `deployment/panel/` and emitted to `deployment/dist/`.
 
+For a step-by-step walkthrough of the OnceUI wizard layout, endpoint triggers, and prerequisites, read [docs/onceui-deployment-wizard.md](./onceui-deployment-wizard.md).
+
 ## Getting Started
 
 > ⚠️ **Prerequisite:** The deployment panel proxies install/start/stop commands through the Warden API. Ensure `noona-warden` is listening on `http://localhost:4001` before launching the panel. You can either run `node initWarden.mjs` (minimal or `DEBUG=super`) or start the published container with `./scripts/run-warden.sh` / `pwsh ./scripts/run-warden.ps1`, which automatically creates the `noona-network` and exposes port `4001`.
