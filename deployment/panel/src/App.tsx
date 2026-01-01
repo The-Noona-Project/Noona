@@ -823,11 +823,11 @@ const App = () => {
                     </section>
                 )}
 
-                <section className="summary-section">
-                    <div className="summary-section__header">
-                        <div>
-                            <p className="eyebrow">Quick commands</p>
-                            <h2>Action shortcuts</h2>
+            <section className="summary-section">
+                <div className="summary-section__header">
+                    <div>
+                        <p className="eyebrow">Quick commands</p>
+                        <h2>Action shortcuts</h2>
                             <p className="muted">Dispatch common deployment flows without drilling into individual services.</p>
                         </div>
                     </div>
@@ -853,6 +853,51 @@ const App = () => {
                                 </div>
                             </div>
                         ))}
+                    </div>
+                </section>
+
+                <section className="oneui-card focus-bar" aria-label="Streaming focus">
+                    <div className="focus-bar__header">
+                        <div>
+                            <p className="eyebrow">Streaming</p>
+                            <h2>Focus service</h2>
+                            <p className="muted">Scope defaults, streaming output, and quick actions.</p>
+                        </div>
+                        <div className="focus-bar__meta">
+                            <span className={selectedService ? getStatusClass(serviceHealth[selectedService]) : servicesStatusClass}>
+                                {selectedService ? serviceHealth[selectedService] ?? 'Unknown' : servicesStatusLabel}
+                            </span>
+                            <span className="muted">
+                                {selectedService ? lastActionLabel(selectedService) : 'Monitoring all services'}
+                            </span>
+                            <button
+                                type="button"
+                                className="ghost"
+                                onClick={handleClearSelection}
+                                disabled={!selectedService}
+                            >
+                                Clear focus
+                            </button>
+                        </div>
+                    </div>
+                    <div className="inline-group focus-row">
+                        <label className="oneui-field">
+                            <div className="field-label">
+                                <span className="oneui-field__label">Select scope</span>
+                                <span className="oneui-field__hint">Updates quick actions and log filtering</span>
+                            </div>
+                            <select
+                                value={selectedService ?? ''}
+                                onChange={(event) => handleFocusService(event.target.value || null)}
+                            >
+                                <option value="">All services</option>
+                                {availableServices.map((service) => (
+                                    <option key={service} value={service}>
+                                        {service}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
                     </div>
                 </section>
 
@@ -882,26 +927,6 @@ const App = () => {
                                 Clear focus
                             </button>
                         )}
-                    </div>
-
-                    <div className="inline-group focus-row">
-                        <label className="oneui-field">
-                            <div className="field-label">
-                                <span className="oneui-field__label">Focus service</span>
-                                <span className="oneui-field__hint">Scopes defaults and streaming logs</span>
-                            </div>
-                            <select
-                                value={selectedService ?? ''}
-                                onChange={(event) => handleFocusService(event.target.value || null)}
-                            >
-                                <option value="">All services</option>
-                                {availableServices.map((service) => (
-                                    <option key={service} value={service}>
-                                        {service}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
                     </div>
 
                     <div className="control-tabs">
@@ -1203,7 +1228,7 @@ const App = () => {
                 </section>
 
                 <section className="stream-column">
-                    <CollapsibleSection title={selectedService ? `Streaming Output — ${selectedService}` : 'Streaming Output'} defaultOpen className="stream-card">
+                    <CollapsibleSection title="Streaming Output" defaultOpen className="stream-card">
                         <LogPanel entries={scopedLogEntries} />
                     </CollapsibleSection>
                 </section>
