@@ -1,7 +1,7 @@
 :root {
     color-scheme: dark;
     font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    background-color: #0f172a;
+    background-color: #020617;
     color: #e2e8f0;
 }
 
@@ -12,7 +12,9 @@
 body.oneui-shell {
     margin: 0;
     min-height: 100vh;
-    background: radial-gradient(circle at top, rgba(99, 102, 241, 0.15), transparent 55%), #020617;
+    background: radial-gradient(circle at 10% 20%, rgba(94, 234, 212, 0.05), transparent 35%),
+        radial-gradient(circle at 90% 10%, rgba(14, 165, 233, 0.08), transparent 32%),
+        linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(2, 6, 23, 0.98));
     color: inherit;
 }
 
@@ -30,47 +32,103 @@ body.oneui-shell {
     min-height: 100vh;
 }
 
-.oneui-header {
-    padding: 2rem 2.5rem 1.5rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-    background: rgba(15, 23, 42, 0.85);
-    backdrop-filter: blur(14px);
+.hero {
+    padding: 2.25rem 2.75rem 1.5rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(2, 6, 23, 0.98));
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
     position: sticky;
     top: 0;
     z-index: 10;
+    backdrop-filter: blur(16px);
 }
 
-.oneui-header h1 {
-    margin: 0 0 0.5rem;
-    font-size: 1.75rem;
+.hero__eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: rgba(94, 234, 212, 0.85);
+    font-size: 0.78rem;
+    margin-bottom: 0.35rem;
+}
+
+.hero__title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.45rem;
+}
+
+.hero h1 {
+    margin: 0;
+    font-size: 2rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
 }
 
-.oneui-header p {
-    margin: 0;
-    max-width: 64ch;
-    color: rgba(226, 232, 240, 0.8);
+.hero__badge {
+    padding: 0.35rem 0.65rem;
+    border-radius: 999px;
+    border: 1px solid rgba(94, 234, 212, 0.45);
+    background: rgba(34, 211, 238, 0.12);
+    color: #67e8f9;
+    font-weight: 700;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
 }
 
-.oneui-grid {
+.hero p {
+    margin: 0 0 1rem;
+    max-width: 72ch;
+    color: rgba(226, 232, 240, 0.82);
+}
+
+.hero__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.hero__hint {
+    color: rgba(148, 163, 184, 0.85);
+    font-size: 0.85rem;
+}
+
+.content-grid {
     flex: 1;
-    padding: 2rem;
     display: grid;
+    grid-template-columns: 2fr 1.05fr;
     gap: 1.5rem;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    padding: 1.75rem 2.75rem 2.5rem;
+}
+
+.stack-grid {
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     align-content: start;
 }
 
+.stream-column {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
 .oneui-card {
-    background: rgba(15, 23, 42, 0.92);
-    border-radius: 1.25rem;
-    padding: 1.25rem;
+    background: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.08), transparent 40%),
+        rgba(15, 23, 42, 0.92);
+    border-radius: 1.15rem;
+    padding: 1.25rem 1.35rem;
     border: 1px solid rgba(148, 163, 184, 0.35);
-    box-shadow: 0 35px 60px rgba(2, 6, 23, 0.45);
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.45);
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+}
+
+.wide-card {
+    grid-column: 1 / -1;
 }
 
 .collapsible-card {
@@ -139,6 +197,11 @@ body.oneui-shell {
     gap: 0.35rem;
 }
 
+.checkbox-field {
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+}
+
 .oneui-field__label {
     font-size: 0.78rem;
     text-transform: uppercase;
@@ -179,7 +242,7 @@ button {
     letter-spacing: 0.04em;
     cursor: pointer;
     color: #fff;
-    background: linear-gradient(135deg, #6366f1, #7c3aed);
+    background: linear-gradient(135deg, #0ea5e9, #6366f1);
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -234,6 +297,42 @@ button:disabled {
     font-size: 0.75rem;
     font-weight: 600;
     margin-bottom: 0.4rem;
+}
+
+.status-ribbon {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1rem;
+    padding: 1rem 2.75rem 0.25rem;
+}
+
+.status-card {
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 1rem;
+    padding: 0.9rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.status-card__label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.78rem;
+    color: rgba(148, 163, 184, 0.85);
+}
+
+.status-card__value {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+
+.status-card__meta {
+    color: rgba(148, 163, 184, 0.78);
+    font-size: 0.85rem;
 }
 
 .status-ok {
@@ -313,11 +412,21 @@ button:disabled {
 }
 
 @media (max-width: 640px) {
-    .oneui-header {
-        padding: 1.5rem 1.25rem;
+    .hero {
+        padding: 1.5rem 1.35rem 1.1rem;
     }
 
-    .oneui-grid {
-        padding: 1.5rem 1.25rem;
+    .hero__title-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .content-grid {
+        grid-template-columns: 1fr;
+        padding: 1.25rem 1.35rem 2rem;
+    }
+
+    .status-ribbon {
+        padding: 1rem 1.35rem 0.25rem;
     }
 }

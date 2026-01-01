@@ -32,8 +32,17 @@ const statusTone: Record<WizardStatus, string> = {
   skipped: "neutral-weak",
 };
 
+const statusIcon: Record<WizardStatus, string> = {
+  pending: "clock",
+  "in-progress": "activity",
+  complete: "check",
+  error: "alertTriangle",
+  skipped: "minus",
+};
+
 const StepStatusBadge = ({ status }: { status: WizardStatus }) => (
   <Badge textVariant="label-default-s" border="neutral-alpha-strong" onBackground={statusTone[status]} gap="8">
+    <Icon name={statusIcon[status]} size="16" />
     {status}
   </Badge>
 );
@@ -60,10 +69,11 @@ const StepCard = ({
       radius="l"
       gap="m"
       background={currentStep === stepId ? "surface-strong" : "surface"}
+      className="console-card"
     >
-      <Row align="center" justify="between" gap="s">
+      <Row align="center" justify="between" gap="s" wrap>
         <Column gap="2xs">
-          <Row gap="s" align="center">
+          <Row gap="s" align="center" wrap>
             <Heading variant="heading-strong-m">{step.title}</Heading>
             {step.optional && (
               <Badge textVariant="label-default-s" border="neutral-alpha-medium" onBackground="neutral-weak">
@@ -78,15 +88,34 @@ const StepCard = ({
         <StepStatusBadge status={state.status} />
       </Row>
 
-      {state.detail && (
-        <Text variant="body-default-s" onBackground="neutral-medium">
-          {state.detail}
-        </Text>
-      )}
+      <Row gap="s" className="console-chip-row">
+        <span className="console-pill">
+          <Icon name="layout" size="16" />
+          {step.id}
+        </span>
+        {state.updatedAt && (
+          <span className="console-pill">
+            <Icon name="clock" size="16" />
+            Updated {new Date(state.updatedAt).toLocaleTimeString()}
+          </span>
+        )}
+        {state.detail && (
+          <span className="console-pill">
+            <Icon name="info" size="16" />
+            {state.detail}
+          </span>
+        )}
+      </Row>
+
       {state.error && (
-        <Text variant="body-default-s" onBackground="negative-strong">
-          {state.error}
-        </Text>
+        <Card border="dashed-medium" padding="s" gap="2xs" background="surface-strong" radius="m">
+          <Row align="center" gap="s">
+            <Icon name="alertTriangle" color="negative-strong" />
+            <Text variant="label-strong-s" onBackground="negative-strong">
+              {state.error}
+            </Text>
+          </Row>
+        </Card>
       )}
 
       {errors.length > 0 && (
@@ -110,10 +139,10 @@ const StepCard = ({
       )}
 
       <Row gap="s" wrap>
-        <Button variant="secondary" size="s" onClick={() => onInspect(stepId)}>
+        <Button variant="primary" size="s" onClick={() => onInspect(stepId)}>
           View history & guidance
         </Button>
-        <Button variant="tertiary" size="s" onClick={() => setCurrentStep(stepId)}>
+        <Button variant="secondary" size="s" onClick={() => setCurrentStep(stepId)} prefixIcon="target">
           Focus this step
         </Button>
       </Row>
@@ -229,17 +258,21 @@ const StepDrawer = ({
 };
 
 const ServiceSelectionPanel = ({ onOpenDrawer }: { onOpenDrawer: () => void }) => {
-  const { stepSelections, serviceCatalog } = useWizardModel();
+  const { stepSelections, serviceCatalog, validationErrors } = useWizardModel();
   const requiredCount = serviceCatalog.filter((entry) => entry.required).length;
   const optionalCount = serviceCatalog.length - requiredCount;
+  const totalIssues = useMemo(() => Object.values(validationErrors).flat().length, [validationErrors]);
 
   return (
-    <Card padding="m" border="solid-medium" radius="l" gap="m" background="surface">
-      <Row justify="between" align="center" gap="s">
+    <Card padding="l" border="solid-medium" radius="l" gap="m" background="surface" className="console-card">
+      <Row justify="between" align="center" gap="s" wrap>
         <Column gap="2xs">
+          <Text variant="label-strong-s" onBackground="neutral-weak" className="console-section-title">
+            Deployment controls
+          </Text>
           <Heading variant="heading-strong-m">Service selection</Heading>
           <Text variant="body-default-s" onBackground="neutral-weak">
-            Use the editor drawer to toggle add-ons, enrich environment variables, and preview validation output before commits.
+            Toggle add-ons, enrich environment variables, and preview validation output before commits.
           </Text>
         </Column>
         <Button variant="primary" onClick={onOpenDrawer} prefixIcon="edit" size="s">
@@ -247,25 +280,30 @@ const ServiceSelectionPanel = ({ onOpenDrawer }: { onOpenDrawer: () => void }) =
         </Button>
       </Row>
 
-      <Row gap="m" wrap>
-        <Card padding="s" border="neutral-alpha-medium" radius="m" background="surface-strong" gap="2xs">
+      <Grid columns="repeat(auto-fit, minmax(220px, 1fr))" gap="s">
+        <Card padding="s" border="neutral-alpha-medium" radius="m" background="surface-strong" gap="2xs" className="console-stats">
           <Text variant="label-strong-s">Catalog</Text>
           <Text variant="body-default-s" onBackground="neutral-weak">
             {requiredCount} required · {optionalCount} optional
           </Text>
         </Card>
-        <Card padding="s" border="neutral-alpha-medium" radius="m" background="surface-strong" gap="2xs">
+        <Card padding="s" border="neutral-alpha-medium" radius="m" background="surface-strong" gap="2xs" className="console-stats">
           <Text variant="label-strong-s">Selections</Text>
           <Text variant="body-default-s" onBackground="neutral-weak">
-            Foundation: {stepSelections.foundation.length}, Add-ons: {stepSelections.addons.length}, Verification:
-            {" "}
+            Foundation: {stepSelections.foundation.length}, Add-ons: {stepSelections.addons.length}, Verification: {" "}
             {stepSelections.verification.length}
           </Text>
         </Card>
-      </Row>
+        <Card padding="s" border="neutral-alpha-medium" radius="m" background="surface-strong" gap="2xs" className="console-stats">
+          <Text variant="label-strong-s">Validation</Text>
+          <Text variant="body-default-s" onBackground={totalIssues > 0 ? "negative-strong" : "positive-strong"}>
+            {totalIssues > 0 ? `${totalIssues} issues detected` : "Ready for validation"}
+          </Text>
+        </Card>
+      </Grid>
 
-      <Grid columns="repeat(auto-fit, minmax(260px, 1fr))" gap="s">
-        <Card padding="s" border="neutral-alpha-strong" radius="m" background="surface-strong" gap="2xs">
+      <Grid columns="repeat(auto-fit, minmax(240px, 1fr))" gap="s">
+        <Card padding="s" border="neutral-alpha-strong" radius="m" background="surface-strong" gap="2xs" className="console-card">
           <Text variant="label-strong-s">Foundation</Text>
           <Text variant="body-default-s" onBackground="neutral-weak">
             {stepSelections.foundation.length === 0
@@ -273,7 +311,7 @@ const ServiceSelectionPanel = ({ onOpenDrawer }: { onOpenDrawer: () => void }) =
               : stepSelections.foundation.map((service) => service.name).join(", ")}
           </Text>
         </Card>
-        <Card padding="s" border="neutral-alpha-strong" radius="m" background="surface-strong" gap="2xs">
+        <Card padding="s" border="neutral-alpha-strong" radius="m" background="surface-strong" gap="2xs" className="console-card">
           <Text variant="label-strong-s">Add-ons</Text>
           <Text variant="body-default-s" onBackground="neutral-weak">
             {stepSelections.addons.length === 0
@@ -281,7 +319,7 @@ const ServiceSelectionPanel = ({ onOpenDrawer }: { onOpenDrawer: () => void }) =
               : stepSelections.addons.map((service) => service.name).join(", ")}
           </Text>
         </Card>
-        <Card padding="s" border="neutral-alpha-strong" radius="m" background="surface-strong" gap="2xs">
+        <Card padding="s" border="neutral-alpha-strong" radius="m" background="surface-strong" gap="2xs" className="console-card">
           <Text variant="label-strong-s">Verification targets</Text>
           <Text variant="body-default-s" onBackground="neutral-weak">
             {stepSelections.verification.length === 0
@@ -387,7 +425,7 @@ const ServiceDrawer = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
           {serviceCatalog.map((service) => {
             const isSelected = selection.some((entry) => entry.name === service.name);
             return (
-              <Card key={service.name} padding="m" border="solid-medium" radius="m" gap="s" background="surface">
+              <Card key={service.name} padding="m" border="solid-medium" radius="m" gap="s" background="surface" className="console-card">
                 <Row justify="between" align="center" gap="s">
                   <Column gap="2xs">
                     <Text variant="heading-strong-s">{service.name}</Text>
@@ -502,21 +540,37 @@ const NdjsonEventLog = () => {
   if (ndjsonEvents.length === 0) return null;
 
   return (
-    <Card padding="m" border="solid-medium" radius="l" gap="s" background="surface" aria-live="polite" role="log">
-      <Row align="center" gap="s">
-        <Heading variant="heading-strong-m">Streaming events</Heading>
-        <Badge textVariant="label-default-s" border="neutral-alpha-medium" onBackground="neutral-weak">
-          {ndjsonEvents.length} entries
-        </Badge>
+    <Card
+      padding="l"
+      border="solid-medium"
+      radius="l"
+      gap="s"
+      background="surface"
+      aria-live="polite"
+      role="log"
+      className="console-card"
+      id="ndjson-log"
+    >
+      <Row align="center" gap="s" justify="between" wrap>
+        <Row align="center" gap="s">
+          <Heading variant="heading-strong-m">Streaming events</Heading>
+          <Badge textVariant="label-default-s" border="neutral-alpha-medium" onBackground="neutral-weak">
+            {ndjsonEvents.length} entries
+          </Badge>
+        </Row>
+        <Text variant="label-default-s" onBackground="neutral-weak">
+          NDJSON stream
+        </Text>
       </Row>
       <Text variant="body-default-s" onBackground="neutral-weak">
         Events stream directly from NDJSON wizard endpoints. Use this panel to ensure previews and validations remain readable
         during long-running tasks.
       </Text>
+      <Line hor background="neutral-alpha-strong" />
       <List gap="s" style={{ maxHeight: "420px", overflowY: "auto", margin: 0 }}>
         {ndjsonEvents.map((event, index) => (
           <ListItem key={`${event.type}-${index}`}>
-            <Card padding="s" border="neutral-alpha-strong" radius="m" gap="2xs" background="surface-strong">
+            <Card padding="s" border="neutral-alpha-strong" radius="m" gap="2xs" background="surface-strong" className="console-card">
               <Row justify="between" align="center">
                 <Text variant="label-strong-s">{event.type}</Text>
                 {event.error && (
@@ -544,7 +598,7 @@ const NdjsonEventLog = () => {
 };
 
 const WizardShell = () => {
-  const { metadata, wizard, progress, refresh, error, setCurrentStep } = useWizardModel();
+  const { metadata, wizard, progress, refresh, error, setCurrentStep, validationErrors } = useWizardModel();
   const [stepDrawerOpen, setStepDrawerOpen] = useState(false);
   const [serviceDrawerOpen, setServiceDrawerOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -557,6 +611,25 @@ const WizardShell = () => {
     return Math.round((completed / steps.length) * 100);
   }, [metadata?.steps, progress?.percent, wizard]);
 
+  const completedCount = useMemo(() => {
+    const steps = metadata?.steps ?? [];
+    if (!wizard || steps.length === 0) return 0;
+    return steps.filter((step) => wizard[step.id].status === "complete").length;
+  }, [metadata?.steps, wizard]);
+
+  const currentStepMeta = useMemo(
+    () => metadata?.steps.find((entry) => entry.id === progress?.currentStep) ?? metadata?.steps.find((entry) => entry.id === "foundation"),
+    [metadata?.steps, progress?.currentStep],
+  );
+
+  const openStepDrawer = useCallback(() => setStepDrawerOpen(true), []);
+  const scrollToLog = useCallback(() => {
+    const element = document.getElementById("ndjson-log");
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
+
   const handleInspectStep = useCallback(
     (step: WizardStepKey) => {
       setCurrentStep(step);
@@ -565,58 +638,155 @@ const WizardShell = () => {
     [setCurrentStep],
   );
 
+  const issueCount = useMemo(() => Object.values(validationErrors).flat().length, [validationErrors]);
+
   return (
-    <Column fillWidth padding="xl" gap="l" style={{ minHeight: "100vh" }}>
-      <Card padding="l" radius="xl" border="solid-medium" background="surface" gap="m">
-        <Row align="center" gap="s" wrap>
-          <Badge textVariant="code-default-s" border="neutral-alpha-medium" onBackground="neutral-medium" gap="16">
-            <Line vert background="neutral-alpha-strong" />
-            <Text marginX="4">
-              <LetterFx trigger="instant">Setup wizard</LetterFx>
-            </Text>
-          </Badge>
-          {percent != null && (
-            <Badge textVariant="label-default-s" border="neutral-alpha-strong" onBackground="neutral-weak">
-              {percent}% complete
+    <Column fillWidth padding="xl" gap="xl" style={{ minHeight: "100vh" }} className="console-shell">
+      <Card padding="xl" radius="xl" border="solid-medium" background="surface" gap="m" className="console-hero">
+        <Row align="center" justify="between" gap="m" wrap>
+          <Column gap="s">
+            <Badge textVariant="code-default-s" border="neutral-alpha-medium" onBackground="neutral-medium" gap="16">
+              <Line vert background="neutral-alpha-strong" />
+              <Text marginX="4">
+                <LetterFx trigger="instant">Warden Deployment Console</LetterFx>
+              </Text>
             </Badge>
-          )}
+            <Heading variant="display-strong-l">Command &amp; control, but sleek</Heading>
+            <Text variant="heading-default-m" onBackground="neutral-weak">
+              A dark cockpit for orchestrating installs, previews, and validation. Track every wizard step with live NDJSON
+              streams and guided history drawers.
+            </Text>
+            <Row gap="s" wrap>
+              <div className="console-pill">
+                <Icon name="shield" size="16" /> Hardened surfaces
+              </div>
+              <div className="console-pill">
+                <Icon name="cpu" size="16" /> Backend-synced
+              </div>
+              <div className="console-pill">
+                <Icon name="zap" size="16" /> Quick actions restored
+              </div>
+            </Row>
+          </Column>
+          <Column gap="s" align="end">
+            {percent != null && (
+              <Column align="end" gap="2xs" style={{ minWidth: "240px" }}>
+                <ProgressBar value={percent} label />
+                <Text variant="label-default-s" onBackground="neutral-weak">
+                  {percent}% ready
+                </Text>
+              </Column>
+            )}
+            <Row gap="s" wrap justify="end">
+              <Button onClick={() => refresh()} prefixIcon="refreshCcw" variant="primary">
+                Refresh wizard state
+              </Button>
+              <Button variant="secondary" onClick={() => setServiceDrawerOpen(true)} prefixIcon="layers">
+                Configure services
+              </Button>
+              <Button variant="tertiary" onClick={openStepDrawer} prefixIcon="list">
+                Review steps
+              </Button>
+              <Button variant="tertiary" onClick={scrollToLog} prefixIcon="activity">
+                View stream
+              </Button>
+            </Row>
+          </Column>
         </Row>
-        <Heading variant="display-strong-l">Deploy Noona with confidence</Heading>
-        <Text variant="heading-default-m" onBackground="neutral-weak">
-          Follow the guided steps to configure core services, add-ons, and verification checks. The UI now tracks backend wizard
-          endpoints, NDJSON streams, and validation issues per step.
-        </Text>
-        <Row gap="s" wrap>
-          <Button onClick={() => refresh()}>Refresh wizard state</Button>
-          <Button variant="secondary" onClick={() => setServiceDrawerOpen(true)} prefixIcon="layers">
-            Edit service selection
-          </Button>
-          <Button variant="tertiary" onClick={() => setStepDrawerOpen(true)} prefixIcon="list">
-            Open step drawer
-          </Button>
-        </Row>
-        {error && (
-          <Text variant="body-default-s" onBackground="negative-strong">
-            {error}
+      </Card>
+
+      <Grid columns="repeat(auto-fit, minmax(260px, 1fr))" gap="m">
+        <Card padding="m" radius="l" border="solid-medium" background="surface" gap="xs" className="console-card">
+          <Text variant="label-strong-s" onBackground="neutral-weak">
+            Step completion
           </Text>
-        )}
-      </Card>
+          <Heading variant="display-strong-s">{completedCount}</Heading>
+          <Text variant="body-default-s" onBackground="neutral-weak">
+            of {metadata?.steps.length ?? 0} steps complete
+          </Text>
+        </Card>
+        <Card padding="m" radius="l" border="solid-medium" background="surface" gap="xs" className="console-card">
+          <Text variant="label-strong-s" onBackground="neutral-weak">
+            Active step
+          </Text>
+          <Heading variant="display-strong-s">{currentStepMeta?.title ?? "Not started"}</Heading>
+          <Text variant="body-default-s" onBackground="neutral-weak">
+            {currentStepMeta?.description ?? "Wizard metadata will populate once loaded."}
+          </Text>
+        </Card>
+        <Card padding="m" radius="l" border="solid-medium" background="surface" gap="xs" className="console-card">
+          <Text variant="label-strong-s" onBackground="neutral-weak">
+            Validation status
+          </Text>
+          <Heading variant="display-strong-s" onBackground={issueCount > 0 ? "negative-strong" : "positive-strong"}>
+            {issueCount > 0 ? `${issueCount} open` : "Clean"}
+          </Heading>
+          <Text variant="body-default-s" onBackground="neutral-weak">
+            Issues surfaced from previews and validations
+          </Text>
+        </Card>
+      </Grid>
 
-      <Card padding="l" radius="l" border="solid-medium" background="surface" gap="m">
-        <Row justify="between" align="center" wrap gap="s">
-          <Heading variant="heading-strong-m">Wizard stepper</Heading>
-          {percent != null && <ProgressBar value={percent} label />}
-        </Row>
-        <Grid columns="repeat(auto-fit, minmax(320px, 1fr))" gap="s">
-          {metadata?.steps.map((entry) => (
-            <StepCard key={entry.id} stepId={entry.id} onInspect={handleInspectStep} />
-          ))}
-        </Grid>
-      </Card>
+      <Grid columns="repeat(auto-fit, minmax(420px, 1fr))" gap="xl" className="console-grid-gap">
+        <Column gap="m">
+          <Card padding="l" radius="l" border="solid-medium" background="surface" gap="m" className="console-card">
+            <Row justify="between" align="center" wrap gap="s">
+              <Heading variant="heading-strong-m">Wizard stepper</Heading>
+              {percent != null && <ProgressBar value={percent} label />}
+            </Row>
+            <Grid columns="repeat(auto-fit, minmax(320px, 1fr))" gap="s">
+              {metadata?.steps.map((entry) => (
+                <StepCard key={entry.id} stepId={entry.id} onInspect={handleInspectStep} />
+              ))}
+            </Grid>
+          </Card>
 
-      <Grid columns="repeat(auto-fit, minmax(420px, 1fr))" gap="m">
-        <ServiceSelectionPanel onOpenDrawer={() => setServiceDrawerOpen(true)} />
-        <NdjsonEventLog />
+          <NdjsonEventLog />
+        </Column>
+
+        <Column gap="m">
+          <ServiceSelectionPanel onOpenDrawer={() => setServiceDrawerOpen(true)} />
+
+          <Card padding="l" border="solid-medium" radius="l" gap="m" background="surface-strong" className="console-card">
+            <Row justify="between" align="center" wrap gap="s">
+              <Heading variant="heading-strong-m">Action center</Heading>
+              <Badge textVariant="label-default-s" border="neutral-alpha-medium" onBackground="neutral-weak">
+                Quick buttons restored
+              </Badge>
+            </Row>
+            <Text variant="body-default-s" onBackground="neutral-weak">
+              Run the common tasks you expect from the deployment console. These shortcuts mirror the CLI and keep parity with
+              the darker experience shown in the reference UI.
+            </Text>
+            <Row gap="s" wrap>
+              <Button variant="primary" prefixIcon="play" onClick={() => setServiceDrawerOpen(true)}>
+                Start configuration
+              </Button>
+              <Button variant="secondary" prefixIcon="check" onClick={openStepDrawer}>
+                Review validation
+              </Button>
+              <Button variant="tertiary" prefixIcon="download" onClick={scrollToLog}>
+                Stream logs
+              </Button>
+              <Button variant="tertiary" prefixIcon="refreshCcw" onClick={() => refresh()}>
+                Refresh state
+              </Button>
+            </Row>
+            {error && (
+              <Card padding="s" border="dashed-medium" radius="m" background="surface" gap="2xs" className="console-card">
+                <Row gap="s" align="center">
+                  <Icon name="alertTriangle" color="negative-strong" />
+                  <Text variant="label-strong-s" onBackground="negative-strong">
+                    {error}
+                  </Text>
+                </Row>
+                <Text variant="body-default-s" onBackground="neutral-weak">
+                  Refresh the wizard or revisit service selection if issues persist.
+                </Text>
+              </Card>
+            )}
+          </Card>
+        </Column>
       </Grid>
 
       <StepDrawer

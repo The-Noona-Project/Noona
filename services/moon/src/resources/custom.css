@@ -1,54 +1,85 @@
-/* :root {
-  /*
-  /* Example setup for custom colors */
-  /* Generate at: https://once-ui.com/customize */
-  /*
-  --scheme-brand-100: #08002f;
-  --scheme-brand-200:  #04025c;
-  --scheme-brand-300:  #1f398e;
-  --scheme-brand-400:  #3856ae;
-  --scheme-brand-500:  #5071cc;
-  --scheme-brand-600:  #6f94f1;
-  --scheme-brand-700:  #8db3ff;
-  --scheme-brand-800:  #b2dbff;
-  --scheme-brand-900:  #bfe8ff;
-  --scheme-brand-1000: #ccf6ff;
-  --scheme-brand-1100: #d2fcff;
-  --scheme-brand-1200: #d2fcff;
-  --scheme-brand-600-10: rgba(111,148,241,0.1);
-  --scheme-brand-600-30: rgba(111,148,241,0.3);
-  --scheme-brand-600-50: rgba(111,148,241,0.5);
+:root {
+  --console-background: #050608;
+  --console-panel: rgba(19, 21, 27, 0.8);
+  --console-border: rgba(255, 255, 255, 0.06);
+  --console-glow: 0 28px 90px rgba(0, 0, 0, 0.55);
+}
 
-  --scheme-accent-100:  #030b10;
-  --scheme-accent-200:  #0d181d;
-  --scheme-accent-300:  #364248;
-  --scheme-accent-400:  #505d64;
-  --scheme-accent-500:  #69777e;
-  --scheme-accent-600:  #8a989f;
-  --scheme-accent-700:  #a8b7bf;
-  --scheme-accent-800:  #c8d7df;
-  --scheme-accent-900:  #d5e4ec;
-  --scheme-accent-1000: #e2f1f9;
-  --scheme-accent-1100: #e9f8ff;
-  --scheme-accent-1200: #efffff;
-  --scheme-accent-600-10: rgba(138,152,159,0.1);
-  --scheme-accent-600-30: rgba(138,152,159,0.3);
-  --scheme-accent-600-50: rgba(138,152,159,0.5);
+body {
+  background-color: var(--console-background);
+  color: var(--neutral-on-background-strong);
+}
 
-  --scheme-neutral-100:  #020b10;
-  --scheme-neutral-200:  #0b181d;
-  --scheme-neutral-300:  #344248;
-  --scheme-neutral-400:  #4f5d64;
-  --scheme-neutral-500:  #68777e;
-  --scheme-neutral-600:  #89989f;
-  --scheme-neutral-700:  #a7b7be;
-  --scheme-neutral-800:  #c7d7df;
-  --scheme-neutral-900:  #d4e4ec;
-  --scheme-neutral-1000: #e1f2f9;
-  --scheme-neutral-1100: #e7f8ff;
-  --scheme-neutral-1200: #eeffff;
-  --scheme-neutral-600-10: rgba(137,152,159,0.1);
-  --scheme-neutral-600-30: rgba(137,152,159,0.3);
-  --scheme-neutral-600-50: rgba(137,152,159,0.5);
-  /*
-}*/
+.console-shell {
+  background: radial-gradient(circle at 20% 20%, rgba(109, 53, 255, 0.08), transparent 32%),
+    radial-gradient(circle at 80% 0%, rgba(64, 192, 255, 0.12), transparent 25%),
+    linear-gradient(135deg, #06060a 0%, #0d0f14 45%, #0a0c12 100%);
+}
+
+.console-card,
+.console-hero {
+  box-shadow: var(--console-glow);
+  border: 1px solid var(--console-border);
+  backdrop-filter: blur(12px);
+}
+
+.console-hero {
+  background: linear-gradient(140deg, rgba(33, 33, 46, 0.75) 0%, rgba(15, 16, 22, 0.9) 65%);
+  position: relative;
+  overflow: hidden;
+}
+
+.console-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 30% 20%, rgba(76, 149, 255, 0.22), transparent 45%),
+    radial-gradient(circle at 80% 60%, rgba(202, 89, 255, 0.16), transparent 40%);
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.console-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.console-stats {
+  border: 1px solid var(--console-border);
+  background: linear-gradient(160deg, rgba(10, 12, 16, 0.9) 0%, rgba(15, 17, 23, 0.8) 100%);
+}
+
+.console-grid-gap {
+  gap: var(--dimension-xl);
+}
+
+.console-section-title {
+  letter-spacing: 0.02em;
+}
+
+.console-chip-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.console-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--console-border);
+  color: var(--neutral-on-background-weak);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.console-divider {
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--console-border), transparent);
+  margin: 6px 0;
+}
+
+#ndjson-log {
+  scroll-margin-top: 96px;
+}
