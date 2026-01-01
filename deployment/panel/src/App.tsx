@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import ActionModal from './components/ActionModal';
 import CollapsibleSection from './components/CollapsibleSection';
 import LogPanel from './components/LogPanel';
 import ServiceSelect, { ALL_SERVICES_OPTION } from './components/ServiceSelect';
@@ -79,6 +80,8 @@ const getStatusClass = (status?: string): string => {
     return 'status-pill status-info';
 };
 
+type ActionSurface = 'build' | 'push' | 'pull' | 'clean';
+
 const App = () => {
     const [availableServices, setAvailableServices] = useState<string[]>([]);
     const [servicesCatalog, setServicesCatalog] = useState<ServicesResponse | null>(null);
@@ -100,6 +103,8 @@ const App = () => {
     const [servicesLoading, setServicesLoading] = useState(false);
     const [settingsLoading, setSettingsLoading] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    const [activeAction, setActiveAction] = useState<ActionSurface | null>(null);
+    const [showWardenPrompt, setShowWardenPrompt] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [selectedService, setSelectedService] = useState<string | null>(null);
     const [serviceActivity, setServiceActivity] = useState<Record<string, string>>({});
@@ -432,6 +437,15 @@ const App = () => {
         setLogServiceScope(null);
     }, []);
 
+    const openActionSurface = useCallback((action: ActionSurface) => {
+        setErrorMessage(null);
+        setActiveAction(action);
+    }, []);
+
+    const closeActionSurface = useCallback(() => {
+        setActiveAction(null);
+    }, []);
+
     useEffect(() => {
         fetchServiceCatalog();
     }, [fetchServiceCatalog]);
@@ -469,6 +483,24 @@ const App = () => {
         [availableServices]
     );
 
+    const handleBuildFlowSubmit = useCallback(async () => {
+        await handleBuild();
+        closeActionSurface();
+        if (hasWarden) {
+            setStartSelection(['warden']);
+            setShowWardenPrompt(true);
+        }
+    }, [closeActionSurface, handleBuild, hasWarden]);
+
+    const dismissWardenPrompt = useCallback(() => {
+        setShowWardenPrompt(false);
+    }, []);
+
+    const startWardenAfterBuild = useCallback(async () => {
+        dismissWardenPrompt();
+        await handleStartWarden();
+    }, [dismissWardenPrompt, handleStartWarden]);
+
     const quickActions = useMemo(
         () => [
             {
@@ -479,7 +511,7 @@ const App = () => {
                 metaLabel: 'Scope',
                 metaValue: availableServices.length ? 'All detected services' : 'No services loaded',
                 actionLabel: 'Start build',
-                onAction: handleBuild,
+                onAction: () => openActionSurface('build'),
                 disabled: isStreaming || availableServices.length === 0
             },
             {
@@ -490,7 +522,7 @@ const App = () => {
                 metaLabel: 'Target',
                 metaValue: serviceCountLabel,
                 actionLabel: 'Push images',
-                onAction: handlePush,
+                onAction: () => openActionSurface('push'),
                 disabled: isStreaming || availableServices.length === 0
             },
             {
@@ -501,7 +533,7 @@ const App = () => {
                 metaLabel: 'Target',
                 metaValue: serviceCountLabel,
                 actionLabel: 'Pull images',
-                onAction: handlePull,
+                onAction: () => openActionSurface('pull'),
                 disabled: isStreaming || availableServices.length === 0
             },
             {
@@ -512,8 +544,8 @@ const App = () => {
                 metaLabel: 'Confirmation',
                 metaValue: deleteConfirm ? 'Prune enabled' : 'Selective cleanup',
                 actionLabel: 'Run cleanup',
-                onAction: handleClean,
-                disabled: isStreaming
+                onAction: () => openActionSurface('clean'),
+                disabled: isStreaming || availableServices.length === 0
             },
             {
                 id: 'start-warden',
@@ -530,19 +562,206 @@ const App = () => {
         [
             availableServices.length,
             deleteConfirm,
-            handleBuild,
-            handleClean,
-            handlePull,
-            handlePush,
             handleStartWarden,
             hasWarden,
             isStreaming,
+            openActionSurface,
             serviceCountLabel
         ]
     );
 
     return (
         <div className="app-shell">
+            {activeAction === 'build' && (
+                <ActionModal
+                    title="Build services"
+                    subtitle="Select services, concurrency, and caching options before dispatching a build."
+                    onClose={closeActionSurface}
+                    footer={
+                        <div className="controls modal-controls">
+                            <button type="button" className="ghost" onClick={closeActionSurface}>
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleBuildFlowSubmit}
+                                disabled={isStreaming || availableServices.length === 0}
+                            >
+                                Dispatch build
+                            </button>
+                        </div>
+                    }
+                >
+                    <div className="inline-group">
+                        <ServiceSelect
+                            id="quick-build-services"
+                            label="Services to build"
+                            value={buildSelection}
+                            onChange={setBuildSelection}
+                            options={selectedService ? [selectedService] : availableServices}
+                            includeAllOption={!selectedService}
+                            helpText="Pick target services or build everything."
+                            size={4}
+                        />
+                        <label className="oneui-field">
+                            <span className="oneui-field__label">Concurrency override</span>
+                            <input
+                                id="quick-build-concurrency"
+                                placeholder='{"workers":2}'
+                                value={buildConcurrency}
+                                onChange={(event) => setBuildConcurrency(event.target.value)}
+                            />
+                        </label>
+                    </div>
+                    <label className="oneui-field checkbox-field">
+                        <span>
+                            <input
+                                type="checkbox"
+                                checked={buildUseNoCache}
+                                onChange={(event) => setBuildUseNoCache(event.target.checked)}
+                            />{' '}
+                            Use --no-cache
+                        </span>
+                    </label>
+                </ActionModal>
+            )}
+
+            {activeAction === 'push' && (
+                <ActionModal
+                    title="Push images"
+                    subtitle="Choose which services to push to the configured registry."
+                    onClose={closeActionSurface}
+                    footer={
+                        <div className="controls modal-controls">
+                            <button type="button" className="ghost" onClick={closeActionSurface}>
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handlePush}
+                                disabled={isStreaming || availableServices.length === 0}
+                            >
+                                Push images
+                            </button>
+                        </div>
+                    }
+                >
+                    <ServiceSelect
+                        id="quick-push-services"
+                        label="Services to push"
+                        value={registrySelection}
+                        onChange={setRegistrySelection}
+                        options={selectedService ? [selectedService] : availableServices}
+                        includeAllOption={!selectedService}
+                        helpText="Limit pushes to specific services or include all."
+                        size={4}
+                    />
+                </ActionModal>
+            )}
+
+            {activeAction === 'pull' && (
+                <ActionModal
+                    title="Pull images"
+                    subtitle="Choose which services to refresh from the registry."
+                    onClose={closeActionSurface}
+                    footer={
+                        <div className="controls modal-controls">
+                            <button type="button" className="ghost" onClick={closeActionSurface}>
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handlePull}
+                                disabled={isStreaming || availableServices.length === 0}
+                            >
+                                Pull images
+                            </button>
+                        </div>
+                    }
+                >
+                    <ServiceSelect
+                        id="quick-pull-services"
+                        label="Services to pull"
+                        value={registrySelection}
+                        onChange={setRegistrySelection}
+                        options={selectedService ? [selectedService] : availableServices}
+                        includeAllOption={!selectedService}
+                        helpText="Target specific services to refresh locally."
+                        size={4}
+                    />
+                </ActionModal>
+            )}
+
+            {activeAction === 'clean' && (
+                <ActionModal
+                    title="Clean resources"
+                    subtitle="Preview cleanup scope and optionally enable full Docker prune."
+                    onClose={closeActionSurface}
+                    footer={
+                        <div className="controls modal-controls">
+                            <button type="button" className="ghost" onClick={closeActionSurface}>
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleClean}
+                                disabled={isStreaming || availableServices.length === 0}
+                            >
+                                Remove resources
+                            </button>
+                        </div>
+                    }
+                >
+                    <ServiceSelect
+                        id="quick-clean-services"
+                        label="Services to clean"
+                        value={cleanSelection}
+                        onChange={setCleanSelection}
+                        options={selectedService ? [selectedService] : availableServices}
+                        includeAllOption={!selectedService}
+                        helpText="Remove resources for a subset or the entire stack."
+                        size={4}
+                    />
+                    <label className="oneui-field checkbox-field">
+                        <span>
+                            <input
+                                type="checkbox"
+                                checked={deleteConfirm}
+                                onChange={(event) => setDeleteConfirm(event.target.checked)}
+                            />{' '}
+                            Confirm full Docker prune
+                        </span>
+                    </label>
+                </ActionModal>
+            )}
+
+            {showWardenPrompt && (
+                <ActionModal
+                    title="Build dispatched"
+                    subtitle="Build options saved. Start Warden with the current start configuration?"
+                    onClose={dismissWardenPrompt}
+                    footer={
+                        <div className="controls modal-controls">
+                            <button type="button" className="ghost" onClick={dismissWardenPrompt}>
+                                Maybe later
+                            </button>
+                            <button
+                                type="button"
+                                onClick={startWardenAfterBuild}
+                                disabled={isStreaming || !hasWarden}
+                            >
+                                Start Warden now
+                            </button>
+                        </div>
+                    }
+                >
+                    <p className="muted">
+                        Build submitted for {buildSelection.length ? buildSelection.join(', ') : 'all detected services'}. Warden is
+                        preselected in the start list so you can launch it with the current boot and debug settings.
+                    </p>
+                </ActionModal>
+            )}
+
             <header className="hero">
                 <div className="hero__eyebrow">Warden Control</div>
                 <div className="hero__title-row">
