@@ -206,6 +206,34 @@ body.oneui-shell {
     justify-content: flex-end;
 }
 
+.focus-bar {
+    gap: 0.85rem;
+}
+
+.focus-bar__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.focus-bar__meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.focus-bar__meta .muted {
+    margin: 0;
+}
+
+.focus-bar__meta button {
+    flex: 0 0 auto;
+}
+
 .detail-surface {
     grid-column: 1 / -1;
     margin-top: 0.25rem;
