@@ -555,3 +555,56 @@ button:disabled {
         padding: 1rem 1.35rem 0.25rem;
     }
 }
+
+.action-modal__backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 6, 23, 0.72);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    z-index: 30;
+}
+
+.action-modal {
+    background: rgba(15, 23, 42, 0.98);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 1rem;
+    padding: 1rem 1.25rem 1.25rem;
+    min-width: min(720px, 100%);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.action-modal__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    padding-bottom: 0.75rem;
+}
+
+.action-modal__header h3 {
+    margin: 0;
+}
+
+.action-modal__body {
+    padding: 0.85rem 0 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.action-modal__footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.modal-controls {
+    justify-content: flex-end;
+}
