@@ -37,7 +37,10 @@ const ServiceSelect = ({
 
     return (
         <label className="oneui-field">
-            <span className="oneui-field__label">{label}</span>
+            <div className="field-label">
+                <span className="oneui-field__label">{label}</span>
+                {helpText && <span className="oneui-field__hint">{helpText}</span>}
+            </div>
             <select id={id} multiple size={size} value={value} onChange={handleChange}>
                 {includeAllOption && (
                     <option value={ALL_SERVICES_OPTION}>All services</option>
@@ -48,7 +51,6 @@ const ServiceSelect = ({
                     </option>
                 ))}
             </select>
-            {helpText && <span className="help-text">{helpText}</span>}
         </label>
     );
 };
