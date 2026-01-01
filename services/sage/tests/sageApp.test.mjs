@@ -177,6 +177,66 @@ test('GET /api/setup/services proxies to setup client', async (t) => {
     assert.deepEqual(calls, ['list'])
 })
 
+test('POST /api/setup/services/validate normalizes payload', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({ status: 200, results: [] }),
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: ['  noona-sage  ', { name: 'noona-raven', env: { DEBUG: true } }] }),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.services, [
+        { name: 'noona-sage' },
+        { name: 'noona-raven', env: { DEBUG: 'true' } },
+    ])
+})
+
+test('POST /api/setup/services/preview streams NDJSON when requested', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [
+                { name: 'noona-sage' },
+                { name: 'noona-raven' },
+            ],
+            installServices: async () => ({ status: 200, results: [] }),
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/preview`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson',
+        },
+        body: JSON.stringify({ services: ['noona-sage', 'unknown-service'] }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'application/x-ndjson')
+    const text = await response.text()
+    const [line] = text.trim().split('\n')
+    const parsed = JSON.parse(line)
+
+    assert.equal(parsed.type, 'preview')
+    assert.deepEqual(parsed.data.summary, { total: 2, known: 1, unknown: 1 })
+})
+
 test('GET /api/setup/wizard/state returns state from client', async (t) => {
     const wizardState = createDefaultWizardState()
     const calls = []
@@ -196,6 +256,51 @@ test('GET /api/setup/wizard/state returns state from client', async (t) => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), wizardState)
     assert.deepEqual(calls, ['load'])
+})
+
+test('GET /api/wizard/steps returns metadata and defaults', async (t) => {
+    const app = createSageApp({ serviceName: 'test-sage' })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/wizard/steps`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(payload.steps, DEFAULT_WIZARD_STEP_METADATA)
+    assert.ok(payload.defaults)
+})
+
+test('GET /api/wizard/progress aggregates wizard and install state', async (t) => {
+    const wizardState = createDefaultWizardState()
+    const progress = { items: [{ name: 'noona-sage', status: 'installing' }], status: 'installing', percent: 25 }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        wizardStateClient: {
+            async loadState() {
+                return wizardState
+            },
+        },
+        setupClient: {
+            async getInstallProgress() {
+                return progress
+            },
+            listServices: async () => [],
+            installServices: async () => ({ status: 200, results: [] }),
+        },
+    })
+
+    const { server, baseUrl } = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/wizard/progress`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(payload.wizard, wizardState)
+    assert.deepEqual(payload.progress, progress)
 })
 
 test('GET /api/setup/wizard/steps/:step/history returns timeline events', async (t) => {
