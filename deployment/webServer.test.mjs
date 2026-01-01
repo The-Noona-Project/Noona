@@ -140,3 +140,33 @@ test('POST /api/build streams structured events', async () => {
     assert.equal(calls[0].useNoCache, true);
     assert.deepEqual(calls[0].services, ['warden']);
 });
+
+test('POST /api/build defaults to building all services when none specified', async () => {
+    const calls = [];
+
+    await withServer({
+        services: ['warden', 'portal'],
+        build: async ({ reporter, services }) => {
+            calls.push(services);
+            reporter.success('build complete');
+            return { ok: true };
+        }
+    }, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/build`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        });
+
+        assert.equal(response.status, 200);
+        const lines = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+        const start = lines[0];
+        assert.equal(start.type, 'start');
+        assert.deepEqual(start.context.services, ['warden', 'portal']);
+        const complete = lines.at(-1);
+        assert.equal(complete.type, 'complete');
+        assert.equal(complete.ok, true);
+    });
+
+    assert.deepEqual(calls, ['all']);
+});
