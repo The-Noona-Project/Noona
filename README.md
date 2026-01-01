@@ -97,6 +97,8 @@ The OnceUI deployment panel calls the Warden API on port `4001`, so make sure **
    ```
 4. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route serves the bundled OnceUI dashboard in `deployment/dist/index.html`.
 
+For a walkthrough of the wizard layout, prerequisites, and endpoint mappings, read [docs/onceui-deployment-wizard.md](docs/onceui-deployment-wizard.md).
+
 From the control panel you can:
 
 - Inspect current state via **Refresh status** (`GET /api/services`) and **Load settings** (`GET /api/settings`).
@@ -127,3 +129,4 @@ Thanks for checking out Noona. This project is growing quickly, and I hope it be
 - Run `npm install` at the repository root (if you haven't already) to set up the shared tooling dependencies.
 - Execute `npm run docs` to regenerate `docs/docs.json`, which now aggregates both the JSDoc output from the Node.js services and parsed Javadoc comments from the Raven (Java) service.
 - Review [docs/deployment.md](docs/deployment.md) for the OnceUI deployment experience and troubleshooting tips built into the deployment wizard stream.
+- Follow [docs/onceui-deployment-wizard.md](docs/onceui-deployment-wizard.md) for the UI flow, endpoint triggers, and prerequisites that replaced the legacy Moon setup guides.
