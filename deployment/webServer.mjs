@@ -231,8 +231,9 @@ const createApp = ({
     app.post('/api/build', (req, res) => {
         const { services: requestedServices, useNoCache = false, concurrency = {} } = req.body || {};
         const requested = normalizeRequestedServices(requestedServices);
+        const servicesRequest = requested ?? 'all';
         const context = {
-            services: normalizeContextServices(requested || requestedServices, availableServices)
+            services: normalizeContextServices(servicesRequest, availableServices)
         };
 
         streamOperation(res, {
@@ -240,7 +241,7 @@ const createApp = ({
             context,
             handler: (channel) =>
                 buildFn({
-                    services: requested ?? requestedServices,
+                    services: servicesRequest,
                     useNoCache,
                     concurrency,
                     reporter: channel.reporter,

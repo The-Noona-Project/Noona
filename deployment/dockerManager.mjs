@@ -1741,9 +1741,16 @@ const cleanService = async service => {
 };
 
 const normalizeServices = services => {
-    if (!services) return [];
-if (services === 'all') return [...SERVICES];
+    if (services === undefined || services === null) {
+        return [...SERVICES];
+    }
+
     const list = Array.isArray(services) ? services : [services];
+    const shouldSelectAll = list.some(value => typeof value === 'string' && value.trim().toLowerCase() === 'all');
+    if (shouldSelectAll) {
+        return [...SERVICES];
+    }
+
     return list
         .map(value => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
         .filter(value => SERVICES.includes(value));
@@ -1814,10 +1821,6 @@ const deleteDockerResources = async ({ reporter, confirm = false } = {}) => {
 
 const buildServices = async (services, options = {}) => {
     const targets = normalizeServices(services);
-    if (!targets.length) {
-        print.error('No services selected for build.');
-        return { ok: false, summary: [] };
-    }
 
     const summary = await executeBuilds(targets, options);
     const normalized = Array.isArray(summary) ? summary : [];
