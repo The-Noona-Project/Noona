@@ -70,8 +70,18 @@ const useLogBuffer = () => {
     return { entries, append, reset };
 };
 
+const getStatusClass = (status?: string): string => {
+    if (!status) return 'status-pill status-info';
+    const normalized = status.toLowerCase();
+    if (['ok', 'healthy', 'running', 'ready'].includes(normalized)) return 'status-pill status-ok';
+    if (['warn', 'warning', 'partial'].includes(normalized)) return 'status-pill status-warn';
+    if (['error', 'failed', 'unavailable', 'stopped'].includes(normalized)) return 'status-pill status-error';
+    return 'status-pill status-info';
+};
+
 const App = () => {
     const [availableServices, setAvailableServices] = useState<string[]>([]);
+    const [servicesCatalog, setServicesCatalog] = useState<ServicesResponse | null>(null);
     const [servicesStatus, setServicesStatus] = useState<'idle' | 'ok' | 'warn' | 'error'>('idle');
     const [servicesOutput, setServicesOutput] = useState('Click “Refresh status” to load deployment information.');
     const [settingsOutput, setSettingsOutput] = useState('Settings output will appear here.');
@@ -91,6 +101,9 @@ const App = () => {
     const [settingsLoading, setSettingsLoading] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [selectedService, setSelectedService] = useState<string | null>(null);
+    const [serviceActivity, setServiceActivity] = useState<Record<string, string>>({});
+    const [logServiceScope, setLogServiceScope] = useState<string | null>(null);
 
     const { entries: logEntries, append: appendLog, reset: resetLog } = useLogBuffer();
 
@@ -102,6 +115,48 @@ const App = () => {
     }, [availableServices, startSelection]);
 
     const shouldBindHostSocket = wardenSelected && startBindSocket;
+
+    const serviceHealth = useMemo(() => {
+        const health: Record<string, string> = {};
+        const services = servicesCatalog?.services;
+        if (Array.isArray(services)) {
+            services.forEach((service) => {
+                const name =
+                    typeof service === 'string'
+                        ? service
+                        : typeof (service as { name?: string })?.name === 'string'
+                          ? (service as { name: string }).name
+                          : typeof (service as { id?: string })?.id === 'string'
+                            ? (service as { id: string }).id
+                            : undefined;
+                const status =
+                    typeof service === 'object' && service
+                        ? (service as { status?: string; state?: string })?.status ||
+                          (service as { status?: string; state?: string })?.state
+                        : undefined;
+                if (name) {
+                    health[name.trim()] = status ?? servicesStatus;
+                }
+            });
+        }
+        return health;
+    }, [servicesCatalog?.services, servicesStatus]);
+
+    const servicesStatusLabel = servicesStatus === 'ok'
+        ? 'Healthy'
+        : servicesStatus === 'warn'
+          ? 'Partial'
+          : servicesStatus === 'error'
+            ? 'Unavailable'
+            : 'Idle';
+    const servicesStatusClass =
+        servicesStatus === 'ok'
+            ? 'status-pill status-ok'
+            : servicesStatus === 'warn'
+              ? 'status-pill status-warn'
+              : servicesStatus === 'error'
+                ? 'status-pill status-error'
+                : 'status-pill status-info';
 
     const readNdjsonStream = useCallback(
         async (response: Response, action: string) => {
@@ -139,8 +194,10 @@ const App = () => {
     );
 
     const invokeStreamEndpoint = useCallback(
-        async (action: string, url: string, payload?: unknown) => {
+        async (action: string, url: string, payload?: unknown, targetServices?: string[]) => {
             setErrorMessage(null);
+            const scope = Array.isArray(targetServices) && targetServices.length === 1 ? targetServices[0] : null;
+            setLogServiceScope(scope);
             resetLog(action);
             setIsStreaming(true);
             try {
@@ -171,10 +228,12 @@ const App = () => {
                 throw new Error(`Failed to load services (${response.status})`);
             }
             const payload: ServicesResponse = await response.json();
+            setServicesCatalog(payload);
             setAvailableServices(extractServiceNames(payload.services));
             setServicesStatus(payload.ok ? 'ok' : 'warn');
             setServicesOutput(formatJSON(payload));
         } catch (error) {
+            setServicesCatalog(null);
             setServicesStatus('error');
             setServicesOutput((error as Error).message);
         } finally {
@@ -232,6 +291,31 @@ const App = () => {
         }
     }, [hostDockerSocket, settingsJson]);
 
+    const deriveTargetServices = useCallback(
+        (selection: 'all' | string[] | undefined): string[] => {
+            if (selection === 'all') {
+                return availableServices;
+            }
+            if (!selection || selection.length === 0) {
+                return availableServices;
+            }
+            return selection;
+        },
+        [availableServices]
+    );
+
+    const markServiceActivity = useCallback((action: string, targets: string[]) => {
+        if (!targets.length) return;
+        const timestamp = new Date().toLocaleTimeString();
+        setServiceActivity((current) => {
+            const next = { ...current };
+            targets.forEach((service) => {
+                next[service] = `${action} @ ${timestamp}`;
+            });
+            return next;
+        });
+    }, []);
+
     const handleBuild = useCallback(async () => {
         const payload: Record<string, unknown> = { useNoCache: buildUseNoCache };
         const services = resolveServicesPayload(buildSelection);
@@ -241,8 +325,10 @@ const App = () => {
         if (buildConcurrency.trim()) {
             payload.concurrency = safeParseJSON(buildConcurrency);
         }
-        await invokeStreamEndpoint('build', '/api/build', payload);
-    }, [buildConcurrency, buildSelection, buildUseNoCache, invokeStreamEndpoint]);
+        const targets = deriveTargetServices(services);
+        markServiceActivity('build', targets);
+        await invokeStreamEndpoint('build', '/api/build', payload, targets);
+    }, [buildConcurrency, buildSelection, buildUseNoCache, deriveTargetServices, invokeStreamEndpoint, markServiceActivity]);
 
     const handleRegistryAction = useCallback(
         async (action: 'push' | 'pull') => {
@@ -251,9 +337,11 @@ const App = () => {
             if (services) {
                 payload.services = services;
             }
-            await invokeStreamEndpoint(action, `/api/${action}`, payload);
+            const targets = deriveTargetServices(services);
+            markServiceActivity(action, targets);
+            await invokeStreamEndpoint(action, `/api/${action}`, payload, targets);
         },
-        [invokeStreamEndpoint, registrySelection]
+        [deriveTargetServices, invokeStreamEndpoint, markServiceActivity, registrySelection]
     );
 
     const handleStart = useCallback(async () => {
@@ -269,12 +357,25 @@ const App = () => {
         if (shouldBindHostSocket && hostDockerSocket.trim()) {
             payload.hostDockerSocketOverride = hostDockerSocket.trim();
         }
-        await invokeStreamEndpoint('start', '/api/start', payload);
-    }, [hostDockerSocket, invokeStreamEndpoint, shouldBindHostSocket, startBootMode, startDebugLevel, startSelection]);
+        const targets = deriveTargetServices(services);
+        markServiceActivity('start', targets);
+        await invokeStreamEndpoint('start', '/api/start', payload, targets);
+    }, [
+        deriveTargetServices,
+        hostDockerSocket,
+        invokeStreamEndpoint,
+        markServiceActivity,
+        shouldBindHostSocket,
+        startBootMode,
+        startDebugLevel,
+        startSelection
+    ]);
 
     const handleStop = useCallback(async () => {
-        await invokeStreamEndpoint('stop', '/api/stop');
-    }, [invokeStreamEndpoint]);
+        const targets = deriveTargetServices('all');
+        markServiceActivity('stop', targets);
+        await invokeStreamEndpoint('stop', '/api/stop', undefined, targets);
+    }, [deriveTargetServices, invokeStreamEndpoint, markServiceActivity]);
 
     const handleClean = useCallback(async () => {
         const payload: Record<string, unknown> = {};
@@ -282,36 +383,56 @@ const App = () => {
         if (services) {
             payload.services = services;
         }
-        await invokeStreamEndpoint('clean', '/api/clean', payload);
-    }, [cleanSelection, invokeStreamEndpoint]);
+        const targets = deriveTargetServices(services);
+        markServiceActivity('clean', targets);
+        await invokeStreamEndpoint('clean', '/api/clean', payload, targets);
+    }, [cleanSelection, deriveTargetServices, invokeStreamEndpoint, markServiceActivity]);
 
     const handleDelete = useCallback(async () => {
         if (!deleteConfirm) {
             setErrorMessage('Please confirm the destructive delete operation before proceeding.');
             return;
         }
-        await invokeStreamEndpoint('delete', '/api/delete', { confirm: true });
-    }, [deleteConfirm, invokeStreamEndpoint]);
+        const targets = deriveTargetServices('all');
+        markServiceActivity('delete', targets);
+        await invokeStreamEndpoint('delete', '/api/delete', { confirm: true }, targets);
+    }, [deleteConfirm, deriveTargetServices, invokeStreamEndpoint, markServiceActivity]);
+
+    const handleSelectService = useCallback((service: string) => {
+        setSelectedService(service);
+    }, []);
+
+    const handleClearSelection = useCallback(() => {
+        setSelectedService(null);
+        setLogServiceScope(null);
+    }, []);
 
     useEffect(() => {
         fetchServiceCatalog();
     }, [fetchServiceCatalog]);
 
-    const servicesStatusLabel = servicesStatus === 'ok'
-        ? 'Healthy'
-        : servicesStatus === 'warn'
-          ? 'Partial'
-          : servicesStatus === 'error'
-            ? 'Unavailable'
-            : 'Idle';
-    const servicesStatusClass =
-        servicesStatus === 'ok'
-            ? 'status-pill status-ok'
-            : servicesStatus === 'warn'
-              ? 'status-pill status-warn'
-              : servicesStatus === 'error'
-                ? 'status-pill status-error'
-                : 'status-pill status-info';
+    useEffect(() => {
+        if (!selectedService) return;
+        setBuildSelection([selectedService]);
+        setRegistrySelection([selectedService]);
+        setStartSelection([selectedService]);
+        setCleanSelection([selectedService]);
+    }, [selectedService]);
+
+    const scopedLogEntries = useMemo(() => {
+        if (!selectedService) return logEntries;
+        return logEntries.filter((entry) => {
+            const entryService = (entry as { service?: string }).service || (entry.event as { service?: string })?.service;
+            if (entryService) {
+                return entryService === selectedService;
+            }
+            return logServiceScope === selectedService;
+        });
+    }, [logEntries, logServiceScope, selectedService]);
+
+    const lastActionLabel = (service: string): string => {
+        return serviceActivity[service] ?? 'Awaiting command';
+    };
 
     return (
         <div className="app-shell">
@@ -375,187 +496,260 @@ const App = () => {
                     </section>
                 )}
 
-                <section className="stack-grid">
-                    <CollapsibleSection
-                        title="Services"
-                        defaultOpen
-                        meta={<div className={servicesStatusClass}>{servicesStatusLabel}</div>}
-                    >
-                        <pre id="services-output">{servicesOutput}</pre>
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="Build">
-                        <div className="inline-group">
-                            <ServiceSelect
-                                id="build-services"
-                                label="Services to build"
-                                value={buildSelection}
-                                onChange={setBuildSelection}
-                                options={availableServices}
-                                helpText="Select one or more services, or choose “All services”."
-                            />
-                            <label className="oneui-field">
-                                <span className="oneui-field__label">Concurrency override</span>
-                                <input
-                                    id="build-concurrency"
-                                    placeholder='{"workers":2}'
-                                    value={buildConcurrency}
-                                    onChange={(event) => setBuildConcurrency(event.target.value)}
-                                />
-                            </label>
+                <section className="summary-section">
+                    <div className="summary-section__header">
+                        <div>
+                            <p className="eyebrow">Service overview</p>
+                            <h2>Compact control deck</h2>
+                            <p className="muted">Open a service to drive builds, registry syncs, lifecycle changes, and cleanup.</p>
                         </div>
-                        <label className="oneui-field checkbox-field">
-                            <span>
-                                <input
-                                    type="checkbox"
-                                    checked={buildUseNoCache}
-                                    onChange={(event) => setBuildUseNoCache(event.target.checked)}
-                                />{' '}
-                                Use --no-cache
-                            </span>
-                        </label>
-                        <div className="controls">
-                            <button type="button" onClick={handleBuild} disabled={isStreaming}>
-                                Start build
+                        {selectedService && (
+                            <button type="button" className="ghost" onClick={handleClearSelection}>
+                                Close detail
                             </button>
-                        </div>
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="Push / Pull">
-                        <ServiceSelect
-                            id="registry-services"
-                            label="Services"
-                            value={registrySelection}
-                            onChange={setRegistrySelection}
-                            options={availableServices}
-                            helpText="Select specific services or operate on the entire stack."
-                        />
-                        <div className="controls">
-                            <button type="button" onClick={() => handleRegistryAction('push')} disabled={isStreaming}>
-                                Push images
-                            </button>
-                            <button type="button" onClick={() => handleRegistryAction('pull')} disabled={isStreaming}>
-                                Pull images
-                            </button>
-                        </div>
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="Start / Stop" defaultOpen>
-                        <div className="inline-group">
-                            <ServiceSelect
-                                id="start-services"
-                                label="Services"
-                                value={startSelection}
-                                onChange={setStartSelection}
-                                options={availableServices}
-                                helpText="Launch individual services or the entire deployment."
-                            />
-                            <label className="oneui-field">
-                                <span className="oneui-field__label">Debug level</span>
-                                <select value={startDebugLevel} onChange={(event) => setStartDebugLevel(event.target.value)}>
-                                    <option value="auto">auto</option>
-                                    <option value="info">info</option>
-                                    <option value="debug">debug</option>
-                                    <option value="super">super</option>
-                                </select>
-                            </label>
-                            <label className="oneui-field">
-                                <span className="oneui-field__label">Boot mode</span>
-                                <select value={startBootMode} onChange={(event) => setStartBootMode(event.target.value)}>
-                                    <option value="standard">standard</option>
-                                    <option value="super">super</option>
-                                </select>
-                            </label>
-                        </div>
-                        {wardenSelected && (
-                            <label className="oneui-field checkbox-field">
-                                <span>
-                                    <input
-                                        type="checkbox"
-                                        checked={startBindSocket}
-                                        onChange={(event) => setStartBindSocket(event.target.checked)}
-                                    />{' '}
-                                    Bind host Docker socket
-                                </span>
-                                <span className="help-text">
-                                    Expose the host Docker socket when launching Warden. Override the socket path from the Settings panel if needed.
-                                </span>
-                            </label>
                         )}
-                        <div className="controls">
-                            <button type="button" onClick={handleStart} disabled={isStreaming}>
-                                Start services
-                            </button>
-                            <button type="button" onClick={handleStop} disabled={isStreaming}>
-                                Stop all
-                            </button>
-                        </div>
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="Cleanup">
-                        <ServiceSelect
-                            id="clean-services"
-                            label="Services"
-                            value={cleanSelection}
-                            onChange={setCleanSelection}
-                            options={availableServices}
-                            helpText="Remove resources for selected services or everything."
-                        />
-                        <label className="oneui-field checkbox-field">
-                            <span>
-                                <input
-                                    type="checkbox"
-                                    checked={deleteConfirm}
-                                    onChange={(event) => setDeleteConfirm(event.target.checked)}
-                                />{' '}
-                                Confirm full Docker prune
-                            </span>
-                        </label>
-                        <div className="controls">
-                            <button type="button" onClick={handleClean} disabled={isStreaming}>
-                                Remove selected resources
-                            </button>
-                            <button type="button" onClick={handleDelete} disabled={isStreaming}>
-                                Delete all Noona Docker resources
-                            </button>
-                        </div>
-                    </CollapsibleSection>
-
-                    <CollapsibleSection title="Settings">
-                        <label className="oneui-field">
-                            <span className="oneui-field__label">Host Docker socket override</span>
-                            <input
-                                id="settings-host-socket"
-                                placeholder="/var/run/docker.sock"
-                                value={hostDockerSocket}
-                                onChange={(event) => setHostDockerSocket(event.target.value)}
-                            />
-                            <span className="help-text">
-                                Optional host socket path to bind when starting Warden. Leave blank to auto-detect.
-                            </span>
-                        </label>
-                        <label className="oneui-field">
-                            <span className="oneui-field__label">Raw JSON payload</span>
-                            <textarea
-                                id="settings-json"
-                                rows={6}
-                                value={settingsJson}
-                                onChange={(event) => setSettingsJson(event.target.value)}
-                                placeholder='{"defaults":{"debugLevel":"debug"}}'
-                            />
-                        </label>
-                        <div className="controls">
-                            <button type="button" onClick={handleUpdateSettings} disabled={isStreaming}>
-                                Update settings
-                            </button>
-                        </div>
-                        <pre id="settings-output">{settingsOutput}</pre>
-                    </CollapsibleSection>
+                    </div>
+                    <div className="summary-grid">
+                        {availableServices.length === 0 && (
+                            <div className="summary-card empty">
+                                <p className="muted">No services detected yet. Refresh status to load the catalog.</p>
+                            </div>
+                        )}
+                        {availableServices.map((service) => {
+                            const status = serviceHealth[service] ?? servicesStatusLabel.toLowerCase();
+                            return (
+                                <div className="summary-card" key={service}>
+                                    <div className="summary-card__top">
+                                        <div>
+                                            <p className="eyebrow">Service</p>
+                                            <h3>{service}</h3>
+                                        </div>
+                                        <span className={getStatusClass(status)}>{status || 'Unknown'}</span>
+                                    </div>
+                                    <div className="summary-card__meta">
+                                        <span className="summary-card__label">Last action</span>
+                                        <span className="summary-card__value">{lastActionLabel(service)}</span>
+                                    </div>
+                                    <div className="summary-card__footer">
+                                        <button type="button" onClick={() => handleSelectService(service)}>
+                                            Open
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </section>
 
+                {selectedService && (
+                    <section className="oneui-card wide-card detail-surface">
+                        <div className="detail-header">
+                            <div>
+                                <p className="eyebrow">Detail</p>
+                                <h2>{selectedService}</h2>
+                                <div className="detail-meta">
+                                    <span className={getStatusClass(serviceHealth[selectedService])}>
+                                        {serviceHealth[selectedService] ?? 'Unknown'}
+                                    </span>
+                                    <span className="muted">{lastActionLabel(selectedService)}</span>
+                                </div>
+                            </div>
+                            <button type="button" className="ghost" onClick={handleClearSelection}>
+                                Back to overview
+                            </button>
+                        </div>
+
+                        <div className="stack-grid detail-grid">
+                            <CollapsibleSection
+                                title="Services"
+                                defaultOpen
+                                meta={<div className={servicesStatusClass}>{servicesStatusLabel}</div>}
+                            >
+                                <pre id="services-output">{servicesOutput}</pre>
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="Build">
+                                <div className="inline-group">
+                                    <ServiceSelect
+                                        id="build-services"
+                                        label="Services to build"
+                                        value={buildSelection}
+                                        onChange={setBuildSelection}
+                                        options={selectedService ? [selectedService] : availableServices}
+                                        helpText="Scope is locked to the selected service."
+                                        includeAllOption={!selectedService}
+                                        size={4}
+                                    />
+                                    <label className="oneui-field">
+                                        <span className="oneui-field__label">Concurrency override</span>
+                                        <input
+                                            id="build-concurrency"
+                                            placeholder='{"workers":2}'
+                                            value={buildConcurrency}
+                                            onChange={(event) => setBuildConcurrency(event.target.value)}
+                                        />
+                                    </label>
+                                </div>
+                                <label className="oneui-field checkbox-field">
+                                    <span>
+                                        <input
+                                            type="checkbox"
+                                            checked={buildUseNoCache}
+                                            onChange={(event) => setBuildUseNoCache(event.target.checked)}
+                                        />{' '}
+                                        Use --no-cache
+                                    </span>
+                                </label>
+                                <div className="controls">
+                                    <button type="button" onClick={handleBuild} disabled={isStreaming}>
+                                        Start build
+                                    </button>
+                                </div>
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="Push / Pull">
+                                <ServiceSelect
+                                    id="registry-services"
+                                    label="Services"
+                                    value={registrySelection}
+                                    onChange={setRegistrySelection}
+                                    options={selectedService ? [selectedService] : availableServices}
+                                    includeAllOption={!selectedService}
+                                    helpText="Select specific services or operate on the entire stack."
+                                    size={4}
+                                />
+                                <div className="controls">
+                                    <button type="button" onClick={() => handleRegistryAction('push')} disabled={isStreaming}>
+                                        Push images
+                                    </button>
+                                    <button type="button" onClick={() => handleRegistryAction('pull')} disabled={isStreaming}>
+                                        Pull images
+                                    </button>
+                                </div>
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="Start / Stop" defaultOpen>
+                                <div className="inline-group">
+                                    <ServiceSelect
+                                        id="start-services"
+                                        label="Services"
+                                        value={startSelection}
+                                        onChange={setStartSelection}
+                                        options={selectedService ? [selectedService] : availableServices}
+                                        includeAllOption={!selectedService}
+                                        helpText="Launch individual services or the entire deployment."
+                                        size={4}
+                                    />
+                                    <label className="oneui-field">
+                                        <span className="oneui-field__label">Debug level</span>
+                                        <select value={startDebugLevel} onChange={(event) => setStartDebugLevel(event.target.value)}>
+                                            <option value="auto">auto</option>
+                                            <option value="info">info</option>
+                                            <option value="debug">debug</option>
+                                            <option value="super">super</option>
+                                        </select>
+                                    </label>
+                                    <label className="oneui-field">
+                                        <span className="oneui-field__label">Boot mode</span>
+                                        <select value={startBootMode} onChange={(event) => setStartBootMode(event.target.value)}>
+                                            <option value="standard">standard</option>
+                                            <option value="super">super</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                {wardenSelected && (
+                                    <label className="oneui-field checkbox-field">
+                                        <span>
+                                            <input
+                                                type="checkbox"
+                                                checked={startBindSocket}
+                                                onChange={(event) => setStartBindSocket(event.target.checked)}
+                                            />{' '}
+                                            Bind host Docker socket
+                                        </span>
+                                        <span className="help-text">
+                                            Expose the host Docker socket when launching Warden. Override the socket path from the Settings panel if needed.
+                                        </span>
+                                    </label>
+                                )}
+                                <div className="controls">
+                                    <button type="button" onClick={handleStart} disabled={isStreaming}>
+                                        Start services
+                                    </button>
+                                    <button type="button" onClick={handleStop} disabled={isStreaming}>
+                                        Stop all
+                                    </button>
+                                </div>
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="Cleanup">
+                                <ServiceSelect
+                                    id="clean-services"
+                                    label="Services"
+                                    value={cleanSelection}
+                                    onChange={setCleanSelection}
+                                    options={selectedService ? [selectedService] : availableServices}
+                                    includeAllOption={!selectedService}
+                                    helpText="Remove resources for selected services or everything."
+                                    size={4}
+                                />
+                                <label className="oneui-field checkbox-field">
+                                    <span>
+                                        <input
+                                            type="checkbox"
+                                            checked={deleteConfirm}
+                                            onChange={(event) => setDeleteConfirm(event.target.checked)}
+                                        />{' '}
+                                        Confirm full Docker prune
+                                    </span>
+                                </label>
+                                <div className="controls">
+                                    <button type="button" onClick={handleClean} disabled={isStreaming}>
+                                        Remove selected resources
+                                    </button>
+                                    <button type="button" onClick={handleDelete} disabled={isStreaming}>
+                                        Delete all Noona Docker resources
+                                    </button>
+                                </div>
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="Settings">
+                                <label className="oneui-field">
+                                    <span className="oneui-field__label">Host Docker socket override</span>
+                                    <input
+                                        id="settings-host-socket"
+                                        placeholder="/var/run/docker.sock"
+                                        value={hostDockerSocket}
+                                        onChange={(event) => setHostDockerSocket(event.target.value)}
+                                    />
+                                    <span className="help-text">
+                                        Optional host socket path to bind when starting Warden. Leave blank to auto-detect.
+                                    </span>
+                                </label>
+                                <label className="oneui-field">
+                                    <span className="oneui-field__label">Raw JSON payload</span>
+                                    <textarea
+                                        id="settings-json"
+                                        rows={6}
+                                        value={settingsJson}
+                                        onChange={(event) => setSettingsJson(event.target.value)}
+                                        placeholder='{"defaults":{"debugLevel":"debug"}}'
+                                    />
+                                </label>
+                                <div className="controls">
+                                    <button type="button" onClick={handleUpdateSettings} disabled={isStreaming}>
+                                        Update settings
+                                    </button>
+                                </div>
+                                <pre id="settings-output">{settingsOutput}</pre>
+                            </CollapsibleSection>
+                        </div>
+                    </section>
+                )}
+
                 <section className="stream-column">
-                    <CollapsibleSection title="Streaming Output" defaultOpen className="stream-card">
-                        <LogPanel entries={logEntries} />
+                    <CollapsibleSection title={selectedService ? `Streaming Output — ${selectedService}` : 'Streaming Output'} defaultOpen className="stream-card">
+                        <LogPanel entries={scopedLogEntries} />
                     </CollapsibleSection>
                 </section>
             </main>
