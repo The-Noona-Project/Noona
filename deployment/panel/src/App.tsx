@@ -109,6 +109,7 @@ const App = () => {
     const [selectedService, setSelectedService] = useState<string | null>(null);
     const [serviceActivity, setServiceActivity] = useState<Record<string, string>>({});
     const [logServiceScope, setLogServiceScope] = useState<string | null>(null);
+    const [activeControl, setActiveControl] = useState('services');
 
     const { entries: logEntries, append: appendLog, reset: resetLog } = useLogBuffer();
 
@@ -883,9 +884,12 @@ const App = () => {
                         )}
                     </div>
 
-                    <div className="inline-group">
+                    <div className="inline-group focus-row">
                         <label className="oneui-field">
-                            <span className="oneui-field__label">Focus service</span>
+                            <div className="field-label">
+                                <span className="oneui-field__label">Focus service</span>
+                                <span className="oneui-field__hint">Scopes defaults and streaming logs</span>
+                            </div>
                             <select
                                 value={selectedService ?? ''}
                                 onChange={(event) => handleFocusService(event.target.value || null)}
@@ -897,33 +901,99 @@ const App = () => {
                                     </option>
                                 ))}
                             </select>
-                            <span className="help-text">Selecting a focus scopes defaults and streaming logs.</span>
                         </label>
                     </div>
 
-                    <div className="stack-grid detail-grid">
-                            <CollapsibleSection
-                                title="Services"
-                                defaultOpen
-                                meta={<div className={servicesStatusClass}>{servicesStatusLabel}</div>}
+                    <div className="control-tabs">
+                        {[
+                            {
+                                id: 'services',
+                                label: 'Services',
+                                meta: servicesStatusLabel,
+                                badgeClass: servicesStatusClass
+                            },
+                            {
+                                id: 'build',
+                                label: 'Build',
+                                meta: buildUseNoCache ? 'No-cache enabled' : 'Cached builds',
+                                badgeClass: 'status-pill status-info'
+                            },
+                            {
+                                id: 'registry',
+                                label: 'Registry',
+                                meta: registrySelection.length ? 'Scoped targets' : 'All services',
+                                badgeClass: 'status-pill status-info'
+                            },
+                            {
+                                id: 'start',
+                                label: 'Start / Stop',
+                                meta: startDebugLevel,
+                                badgeClass: 'status-pill status-info'
+                            },
+                            {
+                                id: 'cleanup',
+                                label: 'Cleanup',
+                                meta: deleteConfirm ? 'Prune enabled' : 'Selective',
+                                badgeClass: 'status-pill status-warn'
+                            },
+                            {
+                                id: 'settings',
+                                label: 'Settings',
+                                meta: hostDockerSocket.trim() ? 'Custom socket' : 'Auto-detect',
+                                badgeClass: 'status-pill status-info'
+                            }
+                        ].map((tab) => (
+                            <button
+                                key={tab.id}
+                                type="button"
+                                className={`control-tab ${activeControl === tab.id ? 'active' : ''}`}
+                                onClick={() => setActiveControl(tab.id)}
                             >
-                                <pre id="services-output">{servicesOutput}</pre>
-                            </CollapsibleSection>
+                                <div className="control-tab__label">{tab.label}</div>
+                                <span className={`${tab.badgeClass} control-tab__meta`}>{tab.meta}</span>
+                            </button>
+                        ))}
+                    </div>
 
-                            <CollapsibleSection title="Build">
-                                <div className="inline-group">
+                    <div className="control-card">
+                        {activeControl === 'services' && (
+                            <>
+                                <p className="muted inline-hint">Live service catalog and reported health.</p>
+                                <pre id="services-output">{servicesOutput}</pre>
+                                <div className="controls card-footer">
+                                    <button type="button" onClick={fetchServiceCatalog} disabled={servicesLoading}>
+                                        Refresh status
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="ghost"
+                                        onClick={handleClearSelection}
+                                        disabled={!selectedService}
+                                    >
+                                        Clear focus
+                                    </button>
+                                </div>
+                            </>
+                        )}
+
+                        {activeControl === 'build' && (
+                            <>
+                                <div className="form-grid">
                                     <ServiceSelect
                                         id="build-services"
                                         label="Services to build"
                                         value={buildSelection}
                                         onChange={setBuildSelection}
                                         options={selectedService ? [selectedService] : availableServices}
-                                        helpText="Scope is locked to the selected service."
+                                        helpText={selectedService ? 'Locked to focused service' : 'Choose targets or build all'}
                                         includeAllOption={!selectedService}
                                         size={4}
                                     />
                                     <label className="oneui-field">
-                                        <span className="oneui-field__label">Concurrency override</span>
+                                        <div className="field-label">
+                                            <span className="oneui-field__label">Concurrency override</span>
+                                            <span className="oneui-field__hint">Provide JSON to override defaults</span>
+                                        </div>
                                         <input
                                             id="build-concurrency"
                                             placeholder='{"workers":2}'
@@ -931,47 +1001,70 @@ const App = () => {
                                             onChange={(event) => setBuildConcurrency(event.target.value)}
                                         />
                                     </label>
+                                    <label className="oneui-field checkbox-field full-span">
+                                        <span>
+                                            <input
+                                                type="checkbox"
+                                                checked={buildUseNoCache}
+                                                onChange={(event) => setBuildUseNoCache(event.target.checked)}
+                                            />{' '}
+                                            Use --no-cache
+                                        </span>
+                                    </label>
                                 </div>
-                                <label className="oneui-field checkbox-field">
-                                    <span>
-                                        <input
-                                            type="checkbox"
-                                            checked={buildUseNoCache}
-                                            onChange={(event) => setBuildUseNoCache(event.target.checked)}
-                                        />{' '}
-                                        Use --no-cache
-                                    </span>
-                                </label>
-                                <div className="controls">
+                                <div className="controls card-footer">
                                     <button type="button" onClick={handleBuild} disabled={isStreaming}>
                                         Start build
                                     </button>
+                                    <button
+                                        type="button"
+                                        className="ghost"
+                                        onClick={() => {
+                                            setBuildSelection(selectedService ? [selectedService] : []);
+                                            setBuildConcurrency('');
+                                            setBuildUseNoCache(false);
+                                        }}
+                                        disabled={isStreaming}
+                                    >
+                                        Reset build options
+                                    </button>
                                 </div>
-                            </CollapsibleSection>
+                            </>
+                        )}
 
-                            <CollapsibleSection title="Push / Pull">
-                                <ServiceSelect
-                                    id="registry-services"
-                                    label="Services"
-                                    value={registrySelection}
-                                    onChange={setRegistrySelection}
-                                    options={selectedService ? [selectedService] : availableServices}
-                                    includeAllOption={!selectedService}
-                                    helpText="Select specific services or operate on the entire stack."
-                                    size={4}
-                                />
-                                <div className="controls">
+                        {activeControl === 'registry' && (
+                            <>
+                                <div className="form-grid">
+                                    <ServiceSelect
+                                        id="registry-services"
+                                        label="Services"
+                                        value={registrySelection}
+                                        onChange={setRegistrySelection}
+                                        options={selectedService ? [selectedService] : availableServices}
+                                        includeAllOption={!selectedService}
+                                        helpText={registrySelection.length ? 'Operating on selected services' : 'Defaults to all'}
+                                        size={4}
+                                    />
+                                </div>
+                                <div className="controls card-footer">
                                     <button type="button" onClick={() => handleRegistryAction('push')} disabled={isStreaming}>
                                         Push images
                                     </button>
-                                    <button type="button" onClick={() => handleRegistryAction('pull')} disabled={isStreaming}>
+                                    <button
+                                        type="button"
+                                        className="ghost"
+                                        onClick={() => handleRegistryAction('pull')}
+                                        disabled={isStreaming}
+                                    >
                                         Pull images
                                     </button>
                                 </div>
-                            </CollapsibleSection>
+                            </>
+                        )}
 
-                            <CollapsibleSection title="Start / Stop" defaultOpen>
-                                <div className="inline-group">
+                        {activeControl === 'start' && (
+                            <>
+                                <div className="form-grid">
                                     <ServiceSelect
                                         id="start-services"
                                         label="Services"
@@ -979,11 +1072,14 @@ const App = () => {
                                         onChange={setStartSelection}
                                         options={selectedService ? [selectedService] : availableServices}
                                         includeAllOption={!selectedService}
-                                        helpText="Launch individual services or the entire deployment."
+                                        helpText={selectedService ? 'Launch focused service' : 'Start a selection or all'}
                                         size={4}
                                     />
                                     <label className="oneui-field">
-                                        <span className="oneui-field__label">Debug level</span>
+                                        <div className="field-label">
+                                            <span className="oneui-field__label">Debug level</span>
+                                            <span className="oneui-field__hint">Controls runtime verbosity</span>
+                                        </div>
                                         <select value={startDebugLevel} onChange={(event) => setStartDebugLevel(event.target.value)}>
                                             <option value="auto">auto</option>
                                             <option value="info">info</option>
@@ -992,101 +1088,119 @@ const App = () => {
                                         </select>
                                     </label>
                                     <label className="oneui-field">
-                                        <span className="oneui-field__label">Boot mode</span>
+                                        <div className="field-label">
+                                            <span className="oneui-field__label">Boot mode</span>
+                                            <span className="oneui-field__hint">Choose standard or elevated boot</span>
+                                        </div>
                                         <select value={startBootMode} onChange={(event) => setStartBootMode(event.target.value)}>
                                             <option value="standard">standard</option>
                                             <option value="super">super</option>
                                         </select>
                                     </label>
+                                    {wardenSelected && (
+                                        <label className="oneui-field checkbox-field full-span">
+                                            <span>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={startBindSocket}
+                                                    onChange={(event) => setStartBindSocket(event.target.checked)}
+                                                />{' '}
+                                                Bind host Docker socket
+                                            </span>
+                                            <span className="oneui-field__hint">
+                                                Expose the host socket when launching Warden; override path in Settings.
+                                            </span>
+                                        </label>
+                                    )}
                                 </div>
-                                {wardenSelected && (
-                                    <label className="oneui-field checkbox-field">
-                                        <span>
-                                            <input
-                                                type="checkbox"
-                                                checked={startBindSocket}
-                                                onChange={(event) => setStartBindSocket(event.target.checked)}
-                                            />{' '}
-                                            Bind host Docker socket
-                                        </span>
-                                        <span className="help-text">
-                                            Expose the host Docker socket when launching Warden. Override the socket path from the Settings panel if needed.
-                                        </span>
-                                    </label>
-                                )}
-                                <div className="controls">
+                                <div className="controls card-footer">
                                     <button type="button" onClick={handleStart} disabled={isStreaming}>
                                         Start services
                                     </button>
-                                    <button type="button" onClick={handleStop} disabled={isStreaming}>
+                                    <button type="button" className="ghost" onClick={handleStop} disabled={isStreaming}>
                                         Stop all
                                     </button>
                                 </div>
-                            </CollapsibleSection>
+                            </>
+                        )}
 
-                            <CollapsibleSection title="Cleanup">
-                                <ServiceSelect
-                                    id="clean-services"
-                                    label="Services"
-                                    value={cleanSelection}
-                                    onChange={setCleanSelection}
-                                    options={selectedService ? [selectedService] : availableServices}
-                                    includeAllOption={!selectedService}
-                                    helpText="Remove resources for selected services or everything."
-                                    size={4}
-                                />
-                                <label className="oneui-field checkbox-field">
-                                    <span>
-                                        <input
-                                            type="checkbox"
-                                            checked={deleteConfirm}
-                                            onChange={(event) => setDeleteConfirm(event.target.checked)}
-                                        />{' '}
-                                        Confirm full Docker prune
-                                    </span>
-                                </label>
-                                <div className="controls">
+                        {activeControl === 'cleanup' && (
+                            <>
+                                <div className="form-grid">
+                                    <ServiceSelect
+                                        id="clean-services"
+                                        label="Services"
+                                        value={cleanSelection}
+                                        onChange={setCleanSelection}
+                                        options={selectedService ? [selectedService] : availableServices}
+                                        includeAllOption={!selectedService}
+                                        helpText={deleteConfirm ? 'Full prune confirmed' : 'Targeted cleanup by default'}
+                                        size={4}
+                                    />
+                                    <label className="oneui-field checkbox-field full-span">
+                                        <span>
+                                            <input
+                                                type="checkbox"
+                                                checked={deleteConfirm}
+                                                onChange={(event) => setDeleteConfirm(event.target.checked)}
+                                            />{' '}
+                                            Confirm full Docker prune
+                                        </span>
+                                    </label>
+                                </div>
+                                <div className="controls card-footer">
                                     <button type="button" onClick={handleClean} disabled={isStreaming}>
                                         Remove selected resources
                                     </button>
-                                    <button type="button" onClick={handleDelete} disabled={isStreaming}>
+                                    <button type="button" className="ghost" onClick={handleDelete} disabled={isStreaming}>
                                         Delete all Noona Docker resources
                                     </button>
                                 </div>
-                            </CollapsibleSection>
+                            </>
+                        )}
 
-                            <CollapsibleSection title="Settings">
-                                <label className="oneui-field">
-                                    <span className="oneui-field__label">Host Docker socket override</span>
-                                    <input
-                                        id="settings-host-socket"
-                                        placeholder="/var/run/docker.sock"
-                                        value={hostDockerSocket}
-                                        onChange={(event) => setHostDockerSocket(event.target.value)}
-                                    />
-                                    <span className="help-text">
-                                        Optional host socket path to bind when starting Warden. Leave blank to auto-detect.
-                                    </span>
-                                </label>
-                                <label className="oneui-field">
-                                    <span className="oneui-field__label">Raw JSON payload</span>
-                                    <textarea
-                                        id="settings-json"
-                                        rows={6}
-                                        value={settingsJson}
-                                        onChange={(event) => setSettingsJson(event.target.value)}
-                                        placeholder='{"defaults":{"debugLevel":"debug"}}'
-                                    />
-                                </label>
-                                <div className="controls">
+                        {activeControl === 'settings' && (
+                            <>
+                                <div className="form-grid">
+                                    <label className="oneui-field">
+                                        <div className="field-label">
+                                            <span className="oneui-field__label">Host Docker socket override</span>
+                                            <span className="oneui-field__hint">Leave blank to auto-detect</span>
+                                        </div>
+                                        <input
+                                            id="settings-host-socket"
+                                            placeholder="/var/run/docker.sock"
+                                            value={hostDockerSocket}
+                                            onChange={(event) => setHostDockerSocket(event.target.value)}
+                                        />
+                                    </label>
+                                    <label className="oneui-field full-span">
+                                        <div className="field-label">
+                                            <span className="oneui-field__label">Raw JSON payload</span>
+                                            <span className="oneui-field__hint">Overrides are merged into deployment settings</span>
+                                        </div>
+                                        <textarea
+                                            id="settings-json"
+                                            rows={6}
+                                            value={settingsJson}
+                                            onChange={(event) => setSettingsJson(event.target.value)}
+                                            placeholder='{"defaults":{"debugLevel":"debug"}}'
+                                        />
+                                    </label>
+                                </div>
+                                <div className="controls card-footer">
                                     <button type="button" onClick={handleUpdateSettings} disabled={isStreaming}>
                                         Update settings
                                     </button>
+                                    <button type="button" className="ghost" onClick={handleLoadSettings} disabled={settingsLoading}>
+                                        Reload settings
+                                    </button>
                                 </div>
                                 <pre id="settings-output">{settingsOutput}</pre>
-                            </CollapsibleSection>
-                        </div>
-                    </section>
+                            </>
+                        )}
+                    </div>
+                </section>
 
                 <section className="stream-column">
                     <CollapsibleSection title={selectedService ? `Streaming Output — ${selectedService}` : 'Streaming Output'} defaultOpen className="stream-card">
