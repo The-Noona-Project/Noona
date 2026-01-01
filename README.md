@@ -11,7 +11,7 @@ Noona is a full-stack companion platform for [Kavita](https://www.kavitareader.c
 - **Kavita integration** – Query, update, and upload content directly into your Kavita library once requests are approved.
 - **AI companion** – Chat with Noona to locate series (e.g., *"Is Naruto on PaxKun?"*), get summaries, and receive tailored reading suggestions.
 - **Reader suggestion workflow** – Collect reader requests, surface them to moderators, and track approvals and fulfillment end to end.
-- **Deployment control panel (OnceUI)** – A React + OnceUI dashboard that drives installs, updates, and lifecycle actions through Warden. The panel code lives in `deployment/panel/` and ships as a bundled client served by the deployment server.
+- **OnceUI deployment wizard** – A React + OnceUI dashboard (built from `deployment/panel/`) that replaces the retired Moon UI and streams install/update lifecycle events directly from Warden.
 - **Distributed deployment** – Run the stack as a master/node cluster to spread workloads across machines via Docker Swarm.
 - **Observability baked in** – Prometheus + Grafana dashboards capture service health, download status, and usage metrics.
 
@@ -25,7 +25,7 @@ Noona is organized into seven primary services that communicate through authenti
 | **Vault** | Authentication and data access gateway. Issues JWTs to services, brokers reads/writes to MongoDB and Redis, and secures internal APIs. |
 | **Portal** | External integrations hub. Handles Discord command logic, listens for guild events, and bridges to Kavita's APIs. |
 | **Sage** | Monitoring and logging backbone using Prometheus for metrics collection and Grafana for visualization. |
-| **Deployment panel** | OnceUI-based control surface bundled from `deployment/panel/` and served by the deployment server. Relays install/start/stop commands through Warden while streaming NDJSON status updates. |
+| **Deployment panel (OnceUI)** | Bundled from the OnceUI template in `deployment/panel/` and served by the deployment server. Replaces the Moon frontend while relaying install/start/stop commands through Warden and streaming NDJSON status updates. |
 | **Raven** | Custom Java-based scraper/downloader. Automates content acquisition, metadata enrichment, and CBZ packaging. |
 | **Oracle** | AI assistant layer powered by LangChain, LocalAI/AnythingLLM for conversational insights and recommendations. |
 
@@ -45,7 +45,7 @@ This design allows you to keep the core management stack on a primary machine wh
 | Backend Services | Node.js 23 (Warden, Vault, Portal, Sage), Python 3 (Oracle), Java 21/24 (Raven) |
 | Datastores | MongoDB, Redis |
 | Integrations | Discord.js, Axios, Kavita REST APIs |
-| Frontend | React, Vite, Tailwind CSS |
+| Frontend | React, Vite, Tailwind CSS, OnceUI design system |
 | Observability | Prometheus, Grafana |
 | AI | LangChain, LocalAI, (planned) AnythingLLM |
 
@@ -55,11 +55,11 @@ This design allows you to keep the core management stack on a primary machine wh
 - **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
 - **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
 
-The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now replaces the retired Ink CLI and serves a React + OnceUI panel that is bundled from `deployment/panel/`.
+The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now serves the OnceUI deployment wizard bundled from `deployment/panel/`.
 
 ### Warden bootstrap options
 
-The OnceUI deployment panel and CLI utilities all call the Warden API on port `4001`, so make sure **noona-warden** is running before opening the UI:
+The OnceUI deployment panel calls the Warden API on port `4001`, so make sure **noona-warden** is running before opening the UI:
 
 1. **Minimal mode (core services only)**
    ```bash
@@ -86,16 +86,16 @@ The OnceUI deployment panel and CLI utilities all call the Warden API on port `4
    ```bash
    npm install
    ```
-2. Build the React control panel (required whenever `deployment/panel/` changes):
+2. Build the OnceUI deployment panel (required whenever `deployment/panel/` changes):
    ```bash
    npm run deploy:panel:build
    ```
-   You can iterate on UI changes via `npm run deploy:panel:dev`, which starts Vite's dev server.
+   You can iterate on UI changes via `npm run deploy:panel:dev`, which starts Vite's dev server and hot-reloads the OnceUI template.
 3. Start the deployment server:
    ```bash
    npm run deploy:server
    ```
-4. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route now serves the bundle in `deployment/dist/index.html`, a OnceUI dashboard that streams newline-delimited JSON updates for every action.
+4. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route serves the bundled OnceUI dashboard in `deployment/dist/index.html`.
 
 From the control panel you can:
 
@@ -126,4 +126,4 @@ Thanks for checking out Noona. This project is growing quickly, and I hope it be
 
 - Run `npm install` at the repository root (if you haven't already) to set up the shared tooling dependencies.
 - Execute `npm run docs` to regenerate `docs/docs.json`, which now aggregates both the JSDoc output from the Node.js services and parsed Javadoc comments from the Raven (Java) service.
-- Review [docs/deployment.md](docs/deployment.md) for the OnceUI deployment experience. The Moon-specific troubleshooting guide remains available in `docs/moon-troubleshooting.md` for legacy environments.
+- Review [docs/deployment.md](docs/deployment.md) for the OnceUI deployment experience and troubleshooting tips built into the deployment wizard stream.
