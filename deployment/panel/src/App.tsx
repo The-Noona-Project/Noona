@@ -344,32 +344,54 @@ const App = () => {
         [deriveTargetServices, invokeStreamEndpoint, markServiceActivity, registrySelection]
     );
 
+    const handlePush = useCallback(async () => {
+        await handleRegistryAction('push');
+    }, [handleRegistryAction]);
+
+    const handlePull = useCallback(async () => {
+        await handleRegistryAction('pull');
+    }, [handleRegistryAction]);
+
+    const dispatchStart = useCallback(
+        async (servicesOverride?: string[]) => {
+            const payload: Record<string, unknown> = {
+                debugLevel: startDebugLevel,
+                bootMode: startBootMode,
+                useHostDockerSocket: shouldBindHostSocket
+            };
+            const services = resolveServicesPayload(servicesOverride ?? startSelection);
+            if (services) {
+                payload.services = services;
+            }
+            if (shouldBindHostSocket && hostDockerSocket.trim()) {
+                payload.hostDockerSocketOverride = hostDockerSocket.trim();
+            }
+            const targets = deriveTargetServices(services);
+            markServiceActivity('start', targets);
+            await invokeStreamEndpoint('start', '/api/start', payload, targets);
+        },
+        [
+            deriveTargetServices,
+            hostDockerSocket,
+            invokeStreamEndpoint,
+            markServiceActivity,
+            shouldBindHostSocket,
+            startBootMode,
+            startDebugLevel,
+            startSelection
+        ]
+    );
+
     const handleStart = useCallback(async () => {
-        const payload: Record<string, unknown> = {
-            debugLevel: startDebugLevel,
-            bootMode: startBootMode,
-            useHostDockerSocket: shouldBindHostSocket
-        };
-        const services = resolveServicesPayload(startSelection);
-        if (services) {
-            payload.services = services;
-        }
-        if (shouldBindHostSocket && hostDockerSocket.trim()) {
-            payload.hostDockerSocketOverride = hostDockerSocket.trim();
-        }
-        const targets = deriveTargetServices(services);
-        markServiceActivity('start', targets);
-        await invokeStreamEndpoint('start', '/api/start', payload, targets);
-    }, [
-        deriveTargetServices,
-        hostDockerSocket,
-        invokeStreamEndpoint,
-        markServiceActivity,
-        shouldBindHostSocket,
-        startBootMode,
-        startDebugLevel,
-        startSelection
-    ]);
+        await dispatchStart();
+    }, [dispatchStart]);
+
+    const handleStartWarden = useCallback(async () => {
+        const wardenSelection = ['warden'];
+        setSelectedService('warden');
+        setStartSelection(wardenSelection);
+        await dispatchStart(wardenSelection);
+    }, [dispatchStart]);
 
     const handleStop = useCallback(async () => {
         const targets = deriveTargetServices('all');
@@ -398,8 +420,11 @@ const App = () => {
         await invokeStreamEndpoint('delete', '/api/delete', { confirm: true }, targets);
     }, [deleteConfirm, deriveTargetServices, invokeStreamEndpoint, markServiceActivity]);
 
-    const handleSelectService = useCallback((service: string) => {
-        setSelectedService(service);
+    const handleFocusService = useCallback((service?: string | null) => {
+        setSelectedService(service || null);
+        if (!service) {
+            setLogServiceScope(null);
+        }
     }, []);
 
     const handleClearSelection = useCallback(() => {
@@ -433,6 +458,88 @@ const App = () => {
     const lastActionLabel = (service: string): string => {
         return serviceActivity[service] ?? 'Awaiting command';
     };
+
+    const serviceCountLabel = useMemo(
+        () => (availableServices.length ? `${availableServices.length} detected` : 'No services detected'),
+        [availableServices.length]
+    );
+
+    const hasWarden = useMemo(
+        () => availableServices.some((service) => service.toLowerCase() === 'warden'),
+        [availableServices]
+    );
+
+    const quickActions = useMemo(
+        () => [
+            {
+                id: 'build',
+                title: 'Build',
+                badge: 'Images',
+                description: 'Compile containers for detected services with optional concurrency overrides.',
+                metaLabel: 'Scope',
+                metaValue: availableServices.length ? 'All detected services' : 'No services loaded',
+                actionLabel: 'Start build',
+                onAction: handleBuild,
+                disabled: isStreaming || availableServices.length === 0
+            },
+            {
+                id: 'push',
+                title: 'Push',
+                badge: 'Registry',
+                description: 'Upload tagged images to the configured container registry.',
+                metaLabel: 'Target',
+                metaValue: serviceCountLabel,
+                actionLabel: 'Push images',
+                onAction: handlePush,
+                disabled: isStreaming || availableServices.length === 0
+            },
+            {
+                id: 'pull',
+                title: 'Pull',
+                badge: 'Registry',
+                description: 'Fetch images from the registry to refresh local caches.',
+                metaLabel: 'Target',
+                metaValue: serviceCountLabel,
+                actionLabel: 'Pull images',
+                onAction: handlePull,
+                disabled: isStreaming || availableServices.length === 0
+            },
+            {
+                id: 'clean',
+                title: 'Clean',
+                badge: 'Lifecycle',
+                description: 'Remove resources for selected services or the entire stack.',
+                metaLabel: 'Confirmation',
+                metaValue: deleteConfirm ? 'Prune enabled' : 'Selective cleanup',
+                actionLabel: 'Run cleanup',
+                onAction: handleClean,
+                disabled: isStreaming
+            },
+            {
+                id: 'start-warden',
+                title: 'Start Warden',
+                badge: 'Control plane',
+                description: 'Launch Warden with the current boot mode and socket binding preferences.',
+                metaLabel: 'Availability',
+                metaValue: hasWarden ? 'Warden detected' : 'Warden not listed',
+                actionLabel: 'Start Warden',
+                onAction: handleStartWarden,
+                disabled: isStreaming
+            }
+        ],
+        [
+            availableServices.length,
+            deleteConfirm,
+            handleBuild,
+            handleClean,
+            handlePull,
+            handlePush,
+            handleStartWarden,
+            hasWarden,
+            isStreaming,
+            serviceCountLabel
+        ]
+    );
 
     return (
         <div className="app-shell">
@@ -499,67 +606,83 @@ const App = () => {
                 <section className="summary-section">
                     <div className="summary-section__header">
                         <div>
-                            <p className="eyebrow">Service overview</p>
-                            <h2>Compact control deck</h2>
-                            <p className="muted">Open a service to drive builds, registry syncs, lifecycle changes, and cleanup.</p>
+                            <p className="eyebrow">Quick commands</p>
+                            <h2>Action shortcuts</h2>
+                            <p className="muted">Dispatch common deployment flows without drilling into individual services.</p>
                         </div>
-                        {selectedService && (
-                            <button type="button" className="ghost" onClick={handleClearSelection}>
-                                Close detail
-                            </button>
-                        )}
                     </div>
                     <div className="summary-grid">
-                        {availableServices.length === 0 && (
-                            <div className="summary-card empty">
-                                <p className="muted">No services detected yet. Refresh status to load the catalog.</p>
-                            </div>
-                        )}
-                        {availableServices.map((service) => {
-                            const status = serviceHealth[service] ?? servicesStatusLabel.toLowerCase();
-                            return (
-                                <div className="summary-card" key={service}>
-                                    <div className="summary-card__top">
-                                        <div>
-                                            <p className="eyebrow">Service</p>
-                                            <h3>{service}</h3>
-                                        </div>
-                                        <span className={getStatusClass(status)}>{status || 'Unknown'}</span>
+                        {quickActions.map((action) => (
+                            <div className="summary-card" key={action.id}>
+                                <div className="summary-card__top">
+                                    <div>
+                                        <p className="eyebrow">Quick action</p>
+                                        <h3>{action.title}</h3>
                                     </div>
-                                    <div className="summary-card__meta">
-                                        <span className="summary-card__label">Last action</span>
-                                        <span className="summary-card__value">{lastActionLabel(service)}</span>
-                                    </div>
-                                    <div className="summary-card__footer">
-                                        <button type="button" onClick={() => handleSelectService(service)}>
-                                            Open
-                                        </button>
-                                    </div>
+                                    <span className="status-pill status-info">{action.badge}</span>
                                 </div>
-                            );
-                        })}
+                                <p className="muted">{action.description}</p>
+                                <div className="summary-card__meta">
+                                    <span className="summary-card__label">{action.metaLabel}</span>
+                                    <span className="summary-card__value">{action.metaValue}</span>
+                                </div>
+                                <div className="summary-card__footer">
+                                    <button type="button" onClick={action.onAction} disabled={action.disabled}>
+                                        {action.actionLabel}
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 </section>
 
-                {selectedService && (
-                    <section className="oneui-card wide-card detail-surface">
-                        <div className="detail-header">
-                            <div>
-                                <p className="eyebrow">Detail</p>
-                                <h2>{selectedService}</h2>
-                                <div className="detail-meta">
-                                    <span className={getStatusClass(serviceHealth[selectedService])}>
-                                        {serviceHealth[selectedService] ?? 'Unknown'}
-                                    </span>
-                                    <span className="muted">{lastActionLabel(selectedService)}</span>
-                                </div>
+                <section className="oneui-card wide-card detail-surface">
+                    <div className="detail-header">
+                        <div>
+                            <p className="eyebrow">Detail</p>
+                            <h2>{selectedService ?? 'Stack controls'}</h2>
+                            <div className="detail-meta">
+                                {selectedService ? (
+                                    <>
+                                        <span className={getStatusClass(serviceHealth[selectedService])}>
+                                            {serviceHealth[selectedService] ?? 'Unknown'}
+                                        </span>
+                                        <span className="muted">{lastActionLabel(selectedService)}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="status-pill status-info">{serviceCountLabel}</span>
+                                        <span className="muted">Manage build, registry, lifecycle, and cleanup flows.</span>
+                                    </>
+                                )}
                             </div>
-                            <button type="button" className="ghost" onClick={handleClearSelection}>
-                                Back to overview
-                            </button>
                         </div>
+                        {selectedService && (
+                            <button type="button" className="ghost" onClick={handleClearSelection}>
+                                Clear focus
+                            </button>
+                        )}
+                    </div>
 
-                        <div className="stack-grid detail-grid">
+                    <div className="inline-group">
+                        <label className="oneui-field">
+                            <span className="oneui-field__label">Focus service</span>
+                            <select
+                                value={selectedService ?? ''}
+                                onChange={(event) => handleFocusService(event.target.value || null)}
+                            >
+                                <option value="">All services</option>
+                                {availableServices.map((service) => (
+                                    <option key={service} value={service}>
+                                        {service}
+                                    </option>
+                                ))}
+                            </select>
+                            <span className="help-text">Selecting a focus scopes defaults and streaming logs.</span>
+                        </label>
+                    </div>
+
+                    <div className="stack-grid detail-grid">
                             <CollapsibleSection
                                 title="Services"
                                 defaultOpen
@@ -745,7 +868,6 @@ const App = () => {
                             </CollapsibleSection>
                         </div>
                     </section>
-                )}
 
                 <section className="stream-column">
                     <CollapsibleSection title={selectedService ? `Streaming Output — ${selectedService}` : 'Streaming Output'} defaultOpen className="stream-card">
