@@ -38,10 +38,10 @@ const fonts = {
 
 // default customization applied to the HTML in the main layout.tsx
 const style = {
-  theme: "system", // dark | light | system
-  neutral: "gray", // sand | gray | slate
-  brand: "blue", // blue | indigo | violet | magenta | pink | red | orange | yellow | moss | green | emerald | aqua | cyan
-  accent: "indigo", // blue | indigo | violet | magenta | pink | red | orange | yellow | moss | green | emerald | aqua | cyan
+  theme: "dark", // dark | light | system
+  neutral: "slate", // sand | gray | slate
+  brand: "violet", // blue | indigo | violet | magenta | pink | red | orange | yellow | moss | green | emerald | aqua | cyan
+  accent: "cyan", // blue | indigo | violet | magenta | pink | red | orange | yellow | moss | green | emerald | aqua | cyan
   solid: "contrast", // color | contrast | inverse
   solidStyle: "flat", // flat | plastic
   border: "playful", // rounded | playful | conservative
@@ -72,21 +72,21 @@ const effects = {
     radius: 100,
   },
   gradient: {
-    display: false,
+    display: true,
     x: 50,
     y: 0,
     width: 100,
-    height: 100,
-    tilt: 0,
-    colorStart: "brand-background-strong",
-    colorEnd: "static-transparent",
-    opacity: 50,
+    height: 120,
+    tilt: 18,
+    colorStart: "static-black",
+    colorEnd: "brand-alpha-weak",
+    opacity: 40,
   },
   dots: {
-    display: true,
+    display: false,
     size: "2",
     color: "brand-on-background-weak",
-    opacity: 40,
+    opacity: 20,
   },
   lines: {
     display: false,

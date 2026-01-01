@@ -315,201 +315,249 @@ const App = () => {
 
     return (
         <div className="app-shell">
-            <header className="oneui-header">
-                <h1>Warden Deployment Console</h1>
-                <p>Drive Docker orchestration workflows from the browser. All responses stream back as NDJSON, matching the CLI.</p>
+            <header className="hero">
+                <div className="hero__eyebrow">Warden Control</div>
+                <div className="hero__title-row">
+                    <h1>Deployment Console</h1>
+                    <span className="hero__badge">Live NDJSON feed</span>
+                </div>
+                <p>Issue build, registry, lifecycle, and cleanup commands with a cockpit-grade interface tailored for on-call.</p>
+                <div className="hero__actions">
+                    <button type="button" onClick={fetchServiceCatalog} disabled={servicesLoading}>
+                        {servicesLoading ? 'Refreshing…' : 'Refresh status'}
+                    </button>
+                    <button type="button" onClick={handleLoadSettings} disabled={settingsLoading}>
+                        {settingsLoading ? 'Loading settings…' : 'Sync settings'}
+                    </button>
+                    <div className="hero__hint">Bindings update automatically when Warden is selected.</div>
+                </div>
             </header>
-            <main className="oneui-grid">
+
+            <section className="status-ribbon" aria-label="Deployment health">
+                <div className="status-card">
+                    <div className="status-card__label">Services</div>
+                    <div className="status-card__value">
+                        <span className={servicesStatusClass}>{servicesStatusLabel}</span>
+                        <span className="status-card__meta">{availableServices.length || '—'} detected</span>
+                    </div>
+                </div>
+                <div className="status-card">
+                    <div className="status-card__label">Streaming</div>
+                    <div className="status-card__value">
+                        <span className={isStreaming ? 'status-pill status-info' : 'status-pill status-ok'}>
+                            {isStreaming ? 'Active' : 'Idle'}
+                        </span>
+                        <span className="status-card__meta">NDJSON output</span>
+                    </div>
+                </div>
+                <div className="status-card">
+                    <div className="status-card__label">Settings</div>
+                    <div className="status-card__value">
+                        <span className="status-pill status-info">{hostDockerSocket ? 'Socket override' : 'Default path'}</span>
+                        <span className="status-card__meta">Patch /api/settings</span>
+                    </div>
+                </div>
+                <div className="status-card">
+                    <div className="status-card__label">Warden Binding</div>
+                    <div className="status-card__value">
+                        <span className={shouldBindHostSocket ? 'status-pill status-ok' : 'status-pill status-warn'}>
+                            {shouldBindHostSocket ? 'Host socket bound' : 'Socket optional'}
+                        </span>
+                        <span className="status-card__meta">Set under Start / Stop</span>
+                    </div>
+                </div>
+            </section>
+
+            <main className="content-grid">
                 {errorMessage && (
-                    <section className="oneui-card" style={{ gridColumn: '1 / -1' }}>
+                    <section className="oneui-card wide-card">
                         <div className="alert">{errorMessage}</div>
                     </section>
                 )}
-                <CollapsibleSection
-                    title="Services"
-                    defaultOpen
-                    meta={<div className={servicesStatusClass}>{servicesStatusLabel}</div>}
-                >
-                    <div className="controls">
-                        <button type="button" onClick={fetchServiceCatalog} disabled={servicesLoading}>
-                            {servicesLoading ? 'Loading…' : 'Refresh status'}
-                        </button>
-                        <button type="button" onClick={handleLoadSettings} disabled={settingsLoading}>
-                            {settingsLoading ? 'Loading settings…' : 'Load settings'}
-                        </button>
-                    </div>
-                    <pre id="services-output">{servicesOutput}</pre>
-                </CollapsibleSection>
 
-                <CollapsibleSection title="Build">
-                    <div className="inline-group">
-                        <ServiceSelect
-                            id="build-services"
-                            label="Services to build"
-                            value={buildSelection}
-                            onChange={setBuildSelection}
-                            options={availableServices}
-                            helpText="Select one or more services, or choose “All services”."
-                        />
-                        <label className="oneui-field">
-                            <span className="oneui-field__label">Concurrency override</span>
-                            <input
-                                id="build-concurrency"
-                                placeholder='{"workers":2}'
-                                value={buildConcurrency}
-                                onChange={(event) => setBuildConcurrency(event.target.value)}
+                <section className="stack-grid">
+                    <CollapsibleSection
+                        title="Services"
+                        defaultOpen
+                        meta={<div className={servicesStatusClass}>{servicesStatusLabel}</div>}
+                    >
+                        <pre id="services-output">{servicesOutput}</pre>
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="Build">
+                        <div className="inline-group">
+                            <ServiceSelect
+                                id="build-services"
+                                label="Services to build"
+                                value={buildSelection}
+                                onChange={setBuildSelection}
+                                options={availableServices}
+                                helpText="Select one or more services, or choose “All services”."
                             />
-                        </label>
-                    </div>
-                    <label className="oneui-field">
-                        <span>
-                            <input
-                                type="checkbox"
-                                checked={buildUseNoCache}
-                                onChange={(event) => setBuildUseNoCache(event.target.checked)}
-                            />{' '}
-                            Use --no-cache
-                        </span>
-                    </label>
-                    <button type="button" onClick={handleBuild} disabled={isStreaming}>
-                        Start build
-                    </button>
-                </CollapsibleSection>
-
-                <CollapsibleSection title="Push / Pull">
-                    <ServiceSelect
-                        id="registry-services"
-                        label="Services"
-                        value={registrySelection}
-                        onChange={setRegistrySelection}
-                        options={availableServices}
-                        helpText="Select specific services or operate on the entire stack."
-                    />
-                    <div className="controls">
-                        <button type="button" onClick={() => handleRegistryAction('push')} disabled={isStreaming}>
-                            Push images
-                        </button>
-                        <button type="button" onClick={() => handleRegistryAction('pull')} disabled={isStreaming}>
-                            Pull images
-                        </button>
-                    </div>
-                </CollapsibleSection>
-
-                <CollapsibleSection title="Start / Stop" defaultOpen>
-                    <div className="inline-group">
-                        <ServiceSelect
-                            id="start-services"
-                            label="Services"
-                            value={startSelection}
-                            onChange={setStartSelection}
-                            options={availableServices}
-                            helpText="Launch individual services or the entire deployment."
-                        />
-                        <label className="oneui-field">
-                            <span className="oneui-field__label">Debug level</span>
-                            <select value={startDebugLevel} onChange={(event) => setStartDebugLevel(event.target.value)}>
-                                <option value="auto">auto</option>
-                                <option value="info">info</option>
-                                <option value="debug">debug</option>
-                                <option value="super">super</option>
-                            </select>
-                        </label>
-                        <label className="oneui-field">
-                            <span className="oneui-field__label">Boot mode</span>
-                            <select value={startBootMode} onChange={(event) => setStartBootMode(event.target.value)}>
-                                <option value="standard">standard</option>
-                                <option value="super">super</option>
-                            </select>
-                        </label>
-                    </div>
-                    {wardenSelected && (
-                        <label className="oneui-field">
+                            <label className="oneui-field">
+                                <span className="oneui-field__label">Concurrency override</span>
+                                <input
+                                    id="build-concurrency"
+                                    placeholder='{"workers":2}'
+                                    value={buildConcurrency}
+                                    onChange={(event) => setBuildConcurrency(event.target.value)}
+                                />
+                            </label>
+                        </div>
+                        <label className="oneui-field checkbox-field">
                             <span>
                                 <input
                                     type="checkbox"
-                                    checked={startBindSocket}
-                                    onChange={(event) => setStartBindSocket(event.target.checked)}
+                                    checked={buildUseNoCache}
+                                    onChange={(event) => setBuildUseNoCache(event.target.checked)}
                                 />{' '}
-                                Bind host Docker socket
-                            </span>
-                            <span className="help-text">
-                                Expose the host Docker socket when launching Warden. Override the socket path from the Settings panel if needed.
+                                Use --no-cache
                             </span>
                         </label>
-                    )}
-                    <div className="controls">
-                        <button type="button" onClick={handleStart} disabled={isStreaming}>
-                            Start services
-                        </button>
-                        <button type="button" onClick={handleStop} disabled={isStreaming}>
-                            Stop all
-                        </button>
-                    </div>
-                </CollapsibleSection>
+                        <div className="controls">
+                            <button type="button" onClick={handleBuild} disabled={isStreaming}>
+                                Start build
+                            </button>
+                        </div>
+                    </CollapsibleSection>
 
-                <CollapsibleSection title="Cleanup">
-                    <ServiceSelect
-                        id="clean-services"
-                        label="Services"
-                        value={cleanSelection}
-                        onChange={setCleanSelection}
-                        options={availableServices}
-                        helpText="Remove resources for selected services or everything."
-                    />
-                    <label className="oneui-field">
-                        <span>
+                    <CollapsibleSection title="Push / Pull">
+                        <ServiceSelect
+                            id="registry-services"
+                            label="Services"
+                            value={registrySelection}
+                            onChange={setRegistrySelection}
+                            options={availableServices}
+                            helpText="Select specific services or operate on the entire stack."
+                        />
+                        <div className="controls">
+                            <button type="button" onClick={() => handleRegistryAction('push')} disabled={isStreaming}>
+                                Push images
+                            </button>
+                            <button type="button" onClick={() => handleRegistryAction('pull')} disabled={isStreaming}>
+                                Pull images
+                            </button>
+                        </div>
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="Start / Stop" defaultOpen>
+                        <div className="inline-group">
+                            <ServiceSelect
+                                id="start-services"
+                                label="Services"
+                                value={startSelection}
+                                onChange={setStartSelection}
+                                options={availableServices}
+                                helpText="Launch individual services or the entire deployment."
+                            />
+                            <label className="oneui-field">
+                                <span className="oneui-field__label">Debug level</span>
+                                <select value={startDebugLevel} onChange={(event) => setStartDebugLevel(event.target.value)}>
+                                    <option value="auto">auto</option>
+                                    <option value="info">info</option>
+                                    <option value="debug">debug</option>
+                                    <option value="super">super</option>
+                                </select>
+                            </label>
+                            <label className="oneui-field">
+                                <span className="oneui-field__label">Boot mode</span>
+                                <select value={startBootMode} onChange={(event) => setStartBootMode(event.target.value)}>
+                                    <option value="standard">standard</option>
+                                    <option value="super">super</option>
+                                </select>
+                            </label>
+                        </div>
+                        {wardenSelected && (
+                            <label className="oneui-field checkbox-field">
+                                <span>
+                                    <input
+                                        type="checkbox"
+                                        checked={startBindSocket}
+                                        onChange={(event) => setStartBindSocket(event.target.checked)}
+                                    />{' '}
+                                    Bind host Docker socket
+                                </span>
+                                <span className="help-text">
+                                    Expose the host Docker socket when launching Warden. Override the socket path from the Settings panel if needed.
+                                </span>
+                            </label>
+                        )}
+                        <div className="controls">
+                            <button type="button" onClick={handleStart} disabled={isStreaming}>
+                                Start services
+                            </button>
+                            <button type="button" onClick={handleStop} disabled={isStreaming}>
+                                Stop all
+                            </button>
+                        </div>
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="Cleanup">
+                        <ServiceSelect
+                            id="clean-services"
+                            label="Services"
+                            value={cleanSelection}
+                            onChange={setCleanSelection}
+                            options={availableServices}
+                            helpText="Remove resources for selected services or everything."
+                        />
+                        <label className="oneui-field checkbox-field">
+                            <span>
+                                <input
+                                    type="checkbox"
+                                    checked={deleteConfirm}
+                                    onChange={(event) => setDeleteConfirm(event.target.checked)}
+                                />{' '}
+                                Confirm full Docker prune
+                            </span>
+                        </label>
+                        <div className="controls">
+                            <button type="button" onClick={handleClean} disabled={isStreaming}>
+                                Remove selected resources
+                            </button>
+                            <button type="button" onClick={handleDelete} disabled={isStreaming}>
+                                Delete all Noona Docker resources
+                            </button>
+                        </div>
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="Settings">
+                        <label className="oneui-field">
+                            <span className="oneui-field__label">Host Docker socket override</span>
                             <input
-                                type="checkbox"
-                                checked={deleteConfirm}
-                                onChange={(event) => setDeleteConfirm(event.target.checked)}
-                            />{' '}
-                            Confirm full Docker prune
-                        </span>
-                    </label>
-                    <div className="controls">
-                        <button type="button" onClick={handleClean} disabled={isStreaming}>
-                            Remove selected resources
-                        </button>
-                        <button type="button" onClick={handleDelete} disabled={isStreaming}>
-                            Delete all Noona Docker resources
-                        </button>
-                    </div>
-                </CollapsibleSection>
+                                id="settings-host-socket"
+                                placeholder="/var/run/docker.sock"
+                                value={hostDockerSocket}
+                                onChange={(event) => setHostDockerSocket(event.target.value)}
+                            />
+                            <span className="help-text">
+                                Optional host socket path to bind when starting Warden. Leave blank to auto-detect.
+                            </span>
+                        </label>
+                        <label className="oneui-field">
+                            <span className="oneui-field__label">Raw JSON payload</span>
+                            <textarea
+                                id="settings-json"
+                                rows={6}
+                                value={settingsJson}
+                                onChange={(event) => setSettingsJson(event.target.value)}
+                                placeholder='{"defaults":{"debugLevel":"debug"}}'
+                            />
+                        </label>
+                        <div className="controls">
+                            <button type="button" onClick={handleUpdateSettings} disabled={isStreaming}>
+                                Update settings
+                            </button>
+                        </div>
+                        <pre id="settings-output">{settingsOutput}</pre>
+                    </CollapsibleSection>
+                </section>
 
-                <CollapsibleSection title="Settings">
-                    <label className="oneui-field">
-                        <span className="oneui-field__label">Host Docker socket override</span>
-                        <input
-                            id="settings-host-socket"
-                            placeholder="/var/run/docker.sock"
-                            value={hostDockerSocket}
-                            onChange={(event) => setHostDockerSocket(event.target.value)}
-                        />
-                        <span className="help-text">
-                            Optional host socket path to bind when starting Warden. Leave blank to auto-detect.
-                        </span>
-                    </label>
-                    <label className="oneui-field">
-                        <span className="oneui-field__label">Raw JSON payload</span>
-                        <textarea
-                            id="settings-json"
-                            rows={6}
-                            value={settingsJson}
-                            onChange={(event) => setSettingsJson(event.target.value)}
-                            placeholder='{"defaults":{"debugLevel":"debug"}}'
-                        />
-                    </label>
-                    <div className="controls">
-                        <button type="button" onClick={handleUpdateSettings} disabled={isStreaming}>
-                            Update settings
-                        </button>
-                    </div>
-                    <pre id="settings-output">{settingsOutput}</pre>
-                </CollapsibleSection>
-
-                <CollapsibleSection title="Streaming Output" defaultOpen className="stream-card">
-                    <LogPanel entries={logEntries} />
-                </CollapsibleSection>
+                <section className="stream-column">
+                    <CollapsibleSection title="Streaming Output" defaultOpen className="stream-card">
+                        <LogPanel entries={logEntries} />
+                    </CollapsibleSection>
+                </section>
             </main>
         </div>
     );
