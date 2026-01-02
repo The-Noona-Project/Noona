@@ -999,6 +999,30 @@ const getDefaultDockerSocketBinding = () => {
     return cachedHostDockerSocket;
 };
 
+const validateHostDockerSocket = async socketPath => {
+    const socket = typeof socketPath === 'string' ? socketPath.trim() : '';
+    if (!socket || isWindowsPipePath(socket) || isTcpDockerSocket(socket)) {
+        return { ok: true, socketPath: socket };
+    }
+
+    try {
+        const stats = await stat(socket);
+        if (!stats.isSocket()) {
+            return { ok: false, socketPath: socket, message: `${socket} is not a UNIX socket` };
+        }
+        return { ok: true, socketPath: socket };
+    } catch (error) {
+        if (error?.code === 'ENOENT') {
+            return { ok: false, socketPath: socket, message: `Docker socket not found at ${socket}` };
+        }
+        return {
+            ok: false,
+            socketPath: socket,
+            message: `Unable to access Docker socket at ${socket}: ${error.message}`,
+        };
+    }
+};
+
 const colors = {
     reset: '\x1b[0m', bold: '\x1b[1m',
     red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m'
@@ -1597,11 +1621,12 @@ const ensureExecutables = async service => {
     }
 };
 
-const createContainerOptions = (service, image, envVars = {}, {
+const createContainerOptions = async (service, image, envVars = {}, {
     detectDockerSockets,
     platform,
     hostDockerSocketOverride,
     bindHostDockerSocket = true,
+    validateSocket = validateHostDockerSocket,
 } = {}) => {
     const entries = Object.entries(envVars)
         .filter(([, value]) => typeof value === 'string' && value.trim() !== '');
@@ -1614,6 +1639,8 @@ const createContainerOptions = (service, image, envVars = {}, {
     const containerName = normalizedEnv.SERVICE_NAME;
     const hostConfig = { Binds: [] };
     const socketCandidates = new Set();
+    const warnings = [];
+    let socketValidation = { ok: true, socketPath: null, bound: false };
 
     if (bindHostDockerSocket) {
         const normalizedOverride = hostDockerSocketOverride !== undefined
@@ -1632,14 +1659,28 @@ const createContainerOptions = (service, image, envVars = {}, {
             const trimmed = hostDockerSocket.trim();
             const remoteSocket = isTcpDockerSocket(trimmed);
 
-            if (!remoteSocket) {
-                hostConfig.Binds.push(`${trimmed}:${DOCKER_SOCKET_TARGET}`);
-                socketCandidates.add(trimmed);
-                socketCandidates.add(DOCKER_SOCKET_TARGET);
-            } else {
-                socketCandidates.add(trimmed);
-                if (service === 'warden' && !normalizedEnv.DOCKER_HOST) {
-                    normalizedEnv.DOCKER_HOST = trimmed;
+            socketValidation = { ok: true, socketPath: trimmed, bound: false, remote: remoteSocket };
+
+            if (!remoteSocket && !isWindowsPipePath(trimmed)) {
+                const validationResult = await validateSocket(trimmed);
+                socketValidation = { ...socketValidation, ...validationResult };
+
+                if (!validationResult.ok) {
+                    warnings.push(validationResult.message || `Host Docker socket unavailable at ${trimmed}`);
+                }
+            }
+
+            if (socketValidation.ok) {
+                if (!remoteSocket) {
+                    hostConfig.Binds.push(`${trimmed}:${DOCKER_SOCKET_TARGET}`);
+                    socketValidation.bound = true;
+                    socketCandidates.add(trimmed);
+                    socketCandidates.add(DOCKER_SOCKET_TARGET);
+                } else {
+                    socketCandidates.add(trimmed);
+                    if (service === 'warden' && !normalizedEnv.DOCKER_HOST) {
+                        normalizedEnv.DOCKER_HOST = trimmed;
+                    }
                 }
             }
         } else if (hostDockerSocket) {
@@ -1665,12 +1706,16 @@ const createContainerOptions = (service, image, envVars = {}, {
     }
 
     return {
-        name: containerName,
-        image: `${image}:latest`,
-        env: normalizedEnv,
-        network: NETWORK_NAME,
-        hostConfig,
-        exposedPorts
+        options: {
+            name: containerName,
+            image: `${image}:latest`,
+            env: normalizedEnv,
+            network: NETWORK_NAME,
+            hostConfig,
+            exposedPorts
+        },
+        warnings,
+        socketValidation
     };
 };
 
@@ -1962,13 +2007,34 @@ const startServices = async (services, {
                 }
 
                 const image = `${DOCKERHUB_USER}/noona-${svc}`;
-                const options = createContainerOptions(svc, image, {
+                const { options, warnings = [], socketValidation } = await createContainerOptions(svc, image, {
                     DEBUG: settings.debugLevel,
                     BOOT_MODE: settings.bootMode
                 }, {
                     hostDockerSocketOverride: resolvedHostDockerSocketOverride,
                     bindHostDockerSocket
                 });
+
+                warnings.forEach(warning => {
+                    console.warn(`${colors.yellow}⚠️  ${warning}${colors.reset}`);
+                });
+
+                if (bindHostDockerSocket && socketValidation?.ok === false) {
+                    const error = new Error(socketValidation.message || 'Host Docker socket unavailable');
+                    print.error(`Failed to start ${svc}: ${error.message}`);
+                    await recordLifecycleEvent({
+                        action: 'start',
+                        service: svc,
+                        status: 'failed',
+                        details: {
+                            step: 'validate-host-docker-socket',
+                            socket: socketValidation.socketPath,
+                            error: error.message
+                        }
+                    });
+                    results.push({ service: svc, ok: false, error, warnings });
+                    continue;
+                }
 
                 const cleanup = await removeResources({ containers: { names: [options.name] } });
                 if (!cleanup.ok) {
