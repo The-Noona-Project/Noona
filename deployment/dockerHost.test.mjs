@@ -46,6 +46,10 @@ test('buildImage forwards options to Docker and surfaces warnings', async () => 
             fake.receivedStream = stream;
             fake.options = options;
             return 'build-stream';
+        },
+        async pruneImages(options) {
+            fake.pruneOptions = options;
+            return { ImagesDeleted: ['dangling1'], SpaceReclaimed: 1234, Warnings: ['prune-warning'] };
         }
     });
 
@@ -59,9 +63,16 @@ test('buildImage forwards options to Docker and surfaces warnings', async () => 
     assert.equal(fake.options.dockerfile, 'deployment/test.Dockerfile');
     assert.equal(fake.options.t, 'example:latest');
     assert.equal(fake.options.nocache, true);
+    assert.equal(fake.options.rm, true);
+    assert.equal(fake.options.forcerm, true);
     assert.ok(result.ok);
-    assert.deepEqual(result.warnings, ['warning: cached layer']);
+    assert.deepEqual(result.warnings, [
+        'warning: cached layer',
+        'Pruned 1 dangling image; reclaimed 1234 bytes.',
+        'prune-warning'
+    ]);
     assert.equal(fake.followedStream, 'build-stream');
+    assert.deepEqual(fake.pruneOptions, { filters: { dangling: { true: true } } });
 });
 
 test('normalizeDockerfilePath converts Windows style paths to posix relative paths', () => {

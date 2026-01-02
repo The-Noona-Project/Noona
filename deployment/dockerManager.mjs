@@ -442,11 +442,36 @@ class DockerHost {
                 t: tag,
                 dockerfile: normalizeDockerfilePath(context, dockerfile),
                 buildargs: buildArgs,
-                nocache: noCache
+                nocache: noCache,
+                rm: true,
+                forcerm: true,
             });
             const { records } = await this._collectStream(buildStream);
-            const warnings = records.filter(entry => entry?.stream?.toLowerCase().includes('warning'));
-            return success({ records }, warnings.map(entry => entry.stream));
+            const warnings = records
+                .filter(entry => entry?.stream?.toLowerCase().includes('warning'))
+                .map(entry => entry.stream);
+
+            try {
+                const pruneResult = await this.docker.pruneImages({ filters: { dangling: { true: true } } });
+                const pruneWarnings = Array.isArray(pruneResult?.Warnings)
+                    ? pruneResult.Warnings.filter(Boolean)
+                    : [];
+
+                const deletedCount = Array.isArray(pruneResult?.ImagesDeleted)
+                    ? pruneResult.ImagesDeleted.length
+                    : 0;
+                const reclaimed = typeof pruneResult?.SpaceReclaimed === 'number'
+                    ? pruneResult.SpaceReclaimed
+                    : 0;
+                const summary = `Pruned ${deletedCount} dangling image${deletedCount === 1 ? '' : 's'}; reclaimed ${reclaimed} bytes.`;
+
+                warnings.push(summary, ...pruneWarnings);
+
+                return success({ records, pruneResult }, warnings);
+            } catch (pruneError) {
+                warnings.push(`Failed to prune dangling images: ${pruneError?.message || pruneError}`);
+                return success({ records }, warnings);
+            }
         } catch (error) {
             return failure('buildImage', error, { context, dockerfile, tag, noCache });
         }
