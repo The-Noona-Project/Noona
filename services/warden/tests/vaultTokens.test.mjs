@@ -217,7 +217,7 @@ test('noona-vault descriptor exposes storage connection environment fields', asy
     assert.ok(vault, 'Vault service descriptor should be defined.');
 
     const expectedEnv = new Set([
-        'MONGO_URI=mongodb://noona-mongo:27017',
+        'MONGO_URI=mongodb://root:example@noona-mongo:27017/admin?authSource=admin',
         'REDIS_HOST=noona-redis',
         'REDIS_PORT=6379',
     ]);
@@ -232,7 +232,7 @@ test('noona-vault descriptor exposes storage connection environment fields', asy
     const configByKey = new Map(vault.envConfig.map((field) => [field.key, field]));
 
     for (const [key, value] of [
-        ['MONGO_URI', 'mongodb://noona-mongo:27017'],
+        ['MONGO_URI', 'mongodb://root:example@noona-mongo:27017/admin?authSource=admin'],
         ['REDIS_HOST', 'noona-redis'],
         ['REDIS_PORT', '6379'],
     ]) {

@@ -1,34 +1,37 @@
 {
-  "name": "@once-ui-system/nextjs-starter",
-  "version": "1.1.1",
-  "private": true,
+  "name": "@once-ui-system/magic-portfolio",
+  "version": "2.3.0",
   "scripts": {
-    "dev": "next dev --turbopack",
-    "export": "next export",
+    "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "biome-write": "npx @biomejs/biome format --write nextjs-starter"
+    "biome-write": "npx @biomejs/biome format --write .",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "lint": "next lint"
   },
   "dependencies": {
+    "@mdx-js/loader": "^3.1.0",
+    "@next/mdx": "^16.0.10",
     "@once-ui-system/core": "latest",
     "classnames": "^2.5.1",
-    "next": "16.0.10",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
-    "react-icons": "^5.2.1",
-    "sass": "^1.77.6",
-    "sharp": "^0.33.4"
+    "cookie": "^1.0.2",
+    "gray-matter": "^4.0.3",
+    "lint-staged": "^16.1.5",
+    "next": "^16.0.10",
+    "next-mdx-remote": "^6.0.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.3",
+    "react-icons": "^5.5.0",
+    "sass": "^1.86.3",
+    "transliteration": "^2.3.5"
   },
   "devDependencies": {
-    "@biomejs/biome": "1.9.4",
-    "@types/node": "20.17.23",
-    "@types/react": "19.0.1",
-    "@types/react-dom": "19.0.2",
-    "typescript": "5.8.2"
-  },
-  "overrides": {
-    "@types/react": "19.0.1",
-    "@types/react-dom": "19.0.2"
+    "@biomejs/biome": "^1.9.4",
+    "@types/cookie": "^0.6.0",
+    "@types/node": "^20.17.30",
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.25.0",
+    "typescript": "^5.8.3",
+    "tzdata": "^1.0.44"
   }
 }

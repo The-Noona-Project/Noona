@@ -7,7 +7,11 @@ const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
 const DOCKER_WARDEN_URL =
     process.env.WARDEN_DOCKER_URL || process.env.INTERNAL_WARDEN_BASE_URL || 'http://noona-warden:4001';
 
-const DEFAULT_VAULT_MONGO_URI = process.env.MONGO_URI || 'mongodb://noona-mongo:27017';
+const DEFAULT_MONGO_ROOT_USERNAME = process.env.MONGO_INITDB_ROOT_USERNAME || 'root';
+const DEFAULT_MONGO_ROOT_PASSWORD = process.env.MONGO_INITDB_ROOT_PASSWORD || 'example';
+const DEFAULT_VAULT_MONGO_URI =
+    process.env.MONGO_URI ||
+    `mongodb://${encodeURIComponent(DEFAULT_MONGO_ROOT_USERNAME)}:${encodeURIComponent(DEFAULT_MONGO_ROOT_PASSWORD)}@noona-mongo:27017/admin?authSource=admin`;
 const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
 const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
@@ -258,7 +262,7 @@ const serviceDefs = rawList.map(name => {
             createEnvField('MONGO_URI', DEFAULT_VAULT_MONGO_URI, {
                 label: 'MongoDB URI',
                 description: 'MongoDB connection URI used by Vault for persistent storage.',
-                warning: 'Defaults to mongodb://noona-mongo:27017 inside the Docker network.',
+                warning: 'Defaults to Mongo auth on noona-mongo:27017/admin?authSource=admin inside the Docker network.',
             }),
             createEnvField('REDIS_HOST', DEFAULT_VAULT_REDIS_HOST, {
                 label: 'Redis Host',

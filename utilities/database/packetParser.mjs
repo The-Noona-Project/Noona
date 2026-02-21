@@ -9,7 +9,7 @@ import redis from './redis/redisClient.mjs';
 import { log, warn, errMSG } from '../etc/logger.mjs';
 
 const allowedOps = {
-    mongo: ['insert', 'find', 'findMany', 'update'],
+    mongo: ['insert', 'find', 'findMany', 'update', 'delete'],
     redis: ['set', 'get', 'del'],
 };
 
@@ -69,6 +69,16 @@ export async function handlePacket(packet) {
                         matched: result.matchedCount,
                         modified: result.modifiedCount,
                     };
+                }
+
+                case 'delete': {
+                    if (!query || typeof query !== 'object' || Object.keys(query).length === 0) {
+                        return {error: 'Mongo delete packet missing non-empty "query"'};
+                    }
+
+                    const result = await col.deleteOne(query);
+                    log(`[Vault] ðŸ—‘ï¸ Deleted from "${collection}"`);
+                    return {status: 'ok', deleted: result.deletedCount};
                 }
             }
         }

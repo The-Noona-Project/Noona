@@ -60,8 +60,11 @@ class DownloadServiceTest {
         assertThat(response).isEqualTo("⚠️ Search session expired or not found. Please search again.");
     }
 
+    /**
+     * Verifies session clearing after successful download queuing
+     */
     @Test
-    void queueDownloadAllChaptersClearsSessionAfterUse() {
+    void queueDownloadAllChaptersClearsSessionAfterUse() throws InterruptedException {
         Map<String, String> title = new HashMap<>();
         title.put("title", "Solo Leveling");
         title.put("href", "http://example.com/solo");
@@ -83,8 +86,14 @@ class DownloadServiceTest {
 
         String secondResponse = downloadService.queueDownloadAllChapters(searchId, 1);
         assertThat(secondResponse).isEqualTo("⚠️ Search session expired or not found. Please search again.");
+
+        // Ensure the async download completes before the @TempDir cleanup runs.
+        waitForStatus("Solo Leveling", "completed");
     }
 
+    /**
+     * Confirms expired session returns expected error message
+     */
     @Test
     void queueDownloadAllChaptersReturnsErrorWhenSessionExpired() {
         AtomicLong clock = new AtomicLong(0L);

@@ -108,8 +108,8 @@ export const loadPortalConfig = (overrides = {}) => {
         vault: {
             baseUrl: normalizeUrl(env.VAULT_BASE_URL),
             token:
-                normalizeString(env.VAULT_ACCESS_TOKEN) ||
-                normalizeString(env.VAULT_API_TOKEN),
+                normalizeString(env.VAULT_API_TOKEN) ||
+                normalizeString(env.VAULT_ACCESS_TOKEN),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',

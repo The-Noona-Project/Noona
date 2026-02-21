@@ -201,9 +201,24 @@ public class DownloadService {
             Path titleFolder = getDownloadRoot().resolve(cleanTitle);
             Files.createDirectories(titleFolder);
 
-            progress.markStarted(chapters.size());
+            // Process oldest -> newest so lastDownloaded ends at the latest chapter number.
+            List<Map<String, String>> chaptersToDownload = new ArrayList<>(chapters);
+            chaptersToDownload.sort(Comparator.comparingDouble(chapter -> {
+                String chapterTitle = chapter.get("chapter_title");
+                String chapterNumber = extractChapterNumberFull(chapterTitle);
+                if ("0000".equals(chapterNumber)) {
+                    return Double.POSITIVE_INFINITY;
+                }
+                try {
+                    return Double.parseDouble(chapterNumber);
+                } catch (NumberFormatException e) {
+                    return Double.POSITIVE_INFINITY;
+                }
+            }));
 
-            for (Map<String, String> chapter : chapters) {
+            progress.markStarted(chaptersToDownload.size());
+
+            for (Map<String, String> chapter : chaptersToDownload) {
                 String chapterTitle = chapter.get("chapter_title");
                 String chapterNumber = extractChapterNumberFull(chapterTitle);
                 String chapterUrl = chapter.get("href");

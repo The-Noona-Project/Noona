@@ -6,11 +6,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * VaultService handles authenticated communication with Noona Vault using static API tokens.
@@ -48,17 +52,27 @@ public class VaultService {
         if (vaultApiToken == null || vaultApiToken.isBlank()) {
             throw new IllegalStateException("VAULT_API_TOKEN is not configured. Set the VAULT_API_TOKEN environment variable or the 'vault.apiToken' property.");
         }
-        try {
-            return webClient.post()
-                    .uri(vaultUrl + "/v1/vault/handle")
-                    .header("Authorization", "Bearer " + vaultApiToken)
-                    .bodyValue(packet)
-                    .retrieve()
-                    .bodyToMono(Map.class)
-                    .block();
-        } catch (Exception e) {
-            throw new RuntimeException("Vault request failed: " + e.getMessage(), e);
-        }
+
+        return webClient.post()
+                .uri(vaultUrl + "/v1/vault/handle")
+                .header("Authorization", "Bearer " + vaultApiToken)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .bodyValue(packet)
+                .exchangeToMono(response -> response
+                        .bodyToMono(Map.class)
+                        .defaultIfEmpty(Collections.emptyMap())
+                        .flatMap(body -> {
+                            if (!response.statusCode().is2xxSuccessful()) {
+                                Object error = body.get("error");
+                                String message = error instanceof String && !((String) error).isBlank()
+                                        ? (String) error
+                                        : "Vault responded with status " + response.statusCode().value();
+                                return Mono.error(new RuntimeException(message));
+                            }
+                            return Mono.just(body);
+                        }))
+                .block();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -92,18 +106,29 @@ public class VaultService {
                 "payload", payload
         );
 
-        Object data = sendPacket(packet).get("data");
-        if (data instanceof Map) {
-            return (Map<String, Object>) data;
-        }
+        try {
+            Object data = sendPacket(packet).get("data");
+            if (data instanceof Map) {
+                return (Map<String, Object>) data;
+            }
 
-        return null;
+            return null;
+        } catch (RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("no document found")) {
+                return null;
+            }
+            throw e;
+        }
     }
 
     public List<Map<String, Object>> findAll(String collection) {
+        return findMany(collection, Map.of());
+    }
+
+    public List<Map<String, Object>> findMany(String collection, Map<String, Object> query) {
         Map<String, Object> payload = Map.of(
                 "collection", collection,
-                "query", Map.of()
+                "query", query == null ? Map.of() : query
         );
 
         Map<String, Object> packet = Map.of(
@@ -177,10 +202,39 @@ public class VaultService {
             List<Map<String, String>> chapters = downloadService.fetchChapters(sourceUrl);
             if (chapters == null || chapters.isEmpty()) return "0";
 
-            return chapters.get(0).get("chapter_title").replaceAll("[^\\d.]", "");
+            Map<String, String> latest = chapters.get(0);
+            if (latest == null) {
+                return "0";
+            }
+
+            String chapterNumber = latest.get("chapter_number");
+            if (chapterNumber != null && !chapterNumber.isBlank()) {
+                return chapterNumber;
+            }
+
+            String extracted = extractChapterNumberFromTitle(latest.get("chapter_title"));
+            return extracted != null && !extracted.isBlank() ? extracted : "0";
         } catch (Exception e) {
             log.warn("[VaultService] ⚠️ Failed to fetch latest chapter from source: " + e.getMessage());
             return "0";
         }
+    }
+
+    private String extractChapterNumberFromTitle(String chapterTitle) {
+        if (chapterTitle == null || chapterTitle.isBlank()) {
+            return null;
+        }
+
+        Matcher matcher = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)", Pattern.CASE_INSENSITIVE).matcher(chapterTitle);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        matcher = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(chapterTitle);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        return null;
     }
 }

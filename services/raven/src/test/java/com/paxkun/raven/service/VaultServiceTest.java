@@ -88,4 +88,18 @@ class VaultServiceTest {
         assertEquals("mongo", request.get("storageType"));
         assertEquals("findMany", request.get("operation"));
     }
+
+    @Test
+    void fetchLatestChapterFromSourcePrefersChapterNumberField() {
+        DownloadService downloadService = Mockito.mock(DownloadService.class);
+        VaultService vaultService = new VaultService(downloadService);
+
+        Mockito.when(downloadService.fetchChapters("http://source"))
+                .thenReturn(List.of(Map.of(
+                        "chapter_number", "22",
+                        "chapter_title", "Chapter 22 Last Read 2024-09-07T17:04:15.717343Z"
+                )));
+
+        assertThat(vaultService.fetchLatestChapterFromSource("http://source")).isEqualTo("22");
+    }
 }

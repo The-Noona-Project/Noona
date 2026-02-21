@@ -8,7 +8,12 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.lang.reflect.Type;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Stream;
 
 /**
  * LibraryService manages Raven's manga library via VaultService.
@@ -25,6 +30,7 @@ public class LibraryService {
     private final LoggerService logger;
 
     private static final String COLLECTION = "manga_library";
+    private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_INSTANT;
 
     public void addOrUpdateTitle(NewTitle title, NewChapter chapter) {
         Map<String, Object> query = Map.of("uuid", title.getUuid());
@@ -33,7 +39,8 @@ public class LibraryService {
                         "uuid", title.getUuid(),
                         "title", title.getTitleName(),
                         "sourceUrl", title.getSourceUrl(),
-                        "lastDownloaded", chapter.getChapter()
+                        "lastDownloaded", chapter.getChapter(),
+                        "lastDownloadedAt", ISO_FORMATTER.format(Instant.now())
                 )
         );
 
@@ -42,13 +49,17 @@ public class LibraryService {
     }
 
     public List<NewTitle> getAllTitleObjects() {
-        List<Map<String, Object>> raw = vaultService.findAll(COLLECTION);
+        Map<String, Object> activeQuery = Map.of("deletedAt", Map.of("$exists", false));
+        List<Map<String, Object>> raw = vaultService.findMany(COLLECTION, activeQuery);
         Type listType = new TypeToken<List<NewTitle>>() {}.getType();
         return vaultService.parseDocuments(raw, listType);
     }
 
     public NewTitle getTitle(String titleName) {
-        Map<String, Object> query = Map.of("title", titleName);
+        Map<String, Object> query = Map.of(
+                "title", titleName,
+                "deletedAt", Map.of("$exists", false)
+        );
         Map<String, Object> doc = vaultService.findOne(COLLECTION, query);
         if (doc == null) return null;
 
@@ -58,6 +69,118 @@ public class LibraryService {
                 (String) doc.get("sourceUrl"),
                 (String) doc.getOrDefault("lastDownloaded", "0")
         );
+    }
+
+    public NewTitle getTitleByUuid(String uuid) {
+        if (uuid == null || uuid.isBlank()) {
+            return null;
+        }
+
+        Map<String, Object> query = Map.of(
+                "uuid", uuid,
+                "deletedAt", Map.of("$exists", false)
+        );
+        Map<String, Object> doc = vaultService.findOne(COLLECTION, query);
+        if (doc == null) return null;
+
+        return new NewTitle(
+                (String) doc.get("title"),
+                (String) doc.get("uuid"),
+                (String) doc.get("sourceUrl"),
+                (String) doc.getOrDefault("lastDownloaded", "0")
+        );
+    }
+
+    public NewTitle updateTitle(String uuid, String titleName, String sourceUrl) {
+        NewTitle existing = getTitleByUuid(uuid);
+        if (existing == null) {
+            return null;
+        }
+
+        if (titleName != null && !titleName.isBlank()) {
+            existing.setTitleName(titleName);
+        }
+
+        if (sourceUrl != null && !sourceUrl.isBlank()) {
+            existing.setSourceUrl(sourceUrl);
+        }
+
+        String chapter = Optional.ofNullable(existing.getLastDownloaded()).orElse("0");
+        addOrUpdateTitle(existing, new NewChapter(chapter));
+        return existing;
+    }
+
+    public boolean deleteTitle(String uuid) {
+        NewTitle existing = getTitleByUuid(uuid);
+        if (existing == null) {
+            return false;
+        }
+
+        Map<String, Object> query = Map.of("uuid", uuid);
+        Map<String, Object> update = Map.of(
+                "$set", Map.of(
+                        "deletedAt", ISO_FORMATTER.format(Instant.now())
+                )
+        );
+
+        vaultService.update(COLLECTION, query, update, false);
+        logger.warn("LIBRARY", "ðŸ—‘ï¸ Archived title [" + existing.getTitleName() + "] (" + uuid + ")");
+        return true;
+    }
+
+    public List<com.paxkun.raven.service.library.DownloadedFile> listDownloadedFiles(NewTitle title, int limit) {
+        if (title == null) {
+            return List.of();
+        }
+
+        Path root = logger.getDownloadsRoot();
+        if (root == null) {
+            return List.of();
+        }
+
+        String cleanTitle = Optional.ofNullable(title.getTitleName())
+                .orElse("")
+                .replaceAll("[^a-zA-Z0-9\\s]", "")
+                .trim();
+        if (cleanTitle.isBlank()) {
+            return List.of();
+        }
+
+        Path titleFolder = root.resolve(cleanTitle);
+        if (!Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
+            return List.of();
+        }
+
+        int safeLimit = Math.max(1, Math.min(500, limit));
+
+        try (Stream<Path> stream = Files.list(titleFolder)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .sorted((a, b) -> {
+                        try {
+                            return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a));
+                        } catch (Exception e) {
+                            return 0;
+                        }
+                    })
+                    .limit(safeLimit)
+                    .map(path -> {
+                        try {
+                            String name = path.getFileName().toString();
+                            long size = Files.size(path);
+                            long modifiedMs = Files.getLastModifiedTime(path).toMillis();
+                            String modifiedAt = ISO_FORMATTER.format(Instant.ofEpochMilli(modifiedMs));
+                            return new com.paxkun.raven.service.library.DownloadedFile(name, size, modifiedMs, modifiedAt);
+                        } catch (Exception e) {
+                            return null;
+                        }
+                    })
+                    .filter(Objects::nonNull)
+                    .toList();
+        } catch (Exception e) {
+            logger.warn("LIBRARY", "âš ï¸ Failed to list files for [" + title.getTitleName() + "]: " + e.getMessage());
+            return List.of();
+        }
     }
 
     public NewTitle resolveOrCreateTitle(String titleName, String sourceUrl) {

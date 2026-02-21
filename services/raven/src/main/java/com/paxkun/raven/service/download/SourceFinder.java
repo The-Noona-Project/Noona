@@ -1,6 +1,10 @@
 package com.paxkun.raven.service.download;
 
 import com.paxkun.raven.service.LoggerService;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
@@ -24,6 +28,9 @@ public class SourceFinder {
     @Autowired
     private LoggerService logger;
 
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
     /**
      * Map of domain -> ScraperFunction
      */
@@ -31,6 +38,8 @@ public class SourceFinder {
 
     public SourceFinder() {
         // Register supported domain scrapers here
+        scrapers.put("weebcentral.com", this::scrapeWeebCentral);
+        scrapers.put("www.weebcentral.com", this::scrapeWeebCentral);
         scrapers.put("hot.planeptune.us", this::scrapePlaneptune);
         scrapers.put("scans.lastation.us", this::scrapeLastation);
         scrapers.put("official.lowee.us", this::scrapeLowee);
@@ -98,6 +107,50 @@ public class SourceFinder {
         }
 
         return imageUrls;
+    }
+
+    /**
+     * WeebCentral serves chapter pages that htmx-load page images from the /images endpoint.
+     * Fetch that HTML directly and extract the page URLs.
+     */
+    private List<String> scrapeWeebCentral(String chapterUrl) {
+        if (chapterUrl == null || chapterUrl.isBlank()) {
+            return List.of();
+        }
+
+        String base = chapterUrl.trim();
+        if (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+
+        String imagesUrl = base + "/images?is_prev=False&current_page=1&reading_style=long_strip";
+        logger.debug("SOURCE", "Fetching WeebCentral images from: " + imagesUrl);
+
+        try {
+            Document doc = Jsoup.connect(imagesUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout(15_000)
+                    .get();
+
+            Elements images = doc.select("img.maw-w-full.mx-auto[src]");
+            if (images.isEmpty()) {
+                images = doc.select("img[src]");
+            }
+
+            List<String> urls = new ArrayList<>(images.size());
+            for (Element img : images) {
+                String src = img.attr("src");
+                if (src == null || src.isBlank()) {
+                    continue;
+                }
+                urls.add(src);
+            }
+
+            return urls;
+        } catch (Exception e) {
+            logger.error("SOURCE", "❌ WeebCentral scrape failed for: " + chapterUrl + " | " + e.getMessage(), e);
+            return List.of();
+        }
     }
 
     /**

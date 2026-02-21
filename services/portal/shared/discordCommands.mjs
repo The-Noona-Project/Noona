@@ -210,10 +210,18 @@ export const createPortalSlashCommands = ({
             const username = interaction.options?.getString('username', true);
             const discordId = interaction.options?.getString('discord_id') ?? null;
 
-            const user = await kavita.fetchUser(username).catch(error => {
-                errMSG(`[Portal/Discord] Kavita search failed: ${error.message}`);
-                throw error;
-            });
+            let user = null;
+            try {
+                user = await kavita.fetchUser(username);
+            } catch (error) {
+                const status = error && typeof error === 'object' ? error.status : null;
+                if (status === 404) {
+                    user = null;
+                } else {
+                    errMSG(`[Portal/Discord] Kavita search failed: ${error.message}`);
+                    throw error;
+                }
+            }
 
             let credential = null;
             if (discordId && vault?.readSecret) {

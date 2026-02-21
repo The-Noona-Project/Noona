@@ -1246,6 +1246,120 @@ export const createSageApp = ({
         }
     })
 
+    app.get('/api/raven/title/:uuid', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const title = await ravenClient.getTitle(uuid)
+            if (!title) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(title)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven title.'})
+        }
+    })
+
+    app.post('/api/raven/title', async (req, res) => {
+        const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
+        const sourceUrl = typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl.trim() : ''
+
+        if (!title) {
+            res.status(400).json({error: 'title is required.'})
+            return
+        }
+
+        try {
+            const created = await ravenClient.createTitle({title, sourceUrl: sourceUrl || null})
+            res.status(200).json(created)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to create Raven title ${title}: ${error.message}`)
+            res.status(502).json({error: 'Unable to create Raven title.'})
+        }
+    })
+
+    app.patch('/api/raven/title/:uuid', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+        const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
+        const sourceUrl = typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        if (!title && !sourceUrl) {
+            res.status(400).json({error: 'At least one of title/sourceUrl must be provided.'})
+            return
+        }
+
+        try {
+            const updated = await ravenClient.updateTitle(uuid, {title: title || null, sourceUrl: sourceUrl || null})
+            if (!updated) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(updated)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to update Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to update Raven title.'})
+        }
+    })
+
+    app.delete('/api/raven/title/:uuid', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const result = await ravenClient.deleteTitle(uuid)
+            if (!result) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(result)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to delete Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to delete Raven title.'})
+        }
+    })
+
+    app.get('/api/raven/title/:uuid/files', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+        const limit = req.query?.limit
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const files = await ravenClient.listTitleFiles(uuid, {limit})
+            if (!files) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(files)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven files for ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven title files.'})
+        }
+    })
+
     app.post('/api/raven/search', async (req, res) => {
         const query = typeof req.body?.query === 'string' ? req.body.query.trim() : ''
 

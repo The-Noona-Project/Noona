@@ -5,18 +5,15 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.openqa.selenium.*;
-import org.openqa.selenium.chrome.ChromeDriver;
-import org.openqa.selenium.chrome.ChromeOptions;
-import org.openqa.selenium.support.ui.ExpectedConditions;
-import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * TitleScraper handles searching for manga titles and scraping chapter lists
@@ -32,44 +29,42 @@ public class TitleScraper {
 
     private List<Map<String, String>> lastSearchResults = new ArrayList<>();
 
-    public List<Map<String, String>> searchManga(String titleName) {
-        ChromeOptions options = new ChromeOptions();
-        List<String> appliedArguments = Arrays.asList("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
-        options.addArguments(appliedArguments);
-        logger.debug("SCRAPER", "ChromeOptions applied: " + appliedArguments);
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-        WebDriver driver = new ChromeDriver(options);
+    public List<Map<String, String>> searchManga(String titleName) {
         List<Map<String, String>> results = new ArrayList<>();
 
         try {
             String encodedTitle = URLEncoder.encode(titleName, StandardCharsets.UTF_8);
-            String searchUrl = "https://weebcentral.com/search/?text=" + encodedTitle +
+            // WeebCentral's search UI loads results via htmx from /search/data; hit it directly to avoid JS timing.
+            String searchUrl = "https://weebcentral.com/search/data?text=" + encodedTitle +
                     "&sort=Best+Match&order=Ascending&official=Any&anime=Any&adult=Any&display_mode=Full+Display";
-            logger.debug("SCRAPER", "Encoded search URL: " + searchUrl);
+            logger.debug("SCRAPER", "Fetching search results from: " + searchUrl);
 
-            driver.get(searchUrl);
+            Document doc = Jsoup.connect(searchUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout(15_000)
+                    .get();
+            Elements mangaResults = doc.select("a.line-clamp-1.link.link-hover");
 
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("section#search-results a.line-clamp-1.link.link-hover")));
+            logger.info("SCRAPER", "Found " + mangaResults.size() + " manga search results for '" + titleName + "'");
 
-            List<WebElement> rawResults = driver.findElements(By.cssSelector("section#search-results a.line-clamp-1.link.link-hover"));
-            logger.debug("SCRAPER", "Raw search result elements before parsing: " + rawResults.size());
-
-            Document doc = Jsoup.parse(driver.getPageSource());
-            Elements mangaResults = doc.select("section#search-results a.line-clamp-1.link.link-hover");
-
-            logger.info("SCRAPER", "🔍 Found " + mangaResults.size() + " manga search results for '" + titleName + "'");
-
+            Set<String> seenHrefs = new HashSet<>();
             int index = 1;
             for (Element manga : mangaResults) {
                 logger.debug("SCRAPER", "Processing search result iteration " + index + " of " + mangaResults.size());
+                String href = manga.absUrl("href");
+                if (href == null || href.isBlank() || !seenHrefs.add(href)) {
+                    continue;
+                }
                 Map<String, String> data = new HashMap<>();
                 data.put("index", String.valueOf(index));
                 data.put("title", manga.text());
-                data.put("href", manga.absUrl("href"));
+                data.put("href", href);
                 results.add(data);
 
-                logger.info("SCRAPER", "➡️ [" + index + "] " + manga.text() + " -> " + manga.absUrl("href"));
+                logger.info("SCRAPER", "[" + index + "] " + manga.text() + " -> " + href);
                 index++;
             }
 
@@ -77,8 +72,6 @@ public class TitleScraper {
 
         } catch (Exception e) {
             logger.error("SCRAPER", "❌ Error searching manga: " + e.getMessage(), e);
-        } finally {
-            driver.quit();
         }
 
         return results;
@@ -98,89 +91,139 @@ public class TitleScraper {
     }
 
     public List<Map<String, String>> getChapters(String titleUrl) {
-        ChromeOptions options = new ChromeOptions();
-        List<String> appliedArguments = Arrays.asList("--headless=new", "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage");
-        options.addArguments(appliedArguments);
-        logger.debug("SCRAPER", "ChromeOptions applied for chapter scrape: " + appliedArguments);
-
-        WebDriver driver = new ChromeDriver(options);
-        List<Map<String, String>> chapters = new ArrayList<>();
+        List<Map<String, String>> rawChapters = new ArrayList<>();
 
         try {
-            logger.debug("SCRAPER", "Starting chapter scrape for URL: " + titleUrl);
-            driver.get(titleUrl);
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-
-            List<WebElement> showAllButtons = driver.findElements(By.xpath("//button[contains(text(), 'Show All Chapters')]"));
-            logger.debug("SCRAPER", "'Show All Chapters' button present: " + !showAllButtons.isEmpty());
-            if (!showAllButtons.isEmpty()) {
-                WebElement button = showAllButtons.get(0);
-                logger.info("SCRAPER", "🔄 'Show All Chapters' button found, clicking...");
-                button.click();
-
-                // Adaptive wait loop with scroll to ensure all chapters load
-                int lastSize = 0;
-                int sameCount = 0;
-                int iteration = 0;
-                while (sameCount < 3) {
-                    List<WebElement> chaptersLoaded = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
-                    if (chaptersLoaded.size() == lastSize) {
-                        sameCount++;
-                    } else {
-                        sameCount = 0;
-                        lastSize = chaptersLoaded.size();
-                    }
-
-                    ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, document.body.scrollHeight);");
-                    Thread.sleep(500);
-                    iteration++;
-                    logger.debug("SCRAPER", "Scroll iteration " + iteration + ": lastSize=" + lastSize + ", sameCount=" + sameCount);
-                }
-
-                logger.info("SCRAPER", "🔁 Finished scrolling. Total chapters loaded: " + lastSize);
+            String listUrl = resolveFullChapterListUrl(titleUrl);
+            if (listUrl == null || listUrl.isBlank()) {
+                logger.warn("SCRAPER", "⚠️ Unable to resolve full chapter list URL for: " + titleUrl);
+                return List.of();
             }
 
-            // Final chapter extraction
-            List<WebElement> chapterLinks = driver.findElements(By.cssSelector("a.flex.items-center.p-2"));
-            logger.info("SCRAPER", "🔍 Found " + chapterLinks.size() + " chapter links for URL: " + titleUrl);
-            logger.debug("SCRAPER", "Chapter extraction complete for URL: " + titleUrl + " with total links: " + chapterLinks.size());
+            logger.debug("SCRAPER", "Fetching full chapter list from: " + listUrl);
+            Document doc = Jsoup.connect(listUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout(15_000)
+                    .get();
+
+            Elements chapterLinks = doc.select("a[href^=https://weebcentral.com/chapters/]");
+            logger.info("SCRAPER", "Found " + chapterLinks.size() + " chapter links for URL: " + titleUrl);
 
             for (int index = 0; index < chapterLinks.size(); index++) {
-                try {
-                    WebElement chapter = chapterLinks.get(index);
+                Element chapter = chapterLinks.get(index);
+                String chapterTitle = chapter.text();
+                String href = chapter.absUrl("href");
+                String chapterNumber = extractChapterNumberFull(chapterTitle);
 
-                    String chapterTitle = chapter.getText();
-                    String href = chapter.getAttribute("href");
-
-                    String chapterNumber = extractChapterNumber(chapterTitle);
-                    Map<String, String> data = new HashMap<>();
-                    data.put("chapter_number", chapterNumber.isEmpty() ? String.valueOf(index) : chapterNumber);
-                    data.put("chapter_title", chapterTitle);
-                    data.put("href", href);
-                    chapters.add(data);
-
-                    logger.info("SCRAPER", "📄 Chapter [" + index + "]: " + chapterTitle + " -> " + href);
-                } catch (Exception inner) {
-                    logger.warn("SCRAPER", "⚠️ Failed to parse chapter at index " + index + ": " + inner.getMessage());
-                }
+                Map<String, String> data = new HashMap<>();
+                data.put("chapter_number", chapterNumber.isEmpty() ? String.valueOf(index) : chapterNumber);
+                data.put("chapter_title", chapterTitle);
+                data.put("href", href);
+                rawChapters.add(data);
             }
 
         } catch (Exception e) {
             logger.error("SCRAPER", "❌ Error scraping chapters: " + e.getMessage(), e);
-        } finally {
-            driver.quit();
         }
 
+        List<Map<String, String>> chapters = preferWholeChapters(rawChapters);
         logger.debug("SCRAPER", "Completed chapter scrape for URL: " + titleUrl + ". Total chapters collected: " + chapters.size());
         return chapters;
     }
 
-    private String extractChapterNumber(String text) {
-        String cleaned = text.replaceAll("[^0-9.]", "");
-        if (cleaned.contains(".")) {
-            String[] parts = cleaned.split("\\.");
-            return parts[0];
+    private String resolveFullChapterListUrl(String titleUrl) {
+        if (titleUrl == null || titleUrl.isBlank()) {
+            return null;
         }
-        return cleaned;
+
+        try {
+            URI uri = URI.create(titleUrl.trim());
+            String[] parts = uri.getPath().split("/");
+            String seriesId = null;
+            for (int i = 0; i < parts.length; i++) {
+                if ("series".equals(parts[i]) && i + 1 < parts.length) {
+                    seriesId = parts[i + 1];
+                    break;
+                }
+            }
+            if (seriesId == null || seriesId.isBlank()) {
+                return null;
+            }
+
+            String scheme = uri.getScheme() != null ? uri.getScheme() : "https";
+            String host = uri.getHost() != null ? uri.getHost() : "weebcentral.com";
+            return scheme + "://" + host + "/series/" + seriesId + "/full-chapter-list";
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private List<Map<String, String>> preferWholeChapters(List<Map<String, String>> chapters) {
+        if (chapters == null || chapters.isEmpty()) {
+            return List.of();
+        }
+
+        // WeebCentral sometimes includes special fractional chapters (ex: 11.5). Prefer the whole-number chapter when both exist.
+        Map<String, Map<String, String>> selectedByKey = new HashMap<>();
+        List<String> keyOrder = new ArrayList<>();
+
+        int fallback = 0;
+        for (Map<String, String> chapter : chapters) {
+            if (chapter == null) {
+                continue;
+            }
+
+            String number = chapter.getOrDefault("chapter_number", "");
+            String key = "";
+            if (number != null && !number.isBlank()) {
+                int dot = number.indexOf('.');
+                key = dot >= 0 ? number.substring(0, dot) : number;
+            }
+            if (key == null || key.isBlank()) {
+                key = "unknown-" + fallback;
+                fallback++;
+            }
+
+            Map<String, String> existing = selectedByKey.get(key);
+            if (existing == null) {
+                selectedByKey.put(key, chapter);
+                keyOrder.add(key);
+                continue;
+            }
+
+            String existingNumber = existing.getOrDefault("chapter_number", "");
+            boolean existingWhole = existingNumber != null && !existingNumber.contains(".");
+            boolean nextWhole = number != null && !number.contains(".");
+            if (!existingWhole && nextWhole) {
+                selectedByKey.put(key, chapter);
+            }
+        }
+
+        List<Map<String, String>> selected = new ArrayList<>(keyOrder.size());
+        for (String key : keyOrder) {
+            Map<String, String> chapter = selectedByKey.get(key);
+            if (chapter != null) {
+                selected.add(chapter);
+            }
+        }
+        return selected;
+    }
+
+    private String extractChapterNumberFull(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+
+        Matcher m = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)", Pattern.CASE_INSENSITIVE).matcher(text);
+        if (m.find()) {
+            return m.group(1);
+        }
+
+        m = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
+        if (m.find()) {
+            return m.group(1);
+        }
+
+        return "";
     }
 }

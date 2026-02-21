@@ -49,6 +49,21 @@ const createRavenStub = (overrides = {}) => ({
     async getLibrary() {
         throw new Error('getLibrary should not be called')
     },
+    async getTitle() {
+        throw new Error('getTitle should not be called')
+    },
+    async createTitle() {
+        throw new Error('createTitle should not be called')
+    },
+    async updateTitle() {
+        throw new Error('updateTitle should not be called')
+    },
+    async deleteTitle() {
+        throw new Error('deleteTitle should not be called')
+    },
+    async listTitleFiles() {
+        throw new Error('listTitleFiles should not be called')
+    },
     async searchTitle() {
         throw new Error('searchTitle should not be called')
     },
@@ -1151,6 +1166,140 @@ test('GET /api/raven/library surfaces Raven errors', async (t) => {
     assert.equal(response.status, 502)
     const payload = await response.json()
     assert.ok(payload.error.includes('Raven library'))
+})
+
+test('GET /api/raven/title/:uuid proxies Raven title lookups', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getTitle(uuid) {
+                calls.push(uuid)
+                return {uuid, title: 'Absolute Duo'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/title-123`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {uuid: 'title-123', title: 'Absolute Duo'})
+    assert.deepEqual(calls, ['title-123'])
+})
+
+test('GET /api/raven/title/:uuid returns 404 for unknown titles', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getTitle() {
+                return null
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/missing`)
+    assert.equal(response.status, 404)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('not found'))
+})
+
+test('POST /api/raven/title proxies Raven title creation', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async createTitle(payload) {
+                calls.push(payload)
+                return {uuid: 'uuid-1', title: payload.title, sourceUrl: payload.sourceUrl ?? null}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({title: '  One Piece  ', sourceUrl: '  https://example.test  '}),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {uuid: 'uuid-1', title: 'One Piece', sourceUrl: 'https://example.test'})
+    assert.deepEqual(calls, [{title: 'One Piece', sourceUrl: 'https://example.test'}])
+})
+
+test('PATCH /api/raven/title/:uuid proxies Raven title updates', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async updateTitle(uuid, payload) {
+                calls.push([uuid, payload])
+                return {uuid, title: payload.title ?? null, sourceUrl: payload.sourceUrl ?? null}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/title-abc`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({title: '  Updated  '}),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {uuid: 'title-abc', title: 'Updated', sourceUrl: null})
+    assert.deepEqual(calls, [['title-abc', {title: 'Updated', sourceUrl: null}]])
+})
+
+test('DELETE /api/raven/title/:uuid proxies Raven title deletes', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async deleteTitle(uuid) {
+                calls.push(uuid)
+                return {deleted: true}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/title-del`, {method: 'DELETE'})
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {deleted: true})
+    assert.deepEqual(calls, ['title-del'])
+})
+
+test('GET /api/raven/title/:uuid/files proxies Raven file listings', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async listTitleFiles(uuid, options) {
+                calls.push([uuid, options])
+                return {uuid, title: 'Absolute Duo', files: []}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/title-files/files?limit=50`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {uuid: 'title-files', title: 'Absolute Duo', files: []})
+    assert.deepEqual(calls, [['title-files', {limit: '50'}]])
 })
 
 test('POST /api/raven/search forwards trimmed query to Raven client', async (t) => {
