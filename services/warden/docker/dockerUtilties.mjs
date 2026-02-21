@@ -1,7 +1,7 @@
 // services/warden/docker/dockerUtilties.mjs
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
-import { debugMSG, log, warn } from '../../../utilities/etc/logger.mjs';
+import {debugMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 
 const docker = new Docker();
 
@@ -179,6 +179,52 @@ export async function containerExists(name, options = {}) {
         const names = Array.isArray(container.Names) ? container.Names : [];
         return names.some(matches);
     });
+}
+
+/**
+ * Removes containers that match the provided service name.
+ *
+ * Uses the same matcher as containerExists so compose-style names such as
+ * stack_noona-vault_1 are handled consistently.
+ */
+export async function removeContainers(name, options = {}) {
+    if (!name) {
+        return [];
+    }
+
+    const {dockerInstance = docker} = options;
+    const list = await dockerInstance.listContainers({all: true});
+    const target = name.toLowerCase();
+    const matcher = buildNameMatcher(target);
+
+    const matches = (rawName = '') => {
+        if (!rawName) {
+            return false;
+        }
+
+        const normalized = rawName.replace(/^\//, '').toLowerCase();
+        if (normalized === target) {
+            return true;
+        }
+
+        return matcher.test(normalized);
+    };
+
+    const matched = list.filter((container = {}) => {
+        const names = Array.isArray(container.Names) ? container.Names : [];
+        return names.some(matches);
+    });
+
+    for (const container of matched) {
+        try {
+            await dockerInstance.getContainer(container.Id).remove({force: true});
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            debugMSG(`[dockerUtil] Failed to remove container ${container.Id}: ${message}`);
+        }
+    }
+
+    return matched.map((container) => container.Id);
 }
 
 /**

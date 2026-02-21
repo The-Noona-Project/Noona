@@ -1,6 +1,5 @@
 // services/warden/shared/wardenCore.mjs
 import fs from 'node:fs';
-import path from 'node:path';
 
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
@@ -15,18 +14,15 @@ import {
     runContainerWithLogs,
     waitForHealthyStatus,
 } from '../docker/dockerUtilties.mjs';
-import { log, warn } from '../../../utilities/etc/logger.mjs';
+import {log, warn} from '../../../utilities/etc/logger.mjs';
 import {
-    normalizeDockerSocket as normalizeSocketPath,
-    isWindowsPipePath,
     defaultDockerSocketDetector,
     isTcpDockerSocket,
+    isWindowsPipePath,
+    normalizeDockerSocket as normalizeSocketPath,
     parseTcpDockerSocket,
 } from '../../../utilities/etc/dockerSockets.mjs';
-import {
-    createWizardStateClient,
-    createWizardStatePublisher,
-} from '../../sage/shared/wizardStateClient.mjs';
+import {createWizardStateClient, createWizardStatePublisher,} from '../../sage/shared/wizardStateClient.mjs';
 
 const describeSocketReference = (value) => {
     if (!value) {
@@ -995,7 +991,7 @@ export function createWarden(options = {}) {
         return null;
     };
 
-    api.startService = async function startService(service, healthUrl = null) {
+    api.startService = async function startService(service, healthUrl = null, options = {}) {
         if (!service) {
             throw new Error('Service descriptor is required.');
         }
@@ -1014,6 +1010,7 @@ export function createWarden(options = {}) {
 
         const dockerClient = await ensureDockerConnection();
         const hostServiceUrl = api.resolveHostServiceUrl(service);
+        const recreate = options?.recreate === true;
         let alreadyRunning = false;
 
         try {
@@ -1029,6 +1026,35 @@ export function createWarden(options = {}) {
                 error: message,
             });
             throw error;
+        }
+
+        if (alreadyRunning && recreate) {
+            appendHistoryEntry(serviceName, {
+                type: 'status',
+                status: 'recreating',
+                message: 'Recreating container to apply updated configuration',
+                detail: null,
+            });
+
+            try {
+                if (typeof dockerUtils.removeContainers === 'function') {
+                    await dockerUtils.removeContainers(serviceName, {dockerInstance: dockerClient});
+                } else {
+                    await dockerClient.getContainer(serviceName).remove({force: true});
+                }
+                alreadyRunning = false;
+            } catch (error) {
+                markDockerConnectionStale(error);
+                const message = error instanceof Error ? error.message : String(error);
+                appendHistoryEntry(serviceName, {
+                    type: 'error',
+                    status: 'error',
+                    message: 'Failed to remove existing container',
+                    detail: message,
+                    error: message,
+                });
+                throw error;
+            }
         }
 
         if (!alreadyRunning) {
@@ -1557,7 +1583,8 @@ export function createWarden(options = {}) {
         });
 
         try {
-            await api.startService(serviceDescriptor, healthUrl);
+            const recreate = normalizedOverrides && Object.keys(normalizedOverrides).length > 0;
+            await api.startService(serviceDescriptor, healthUrl, {recreate});
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             appendHistoryEntry(descriptor.name, {

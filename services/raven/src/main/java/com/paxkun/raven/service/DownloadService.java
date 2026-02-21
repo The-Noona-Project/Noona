@@ -1,10 +1,6 @@
 package com.paxkun.raven.service;
 
-import com.paxkun.raven.service.download.DownloadChapter;
-import com.paxkun.raven.service.download.DownloadProgress;
-import com.paxkun.raven.service.download.SearchTitle;
-import com.paxkun.raven.service.download.SourceFinder;
-import com.paxkun.raven.service.download.TitleScraper;
+import com.paxkun.raven.service.download.*;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import org.openqa.selenium.StaleElementReferenceException;
@@ -16,7 +12,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Supplier;
@@ -186,6 +184,10 @@ public class DownloadService {
                             " | url=" + sanitizeForLog(titleUrl));
 
             NewTitle titleRecord = libraryService.resolveOrCreateTitle(titleName, titleUrl);
+            String summary = titleScraper.getSummary(titleUrl);
+            if (summary != null && !summary.isBlank()) {
+                titleRecord.setSummary(summary);
+            }
 
             List<Map<String, String>> chapters = fetchAllChaptersWithRetry(titleUrl);
             if (chapters.isEmpty()) {
@@ -200,10 +202,27 @@ public class DownloadService {
             String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
             Path titleFolder = getDownloadRoot().resolve(cleanTitle);
             Files.createDirectories(titleFolder);
+            titleRecord.setDownloadPath(titleFolder.toString());
 
-            progress.markStarted(chapters.size());
+            // Process oldest -> newest so lastDownloaded ends at the latest chapter number.
+            List<Map<String, String>> chaptersToDownload = new ArrayList<>(chapters);
+            chaptersToDownload.sort(Comparator.comparingDouble(chapter -> {
+                String chapterTitle = chapter.get("chapter_title");
+                String chapterNumber = extractChapterNumberFull(chapterTitle);
+                if ("0000".equals(chapterNumber)) {
+                    return Double.POSITIVE_INFINITY;
+                }
+                try {
+                    return Double.parseDouble(chapterNumber);
+                } catch (NumberFormatException e) {
+                    return Double.POSITIVE_INFINITY;
+                }
+            }));
 
-            for (Map<String, String> chapter : chapters) {
+            titleRecord.setChapterCount(chaptersToDownload.size());
+            progress.markStarted(chaptersToDownload.size());
+
+            for (Map<String, String> chapter : chaptersToDownload) {
                 String chapterTitle = chapter.get("chapter_title");
                 String chapterNumber = extractChapterNumberFull(chapterTitle);
                 String chapterUrl = chapter.get("href");
@@ -238,10 +257,17 @@ public class DownloadService {
 
                 logger.info("DOWNLOAD", "📦 Saved [" + cbzName + "] with " + pageCount + " pages at " + cbzPath);
 
-                titleRecord.setLastDownloaded(chapterNumber);
-                libraryService.addOrUpdateTitle(titleRecord, new NewChapter(chapterNumber));
                 progress.chapterCompleted();
+                titleRecord.setLastDownloaded(chapterNumber);
+                titleRecord.setChaptersDownloaded(progress.getCompletedChapters());
+                libraryService.addOrUpdateTitle(titleRecord, new NewChapter(chapterNumber));
             }
+
+            titleRecord.setChaptersDownloaded(progress.getCompletedChapters());
+            libraryService.addOrUpdateTitle(
+                    titleRecord,
+                    new NewChapter(Optional.ofNullable(titleRecord.getLastDownloaded()).orElse("0"))
+            );
 
             result.setChapterName(titleName);
             result.setStatus("✅ Download completed.");

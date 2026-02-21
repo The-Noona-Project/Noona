@@ -1,37 +1,37 @@
 {
-  "name": "noona-moon",
-  "private": true,
-  "version": "1.0.0",
-  "type": "module",
+  "name": "@once-ui-system/magic-portfolio",
+  "version": "2.3.0",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "test": "vitest run"
+    "dev": "next dev",
+    "build": "next build",
+    "biome-write": "npx @biomejs/biome format --write .",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "lint": "next lint"
   },
   "dependencies": {
-    "@chakra-ui/icons": "^2.1.1",
-    "@chakra-ui/react": "^2.9.1",
-    "@emotion/react": "^11.13.5",
-    "@emotion/styled": "^11.13.5",
-    "@mdi/js": "^7.4.47",
-    "@textkernel/oneui": "^28.2.1",
-    "framer-motion": "^11.11.1",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.28.0"
+    "@mdx-js/loader": "^3.1.0",
+    "@next/mdx": "^16.0.10",
+    "@once-ui-system/core": "latest",
+    "classnames": "^2.5.1",
+    "cookie": "^1.0.2",
+    "gray-matter": "^4.0.3",
+    "lint-staged": "^16.1.5",
+    "next": "^16.0.10",
+    "next-mdx-remote": "^6.0.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.3",
+    "react-icons": "^5.5.0",
+    "sass": "^1.86.3",
+    "transliteration": "^2.3.5"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.4.5",
-    "@testing-library/react": "^16.0.0",
-    "@testing-library/user-event": "^14.5.2",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "jsdom": "^25.0.1",
-    "postcss-nested": "^7.0.2",
-    "typescript": "^5.6.3",
-    "vite": "^7.0.0",
-    "vitest": "^2.1.4"
+    "@biomejs/biome": "^1.9.4",
+    "@types/cookie": "^0.6.0",
+    "@types/node": "^20.17.30",
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.25.0",
+    "typescript": "^5.8.3",
+    "tzdata": "^1.0.44"
   }
 }

@@ -1,6 +1,8 @@
 # Deployment Control Panel
 
-The deployment tooling is now driven entirely from the lightweight Express server in `deployment/webServer.mjs`. It exposes the same Docker workflows that previously powered the Ink CLI, but the interface now lives in a React + OneUI experience that is bundled with Vite from `deployment/panel/` and emitted to `deployment/dist/`.
+The deployment tooling is now driven entirely from the lightweight Express server in `deployment/webServer.mjs`. It exposes the same Docker workflows that previously powered the Ink CLI, but the interface now lives in a React + OnceUI experience that is bundled with Vite from `deployment/panel/` and emitted to `deployment/dist/`.
+
+For a step-by-step walkthrough of the OnceUI wizard layout, endpoint triggers, and prerequisites, read [docs/onceui-deployment-wizard.md](./onceui-deployment-wizard.md).
 
 ## Getting Started
 
@@ -62,12 +64,12 @@ The page is organised into cards. Each card writes NDJSON responses into the str
 * Buttons and inputs follow the browser's default keyboard navigation order.
 * Screen readers announce log updates thanks to `aria-live` attributes on the stream and status panes.
 
-## Moon Bundle Monitoring
+## Deployment Panel Bundle Monitoring
 
-Moon's Vite build now emits three large vendor chunks so the ops team can track their cache characteristics and CDN behavior. Warden deployments should expect the following asset prefixes inside `services/moon/dist/assets/`:
+The OnceUI deployment panel's Vite build emits three large vendor chunks so the ops team can track their cache characteristics and CDN behavior. Warden deployments should expect the following asset prefixes inside `deployment/dist/assets/`:
 
-* `react-*.js` – React runtime shared by the dashboard and setup wizard.
-* `chakra-*.js` – Chakra UI plus the Emotion styling runtime that powers the design system components.
-* `oneui-*.js` – Textkernel OneUI widgets and theme bindings used across the control panel shell.
+* `react-*.js` – React runtime shared by the dashboard and settings editors.
+* `onceui-*.js` – OnceUI widgets and theme bindings used across the control panel shell.
+* `vendor-*.js` – Additional shared dependencies used by the panel routes and streaming log renderer.
 
 If any of these bundles approaches the CDN alert thresholds, review the dependency graph for regressions before the next release.

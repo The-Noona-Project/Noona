@@ -42,27 +42,34 @@ class LibraryServiceTest {
 
     @Test
     void addOrUpdateTitlePersistsToVaultAndLogs() {
-        NewTitle title = new NewTitle("Solo Leveling", "uuid-123", "http://source", "99");
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setUuid("uuid-123");
+        title.setSourceUrl("http://source");
+        title.setLastDownloaded("99");
         NewChapter chapter = new NewChapter("100");
 
         libraryService.addOrUpdateTitle(title, chapter);
 
         Map<String, Object> expectedQuery = Map.of("uuid", title.getUuid());
-        Map<String, Object> expectedSet = Map.of(
-                "uuid", title.getUuid(),
-                "title", title.getTitleName(),
-                "sourceUrl", title.getSourceUrl(),
-                "lastDownloaded", chapter.getChapter()
-        );
-        Map<String, Object> expectedUpdate = Map.of("$set", expectedSet);
+        verify(vaultService).update(eq("manga_library"), eq(expectedQuery), mapCaptor.capture(), eq(true));
 
-        verify(vaultService).update("manga_library", expectedQuery, expectedUpdate, true);
+        Map<String, Object> update = mapCaptor.getValue();
+        assertThat(update).containsKey("$set");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) update.get("$set");
+        assertThat(set)
+                .containsEntry("uuid", title.getUuid())
+                .containsEntry("title", title.getTitleName())
+                .containsEntry("sourceUrl", title.getSourceUrl())
+                .containsEntry("lastDownloaded", chapter.getChapter())
+                .containsKey("lastDownloadedAt");
         verify(loggerService).info("LIBRARY", "📚 Updated title [" + title.getTitleName() + "] to chapter " + chapter.getChapter());
     }
 
     @Test
     void checkForNewChaptersReturnsWarningWhenNoTitles() {
-        when(vaultService.findAll("manga_library")).thenReturn(List.of());
+        when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of());
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(Collections.emptyList());
 
         String result = libraryService.checkForNewChapters();
@@ -74,8 +81,12 @@ class LibraryServiceTest {
 
     @Test
     void checkForNewChaptersDownloadsAndUpdatesWhenNewChaptersFound() {
-        NewTitle title = new NewTitle("Omniscient Reader", "uuid-456", "http://omniscient", "1");
-        when(vaultService.findAll("manga_library")).thenReturn(List.of(Map.of("title", title.getTitleName())));
+        NewTitle title = new NewTitle();
+        title.setTitleName("Omniscient Reader");
+        title.setUuid("uuid-456");
+        title.setSourceUrl("http://omniscient");
+        title.setLastDownloaded("1");
+        when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
         when(vaultService.fetchLatestChapterFromSource(title.getSourceUrl())).thenReturn("2");
 
@@ -95,8 +106,12 @@ class LibraryServiceTest {
 
     @Test
     void checkForNewChaptersSkipsWhenAlreadyUpToDate() {
-        NewTitle title = new NewTitle("Tower of God", "uuid-789", "http://tower", "105");
-        when(vaultService.findAll("manga_library")).thenReturn(List.of(Map.of("title", title.getTitleName())));
+        NewTitle title = new NewTitle();
+        title.setTitleName("Tower of God");
+        title.setUuid("uuid-789");
+        title.setSourceUrl("http://tower");
+        title.setLastDownloaded("105");
+        when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
         when(vaultService.fetchLatestChapterFromSource(title.getSourceUrl())).thenReturn("105");
 
@@ -109,7 +124,7 @@ class LibraryServiceTest {
 
     @Test
     void resolveOrCreateTitleCreatesNewEntryWhenMissing() {
-        when(vaultService.findOne("manga_library", Map.of("title", "Solo Leveling"))).thenReturn(null);
+        when(vaultService.findOne("manga_library", Map.of("title", "Solo Leveling", "deletedAt", Map.of("$exists", false)))).thenReturn(null);
 
         NewTitle created = libraryService.resolveOrCreateTitle("Solo Leveling", "http://solo");
 
@@ -132,7 +147,13 @@ class LibraryServiceTest {
         stored.put("uuid", "existing-uuid");
         stored.put("sourceUrl", "");
         stored.put("lastDownloaded", "7");
-        when(vaultService.findOne("manga_library", Map.of("title", "Solo Leveling"))).thenReturn(stored);
+        when(vaultService.findOne("manga_library", Map.of("title", "Solo Leveling", "deletedAt", Map.of("$exists", false)))).thenReturn(stored);
+        NewTitle existing = new NewTitle();
+        existing.setTitleName("Solo Leveling");
+        existing.setUuid("existing-uuid");
+        existing.setSourceUrl("");
+        existing.setLastDownloaded("7");
+        when(vaultService.parseJson(eq(stored), eq(NewTitle.class))).thenReturn(existing);
 
         NewTitle resolved = libraryService.resolveOrCreateTitle("Solo Leveling", "http://solo");
 
@@ -151,7 +172,7 @@ class LibraryServiceTest {
                 "lastDownloaded", "23"
         );
 
-        when(vaultService.findAll("manga_library")).thenReturn(List.of(vaultDoc));
+        when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(vaultDoc));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenAnswer(invocation -> {
             List<Map<String, Object>> docs = invocation.getArgument(0);
             Type type = invocation.getArgument(1);

@@ -9,6 +9,7 @@ import { createDiscordSetupClient } from './discordSetupClient.mjs'
 import { createRavenClient } from './ravenClient.mjs'
 import { createWizardStateClient } from './wizardStateClient.mjs'
 import {
+    createDefaultWizardState,
     normalizeWizardMetadata,
     resolveWizardStateOperation,
     WIZARD_STEP_KEYS,
@@ -641,6 +642,70 @@ export const createSageApp = ({
         }
     })
 
+    app.post('/api/setup/services/validate', async (req, res) => {
+        try {
+            const services = normalizeServiceInstallPayload(req.body?.services ?? req.body)
+            const payload = { services }
+
+            if (req.headers?.accept?.includes('application/x-ndjson')) {
+                res.setHeader('Content-Type', 'application/x-ndjson')
+                res.write(`${JSON.stringify({ type: 'validation', data: payload })}\n`)
+                res.end()
+                return
+            }
+
+            res.json(payload)
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ⚠️ Validation failed: ${error.message}`)
+            res.status(502).json({ error: 'Unable to validate selection.' })
+        }
+    })
+
+    app.post('/api/setup/services/preview', async (req, res) => {
+        try {
+            const services = normalizeServiceInstallPayload(req.body?.services ?? req.body)
+            const catalog = await setupClient.listServices({ includeInstalled: true })
+            const knownNames = new Set(catalog.map((entry) => entry?.name).filter(Boolean))
+
+            const normalized = services.map((entry) => ({
+                name: entry.name,
+                env: entry.env ?? {},
+                known: knownNames.has(entry.name),
+            }))
+
+            const payload = {
+                services: normalized,
+                summary: {
+                    total: normalized.length,
+                    known: normalized.filter((entry) => entry.known).length,
+                    unknown: normalized.filter((entry) => !entry.known).length,
+                },
+            }
+
+            if (req.headers?.accept?.includes('application/x-ndjson')) {
+                res.setHeader('Content-Type', 'application/x-ndjson')
+                res.write(`${JSON.stringify({ type: 'preview', data: payload })}\n`)
+                res.end()
+                return
+            }
+
+            res.json(payload)
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({ error: error.message })
+                return
+            }
+
+            logger.error(`[${serviceName}] ⚠️ Preview failed: ${error.message}`)
+            res.status(502).json({ error: 'Unable to preview selection.' })
+        }
+    })
+
     app.get('/api/setup/services/install/progress', async (req, res) => {
         try {
             const progress = await setupClient.getInstallProgress()
@@ -693,6 +758,14 @@ export const createSageApp = ({
         res.json(wizardMetadata)
     })
 
+    app.get('/api/wizard/steps', (_req, res) => {
+        res.json({
+            steps: wizardMetadata.steps,
+            featureFlags: wizardMetadata.featureFlags,
+            defaults: createDefaultWizardState(),
+        })
+    })
+
     app.get('/api/setup/wizard/state', async (_req, res) => {
         if (!wizardStateClient) {
             res.status(503).json({ error: 'Wizard state storage is not configured.' })
@@ -705,6 +778,24 @@ export const createSageApp = ({
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load wizard state: ${error.message}`)
             res.status(502).json({ error: 'Unable to load setup wizard state.' })
+        }
+    })
+
+    app.get('/api/wizard/progress', async (_req, res) => {
+        const progressFallback = { items: [], status: 'idle', percent: null }
+
+        try {
+            const [wizard, progress] = await Promise.all([
+                wizardStateClient
+                    ? wizardStateClient.loadState({ fallbackToDefault: true })
+                    : Promise.resolve(createDefaultWizardState()),
+                setupClient.getInstallProgress().catch(() => progressFallback),
+            ])
+
+            res.json({ wizard, progress: progress ?? progressFallback })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load wizard progress: ${error.message}`)
+            res.status(502).json({ error: 'Unable to load wizard progress.' })
         }
     })
 
@@ -1152,6 +1243,120 @@ export const createSageApp = ({
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load Raven library: ${error.message}`)
             res.status(502).json({ error: 'Unable to retrieve Raven library.' })
+        }
+    })
+
+    app.get('/api/raven/title/:uuid', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const title = await ravenClient.getTitle(uuid)
+            if (!title) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(title)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven title.'})
+        }
+    })
+
+    app.post('/api/raven/title', async (req, res) => {
+        const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
+        const sourceUrl = typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl.trim() : ''
+
+        if (!title) {
+            res.status(400).json({error: 'title is required.'})
+            return
+        }
+
+        try {
+            const created = await ravenClient.createTitle({title, sourceUrl: sourceUrl || null})
+            res.status(200).json(created)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to create Raven title ${title}: ${error.message}`)
+            res.status(502).json({error: 'Unable to create Raven title.'})
+        }
+    })
+
+    app.patch('/api/raven/title/:uuid', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+        const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
+        const sourceUrl = typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        if (!title && !sourceUrl) {
+            res.status(400).json({error: 'At least one of title/sourceUrl must be provided.'})
+            return
+        }
+
+        try {
+            const updated = await ravenClient.updateTitle(uuid, {title: title || null, sourceUrl: sourceUrl || null})
+            if (!updated) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(updated)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to update Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to update Raven title.'})
+        }
+    })
+
+    app.delete('/api/raven/title/:uuid', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const result = await ravenClient.deleteTitle(uuid)
+            if (!result) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(result)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to delete Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to delete Raven title.'})
+        }
+    })
+
+    app.get('/api/raven/title/:uuid/files', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+        const limit = req.query?.limit
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const files = await ravenClient.listTitleFiles(uuid, {limit})
+            if (!files) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(files)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven files for ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven title files.'})
         }
     })
 

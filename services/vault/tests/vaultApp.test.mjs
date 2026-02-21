@@ -300,3 +300,153 @@ test('POST /v1/vault/handle returns array payloads from handler', async () => {
         server.close(err => (err ? reject(err) : resolve()))
     );
 });
+
+test('GET /api/secrets/:path returns stored secret payload', async () => {
+    const packets = [];
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async packet => {
+            packets.push(packet);
+            return {status: 'ok', data: {path: packet.payload.query.path, secret: {username: 'pax'}}};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/secrets/portal%2F123`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {username: 'pax'});
+    assert.deepEqual(packets, [{
+        storageType: 'mongo',
+        operation: 'find',
+        payload: {
+            collection: 'vault_secrets',
+            query: {path: 'portal/123'},
+        },
+    }]);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('GET /api/secrets/:path returns 404 when secret is missing', async () => {
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async () => ({error: 'No document found'}),
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/secrets/portal%2Fmissing`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+
+    assert.equal(response.status, 404);
+    const payload = await response.json();
+    assert.ok(payload.error.includes('Secret'));
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('PUT /api/secrets/:path writes secret via packet handler', async () => {
+    const packets = [];
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async packet => {
+            packets.push(packet);
+            return {status: 'ok', matched: 0, modified: 1};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/secrets/portal%2F999`, {
+        method: 'PUT',
+        headers: {'content-type': 'application/json', authorization: 'Bearer secret'},
+        body: JSON.stringify({secret: {email: 'test@example.com'}}),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {ok: true});
+    assert.equal(packets.length, 1);
+    assert.equal(packets[0].storageType, 'mongo');
+    assert.equal(packets[0].operation, 'update');
+    assert.equal(packets[0].payload.collection, 'vault_secrets');
+    assert.deepEqual(packets[0].payload.query, {path: 'portal/999'});
+    assert.equal(packets[0].payload.upsert, true);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('DELETE /api/secrets/:path deletes secret via packet handler', async () => {
+    const packets = [];
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async packet => {
+            packets.push(packet);
+            return {status: 'ok', deleted: 1};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/secrets/portal%2Fdelete-me`, {
+        method: 'DELETE',
+        headers: {authorization: 'Bearer secret'},
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {deleted: true});
+    assert.deepEqual(packets, [{
+        storageType: 'mongo',
+        operation: 'delete',
+        payload: {
+            collection: 'vault_secrets',
+            query: {path: 'portal/delete-me'},
+        },
+    }]);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});

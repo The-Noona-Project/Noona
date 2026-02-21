@@ -83,15 +83,26 @@ const parseResponsePayload = async (response) => {
     }
 
     const contentType = response.headers?.get?.('content-type') ?? ''
+    const text = await response.text().catch(() => '')
+    if (!text) {
+        return contentType.includes('application/json') ? {} : ''
+    }
 
-    if (contentType.includes('application/json')) {
-        return await response.json()
+    const trimmed = text.trim()
+    const shouldParseJson =
+        contentType.includes('application/json') ||
+        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+        (trimmed.startsWith('"') && trimmed.endsWith('"'))
+
+    if (!shouldParseJson) {
+        return text
     }
 
     try {
-        return await response.json()
+        return JSON.parse(trimmed)
     } catch (_) {
-        return await response.text()
+        return text
     }
 }
 
@@ -141,7 +152,7 @@ export const createRavenClient = ({
         cachedCandidates = [preferred, ...candidates.filter((entry) => entry !== preferred)]
     }
 
-    const fetchFromRaven = async (path, options) => {
+    const fetchFromRaven = async (path, options, {acceptStatuses = []} = {}) => {
         const candidates = await buildCandidates()
         const errors = []
 
@@ -150,7 +161,8 @@ export const createRavenClient = ({
                 const requestUrl = new URL(path, candidate)
                 const response = await fetchImpl(requestUrl.toString(), options)
 
-                if (!response.ok) {
+                const accept = new Set([200, 201, 202, 204, ...acceptStatuses])
+                if (!accept.has(response.status)) {
                     throw new Error(`Raven responded with status ${response.status}`)
                 }
 
@@ -172,6 +184,115 @@ export const createRavenClient = ({
     return {
         async getLibrary() {
             const response = await fetchFromRaven('/v1/library/getall')
+            return await parseResponsePayload(response)
+        },
+
+        async getTitle(uuid) {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : ''
+            if (!normalized) {
+                throw new Error('uuid is required.')
+            }
+
+            const encoded = encodeURIComponent(normalized)
+            const response = await fetchFromRaven(`/v1/library/title/${encoded}`, undefined, {acceptStatuses: [404]})
+            if (response.status === 404) {
+                return null
+            }
+
+            return await parseResponsePayload(response)
+        },
+
+        async createTitle({title, sourceUrl} = {}) {
+            const normalizedTitle = typeof title === 'string' ? title.trim() : ''
+            if (!normalizedTitle) {
+                throw new Error('title is required.')
+            }
+
+            const response = await fetchFromRaven('/v1/library/title', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({title: normalizedTitle, sourceUrl}),
+            })
+
+            return await parseResponsePayload(response)
+        },
+
+        async updateTitle(uuid, {title, sourceUrl} = {}) {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : ''
+            if (!normalized) {
+                throw new Error('uuid is required.')
+            }
+
+            const payload = {}
+            if (typeof title === 'string' && title.trim()) {
+                payload.title = title.trim()
+            }
+            if (typeof sourceUrl === 'string' && sourceUrl.trim()) {
+                payload.sourceUrl = sourceUrl.trim()
+            }
+
+            if (!Object.keys(payload).length) {
+                throw new Error('At least one of title/sourceUrl must be provided.')
+            }
+
+            const encoded = encodeURIComponent(normalized)
+            const response = await fetchFromRaven(`/v1/library/title/${encoded}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify(payload),
+            }, {acceptStatuses: [404]})
+
+            if (response.status === 404) {
+                return null
+            }
+
+            return await parseResponsePayload(response)
+        },
+
+        async deleteTitle(uuid) {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : ''
+            if (!normalized) {
+                throw new Error('uuid is required.')
+            }
+
+            const encoded = encodeURIComponent(normalized)
+            const response = await fetchFromRaven(`/v1/library/title/${encoded}`, {
+                method: 'DELETE',
+                headers: {Accept: 'application/json'},
+            }, {acceptStatuses: [404]})
+
+            if (response.status === 404) {
+                return null
+            }
+
+            return await parseResponsePayload(response)
+        },
+
+        async listTitleFiles(uuid, {limit} = {}) {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : ''
+            if (!normalized) {
+                throw new Error('uuid is required.')
+            }
+
+            const encoded = encodeURIComponent(normalized)
+            const normalizedLimit =
+                typeof limit === 'number'
+                    ? limit
+                    : typeof limit === 'string' && limit.trim()
+                        ? Number(limit)
+                        : NaN
+            const suffix = Number.isFinite(normalizedLimit)
+                ? `?limit=${encodeURIComponent(String(normalizedLimit))}`
+                : ''
+
+            const response = await fetchFromRaven(`/v1/library/title/${encoded}/files${suffix}`, undefined, {
+                acceptStatuses: [404],
+            })
+
+            if (response.status === 404) {
+                return null
+            }
+
             return await parseResponsePayload(response)
         },
 

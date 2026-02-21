@@ -7,19 +7,29 @@
     "deploy:server": "node deployment/webServer.mjs",
     "deploy:panel:dev": "vite --config deployment/panel/vite.config.ts",
     "deploy:panel:build": "vite build --config deployment/panel/vite.config.ts",
-    "deploy:panel:preview": "vite preview --config deployment/panel/vite.config.ts"
+    "deploy:panel:preview": "vite preview --config deployment/panel/vite.config.ts",
+    "docker:list": "node scripts/docker-images.mjs list",
+    "docker:build": "node scripts/docker-images.mjs build",
+    "docker:push": "node scripts/docker-images.mjs push",
+    "docker:publish": "node scripts/docker-images.mjs publish",
+    "test": "vitest --config deployment/panel/vite.config.ts run"
   },
   "devDependencies": {
     "@babel/cli": "^7.26.0",
     "@babel/core": "^7.26.0",
     "@babel/preset-react": "^7.26.3",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.2.0",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.2.6",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "docdash": "^2.0.1",
     "jsdoc": "^4.0.3",
+    "jsdom": "^26.0.0",
     "typescript": "^5.9.3",
-    "vite": "^7.2.2"
+    "vite": "^7.2.2",
+    "vitest": "^3.0.4"
   },
   "dependencies": {
     "dockerode": "^4.0.9",
