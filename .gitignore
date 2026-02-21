@@ -52,6 +52,7 @@ deployment/.dockerignore
 *.tmp
 
 # Custom exclusions
+.noona-data/
 services/**/package-lock.json
 !services/moon/package-lock.json
 services/**/logs/

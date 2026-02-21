@@ -83,15 +83,26 @@ const parseResponsePayload = async (response) => {
     }
 
     const contentType = response.headers?.get?.('content-type') ?? ''
+    const text = await response.text().catch(() => '')
+    if (!text) {
+        return contentType.includes('application/json') ? {} : ''
+    }
 
-    if (contentType.includes('application/json')) {
-        return await response.json()
+    const trimmed = text.trim()
+    const shouldParseJson =
+        contentType.includes('application/json') ||
+        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+        (trimmed.startsWith('"') && trimmed.endsWith('"'))
+
+    if (!shouldParseJson) {
+        return text
     }
 
     try {
-        return await response.json()
+        return JSON.parse(trimmed)
     } catch (_) {
-        return await response.text()
+        return text
     }
 }
 
