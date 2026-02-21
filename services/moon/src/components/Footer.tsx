@@ -1,9 +1,20 @@
-import {Row, IconButton, SmartLink, Text} from "@once-ui-system/core";
-import {social} from "@/resources";
+import {IconButton, Row, SmartLink, Text} from "@once-ui-system/core";
 import styles from "./Footer.module.scss";
 
 export const Footer = () => {
     const currentYear = new Date().getFullYear();
+    const links = [
+        {
+            name: "GitHub",
+            icon: "github",
+            link: "https://github.com/The-Noona-Project",
+        },
+        {
+            name: "Discord",
+            icon: "discord",
+            link: "https://discord.gg/ukhtZrgJ9e",
+        },
+    ];
 
     return (
         <Row as="footer" fillWidth padding="8" horizontal="center" s={{direction: "column"}}>
@@ -31,19 +42,16 @@ export const Footer = () => {
                     </Text>
                 </Text>
                 <Row gap="16">
-                    {social.map(
-                        (item) =>
-                            item.link && (
-                                <IconButton
-                                    key={item.name}
-                                    href={item.link}
-                                    icon={item.icon}
-                                    tooltip={item.name}
-                                    size="s"
-                                    variant="ghost"
-                                />
-                            ),
-                    )}
+                    {links.map((item) => (
+                        <IconButton
+                            key={item.name}
+                            href={item.link}
+                            icon={item.icon}
+                            tooltip={item.name}
+                            size="s"
+                            variant="ghost"
+                        />
+                    ))}
                 </Row>
             </Row>
             <Row height="80" hide s={{hide: false}}/>

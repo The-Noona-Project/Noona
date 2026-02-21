@@ -32,4 +32,29 @@ public class NewTitle {
 
     /** Last downloaded chapter number (used for update checking). */
     private String lastDownloaded;
+
+    /**
+     * Timestamp (ISO-8601) when the last chapter update was recorded.
+     */
+    private String lastDownloadedAt;
+
+    /**
+     * Total chapters discovered for this title at the time of the latest download run.
+     */
+    private Integer chapterCount;
+
+    /**
+     * Chapters downloaded (or processed) during the latest download run.
+     */
+    private Integer chaptersDownloaded;
+
+    /**
+     * Download folder path (inside the container) where Raven stores files for this title.
+     */
+    private String downloadPath;
+
+    /**
+     * Optional summary/description scraped from the source site.
+     */
+    private String summary;
 }

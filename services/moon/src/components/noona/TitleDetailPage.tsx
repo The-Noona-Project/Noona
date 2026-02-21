@@ -2,7 +2,7 @@
 
 import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
+import {Badge, Button, Card, Column, Heading, Input, Line, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
 
 type RavenTitle = {
@@ -12,6 +12,10 @@ type RavenTitle = {
     sourceUrl?: string | null;
     lastDownloaded?: string | null;
     lastDownloadedAt?: string | null;
+    chapterCount?: number | null;
+    chaptersDownloaded?: number | null;
+    downloadPath?: string | null;
+    summary?: string | null;
 };
 
 type TitleFile = {
@@ -263,6 +267,14 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                             last chapter: {title.lastDownloaded}
                                         </Badge>
                                     )}
+                                    {typeof title?.chapterCount === "number" && Number.isFinite(title.chapterCount) && (
+                                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            chapters:{" "}
+                                            {typeof title?.chaptersDownloaded === "number" && Number.isFinite(title.chaptersDownloaded)
+                                                ? `${title.chaptersDownloaded}/${title.chapterCount}`
+                                                : title.chapterCount}
+                                        </Badge>
+                                    )}
                                     <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
                                         files: {fileCount}
                                     </Badge>
@@ -271,11 +283,28 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                             latest file: {latestFileTimestamp}
                                         </Badge>
                                     )}
+                                    {typeof title?.lastDownloadedAt === "string" && title.lastDownloadedAt.trim() && (
+                                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            updated: {title.lastDownloadedAt}
+                                        </Badge>
+                                    )}
                                 </Row>
 
                                 {typeof title?.sourceUrl === "string" && title.sourceUrl.trim() && (
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Source: {title.sourceUrl}
+                                        Source: <SmartLink href={title.sourceUrl}>{title.sourceUrl}</SmartLink>
+                                    </Text>
+                                )}
+
+                                {typeof title?.downloadPath === "string" && title.downloadPath.trim() && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Download path: {title.downloadPath}
+                                    </Text>
+                                )}
+
+                                {typeof title?.summary === "string" && title.summary.trim() && (
+                                    <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
+                                        {title.summary}
                                     </Text>
                                 )}
                             </Column>

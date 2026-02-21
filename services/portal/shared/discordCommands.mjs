@@ -1,7 +1,7 @@
 // services/portal/shared/discordCommands.mjs
 
-import { ApplicationCommandOptionType } from 'discord.js';
-import { errMSG, log } from '../../../utilities/etc/logger.mjs';
+import {ApplicationCommandOptionType} from 'discord.js';
+import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const ensureArray = (value) => {
     if (!value) {
@@ -26,6 +26,24 @@ const resolveDiscordId = interaction => interaction?.user?.id
     ?? interaction?.member?.user?.id
     ?? interaction?.member?.id
     ?? null;
+
+const normalizeDiscordIdCandidate = (value) => {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const digits = trimmed.replace(/\D/g, '');
+    if (!digits) {
+        return null;
+    }
+
+    return digits;
+};
 
 const respondWithError = async (interaction, message) => {
     const payload = { content: message, ephemeral: true };
@@ -190,11 +208,11 @@ export const createPortalSlashCommands = ({
                     name: 'username',
                     description: 'Kavita username to look up.',
                     type: ApplicationCommandOptionType.String,
-                    required: true,
+                    required: false,
                 },
                 {
                     name: 'discord_id',
-                    description: 'Optional Discord identifier to fetch stored credentials.',
+                    description: 'Discord identifier/mention to fetch stored credentials.',
                     type: ApplicationCommandOptionType.String,
                     required: false,
                 },
@@ -207,19 +225,28 @@ export const createPortalSlashCommands = ({
                 throw new Error('Kavita client is not configured for search.');
             }
 
-            const username = interaction.options?.getString('username', true);
-            const discordId = interaction.options?.getString('discord_id') ?? null;
+            const usernameRaw = interaction.options?.getString('username') ?? null;
+            const username = typeof usernameRaw === 'string' ? usernameRaw.trim() : '';
+            const discordIdRaw = interaction.options?.getString('discord_id') ?? null;
+            const discordId = normalizeDiscordIdCandidate(discordIdRaw);
+
+            if (!username && !discordId) {
+                await respondWithError(interaction, 'Provide a Kavita username or a Discord id to search.');
+                return;
+            }
 
             let user = null;
-            try {
-                user = await kavita.fetchUser(username);
-            } catch (error) {
-                const status = error && typeof error === 'object' ? error.status : null;
-                if (status === 404) {
-                    user = null;
-                } else {
-                    errMSG(`[Portal/Discord] Kavita search failed: ${error.message}`);
-                    throw error;
+            if (username) {
+                try {
+                    user = await kavita.fetchUser(username);
+                } catch (error) {
+                    const status = error && typeof error === 'object' ? error.status : null;
+                    if (status === 404) {
+                        user = null;
+                    } else {
+                        errMSG(`[Portal/Discord] Kavita search failed: ${error.message}`);
+                        throw error;
+                    }
                 }
             }
 
@@ -232,6 +259,17 @@ export const createPortalSlashCommands = ({
                 }
             }
 
+            if (!user && credential && credential.username) {
+                try {
+                    user = await kavita.fetchUser(String(credential.username));
+                } catch (error) {
+                    const status = error && typeof error === 'object' ? error.status : null;
+                    if (status !== 404) {
+                        errMSG(`[Portal/Discord] Kavita credential lookup failed: ${error.message}`);
+                    }
+                }
+            }
+
             const payload = {
                 content: 'Search complete.',
                 ephemeral: true,
@@ -239,12 +277,17 @@ export const createPortalSlashCommands = ({
 
             const details = [];
             if (user) {
-                details.push(`Kavita user **${user.username ?? username}** found.`);
+                const resolvedName = user.username ?? (username || String(credential?.username ?? ''));
+                details.push(`Kavita user **${resolvedName}** found.`);
                 if (Array.isArray(user.libraries) && user.libraries.length) {
                     details.push(`Libraries: ${user.libraries.join(', ')}`);
                 }
             } else {
-                details.push(`No Kavita user found for **${username}**.`);
+                if (username) {
+                    details.push(`No Kavita user found for **${username}**.`);
+                } else {
+                    details.push('No Kavita user record was found.');
+                }
             }
 
             if (credential) {

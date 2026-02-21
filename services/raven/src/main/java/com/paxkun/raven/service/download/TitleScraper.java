@@ -131,6 +131,35 @@ public class TitleScraper {
         return chapters;
     }
 
+    public String getSummary(String titleUrl) {
+        if (titleUrl == null || titleUrl.isBlank()) {
+            return null;
+        }
+
+        try {
+            Document doc = Jsoup.connect(titleUrl.trim())
+                    .userAgent(USER_AGENT)
+                    .timeout(15_000)
+                    .get();
+
+            Element description = doc.selectFirst("strong:matchesOwn((?i)Description) + p");
+            if (description == null) {
+                return null;
+            }
+
+            String summary = description.text();
+            if (summary == null) {
+                return null;
+            }
+
+            String trimmed = summary.trim();
+            return trimmed.isBlank() ? null : trimmed;
+        } catch (Exception e) {
+            logger.warn("SCRAPER", "âš ï¸ Failed to fetch summary: " + e.getMessage());
+            return null;
+        }
+    }
+
     private String resolveFullChapterListUrl(String titleUrl) {
         if (titleUrl == null || titleUrl.isBlank()) {
             return null;

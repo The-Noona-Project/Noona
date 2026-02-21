@@ -9,13 +9,13 @@ const DEFAULT_TAG = process.env.NOONA_DOCKER_TAG || 'latest';
 const ROOT = resolve('.');
 
 const SERVICES = [
-    {name: 'noona-warden', dockerfile: 'deployment/warden.Dockerfile'},
-    {name: 'noona-moon', dockerfile: 'deployment/moon.Dockerfile'},
-    {name: 'noona-sage', dockerfile: 'deployment/sage.Dockerfile'},
-    {name: 'noona-vault', dockerfile: 'deployment/vault.Dockerfile'},
-    {name: 'noona-raven', dockerfile: 'deployment/raven.Dockerfile'},
-    {name: 'noona-portal', dockerfile: 'deployment/portal.Dockerfile'},
-    {name: 'noona-oracle', dockerfile: 'deployment/oracle.Dockerfile', optional: true},
+    {name: 'noona-warden', dockerfile: 'warden.Dockerfile'},
+    {name: 'noona-moon', dockerfile: 'moon.Dockerfile'},
+    {name: 'noona-sage', dockerfile: 'sage.Dockerfile'},
+    {name: 'noona-vault', dockerfile: 'vault.Dockerfile'},
+    {name: 'noona-raven', dockerfile: 'raven.Dockerfile'},
+    {name: 'noona-portal', dockerfile: 'portal.Dockerfile'},
+    {name: 'noona-oracle', dockerfile: 'oracle.Dockerfile', optional: true},
 ];
 
 const ALIASES = Object.freeze({
@@ -217,4 +217,3 @@ main().catch((error) => {
     console.error(error?.stack || error?.message || String(error));
     process.exitCode = 1;
 });
-

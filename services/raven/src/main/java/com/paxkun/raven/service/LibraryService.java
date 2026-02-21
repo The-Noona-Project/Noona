@@ -34,15 +34,39 @@ public class LibraryService {
 
     public void addOrUpdateTitle(NewTitle title, NewChapter chapter) {
         Map<String, Object> query = Map.of("uuid", title.getUuid());
-        Map<String, Object> update = Map.of(
-                "$set", Map.of(
-                        "uuid", title.getUuid(),
-                        "title", title.getTitleName(),
-                        "sourceUrl", title.getSourceUrl(),
-                        "lastDownloaded", chapter.getChapter(),
-                        "lastDownloadedAt", ISO_FORMATTER.format(Instant.now())
-                )
-        );
+        String now = ISO_FORMATTER.format(Instant.now());
+
+        Map<String, Object> set = new HashMap<>();
+        set.put("uuid", title.getUuid());
+        set.put("title", title.getTitleName());
+        set.put("sourceUrl", title.getSourceUrl());
+        set.put("lastDownloaded", chapter.getChapter());
+        set.put("lastDownloadedAt", now);
+
+        if (title.getChapterCount() != null) {
+            set.put("chapterCount", title.getChapterCount());
+        }
+
+        if (title.getChaptersDownloaded() != null) {
+            set.put("chaptersDownloaded", title.getChaptersDownloaded());
+        }
+
+        String downloadPath = title.getDownloadPath();
+        if (downloadPath == null || downloadPath.isBlank()) {
+            downloadPath = resolveDownloadPath(title.getTitleName());
+        }
+        if (downloadPath != null && !downloadPath.isBlank()) {
+            set.put("downloadPath", downloadPath);
+            title.setDownloadPath(downloadPath);
+        }
+
+        if (title.getSummary() != null && !title.getSummary().isBlank()) {
+            set.put("summary", title.getSummary());
+        }
+
+        title.setLastDownloadedAt(now);
+
+        Map<String, Object> update = Map.of("$set", set);
 
         vaultService.update(COLLECTION, query, update, true);
         logger.info("LIBRARY", "📚 Updated title [" + title.getTitleName() + "] to chapter " + chapter.getChapter());
@@ -63,12 +87,7 @@ public class LibraryService {
         Map<String, Object> doc = vaultService.findOne(COLLECTION, query);
         if (doc == null) return null;
 
-        return new NewTitle(
-                (String) doc.get("title"),
-                (String) doc.get("uuid"),
-                (String) doc.get("sourceUrl"),
-                (String) doc.getOrDefault("lastDownloaded", "0")
-        );
+        return vaultService.parseJson(doc, NewTitle.class);
     }
 
     public NewTitle getTitleByUuid(String uuid) {
@@ -83,12 +102,7 @@ public class LibraryService {
         Map<String, Object> doc = vaultService.findOne(COLLECTION, query);
         if (doc == null) return null;
 
-        return new NewTitle(
-                (String) doc.get("title"),
-                (String) doc.get("uuid"),
-                (String) doc.get("sourceUrl"),
-                (String) doc.getOrDefault("lastDownloaded", "0")
-        );
+        return vaultService.parseJson(doc, NewTitle.class);
     }
 
     public NewTitle updateTitle(String uuid, String titleName, String sourceUrl) {
@@ -201,9 +215,31 @@ public class LibraryService {
             return existing;
         }
 
-        NewTitle created = new NewTitle(titleName, UUID.randomUUID().toString(), sourceUrl, "0");
+        NewTitle created = new NewTitle();
+        created.setTitleName(titleName);
+        created.setUuid(UUID.randomUUID().toString());
+        created.setSourceUrl(sourceUrl);
+        created.setLastDownloaded("0");
         addOrUpdateTitle(created, new NewChapter("0"));
         return created;
+    }
+
+    private String resolveDownloadPath(String titleName) {
+        if (titleName == null || titleName.isBlank()) {
+            return null;
+        }
+
+        Path root = logger.getDownloadsRoot();
+        if (root == null) {
+            return null;
+        }
+
+        String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
+        if (cleanTitle.isBlank()) {
+            return null;
+        }
+
+        return root.resolve(cleanTitle).toString();
     }
 
     public String checkForNewChapters() {
