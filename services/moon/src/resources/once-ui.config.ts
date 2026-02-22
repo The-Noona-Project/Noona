@@ -12,14 +12,19 @@ import {
     StyleConfig,
 } from "@/types";
 import {home} from "./index";
+// Import and set font for each variant
+import {Geist, Geist_Mono} from "next/font/google";
 
 // IMPORTANT: Replace with your own domain address - it's used for SEO in meta tags and schema
 const baseURL: string = "https://demo.magic-portfolio.com";
 
 const routes: RoutesConfig = {
     "/": true,
+    "/login": true,
+    "/signup": true,
     "/setupwizard": true,
     "/libraries": true,
+    "/settings": true,
     "/about": false,
     "/work": false,
     "/blog": false,
@@ -27,7 +32,7 @@ const routes: RoutesConfig = {
 };
 
 const display: DisplayConfig = {
-    location: true,
+    location: false,
     time: true,
     themeSwitcher: true,
 };
@@ -37,10 +42,6 @@ const display: DisplayConfig = {
 const protectedRoutes: ProtectedRoutesConfig = {
     "/work/automate-design-handovers-with-a-figma-to-code-pipeline": true,
 };
-
-// Import and set font for each variant
-import {Geist} from "next/font/google";
-import {Geist_Mono} from "next/font/google";
 
 const heading = Geist({
     variable: "--font-heading",

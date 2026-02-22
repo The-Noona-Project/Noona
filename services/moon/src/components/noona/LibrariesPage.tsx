@@ -2,8 +2,9 @@
 
 import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {Badge, Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
+import {AuthGate} from "./AuthGate";
 
 type RavenTitle = {
     title?: string | null;
@@ -11,6 +12,10 @@ type RavenTitle = {
     uuid?: string | null;
     sourceUrl?: string | null;
     lastDownloaded?: string | null;
+    coverUrl?: string | null;
+    type?: string | null;
+    chapterCount?: number | null;
+    chaptersDownloaded?: number | null;
 };
 
 type RavenSearchOption = {
@@ -18,11 +23,26 @@ type RavenSearchOption = {
     option_number?: string | null;
     title?: string | null;
     href?: string | null;
+    coverUrl?: string | null;
+    type?: string | null;
 };
 
 type RavenSearchResponse = {
     searchId?: string | null;
     options?: RavenSearchOption[] | null;
+};
+
+type RavenDownloadProgress = {
+    title?: string | null;
+    queuedAt?: number | null;
+    totalChapters?: number | null;
+    completedChapters?: number | null;
+    currentChapter?: string | null;
+    status?: string | null;
+    startedAt?: number | null;
+    completedAt?: number | null;
+    errorMessage?: string | null;
+    lastUpdated?: number | null;
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -32,6 +52,7 @@ export function LibrariesPage() {
     const [titles, setTitles] = useState<RavenTitle[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [query, setQuery] = useState("");
+    const [typeFilter, setTypeFilter] = useState<string>("All");
 
     const [addOpen, setAddOpen] = useState(false);
     const [addQuery, setAddQuery] = useState("");
@@ -42,6 +63,9 @@ export function LibrariesPage() {
     const [queueing, setQueueing] = useState(false);
     const [queueError, setQueueError] = useState<string | null>(null);
     const [queueMessage, setQueueMessage] = useState<string | null>(null);
+
+    const [downloads, setDownloads] = useState<RavenDownloadProgress[] | null>(null);
+    const [downloadsError, setDownloadsError] = useState<string | null>(null);
 
     const load = async () => {
         setError(null);
@@ -75,6 +99,67 @@ export function LibrariesPage() {
 
     useEffect(() => {
         void load();
+    }, []);
+
+    const libraryTabs = useMemo(() => {
+        const list = titles ?? [];
+        const counts = new Map<string, number>();
+
+        for (const entry of list) {
+            const raw = normalizeString(entry?.type).trim();
+            const key = raw || "Unknown";
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+
+        const sorted = Array.from(counts.keys()).filter((key) => key !== "Unknown");
+        sorted.sort((a, b) => a.localeCompare(b));
+
+        if (counts.has("Unknown")) {
+            sorted.push("Unknown");
+        }
+
+        return ["All", ...sorted];
+    }, [titles]);
+
+    useEffect(() => {
+        if (!libraryTabs.includes(typeFilter)) {
+            setTypeFilter("All");
+        }
+    }, [libraryTabs, typeFilter]);
+
+    const pollDownloads = async () => {
+        try {
+            const res = await fetch("/api/noona/raven/downloads/status", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as unknown;
+
+            if (!res.ok) {
+                const message =
+                    json && typeof json === "object" && "error" in json && typeof (json as {
+                        error?: unknown
+                    }).error === "string"
+                        ? String((json as { error?: unknown }).error)
+                        : `Failed to load downloads (HTTP ${res.status}).`;
+                throw new Error(message);
+            }
+
+            setDownloads(Array.isArray(json) ? (json as RavenDownloadProgress[]) : []);
+            setDownloadsError(null);
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setDownloadsError(message);
+        }
+    };
+
+    useEffect(() => {
+        const interval = window.setInterval(() => {
+            void pollDownloads();
+        }, 1500);
+
+        void pollDownloads();
+
+        return () => {
+            window.clearInterval(interval);
+        };
     }, []);
 
     const closeAdd = () => {
@@ -197,18 +282,34 @@ export function LibrariesPage() {
     const filtered = useMemo(() => {
         const list = titles ?? [];
         const needle = query.trim().toLowerCase();
-        if (!needle) return list;
+        const normalizedType = typeFilter === "All" ? "" : typeFilter.trim().toLowerCase();
 
         return list.filter((entry) => {
+            if (normalizedType) {
+                const rawType = normalizeString(entry.type).trim();
+                const entryType = rawType ? rawType.toLowerCase() : "unknown";
+
+                if (normalizedType === "unknown") {
+                    if (rawType) return false;
+                } else if (entryType !== normalizedType) {
+                    return false;
+                }
+            }
+
+            if (!needle) {
+                return true;
+            }
+
             const title = normalizeString(entry.title ?? entry.titleName).toLowerCase();
             const uuid = normalizeString(entry.uuid).toLowerCase();
             return title.includes(needle) || uuid.includes(needle);
         });
-    }, [query, titles]);
+    }, [query, titles, typeFilter]);
 
     return (
         <SetupModeGate>
-            <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
+            <AuthGate>
+                <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
                     <Column gap="4" style={{minWidth: 0}}>
                         <Heading variant="display-strong-s" wrap="balance">
@@ -228,6 +329,18 @@ export function LibrariesPage() {
                     </Row>
                 </Row>
 
+                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                        {libraryTabs.map((value) => (
+                            <Button
+                                key={value}
+                                variant={typeFilter === value ? "primary" : "secondary"}
+                                onClick={() => setTypeFilter(value)}
+                            >
+                                {value}
+                            </Button>
+                        ))}
+                    </Row>
+
                 <Input
                     id="library-search"
                     name="library-search"
@@ -236,6 +349,136 @@ export function LibrariesPage() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                 />
+
+                    <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                        <Column gap="12">
+                            <Row horizontal="between" vertical="center" gap="12">
+                                <Heading as="h2" variant="heading-strong-l">
+                                    Downloads
+                                </Heading>
+                                <Button variant="secondary" onClick={() => void pollDownloads()}>
+                                    Refresh
+                                </Button>
+                            </Row>
+
+                            {downloadsError && (
+                                <Text onBackground="danger-strong" variant="body-default-xs">
+                                    {downloadsError}
+                                </Text>
+                            )}
+
+                            {!downloads && !downloadsError && (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Loading download status...
+                                </Text>
+                            )}
+
+                            {downloads && downloads.length === 0 && (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    No active downloads.
+                                </Text>
+                            )}
+
+                            {downloads && downloads.length > 0 && (
+                                <Column gap="8">
+                                    {downloads.map((entry, idx) => {
+                                        const titleName = normalizeString(entry.title).trim() || "Untitled";
+                                        const statusRaw = normalizeString(entry.status).trim() || "unknown";
+                                        const status = statusRaw.toLowerCase();
+                                        const current = normalizeString(entry.currentChapter).trim();
+                                        const errorMessage = normalizeString(entry.errorMessage).trim();
+
+                                        const total =
+                                            typeof entry.totalChapters === "number" && Number.isFinite(entry.totalChapters)
+                                                ? entry.totalChapters
+                                                : 0;
+                                        const completed =
+                                            typeof entry.completedChapters === "number" && Number.isFinite(entry.completedChapters)
+                                                ? entry.completedChapters
+                                                : 0;
+
+                                        const percent = total > 0 ? Math.min(100, Math.max(0, (completed / total) * 100)) : 0;
+
+                                        const badgeBackground =
+                                            status === "completed"
+                                                ? "success-alpha-weak"
+                                                : status === "failed"
+                                                    ? "danger-alpha-weak"
+                                                    : status === "downloading"
+                                                        ? "brand-alpha-weak"
+                                                        : "neutral-alpha-weak";
+
+                                        const barBackground =
+                                            status === "completed"
+                                                ? "success-alpha-medium"
+                                                : status === "failed"
+                                                    ? "danger-alpha-medium"
+                                                    : "brand-alpha-medium";
+
+                                        return (
+                                            <Card
+                                                key={`${titleName}-${typeof entry.queuedAt === "number" ? entry.queuedAt : statusRaw}-${idx}`}
+                                                fillWidth
+                                                background="surface"
+                                                border="neutral-alpha-weak"
+                                                padding="m"
+                                                radius="l"
+                                            >
+                                                <Column gap="12">
+                                                    <Row horizontal="between" vertical="center" gap="12">
+                                                        <Text variant="heading-default-s" wrap="balance">
+                                                            {titleName}
+                                                        </Text>
+                                                        <Badge background={badgeBackground}
+                                                               onBackground="neutral-strong">
+                                                            {statusRaw}
+                                                        </Badge>
+                                                    </Row>
+
+                                                    {(total > 0 || completed > 0) && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            Chapters: {completed}/{total || "?"}
+                                                        </Text>
+                                                    )}
+
+                                                    {current && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            Current: {current}
+                                                        </Text>
+                                                    )}
+
+                                                    {status === "failed" && errorMessage && (
+                                                        <Text onBackground="danger-strong" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            {errorMessage}
+                                                        </Text>
+                                                    )}
+
+                                                    <Row
+                                                        fillWidth
+                                                        background="neutral-alpha-weak"
+                                                        radius="l"
+                                                        style={{height: 8, overflow: "hidden"}}
+                                                    >
+                                                        <Row
+                                                            background={barBackground}
+                                                            radius="l"
+                                                            style={{
+                                                                width: status === "queued" ? "12%" : `${percent}%`,
+                                                                height: "100%",
+                                                                minWidth: status === "queued" ? 18 : 0,
+                                                            }}
+                                                        />
+                                                    </Row>
+                                                </Column>
+                                            </Card>
+                                        );
+                                    })}
+                                </Column>
+                            )}
+                        </Column>
+                    </Card>
 
                 {error && (
                     <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
@@ -270,6 +513,10 @@ export function LibrariesPage() {
                             const uuid = normalizeString(entry.uuid);
                             const title = normalizeString(entry.title ?? entry.titleName) || uuid || "Untitled";
                             const lastDownloaded = normalizeString(entry.lastDownloaded);
+                            const coverUrl = normalizeString(entry.coverUrl).trim();
+                            const type = normalizeString(entry.type).trim();
+                            const chapterCount = typeof entry.chapterCount === "number" && Number.isFinite(entry.chapterCount) ? entry.chapterCount : null;
+                            const chaptersDownloaded = typeof entry.chaptersDownloaded === "number" && Number.isFinite(entry.chaptersDownloaded) ? entry.chaptersDownloaded : null;
 
                             const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
 
@@ -277,21 +524,56 @@ export function LibrariesPage() {
                                 <SmartLink key={uuid || title} href={href}>
                                     <Card background="surface" border="neutral-alpha-weak" padding="l" radius="l"
                                           fillWidth>
-                                        <Column gap="8">
-                                            <Heading as="h3" variant="heading-strong-m" wrap="balance">
-                                                {title}
-                                            </Heading>
-                                            {lastDownloaded && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Last downloaded: {lastDownloaded}
-                                                </Text>
+                                        <Row gap="12" vertical="center">
+                                            {coverUrl && (
+                                                <img
+                                                    src={coverUrl}
+                                                    alt={`${title} cover`}
+                                                    style={{
+                                                        width: 52,
+                                                        height: 78,
+                                                        objectFit: "cover",
+                                                        borderRadius: 10,
+                                                        border: "1px solid rgba(255,255,255,0.12)",
+                                                        flex: "0 0 auto",
+                                                    }}
+                                                    loading="lazy"
+                                                />
                                             )}
-                                            {uuid && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    {uuid}
-                                                </Text>
-                                            )}
-                                        </Column>
+                                            <Column gap="8" style={{minWidth: 0}}>
+                                                <Row horizontal="between" vertical="center" gap="8">
+                                                    <Heading as="h3" variant="heading-strong-m" wrap="balance">
+                                                        {title}
+                                                    </Heading>
+                                                    {type && (
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            {type}
+                                                        </Badge>
+                                                    )}
+                                                </Row>
+
+                                                {typeof chapterCount === "number" && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Chapters:{" "}
+                                                        {typeof chaptersDownloaded === "number"
+                                                            ? `${chaptersDownloaded}/${chapterCount}`
+                                                            : chapterCount}
+                                                    </Text>
+                                                )}
+
+                                                {lastDownloaded && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Last downloaded: {lastDownloaded}
+                                                    </Text>
+                                                )}
+                                                {uuid && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        {uuid}
+                                                    </Text>
+                                                )}
+                                            </Column>
+                                        </Row>
                                     </Card>
                                 </SmartLink>
                             );
@@ -300,13 +582,15 @@ export function LibrariesPage() {
                 )}
 
                 {addOpen && (
-                    <div
+                    <Row
                         role="presentation"
                         onClick={(event) => {
                             if (event.target === event.currentTarget) {
                                 closeAdd();
                             }
                         }}
+                        horizontal="center"
+                        vertical="center"
                         style={{
                             position: "fixed",
                             inset: 0,
@@ -386,6 +670,8 @@ export function LibrariesPage() {
                                                 {searchResult.options.map((option, idx) => {
                                                     const title = normalizeString(option?.title).trim();
                                                     const href = normalizeString(option?.href).trim();
+                                                    const coverUrl = normalizeString(option?.coverUrl).trim();
+                                                    const type = normalizeString(option?.type).trim();
                                                     const optionIndexRaw = normalizeString(option?.option_number ?? option?.index).trim();
                                                     const optionIndexParsed = optionIndexRaw ? Number(optionIndexRaw) : NaN;
                                                     const optionIndex = Number.isFinite(optionIndexParsed) ? optionIndexParsed : idx + 1;
@@ -404,9 +690,39 @@ export function LibrariesPage() {
                                                         >
                                                             <Column gap="8">
                                                                 <Row horizontal="between" vertical="center" gap="12">
-                                                                    <Text variant="heading-default-s" wrap="balance">
-                                                                        {title || `Option ${optionIndex}`}
-                                                                    </Text>
+                                                                    <Row gap="12" vertical="center"
+                                                                         style={{minWidth: 0}}>
+                                                                        {coverUrl && (
+                                                                            <img
+                                                                                src={coverUrl}
+                                                                                alt={`${title || `Option ${optionIndex}`} cover`}
+                                                                                style={{
+                                                                                    width: 44,
+                                                                                    height: 66,
+                                                                                    objectFit: "cover",
+                                                                                    borderRadius: 10,
+                                                                                    border: "1px solid rgba(255,255,255,0.12)",
+                                                                                    flex: "0 0 auto",
+                                                                                }}
+                                                                                loading="lazy"
+                                                                            />
+                                                                        )}
+                                                                        <Column gap="8" style={{minWidth: 0}}>
+                                                                            <Text variant="heading-default-s"
+                                                                                  wrap="balance">
+                                                                                {title || `Option ${optionIndex}`}
+                                                                            </Text>
+                                                                            {type && (
+                                                                                <Row>
+                                                                                    <Badge
+                                                                                        background="neutral-alpha-weak"
+                                                                                        onBackground="neutral-strong">
+                                                                                        {type}
+                                                                                    </Badge>
+                                                                                </Row>
+                                                                            )}
+                                                                        </Column>
+                                                                    </Row>
                                                                     <input
                                                                         type="radio"
                                                                         name="download-source"
@@ -454,9 +770,10 @@ export function LibrariesPage() {
                                 )}
                             </Column>
                         </Card>
-                    </div>
+                    </Row>
                 )}
             </Column>
+            </AuthGate>
         </SetupModeGate>
     );
 }

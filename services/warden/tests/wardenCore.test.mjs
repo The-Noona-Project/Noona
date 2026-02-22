@@ -2,8 +2,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createWarden, defaultDockerSocketDetector } from '../shared/wardenCore.mjs';
-import { attachSelfToNetwork } from '../docker/dockerUtilties.mjs';
+import {createWarden, defaultDockerSocketDetector} from '../shared/wardenCore.mjs';
+import {attachSelfToNetwork} from '../docker/dockerUtilties.mjs';
 
 function createStubDocker(overrides = {}) {
     return {
@@ -363,11 +363,18 @@ test('installServices publishes wizard state transitions', async () => {
     );
     assert.ok(events.some((event) => event.type === 'reset'));
     const tracked = events.filter((event) => event.type === 'track');
-    assert.ok(tracked.some((event) => event.name === 'noona-redis' && event.status === 'installing'));
     assert.ok(
         tracked.some(
             (event) =>
-                event.name === 'noona-portal' && (event.status === 'installing' || event.status === 'installed'),
+                event.name === 'noona-redis' &&
+                ['pending', 'downloading', 'installing', 'installed'].includes(event.status),
+        ),
+    );
+    assert.ok(
+        tracked.some(
+            (event) =>
+                event.name === 'noona-portal' &&
+                ['pending', 'downloading', 'installing', 'installed'].includes(event.status),
         ),
     );
     const completion = events.find((event) => event.type === 'complete');

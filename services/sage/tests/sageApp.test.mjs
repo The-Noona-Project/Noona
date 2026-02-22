@@ -2,23 +2,19 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
+import {once} from 'node:events'
+import crypto from 'node:crypto'
 
-import { ChannelType, GatewayIntentBits } from 'discord.js'
+import {ChannelType, GatewayIntentBits} from 'discord.js'
 
+import {createSageApp, normalizeServiceInstallPayload, SetupValidationError, startSage,} from '../shared/sageApp.mjs'
 import {
-    SetupValidationError,
-    createSageApp,
-    normalizeServiceInstallPayload,
-    startSage,
-} from '../shared/sageApp.mjs'
-import {
-    createDefaultWizardState,
-    DEFAULT_WIZARD_STEP_METADATA,
     appendWizardStepHistoryEntries,
     applyWizardStateUpdates,
+    createDefaultWizardState,
+    DEFAULT_WIZARD_STEP_METADATA,
 } from '../shared/wizardStateSchema.mjs'
-import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
+import {createDiscordSetupClient} from '../shared/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -75,6 +71,252 @@ const createRavenStub = (overrides = {}) => ({
     },
     ...overrides,
 })
+
+const matchesQuery = (doc, query = {}) => {
+    if (!query || typeof query !== 'object') {
+        return true
+    }
+
+    return Object.entries(query).every(([key, value]) => doc?.[key] === value)
+}
+
+const applyMongoUpdate = (doc, update = {}, {isInsert = false} = {}) => {
+    if (isInsert && update?.$setOnInsert && typeof update.$setOnInsert === 'object') {
+        Object.assign(doc, update.$setOnInsert)
+    }
+    if (update?.$set && typeof update.$set === 'object') {
+        Object.assign(doc, update.$set)
+    }
+    return doc
+}
+
+const createVaultAuthStub = ({users = [], settings = []} = {}) => {
+    const userDocs = users.map((entry) => ({...entry}))
+    const settingDocs = settings.map((entry) => ({...entry}))
+    const redisStore = new Map()
+    const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeUsername = (value) => normalizeString(value)
+    const normalizeUsernameKey = (value) => normalizeUsername(value).toLowerCase()
+    const normalizeRole = (value, fallback = 'member') => {
+        const normalized = normalizeString(value).toLowerCase()
+        if (normalized === 'admin' || normalized === 'member') {
+            return normalized
+        }
+        return fallback
+    }
+
+    const hashPassword = (password) => {
+        const salt = crypto.randomBytes(16)
+        const derived = crypto.scryptSync(password, salt, 64, {
+            N: 16384,
+            r: 8,
+            p: 1,
+        })
+        return `scrypt$16384$8$1$${salt.toString('base64')}$${derived.toString('base64')}`
+    }
+
+    const verifyPassword = (password, stored) => {
+        if (typeof password !== 'string' || !password || typeof stored !== 'string' || !stored) {
+            return false
+        }
+
+        const parts = stored.split('$')
+        if (parts.length !== 6 || parts[0] !== 'scrypt') {
+            return false
+        }
+
+        const N = Number(parts[1])
+        const r = Number(parts[2])
+        const p = Number(parts[3])
+        const salt = Buffer.from(parts[4], 'base64')
+        const expected = Buffer.from(parts[5], 'base64')
+        const derived = crypto.scryptSync(password, salt, expected.length, {N, r, p})
+        return crypto.timingSafeEqual(derived, expected)
+    }
+
+    const lookupKeyForUser = (user) => {
+        const normalized = normalizeUsernameKey(user?.usernameNormalized)
+        if (normalized) return normalized
+        return normalizeUsernameKey(user?.username)
+    }
+
+    const toPublicUser = (user) => ({
+        username: normalizeUsername(user?.username),
+        usernameNormalized: lookupKeyForUser(user),
+        role: normalizeRole(user?.role, 'member'),
+        createdAt: normalizeString(user?.createdAt) || null,
+        updatedAt: normalizeString(user?.updatedAt) || null,
+    })
+
+    const findUserIndex = (lookup) => userDocs.findIndex((entry) => lookupKeyForUser(entry) === normalizeUsernameKey(lookup))
+
+    const createVaultError = (message, status) => {
+        const error = new Error(message)
+        error.status = status
+        error.payload = {error: message}
+        return error
+    }
+
+    const updateCollection = (collectionName, query = {}, update = {}, {upsert = false} = {}) => {
+        const target = collectionName === 'noona_users' ? userDocs : settingDocs
+        const index = target.findIndex((doc) => matchesQuery(doc, query))
+
+        if (index >= 0) {
+            target[index] = applyMongoUpdate({...target[index]}, update, {isInsert: false})
+            return {status: 'ok', matched: 1, modified: 1}
+        }
+
+        if (!upsert) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const inserted = applyMongoUpdate({...query}, update, {isInsert: true})
+        target.push(inserted)
+        return {status: 'ok', matched: 0, modified: 0}
+    }
+
+    return {
+        userDocs,
+        settingDocs,
+        redisStore,
+        client: {
+            mongo: {
+                async findOne(collectionName, query = {}) {
+                    if (collectionName === 'noona_users') {
+                        return userDocs.find((doc) => matchesQuery(doc, query)) ?? null
+                    }
+                    if (collectionName === 'noona_settings') {
+                        return settingDocs.find((doc) => matchesQuery(doc, query)) ?? null
+                    }
+                    return null
+                },
+                async insert(collectionName, data = {}) {
+                    if (collectionName === 'noona_users') {
+                        userDocs.push({...data})
+                        return {status: 'ok', insertedId: `user-${userDocs.length}`}
+                    }
+                    if (collectionName === 'noona_settings') {
+                        settingDocs.push({...data})
+                        return {status: 'ok', insertedId: `setting-${settingDocs.length}`}
+                    }
+                    return {status: 'ok', insertedId: null}
+                },
+                async findMany(collectionName, query = {}) {
+                    if (collectionName === 'noona_users') {
+                        return userDocs.filter((doc) => matchesQuery(doc, query)).map((entry) => ({...entry}))
+                    }
+                    if (collectionName === 'noona_settings') {
+                        return settingDocs.filter((doc) => matchesQuery(doc, query)).map((entry) => ({...entry}))
+                    }
+                    return []
+                },
+                async update(collectionName, query = {}, update = {}, options = {}) {
+                    return updateCollection(collectionName, query, update, options)
+                },
+            },
+            redis: {
+                async set(key, value) {
+                    redisStore.set(key, value)
+                    return {status: 'ok'}
+                },
+                async get(key) {
+                    return redisStore.get(key) ?? null
+                },
+                async del(key) {
+                    return redisStore.delete(key) ? 1 : 0
+                },
+            },
+            users: {
+                async list() {
+                    return userDocs.map((entry) => toPublicUser(entry))
+                },
+                async get(username) {
+                    const idx = findUserIndex(username)
+                    if (idx < 0) return null
+                    return toPublicUser(userDocs[idx])
+                },
+                async create({username, password, role = 'member'} = {}) {
+                    const usernameTrimmed = normalizeUsername(username)
+                    const lookupKey = normalizeUsernameKey(usernameTrimmed)
+                    if (!lookupKey) {
+                        throw createVaultError('username is required.', 400)
+                    }
+                    if (findUserIndex(usernameTrimmed) >= 0) {
+                        throw createVaultError('User already exists.', 409)
+                    }
+
+                    const now = new Date().toISOString()
+                    const doc = {
+                        username: usernameTrimmed,
+                        usernameNormalized: lookupKey,
+                        passwordHash: hashPassword(password),
+                        role: normalizeRole(role, 'member'),
+                        createdAt: now,
+                        updatedAt: now,
+                    }
+                    userDocs.push(doc)
+                    return {ok: true, user: toPublicUser(doc)}
+                },
+                async update(lookupUsername, updates = {}) {
+                    const idx = findUserIndex(lookupUsername)
+                    if (idx < 0) {
+                        throw createVaultError('User not found.', 404)
+                    }
+
+                    const target = {...userDocs[idx]}
+                    if (Object.prototype.hasOwnProperty.call(updates, 'username')) {
+                        const nextUsername = normalizeUsername(updates.username)
+                        const nextLookup = normalizeUsernameKey(nextUsername)
+                        const conflictIdx = findUserIndex(nextUsername)
+                        if (conflictIdx >= 0 && conflictIdx !== idx) {
+                            throw createVaultError('Username is already in use.', 409)
+                        }
+                        target.username = nextUsername
+                        target.usernameNormalized = nextLookup
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(updates, 'password')) {
+                        target.passwordHash = hashPassword(updates.password)
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(updates, 'role')) {
+                        target.role = normalizeRole(updates.role, normalizeRole(target.role, 'member'))
+                    }
+
+                    target.updatedAt = new Date().toISOString()
+                    userDocs[idx] = target
+                    return {ok: true, user: toPublicUser(target)}
+                },
+                async delete(lookupUsername) {
+                    const idx = findUserIndex(lookupUsername)
+                    if (idx < 0) {
+                        return {deleted: false}
+                    }
+                    userDocs.splice(idx, 1)
+                    return {deleted: true}
+                },
+                async authenticate({username, password} = {}) {
+                    const idx = findUserIndex(username)
+                    if (idx < 0) {
+                        return {authenticated: false, user: null}
+                    }
+
+                    const target = userDocs[idx]
+                    const lookupKey = normalizeUsernameKey(username)
+                    if (!normalizeUsernameKey(target.usernameNormalized) && lookupKey) {
+                        target.usernameNormalized = lookupKey
+                    }
+
+                    if (!verifyPassword(password, target.passwordHash)) {
+                        return {authenticated: false, user: null}
+                    }
+
+                    return {authenticated: true, user: toPublicUser(target)}
+                },
+            },
+        },
+    }
+}
 
 test('normalizeServiceInstallPayload normalizes entries and trims values', () => {
     const payload = normalizeServiceInstallPayload([
@@ -1631,6 +1873,349 @@ test('GET /api/setup/services/:name/health surfaces validation errors', async (t
     assert.equal(response.status, 400)
     const payload = await response.json()
     assert.equal(payload.error, 'Unsupported service for health check')
+})
+
+const bootstrapAdminAndLogin = async ({baseUrl, username = 'CaptainPax', password = 'Password123'} = {}) => {
+    const bootstrapResponse = await fetch(`${baseUrl}/api/auth/bootstrap`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, password}),
+    })
+    assert.equal(bootstrapResponse.status, 200)
+    const bootstrapPayload = await bootstrapResponse.json()
+    assert.equal(bootstrapPayload.ok, true)
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, password}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    assert.equal(typeof loginPayload.token, 'string')
+    assert.equal(loginPayload.user.username, username)
+    assert.equal(loginPayload.user.role, 'admin')
+
+    return {
+        username,
+        password,
+        token: loginPayload.token,
+        bootstrapPayload,
+    }
+}
+
+const finalizeBootstrapAdmin = async ({baseUrl, token}) => {
+    const response = await fetch(`${baseUrl}/api/auth/bootstrap/finalize`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+        },
+    })
+    const payload = await response.json()
+    return {response, payload}
+}
+
+test('POST /api/auth/bootstrap stores admin in memory and login works before vault is configured', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const statusBefore = await fetch(`${baseUrl}/api/auth/bootstrap/status`)
+    assert.equal(statusBefore.status, 200)
+    assert.deepEqual(await statusBefore.json(), {
+        setupCompleted: false,
+        adminExists: false,
+        username: null,
+        persisted: false,
+    })
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const statusAfter = await fetch(`${baseUrl}/api/auth/bootstrap/status`)
+    assert.equal(statusAfter.status, 200)
+    assert.deepEqual(await statusAfter.json(), {
+        setupCompleted: false,
+        adminExists: true,
+        username: 'CaptainPax',
+        persisted: false,
+    })
+
+    const authStatus = await fetch(`${baseUrl}/api/auth/status`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(authStatus.status, 200)
+    const authPayload = await authStatus.json()
+    assert.equal(authPayload.user.username, 'CaptainPax')
+    assert.equal(authPayload.user.role, 'admin')
+})
+
+test('POST /api/auth/bootstrap/finalize persists pending admin into vault storage', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    assert.equal(vault.userDocs.length, 0)
+
+    const {response, payload} = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(response.status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.persisted, true)
+    assert.equal(payload.created, true)
+    assert.equal(payload.username, 'CaptainPax')
+
+    const createdAdmin = vault.userDocs.find((entry) => entry.role === 'admin')
+    assert.ok(createdAdmin)
+    assert.equal(createdAdmin.username, 'CaptainPax')
+    assert.equal(createdAdmin.usernameNormalized, 'captainpax')
+    assert.ok(typeof createdAdmin.passwordHash === 'string' && createdAdmin.passwordHash.startsWith('scrypt$'))
+
+    const secondFinalize = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(secondFinalize.response.status, 200)
+    assert.equal(secondFinalize.payload.persisted, false)
+})
+
+test('POST /api/auth/bootstrap/finalize updates existing admin credentials when admin already exists', async (t) => {
+    const oldPasswordHash =
+        'scrypt$16384$8$1$R0Q4jRjN0Bhiw91o0q4LYQ==$XWwI3dI7X9gJQTLf5+3xHzrJQkEM6GShAb8ehIg4s0v8fu4vW7nKfknB/olqV+Y4x9D9iJ8qC6C0VJkpA8Y3jw=='
+
+    const vault = createVaultAuthStub({
+        users: [
+            {
+                username: 'admin',
+                usernameNormalized: 'admin',
+                role: 'admin',
+                passwordHash: oldPasswordHash,
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+            },
+        ],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const {response, payload} = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(response.status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.created, false)
+    assert.equal(payload.persisted, true)
+
+    const updatedAdmin = vault.userDocs.find((entry) => entry.role === 'admin')
+    assert.ok(updatedAdmin)
+    assert.equal(updatedAdmin.username, 'CaptainPax')
+    assert.equal(updatedAdmin.usernameNormalized, 'captainpax')
+    assert.equal(updatedAdmin.createdAt, '2026-01-01T00:00:00.000Z')
+    assert.ok(typeof updatedAdmin.passwordHash === 'string' && updatedAdmin.passwordHash.startsWith('scrypt$'))
+    assert.notEqual(updatedAdmin.passwordHash, oldPasswordHash)
+})
+
+test('POST /api/auth/bootstrap/finalize promotes existing username and demotes stale admin records', async (t) => {
+    const vault = createVaultAuthStub({
+        users: [
+            {
+                username: 'admin',
+                usernameNormalized: 'admin',
+                role: 'admin',
+                passwordHash:
+                    'scrypt$16384$8$1$R0Q4jRjN0Bhiw91o0q4LYQ==$XWwI3dI7X9gJQTLf5+3xHzrJQkEM6GShAb8ehIg4s0v8fu4vW7nKfknB/olqV+Y4x9D9iJ8qC6C0VJkpA8Y3jw==',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+                username: 'CaptainPax',
+                usernameNormalized: 'captainpax',
+                role: 'member',
+                passwordHash:
+                    'scrypt$16384$8$1$R0Q4jRjN0Bhiw91o0q4LYQ==$XWwI3dI7X9gJQTLf5+3xHzrJQkEM6GShAb8ehIg4s0v8fu4vW7nKfknB/olqV+Y4x9D9iJ8qC6C0VJkpA8Y3jw==',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+            },
+        ],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const {response, payload} = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(response.status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.persisted, true)
+
+    const currentAdmin = vault.userDocs.find((entry) => entry.usernameNormalized === 'captainpax')
+    assert.ok(currentAdmin)
+    assert.equal(currentAdmin.role, 'admin')
+    assert.ok(typeof currentAdmin.passwordHash === 'string' && currentAdmin.passwordHash.startsWith('scrypt$'))
+
+    const previousAdmin = vault.userDocs.find((entry) => entry.usernameNormalized === 'admin')
+    assert.ok(previousAdmin)
+    assert.equal(previousAdmin.role, 'member')
+})
+
+test('POST /api/auth/bootstrap returns conflict when setup is already completed', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/auth/bootstrap`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'CaptainPax', password: 'Password123'}),
+    })
+
+    assert.equal(response.status, 409)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Setup already completed.')
+})
+
+test('POST /api/auth/login repairs legacy users missing usernameNormalized', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'captainpax')
+    assert.ok(storedUser)
+    delete storedUser.usernameNormalized
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'CaptainPax', password: 'Password123'}),
+    })
+
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    assert.equal(loginPayload.user.username, 'CaptainPax')
+    assert.equal(loginPayload.user.role, 'admin')
+
+    const refreshedStoredUser = vault.userDocs.find((entry) => entry.username === 'CaptainPax')
+    assert.ok(refreshedStoredUser)
+    assert.equal(refreshedStoredUser.usernameNormalized, 'captainpax')
+})
+
+test('auth user management routes create, update, list, and delete users through vault', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderPrime', role: 'admin'}),
+    })
+    assert.equal(updateResponse.status, 200)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.user.username, 'ReaderPrime')
+    assert.equal(updatePayload.user.role, 'admin')
+
+    const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json()
+    assert.ok(Array.isArray(listPayload.users))
+    assert.ok(listPayload.users.some((entry) => entry.username === 'ReaderPrime'))
+
+    const deleteResponse = await fetch(`${baseUrl}/api/auth/users/ReaderPrime`, {
+        method: 'DELETE',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(deleteResponse.status, 200)
+    assert.deepEqual(await deleteResponse.json(), {deleted: true})
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {

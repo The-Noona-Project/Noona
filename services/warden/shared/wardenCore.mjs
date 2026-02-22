@@ -667,6 +667,7 @@ export function createWarden(options = {}) {
             label: name,
             status: 'pending',
             detail: null,
+            percent: null,
             updatedAt: null,
         };
 
@@ -679,6 +680,21 @@ export function createWarden(options = {}) {
         });
 
         refreshInstallationSummary();
+    };
+
+    const INSTALLATION_STATUS_RANK = Object.freeze({
+        pending: 0,
+        downloading: 1,
+        installing: 2,
+        installed: 3,
+    });
+
+    const resolveInstallationStatusRank = (status) => {
+        if (!status || typeof status !== 'string') {
+            return null;
+        }
+
+        return INSTALLATION_STATUS_RANK[status] ?? null;
     };
 
     const mapStatusForInstallation = (status) => {
@@ -694,10 +710,6 @@ export function createWarden(options = {}) {
                 'ready',
                 'healthy',
                 'running',
-                'complete',
-                'completed',
-                'detected',
-                'configured',
             ].includes(normalized)
         ) {
             return 'installed';
@@ -707,23 +719,88 @@ export function createWarden(options = {}) {
             return 'error';
         }
 
+        if (['pending', 'idle', 'detecting', 'not-found', 'configured', 'detected'].includes(normalized)) {
+            return 'pending';
+        }
+
+        // Docker pull / download phases
         if (
             [
-                'pending',
-                'installing',
                 'pulling',
+                'pulling fs layer',
+                'downloading',
+                'verifying checksum',
+                'waiting',
+                'download complete',
+                'pull complete',
+            ].includes(normalized)
+        ) {
+            return 'downloading';
+        }
+
+        // Docker extraction transitions from download -> install preparation.
+        if (['extracting', 'already-present', 'already exists', 'complete'].includes(normalized)) {
+            return 'installing';
+        }
+
+        if (
+            [
+                'installing',
                 'starting',
+                'started',
+                'recreating',
                 'exists',
                 'health-check',
-                'waiting',
-                'detecting',
-                'not-found',
+                'waiting for health check',
+                'launching',
+                'launched',
             ].includes(normalized)
         ) {
             return 'installing';
         }
 
         return null;
+    };
+
+    const normalizeInstallationDetail = (normalized) => {
+        if (!normalized || typeof normalized !== 'object') {
+            return null;
+        }
+
+        const rawDetail = typeof normalized.detail === 'string' ? normalized.detail.trim() : '';
+        const rawMessage = typeof normalized.message === 'string' ? normalized.message.trim() : '';
+
+        let detail = rawDetail || rawMessage || '';
+
+        // Docker pull progress can emit bare numbers (current bytes without total). Prefer the richer message in those cases.
+        if (rawMessage && (!rawDetail || /^\d+(?:\/\d+)?$/.test(rawDetail))) {
+            detail = rawMessage;
+        }
+
+        if (!detail) {
+            return null;
+        }
+
+        const hostServiceMatch = detail.match(/^host_service_url:\s*(.+)$/i);
+        if (hostServiceMatch) {
+            const url = hostServiceMatch[1]?.trim();
+            detail = url ? `URL: ${url}` : 'URL ready';
+        }
+
+        // Strip docker layer/image identifiers like "[4f4fb700ef54] ".
+        detail = detail.replace(/^\[[^\]]+\]\s*/, '').trim();
+
+        // Drop trailing bare numbers like "Downloading 3".
+        if (/\s\d+$/.test(detail) && !/\d+\/\d+/.test(detail)) {
+            detail = detail.replace(/\s\d+$/, '').trim();
+        }
+
+        // If we still only have numbers, skip showing it in the install progress readout.
+        if (!detail || /^\d+(?:\/\d+)?$/.test(detail)) {
+            return null;
+        }
+
+        return detail;
     };
 
     const appendHistoryEntry = (name, entry = {}, { mirrorToInstallation = true } = {}) => {
@@ -821,7 +898,7 @@ export function createWarden(options = {}) {
         if (name !== INSTALLATION_SERVICE) {
             const mappedStatus = mapStatusForInstallation(normalized.status);
             if (mappedStatus) {
-                const detail = normalized.detail || normalized.message || null;
+                const detail = normalizeInstallationDetail(normalized);
                 const previous = installationStatuses.get(name);
 
                 if (
@@ -829,7 +906,20 @@ export function createWarden(options = {}) {
                     previous.status !== 'error' ||
                     mappedStatus === 'error'
                 ) {
-                    if (!(previous?.status === 'installed' && mappedStatus === 'installing')) {
+                    const previousRank = resolveInstallationStatusRank(previous?.status);
+                    const nextRank = resolveInstallationStatusRank(mappedStatus);
+                    const isRegression =
+                        previousRank != null &&
+                        nextRank != null &&
+                        nextRank < previousRank;
+
+                    const isInstalled = previous?.status === 'installed';
+                    const shouldUpdate =
+                        mappedStatus === 'error' ||
+                        !isInstalled ||
+                        mappedStatus === 'installed';
+
+                    if (shouldUpdate && !isRegression) {
                         updateInstallationStatus(name, mappedStatus, {
                             label: name,
                             detail,
@@ -1490,7 +1580,7 @@ export function createWarden(options = {}) {
                 const detectedMessage = `Kavita data mount detected at ${kavitaDataMount}`;
                 appendHistoryEntry(descriptor.name, {
                     type: 'status',
-                    status: 'installed',
+                    status: 'detected',
                     message: detectedMessage,
                     detail: kavitaDataMount,
                 });
@@ -1577,7 +1667,7 @@ export function createWarden(options = {}) {
 
         appendHistoryEntry(descriptor.name, {
             type: 'status',
-            status: 'installing',
+            status: 'pending',
             message: 'Starting installation',
             detail: null,
         });

@@ -57,4 +57,14 @@ public class NewTitle {
      * Optional summary/description scraped from the source site.
      */
     private String summary;
+
+    /**
+     * Optional cover image URL scraped from the source site.
+     */
+    private String coverUrl;
+
+    /**
+     * Optional title type scraped from the source site (ex: Manga, Manhwa).
+     */
+    private String type;
 }

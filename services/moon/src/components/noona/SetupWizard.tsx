@@ -2,6 +2,7 @@
 
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
+import styles from "./SetupWizard.module.scss";
 
 type EnvConfigField = {
     key: string;
@@ -64,6 +65,9 @@ const isSecretKey = (key: string) => /TOKEN|API_KEY|PASSWORD/i.test(key) || key 
 const isUrlKey = (key: string) => /_URL$|_BASE_URL$/i.test(key);
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+const sanitizeEnvValue = (value: string): string =>
+    value.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
 
 const parseMongoUriParts = (uri: string): { username: string | null; host: string | null } => {
     const trimmed = uri.trim();
@@ -141,6 +145,93 @@ const buildInitialEnvState = (services: ServiceCatalogEntry[]) => {
     return state;
 };
 
+type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
+
+const clampPercent = (value: number) => {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.round(value)));
+};
+
+const formatInstallStatusLabel = (value: string) => {
+    const normalized = value.trim().toLowerCase();
+
+    if (normalized === "idle") return "Idle";
+    if (normalized === "complete" || normalized === "completed") return "Complete";
+    if (normalized === "pending") return "Pending";
+    if (normalized === "downloading") return "Downloading";
+    if (normalized === "installing") return "Installing";
+    if (normalized === "installed") return "Installed";
+    if (normalized === "error") return "Error";
+
+    if (!normalized) return "Unknown";
+    return normalized;
+};
+
+const formatInstallDetail = (detail: string | null | undefined): string | null => {
+    if (!detail || typeof detail !== "string") return null;
+    let text = detail.trim();
+    if (!text) return null;
+
+    // Normalize legacy "host_service_url:" readouts.
+    const hostMatch = text.match(/^host_service_url:\s*(.+)$/i);
+    if (hostMatch) {
+        const url = hostMatch[1]?.trim();
+        text = url ? `URL: ${url}` : "URL ready";
+    }
+
+    // Strip docker layer/image identifiers like "[4f4fb700ef54] ".
+    text = text.replace(/^\[[^\]]+\]\s*/, "").trim();
+
+    // Drop trailing bare numbers like "Downloading 3".
+    if (/\s\d+$/.test(text) && !/\d+\/\d+/.test(text)) {
+        text = text.replace(/\s\d+$/, "").trim();
+    }
+
+    // Hide meaningless numeric-only details.
+    if (/^\d+(?:\/\d+)?$/.test(text)) {
+        return null;
+    }
+
+    return text;
+};
+
+function ProgressBar({
+                         value,
+                         tone = "brand-alpha-medium",
+                         indeterminate = false,
+                     }: {
+    value: number | null;
+    tone?: ProgressTone;
+    indeterminate?: boolean;
+}) {
+    const normalizedValue = value == null ? null : clampPercent(value);
+
+    return (
+        <Row
+            fillWidth
+            background="neutral-alpha-weak"
+            className={styles.progressTrack}
+            style={{
+                height: 8,
+                borderRadius: 999,
+                overflow: "hidden",
+            }}
+        >
+            {indeterminate || normalizedValue == null ? (
+                <Row background={tone} className={styles.progressIndeterminate}/>
+            ) : (
+                <Row
+                    background={tone}
+                    style={{
+                        height: "100%",
+                        width: `${normalizedValue}%`,
+                    }}
+                />
+            )}
+        </Row>
+    );
+}
+
 const buildInstallPayload = ({
                                  services,
                                  selected,
@@ -165,7 +256,7 @@ const buildInstallPayload = ({
             const raw = current[field.key];
             const trimmed = typeof raw === "string" ? raw.trim() : "";
             if (!trimmed) continue;
-            env[field.key] = trimmed;
+            env[field.key] = sanitizeEnvValue(trimmed);
         }
 
         return Object.keys(env).length > 0 ? {name, env} : {name};
@@ -231,11 +322,13 @@ export function SetupWizard() {
     const [installError, setInstallError] = useState<string | null>(null);
     const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
     const [installResult, setInstallResult] = useState<unknown | null>(null);
+    const [summaryOpen, setSummaryOpen] = useState(false);
 
     const [finishing, setFinishing] = useState(false);
     const [finishError, setFinishError] = useState<string | null>(null);
 
     const pollRef = useRef<number | null>(null);
+    const finishInFlightRef = useRef(false);
 
     const services = catalog ?? [];
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
@@ -348,6 +441,7 @@ export function SetupWizard() {
         setInstallError(null);
         setInstallResult(null);
         setInstallProgress(null);
+        setSummaryOpen(false);
 
         stopPolling();
         pollRef.current = window.setInterval(pollProgress, 1200);
@@ -374,6 +468,7 @@ export function SetupWizard() {
             }
 
             setInstallResult(json);
+            setSummaryOpen(true);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             setInstallError(message);
@@ -462,7 +557,7 @@ export function SetupWizard() {
                     const envMap: Record<string, string> = {};
                     for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
                         if (typeof key !== "string" || !key.trim()) continue;
-                        envMap[key] = typeof value === "string" ? value : String(value ?? "");
+                        envMap[key] = sanitizeEnvValue(typeof value === "string" ? value : String(value ?? ""));
                     }
 
                     nextValues[serviceName] = envMap;
@@ -481,6 +576,11 @@ export function SetupWizard() {
     };
 
     const finishSetup = async () => {
+        if (finishInFlightRef.current) {
+            return;
+        }
+
+        finishInFlightRef.current = true;
         setFinishError(null);
         setFinishing(true);
 
@@ -502,6 +602,7 @@ export function SetupWizard() {
             setFinishError(message);
         } finally {
             setFinishing(false);
+            finishInFlightRef.current = false;
         }
     };
 
@@ -594,9 +695,15 @@ export function SetupWizard() {
                                                             </Badge>
                                                         )}
                                                     </Row>
+                                                    {service.description && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            {service.description}
+                                                        </Text>
+                                                    )}
                                                     {service.image && (
                                                         <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            {service.image}
+                                                            Pulls: {service.image}
                                                         </Text>
                                                     )}
                                                 </Column>
@@ -667,7 +774,11 @@ export function SetupWizard() {
                                     disabled={installing || missingPortalKeys.length > 0}
                                     onClick={() => void install()}
                                 >
-                                    {installing ? "Installing..." : "Install selected services"}
+                                    {installing
+                                        ? installProgress?.items?.some((item) => item.status?.trim().toLowerCase() === "downloading")
+                                            ? "Downloading..."
+                                            : "Installing..."
+                                        : "Install selected services"}
                                 </Button>
 
                                 {installError && (
@@ -678,42 +789,66 @@ export function SetupWizard() {
                                     <Column gap="8">
                                         <Row horizontal="between" vertical="center">
                                             <Text onBackground="neutral-weak">
-                                                Status: {installProgress.status}
+                                                Status: {formatInstallStatusLabel(installProgress.status)}
                                             </Text>
                                             <Text onBackground="neutral-weak">
                                                 {installProgress.percent != null ? `${installProgress.percent}%` : ""}
                                             </Text>
                                         </Row>
+                                        <ProgressBar
+                                            value={installProgress.percent ?? 0}
+                                            indeterminate={installProgress.percent == null && installProgress.status !== "idle"}
+                                            tone="brand-alpha-medium"
+                                        />
                                         <Line background="neutral-alpha-weak"/>
                                         <Column gap="8">
-                                            {installProgress.items.map((item) => (
-                                                <Row key={item.name} horizontal="between" gap="12">
-                                                    <Text>{item.label ?? item.name}</Text>
-                                                    <Text onBackground="neutral-weak">{item.status}</Text>
-                                                </Row>
-                                            ))}
+                                            {installProgress.items.map((item) => {
+                                                const normalized = item.status?.trim().toLowerCase() ?? "";
+                                                const isInstalled = normalized === "installed";
+                                                const isError = normalized === "error";
+                                                const isPending = normalized === "pending";
+                                                const detail = formatInstallDetail(item.detail);
+                                                const progressValue = isInstalled ? 100 : isError ? 100 : isPending ? 0 : null;
+                                                const tone: ProgressTone = isInstalled
+                                                    ? "success-alpha-medium"
+                                                    : isError
+                                                        ? "danger-alpha-medium"
+                                                        : isPending
+                                                            ? "neutral-alpha-medium"
+                                                            : "brand-alpha-medium";
+
+                                                return (
+                                                    <Column key={item.name} gap="8">
+                                                        <Row horizontal="between" gap="12" vertical="center">
+                                                            <Text>{item.label ?? item.name}</Text>
+                                                            <Text
+                                                                onBackground="neutral-weak">{formatInstallStatusLabel(item.status)}</Text>
+                                                        </Row>
+                                                        <ProgressBar
+                                                            value={progressValue}
+                                                            indeterminate={progressValue == null}
+                                                            tone={tone}
+                                                        />
+                                                        {detail && (
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                                {detail}
+                                                            </Text>
+                                                        )}
+                                                    </Column>
+                                                );
+                                            })}
                                         </Column>
                                     </Column>
                                 )}
 
                                 {installResult !== null && (
-                                    <Column gap="8">
+                                    <Column gap="12">
                                         <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            Install completed. Refresh services to see updated status.
+                                            Install completed. Open setup summary to finalize setup and continue.
                                         </Text>
-                                        <Button
-                                            size="m"
-                                            variant="primary"
-                                            disabled={finishing}
-                                            onClick={() => void finishSetup()}
-                                        >
-                                            {finishing ? "Finishing..." : "Finish setup and open Noona"}
+                                        <Button size="m" variant="primary" onClick={() => setSummaryOpen(true)}>
+                                            Open setup summary
                                         </Button>
-                                        {finishError && (
-                                            <Text onBackground="danger-strong" variant="body-default-xs">
-                                                {finishError}
-                                            </Text>
-                                        )}
                                     </Column>
                                 )}
                             </Column>
@@ -749,6 +884,17 @@ export function SetupWizard() {
                                                 <Heading as="h3" variant="heading-strong-l">
                                                     {name}
                                                 </Heading>
+                                                {service.description && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                          wrap="balance">
+                                                        {service.description}
+                                                    </Text>
+                                                )}
+                                                {service.image && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Pulls: {service.image}
+                                                    </Text>
+                                                )}
                                                 <Text onBackground="neutral-weak">No configurable environment
                                                     fields.</Text>
                                             </Column>
@@ -771,6 +917,17 @@ export function SetupWizard() {
                                                     <Heading as="h3" variant="heading-strong-l">
                                                         {name}
                                                     </Heading>
+                                                    {service.description && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            {service.description}
+                                                        </Text>
+                                                    )}
+                                                    {service.image && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            Pulls: {service.image}
+                                                        </Text>
+                                                    )}
                                                     {service.hostServiceUrl && (
                                                         <Text onBackground="neutral-weak" variant="body-default-xs">
                                                             {service.hostServiceUrl}
@@ -856,6 +1013,55 @@ export function SetupWizard() {
                             })}
                     </Column>
                 </Row>
+            )}
+
+            {installResult !== null && summaryOpen && (
+                <div className={styles.summaryOverlay}>
+                    <Card background="surface" border="neutral-alpha-weak" radius="l" padding="l"
+                          className={styles.summaryModal}>
+                        <Column gap="12">
+                            <Row horizontal="between" vertical="center" gap="12">
+                                <Heading as="h2" variant="heading-strong-l">
+                                    Setup summary
+                                </Heading>
+                                <Button size="s" variant="secondary" onClick={() => setSummaryOpen(false)}>
+                                    Close
+                                </Button>
+                            </Row>
+
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Final step: mark setup complete and return to the main app.
+                            </Text>
+
+                            <Line background="neutral-alpha-weak"/>
+
+                            <Column gap="12">
+                                <Row gap="8" vertical="center">
+                                    <Badge background="brand-alpha-weak" onBackground="neutral-strong">
+                                        Finalize
+                                    </Badge>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Admin account is already handled before setup. This only closes setup mode.
+                                    </Text>
+                                </Row>
+                            </Column>
+
+                            <Button
+                                size="m"
+                                variant="primary"
+                                disabled={finishing}
+                                onClick={() => void finishSetup()}
+                            >
+                                {finishing ? "Finishing..." : "Finish setup and continue"}
+                            </Button>
+                            {finishError && (
+                                <Text onBackground="danger-strong" variant="body-default-xs">
+                                    {finishError}
+                                </Text>
+                            )}
+                        </Column>
+                    </Card>
+                </div>
             )}
         </Column>
     );

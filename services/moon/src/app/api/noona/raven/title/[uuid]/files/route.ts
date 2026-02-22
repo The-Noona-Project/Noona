@@ -1,5 +1,6 @@
 import {NextRequest, NextResponse} from "next/server";
 import {jsonError, sageJson} from "../../../../_backend";
+import {withNoonaAuthHeaders} from "../../../../_auth";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,9 @@ export async function GET(request: NextRequest, context: { params: Promise<{ uui
     const suffix = limit ? `?limit=${encodeURIComponent(limit)}` : "";
 
     try {
-        const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}/files${suffix}`);
+        const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}/files${suffix}`, {
+            headers: await withNoonaAuthHeaders(),
+        });
         return NextResponse.json(payload, {status});
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

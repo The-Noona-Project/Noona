@@ -6,6 +6,9 @@ import com.paxkun.raven.service.download.SourceFinder;
 import com.paxkun.raven.service.download.TitleScraper;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
+import com.paxkun.raven.service.settings.DownloadNamingSettings;
+import com.paxkun.raven.service.settings.SettingsService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -44,11 +47,27 @@ class DownloadServiceTest {
     @Mock
     private LibraryService libraryService;
 
+    @Mock
+    private SettingsService settingsService;
+
     @InjectMocks
     private TestableDownloadService downloadService;
 
     @TempDir
     Path downloadsRoot;
+
+    @BeforeEach
+    void setupDefaults() {
+        DownloadNamingSettings naming = new DownloadNamingSettings(
+                "downloads.naming",
+                "{title}",
+                "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz",
+                "{page_padded}{ext}",
+                3,
+                4
+        );
+        lenient().when(settingsService.getDownloadNamingSettings()).thenReturn(naming);
+    }
 
     @Test
     void queueDownloadAllChaptersReturnsErrorWhenSessionMissing() {
@@ -157,7 +176,7 @@ class DownloadServiceTest {
 
         ArgumentCaptor<NewTitle> titleCaptor = ArgumentCaptor.forClass(NewTitle.class);
         ArgumentCaptor<NewChapter> chapterCaptor = ArgumentCaptor.forClass(NewChapter.class);
-        verify(libraryService, timeout(2000).times(3))
+        verify(libraryService, timeout(2000).times(4))
                 .addOrUpdateTitle(titleCaptor.capture(), chapterCaptor.capture());
         assertThat(chapterCaptor.getAllValues())
                 .extracting(NewChapter::getChapter)
@@ -183,7 +202,7 @@ class DownloadServiceTest {
 
     static class TestableDownloadService extends DownloadService {
         @Override
-        protected int saveImagesToFolder(List<String> urls, Path folder) {
+        protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
             try {
                 Files.createDirectories(folder);
             } catch (IOException ignored) {

@@ -5,7 +5,7 @@ import {useEffect, useState} from "react";
 
 import {Fade, Flex, Line, Row, ToggleButton} from "@once-ui-system/core";
 
-import {routes, display, person} from "@/resources";
+import {display, person, routes} from "@/resources";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./Header.module.scss";
 
@@ -73,7 +73,9 @@ export const Header = () => {
         };
     }, []);
 
-    const showSetup = setupCompleted !== true;
+    const setupLocked = setupCompleted !== true;
+    const showSetup = setupLocked;
+    const showMainNav = !setupLocked;
 
     return (
         <>
@@ -116,10 +118,10 @@ export const Header = () => {
                         zIndex={1}
                     >
                         <Row gap="4" vertical="center" textVariant="body-default-s" suppressHydrationWarning>
-                            {routes["/"] && (
+                            {showMainNav && routes["/"] && (
                                 <ToggleButton prefixIcon="home" href="/" selected={pathname === "/"}/>
                             )}
-                            {routes["/libraries"] && (
+                            {showMainNav && routes["/libraries"] && (
                                 <>
                                     <Row s={{hide: true}}>
                                         <ToggleButton
@@ -134,6 +136,25 @@ export const Header = () => {
                                             prefixIcon="book"
                                             href="/libraries"
                                             selected={pathname.startsWith("/libraries")}
+                                        />
+                                    </Row>
+                                </>
+                            )}
+                            {showMainNav && routes["/settings"] && (
+                                <>
+                                    <Row s={{hide: true}}>
+                                        <ToggleButton
+                                            prefixIcon="settings"
+                                            href="/settings"
+                                            label="Settings"
+                                            selected={pathname.startsWith("/settings")}
+                                        />
+                                    </Row>
+                                    <Row hide s={{hide: false}}>
+                                        <ToggleButton
+                                            prefixIcon="settings"
+                                            href="/settings"
+                                            selected={pathname.startsWith("/settings")}
                                         />
                                     </Row>
                                 </>
@@ -157,7 +178,6 @@ export const Header = () => {
                                     </Row>
                                 </>
                             )}
-                            <Line background="neutral-alpha-medium" vert maxHeight="24"/>
                             {display.themeSwitcher && (
                                 <>
                                     <Line background="neutral-alpha-medium" vert maxHeight="24"/>

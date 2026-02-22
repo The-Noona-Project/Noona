@@ -3,6 +3,8 @@ package com.paxkun.raven.service;
 import com.paxkun.raven.service.download.*;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
+import com.paxkun.raven.service.settings.DownloadNamingSettings;
+import com.paxkun.raven.service.settings.SettingsService;
 import org.openqa.selenium.StaleElementReferenceException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -30,6 +32,8 @@ public class DownloadService {
     @Autowired private SourceFinder sourceFinder;
     @Autowired private LoggerService logger;
     @Autowired @Lazy private LibraryService libraryService;
+    @Autowired
+    private SettingsService settingsService;
 
     private static final String USER_AGENT = "Mozilla/5.0";
     private static final String REFERER = "https://weebcentral.com";
@@ -184,6 +188,17 @@ public class DownloadService {
                             " | url=" + sanitizeForLog(titleUrl));
 
             NewTitle titleRecord = libraryService.resolveOrCreateTitle(titleName, titleUrl);
+
+            String coverUrl = selectedTitle.get("coverUrl");
+            if (coverUrl != null && !coverUrl.isBlank()) {
+                titleRecord.setCoverUrl(coverUrl.trim());
+            }
+
+            String normalizedType = normalizeMediaType(selectedTitle.get("type"));
+            if (normalizedType != null) {
+                titleRecord.setType(normalizedType);
+            }
+
             String summary = titleScraper.getSummary(titleUrl);
             if (summary != null && !summary.isBlank()) {
                 titleRecord.setSummary(summary);
@@ -199,11 +214,24 @@ public class DownloadService {
                     "Fetched chapters | title=" + sanitizeForLog(titleName) +
                             " | count=" + chapters.size());
 
-            String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
-            Path titleFolder = getDownloadRoot().resolve(cleanTitle);
+            DownloadNamingSettings naming = settingsService.getDownloadNamingSettings();
+            Path titleFolder = resolveTitleFolder(titleName, titleRecord.getType(), naming);
+            String existingDownloadPath = titleRecord.getDownloadPath();
+            if (existingDownloadPath != null && !existingDownloadPath.isBlank()) {
+                try {
+                    Path existingPath = Path.of(existingDownloadPath);
+                    if (!existingPath.normalize().equals(titleFolder.normalize()) && Files.exists(existingPath) && Files.isDirectory(existingPath) && !Files.exists(titleFolder)) {
+                        Files.createDirectories(titleFolder.getParent());
+                        Files.move(existingPath, titleFolder);
+                    }
+                } catch (Exception e) {
+                    logger.warn(
+                            "DOWNLOAD",
+                            "Failed to migrate title folder for [" + sanitizeForLog(titleName) + "]: " + e.getMessage());
+                }
+            }
             Files.createDirectories(titleFolder);
             titleRecord.setDownloadPath(titleFolder.toString());
-
             // Process oldest -> newest so lastDownloaded ends at the latest chapter number.
             List<Map<String, String>> chaptersToDownload = new ArrayList<>(chapters);
             chaptersToDownload.sort(Comparator.comparingDouble(chapter -> {
@@ -221,6 +249,12 @@ public class DownloadService {
 
             titleRecord.setChapterCount(chaptersToDownload.size());
             progress.markStarted(chaptersToDownload.size());
+
+            titleRecord.setChaptersDownloaded(0);
+            libraryService.addOrUpdateTitle(
+                    titleRecord,
+                    new NewChapter(Optional.ofNullable(titleRecord.getLastDownloaded()).orElse("0"))
+            );
 
             for (Map<String, String> chapter : chaptersToDownload) {
                 String chapterTitle = chapter.get("chapter_title");
@@ -247,9 +281,9 @@ public class DownloadService {
 
                 String sourceDomain = extractDomain(pageUrls.get(0));
                 Path chapterFolder = titleFolder.resolve("temp_" + chapterNumber);
-                int pageCount = saveImagesToFolder(pageUrls, chapterFolder);
+                int pageCount = saveImagesToFolder(pageUrls, chapterFolder, naming, titleName, titleRecord.getType(), chapterNumber);
 
-                String cbzName = String.format("Chapter %s [Pages %d %s - Noona].cbz", chapterNumber, pageCount, sourceDomain);
+                String cbzName = formatChapterCbzName(naming, titleName, titleRecord.getType(), chapterNumber, pageCount, sourceDomain);
                 Path cbzPath = titleFolder.resolve(cbzName);
 
                 zipFolderAsCbz(chapterFolder, cbzPath);
@@ -351,14 +385,215 @@ public class DownloadService {
         }
     }
 
-    protected int saveImagesToFolder(List<String> urls, Path folder) {
+    private String extractExtension(String url) {
+        if (url == null || url.isBlank()) {
+            return ".jpg";
+        }
+
+        int dot = url.lastIndexOf('.');
+        if (dot < 0 || dot >= url.length() - 1) {
+            return ".jpg";
+        }
+
+        String ext = url.substring(dot);
+        int queryIndex = ext.indexOf('?');
+        if (queryIndex >= 0) {
+            ext = ext.substring(0, queryIndex);
+        }
+
+        if (!ext.startsWith(".")) {
+            ext = "." + ext;
+        }
+
+        if (!ext.matches("\\.[A-Za-z0-9]{1,8}")) {
+            return ".jpg";
+        }
+
+        return ext;
+    }
+
+    private String formatTitleFolderName(DownloadNamingSettings naming, String titleName, String type) {
+        String title = titleName == null ? "" : titleName.trim();
+        String normalizedType = normalizeMediaType(type);
+        String typeSlug = resolveMediaTypeFolder(type);
+
+        String template = naming != null ? naming.getTitleTemplate() : null;
+        if (template == null || template.isBlank()) {
+            template = "{title}";
+        }
+
+        Map<String, String> values = new HashMap<>();
+        values.put("title", title);
+        values.put("type", normalizedType != null ? normalizedType : "");
+        values.put("type_slug", typeSlug != null ? typeSlug : "");
+
+        String raw = applyTemplate(template, values);
+        String sanitized = sanitizePathSegment(raw);
+        if (sanitized.isBlank()) {
+            sanitized = sanitizeFolderName(title);
+        }
+        return sanitized;
+    }
+
+    private String formatChapterCbzName(DownloadNamingSettings naming, String titleName, String type, String chapterNumber, int pageCount, String domain) {
+        String title = titleName == null ? "" : titleName.trim();
+        String normalizedType = normalizeMediaType(type);
+        String typeSlug = resolveMediaTypeFolder(type);
+        String chapter = chapterNumber == null ? "" : chapterNumber.trim();
+
+        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 4;
+        String chapterPadded = formatChapterPadded(chapter, chapterPad);
+
+        String template = naming != null ? naming.getChapterTemplate() : null;
+        if (template == null || template.isBlank()) {
+            template = "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz";
+        }
+
+        Map<String, String> values = new HashMap<>();
+        values.put("title", title);
+        values.put("type", normalizedType != null ? normalizedType : "");
+        values.put("type_slug", typeSlug != null ? typeSlug : "");
+        values.put("chapter", chapter);
+        values.put("chapter_padded", chapterPadded);
+        values.put("pages", String.valueOf(pageCount));
+        values.put("domain", domain != null ? domain : "");
+
+        String raw = applyTemplate(template, values);
+        if (raw == null || raw.isBlank()) {
+            raw = String.format("Chapter %s [Pages %d %s - Noona].cbz", chapter, pageCount, domain);
+        }
+
+        String withExt = raw.trim();
+        if (!withExt.toLowerCase(Locale.ROOT).endsWith(".cbz")) {
+            withExt = withExt + ".cbz";
+        }
+
+        String sanitized = sanitizeFileName(withExt);
+        if (sanitized.isBlank()) {
+            sanitized = sanitizeFileName(String.format("Chapter %s.cbz", chapterPadded));
+        }
+        return sanitized.isBlank() ? "Chapter.cbz" : sanitized;
+    }
+
+    private String formatPageFileName(DownloadNamingSettings naming, String titleName, String type, String chapterNumber, int pageIndex, String ext) {
+        String title = titleName == null ? "" : titleName.trim();
+        String normalizedType = normalizeMediaType(type);
+        String typeSlug = resolveMediaTypeFolder(type);
+        String chapter = chapterNumber == null ? "" : chapterNumber.trim();
+        String extension = ext == null || ext.isBlank() ? ".jpg" : ext;
+
+        int pagePad = naming != null && naming.getPagePad() != null ? Math.max(1, naming.getPagePad()) : 3;
+        String pagePadded = String.format("%0" + pagePad + "d", pageIndex);
+
+        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 4;
+        String chapterPadded = formatChapterPadded(chapter, chapterPad);
+
+        String template = naming != null ? naming.getPageTemplate() : null;
+        if (template == null || template.isBlank()) {
+            template = "{page_padded}{ext}";
+        }
+
+        Map<String, String> values = new HashMap<>();
+        values.put("title", title);
+        values.put("type", normalizedType != null ? normalizedType : "");
+        values.put("type_slug", typeSlug != null ? typeSlug : "");
+        values.put("chapter", chapter);
+        values.put("chapter_padded", chapterPadded);
+        values.put("page", String.valueOf(pageIndex));
+        values.put("page_padded", pagePadded);
+        values.put("ext", extension);
+
+        boolean hasExt = template.contains("{ext}");
+        String raw = applyTemplate(template, values);
+        if (raw == null) {
+            raw = "";
+        }
+        if (!hasExt) {
+            raw = raw + extension;
+        }
+
+        String sanitized = sanitizeFileName(raw);
+        if (!sanitized.toLowerCase(Locale.ROOT).endsWith(extension.toLowerCase(Locale.ROOT))) {
+            sanitized = sanitizeFileName(sanitized + extension);
+        }
+
+        return sanitized;
+    }
+
+    private String formatChapterPadded(String chapterNumber, int width) {
+        int padWidth = Math.max(1, width);
+        String trimmed = chapterNumber == null ? "" : chapterNumber.trim();
+        if (trimmed.isBlank()) {
+            return String.format("%0" + padWidth + "d", 0);
+        }
+
+        String[] parts = trimmed.split("\\.", 2);
+        String left = parts.length > 0 ? parts[0] : trimmed;
+        String right = parts.length == 2 ? parts[1] : null;
+
+        try {
+            int value = Integer.parseInt(left);
+            String padded = String.format("%0" + padWidth + "d", value);
+            if (right != null && !right.isBlank()) {
+                return padded + "." + right;
+            }
+            return padded;
+        } catch (NumberFormatException e) {
+            return trimmed;
+        }
+    }
+
+    private String applyTemplate(String template, Map<String, String> values) {
+        if (template == null) {
+            return null;
+        }
+
+        String out = template;
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.isBlank()) continue;
+            out = out.replace("{" + key + "}", entry.getValue() == null ? "" : entry.getValue());
+        }
+
+        return out;
+    }
+
+    private String sanitizePathSegment(String raw) {
+        if (raw == null) {
+            return "";
+        }
+
+        String cleaned = raw
+                .replaceAll("[\\\\/:*?\\\"<>|]", "")
+                .replaceAll("\\p{Cntrl}", "")
+                .replaceAll("\\s+", " ")
+                .trim()
+                .replaceAll("[ .]+$", "");
+
+        return cleaned.trim();
+    }
+
+    private String sanitizeFileName(String raw) {
+        return sanitizePathSegment(raw);
+    }
+
+    protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
         int count = 0;
+
         try {
             Files.createDirectories(folder);
             int index = 1;
+            Set<String> usedNames = new HashSet<>();
+
             for (String url : urls) {
-                String ext = url.substring(url.lastIndexOf('.')).split("\\?")[0];
-                Path path = folder.resolve(String.format("%03d%s", index, ext));
+                String ext = extractExtension(url);
+                String fileName = formatPageFileName(naming, titleName, type, chapterNumber, index, ext);
+                if (fileName == null || fileName.isBlank() || usedNames.contains(fileName)) {
+                    fileName = String.format("%03d%s", index, ext);
+                }
+                usedNames.add(fileName);
+
+                Path path = folder.resolve(fileName);
                 try {
                     HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
                     connection.setRequestProperty("User-Agent", USER_AGENT);
@@ -378,6 +613,7 @@ public class DownloadService {
         } catch (IOException e) {
             logger.error("DOWNLOAD", "❌ Failed to save images: " + e.getMessage(), e);
         }
+
         return count;
     }
 
@@ -435,10 +671,10 @@ public class DownloadService {
     }
 
     public void downloadSingleChapter(NewTitle title, String chapterNumber) {
-        String titleUrl = title.getSourceUrl();
-        String cleanTitle = title.getTitleName().replaceAll("[^a-zA-Z0-9\\s]", "").trim();
-        Path titleFolder = getDownloadRoot().resolve(cleanTitle);
 
+        String titleUrl = title.getSourceUrl();
+        DownloadNamingSettings naming = settingsService.getDownloadNamingSettings();
+        Path titleFolder = resolveTitleFolder(title, naming);
         try {
             String sanitizedTitle = sanitizeForLog(title.getTitleName());
             logger.debug(
@@ -475,9 +711,9 @@ public class DownloadService {
             String domain = extractDomain(pages.get(0));
             Path chapterFolder = titleFolder.resolve("temp_" + chapterNumber);
             Files.createDirectories(titleFolder);
-            int count = saveImagesToFolder(pages, chapterFolder);
+            int count = saveImagesToFolder(pages, chapterFolder, naming, title.getTitleName(), title.getType(), chapterNumber);
 
-            String cbzName = String.format("Chapter %s [Pages %d %s - Noona].cbz", chapterNumber, count, domain);
+            String cbzName = formatChapterCbzName(naming, title.getTitleName(), title.getType(), chapterNumber, count, domain);
             Path cbzPath = titleFolder.resolve(cbzName);
             zipFolderAsCbz(chapterFolder, cbzPath);
             deleteFolder(chapterFolder);
@@ -495,6 +731,126 @@ public class DownloadService {
             throw new IllegalStateException("LoggerService has not initialized the downloads root directory");
         }
         return root;
+    }
+
+
+    private Path resolveTitleFolder(NewTitle title) {
+        return resolveTitleFolder(title, settingsService.getDownloadNamingSettings());
+    }
+
+    private Path resolveTitleFolder(NewTitle title, DownloadNamingSettings naming) {
+        if (title == null) {
+            return getDownloadRoot();
+        }
+
+        String downloadPath = title.getDownloadPath();
+        if (downloadPath != null && !downloadPath.isBlank()) {
+            return Path.of(downloadPath);
+        }
+
+        return resolveTitleFolder(title.getTitleName(), title.getType(), naming);
+    }
+
+    private Path resolveTitleFolder(String titleName, String type) {
+        return resolveTitleFolder(titleName, type, settingsService.getDownloadNamingSettings());
+    }
+
+    private Path resolveTitleFolder(String titleName, String type, DownloadNamingSettings naming) {
+        String cleanTitle = formatTitleFolderName(naming, titleName, type);
+        if (cleanTitle == null || cleanTitle.isBlank()) {
+            throw new IllegalArgumentException("titleName is required");
+        }
+
+        Path root = getDownloadRoot();
+        String typeFolder = resolveMediaTypeFolder(type);
+        Path base = typeFolder != null ? root.resolve(typeFolder) : root;
+        return base.resolve(cleanTitle);
+    }
+
+    private String resolveMediaTypeFolder(String rawType) {
+        String normalized = normalizeMediaType(rawType);
+        if (normalized == null) {
+            return null;
+        }
+        return slugifyFolderSegment(normalized);
+    }
+
+    private String normalizeMediaType(String raw) {
+        if (raw == null) {
+            return null;
+        }
+
+        String trimmed = raw.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+
+        String cleaned = trimmed.replaceFirst("(?i)^Type:?\\s*", "").replaceAll("\\s+", " ").trim();
+        if (cleaned.isBlank()) {
+            return null;
+        }
+
+        String lower = cleaned.toLowerCase(Locale.ROOT);
+        return switch (lower) {
+            case "manga" -> "Manga";
+            case "manhwa" -> "Manhwa";
+            case "manhua" -> "Manhua";
+            default -> prettifyLabel(cleaned);
+        };
+    }
+
+    private String prettifyLabel(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.isBlank()) return null;
+
+        boolean hasUpper = false;
+        boolean hasLower = false;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            if (!Character.isLetter(ch)) continue;
+            if (Character.isUpperCase(ch)) hasUpper = true;
+            if (Character.isLowerCase(ch)) hasLower = true;
+        }
+
+        if (hasUpper && hasLower) {
+            return trimmed;
+        }
+
+        String[] parts = trimmed.toLowerCase(Locale.ROOT).split("\\s+");
+        StringBuilder out = new StringBuilder();
+        for (String part : parts) {
+            if (part.isBlank()) continue;
+            if (out.length() > 0) out.append(' ');
+            out.append(Character.toUpperCase(part.charAt(0)));
+            if (part.length() > 1) {
+                out.append(part.substring(1));
+            }
+        }
+
+        String result = out.toString().trim();
+        return result.isBlank() ? trimmed : result;
+    }
+
+    private String slugifyFolderSegment(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.isBlank()) return null;
+
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        String slug = lower
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-+", "")
+                .replaceAll("-+$", "");
+        return slug.isBlank() ? null : slug;
+    }
+
+    private String sanitizeFolderName(String raw) {
+        if (raw == null) {
+            return null;
+        }
+
+        return raw.replaceAll("[^a-zA-Z0-9\s]", "").trim();
     }
 
     private void cleanupExpiredSearches() {

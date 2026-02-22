@@ -13,6 +13,8 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -53,7 +55,7 @@ public class LibraryService {
 
         String downloadPath = title.getDownloadPath();
         if (downloadPath == null || downloadPath.isBlank()) {
-            downloadPath = resolveDownloadPath(title.getTitleName());
+            downloadPath = resolveDownloadPath(title.getTitleName(), title.getType());
         }
         if (downloadPath != null && !downloadPath.isBlank()) {
             set.put("downloadPath", downloadPath);
@@ -62,6 +64,14 @@ public class LibraryService {
 
         if (title.getSummary() != null && !title.getSummary().isBlank()) {
             set.put("summary", title.getSummary());
+        }
+
+        if (title.getCoverUrl() != null && !title.getCoverUrl().isBlank()) {
+            set.put("coverUrl", title.getCoverUrl());
+        }
+
+        if (title.getType() != null && !title.getType().isBlank()) {
+            set.put("type", title.getType());
         }
 
         title.setLastDownloadedAt(now);
@@ -147,20 +157,16 @@ public class LibraryService {
             return List.of();
         }
 
-        Path root = logger.getDownloadsRoot();
-        if (root == null) {
+        String downloadPath = title.getDownloadPath();
+        if (downloadPath == null || downloadPath.isBlank()) {
+            downloadPath = resolveDownloadPath(title.getTitleName(), title.getType());
+        }
+
+        if (downloadPath == null || downloadPath.isBlank()) {
             return List.of();
         }
 
-        String cleanTitle = Optional.ofNullable(title.getTitleName())
-                .orElse("")
-                .replaceAll("[^a-zA-Z0-9\\s]", "")
-                .trim();
-        if (cleanTitle.isBlank()) {
-            return List.of();
-        }
-
-        Path titleFolder = root.resolve(cleanTitle);
+        Path titleFolder = Path.of(downloadPath);
         if (!Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
             return List.of();
         }
@@ -192,7 +198,7 @@ public class LibraryService {
                     .filter(Objects::nonNull)
                     .toList();
         } catch (Exception e) {
-            logger.warn("LIBRARY", "âš ï¸ Failed to list files for [" + title.getTitleName() + "]: " + e.getMessage());
+            logger.warn("LIBRARY", "???????????? Failed to list files for [" + title.getTitleName() + "]: " + e.getMessage());
             return List.of();
         }
     }
@@ -224,7 +230,7 @@ public class LibraryService {
         return created;
     }
 
-    private String resolveDownloadPath(String titleName) {
+    private String resolveDownloadPath(String titleName, String type) {
         if (titleName == null || titleName.isBlank()) {
             return null;
         }
@@ -234,12 +240,134 @@ public class LibraryService {
             return null;
         }
 
-        String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\\s]", "").trim();
+        String cleanTitle = titleName.replaceAll("[^a-zA-Z0-9\s]", "").trim();
         if (cleanTitle.isBlank()) {
             return null;
         }
 
-        return root.resolve(cleanTitle).toString();
+        String normalizedFolder = normalizeMediaTypeFolder(type);
+        Path base = normalizedFolder != null ? root.resolve(normalizedFolder) : root;
+
+        return base.resolve(cleanTitle).toString();
+    }
+
+    private String normalizeMediaTypeFolder(String raw) {
+        String normalized = normalizeMediaType(raw);
+        if (normalized == null) {
+            return null;
+        }
+        return slugifyFolderSegment(normalized);
+    }
+
+    private String normalizeMediaType(String raw) {
+        if (raw == null) {
+            return null;
+        }
+
+        String trimmed = raw.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+
+        String cleaned = trimmed.replaceFirst("(?i)^Type:?\\s*", "").replaceAll("\\s+", " ").trim();
+        if (cleaned.isBlank()) {
+            return null;
+        }
+
+        String lower = cleaned.toLowerCase(Locale.ROOT);
+        return switch (lower) {
+            case "manga" -> "Manga";
+            case "manhwa" -> "Manhwa";
+            case "manhua" -> "Manhua";
+            default -> prettifyLabel(cleaned);
+        };
+    }
+
+    private String prettifyLabel(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.isBlank()) return null;
+
+        boolean hasUpper = false;
+        boolean hasLower = false;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            if (!Character.isLetter(ch)) continue;
+            if (Character.isUpperCase(ch)) hasUpper = true;
+            if (Character.isLowerCase(ch)) hasLower = true;
+        }
+
+        if (hasUpper && hasLower) {
+            return trimmed;
+        }
+
+        String[] parts = trimmed.toLowerCase(Locale.ROOT).split("\\s+");
+        StringBuilder out = new StringBuilder();
+        for (String part : parts) {
+            if (part.isBlank()) continue;
+            if (out.length() > 0) out.append(' ');
+            out.append(Character.toUpperCase(part.charAt(0)));
+            if (part.length() > 1) {
+                out.append(part.substring(1));
+            }
+        }
+
+        String result = out.toString().trim();
+        return result.isBlank() ? trimmed : result;
+    }
+
+    private String slugifyFolderSegment(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.isBlank()) return null;
+
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        String slug = lower
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-+", "")
+                .replaceAll("-+$", "");
+        return slug.isBlank() ? null : slug;
+    }
+
+    private String fetchLatestChapterFromSource(String sourceUrl) {
+        try {
+            List<Map<String, String>> chapters = downloadService.fetchChapters(sourceUrl);
+            if (chapters == null || chapters.isEmpty()) return "0";
+
+            Map<String, String> latest = chapters.get(0);
+            if (latest == null) {
+                return "0";
+            }
+
+            String chapterNumber = latest.get("chapter_number");
+            if (chapterNumber != null && !chapterNumber.isBlank()) {
+                return chapterNumber;
+            }
+
+            String extracted = extractChapterNumberFromTitle(latest.get("chapter_title"));
+            return extracted != null && !extracted.isBlank() ? extracted : "0";
+        } catch (Exception e) {
+            logger.warn("LIBRARY", "⚠️ Failed to fetch latest chapter from source: " + e.getMessage());
+            return "0";
+        }
+    }
+
+    private String extractChapterNumberFromTitle(String chapterTitle) {
+        if (chapterTitle == null || chapterTitle.isBlank()) {
+            return null;
+        }
+
+        Matcher matcher = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)", Pattern.CASE_INSENSITIVE).matcher(chapterTitle);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        matcher = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(chapterTitle);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        return null;
     }
 
     public String checkForNewChapters() {
@@ -253,7 +381,7 @@ public class LibraryService {
         for (NewTitle title : titles) {
             try {
                 String sourceUrl = title.getSourceUrl();
-                String latest = vaultService.fetchLatestChapterFromSource(sourceUrl);
+                String latest = fetchLatestChapterFromSource(sourceUrl);
                 String last = Optional.ofNullable(title.getLastDownloaded()).orElse("0");
 
                 if (isNewer(latest, last)) {

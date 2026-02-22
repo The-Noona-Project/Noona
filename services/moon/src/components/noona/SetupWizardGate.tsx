@@ -2,11 +2,10 @@
 
 import {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Row, Spinner} from "@once-ui-system/core";
+import {Row, Spinner, Text} from "@once-ui-system/core";
 
 type SetupStatus = {
     completed: boolean;
-    error?: string;
 };
 
 type SetupWizardGateProps = {
@@ -15,27 +14,38 @@ type SetupWizardGateProps = {
 
 export function SetupWizardGate({children}: SetupWizardGateProps) {
     const router = useRouter();
-    const [setup, setSetup] = useState<SetupStatus | null>(null);
+    const [ready, setReady] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
 
         const load = async () => {
+            setReady(false);
+            setError(null);
+
             try {
-                const res = await fetch("/api/noona/setup/status", {cache: "no-store"});
-                const json = (await res.json().catch(() => null)) as SetupStatus | null;
+                const setupRes = await fetch("/api/noona/setup/status", {cache: "no-store"});
+                const setupJson = (await setupRes.json().catch(() => null)) as SetupStatus | null;
                 if (cancelled) return;
 
-                if (json && typeof json.completed === "boolean") {
-                    setSetup(json);
+                const completed = setupJson?.completed === true;
+                if (completed) {
+                    router.replace("/");
                     return;
                 }
 
-                setSetup({completed: false, error: "Unable to determine setup status."});
-            } catch (error) {
+                const authRes = await fetch("/api/noona/auth/status", {cache: "no-store"});
                 if (cancelled) return;
-                const message = error instanceof Error ? error.message : String(error);
-                setSetup({completed: false, error: message});
+                if (authRes.ok) {
+                    setReady(true);
+                    return;
+                }
+                router.replace("/signup");
+            } catch (error_) {
+                if (cancelled) return;
+                const message = error_ instanceof Error ? error_.message : String(error_);
+                setError(message || "Unable to prepare setup wizard.");
             }
         };
 
@@ -43,26 +53,23 @@ export function SetupWizardGate({children}: SetupWizardGateProps) {
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [router]);
 
-    useEffect(() => {
-        if (setup?.completed === true) {
-            router.replace("/");
-        }
-    }, [router, setup]);
+    if (ready) {
+        return <>{children}</>;
+    }
 
-    if (!setup) {
+    if (error) {
         return (
             <Row fillWidth horizontal="center" paddingY="64">
-                <Spinner/>
+                <Text onBackground="danger-strong">{error}</Text>
             </Row>
         );
     }
 
-    if (setup.completed === true) {
-        return null;
-    }
-
-    return <>{children}</>;
+    return (
+        <Row fillWidth horizontal="center" paddingY="64">
+            <Spinner/>
+        </Row>
+    );
 }
-

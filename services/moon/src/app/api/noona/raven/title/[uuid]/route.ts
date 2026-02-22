@@ -1,5 +1,6 @@
 import {NextRequest, NextResponse} from "next/server";
 import {jsonError, sageJson} from "../../../_backend";
+import {withNoonaAuthHeaders} from "../../../_auth";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,9 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ uu
     }
 
     try {
-        const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}`);
+        const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}`, {
+            headers: await withNoonaAuthHeaders(),
+        });
         return NextResponse.json(payload, {status});
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -38,7 +41,7 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ u
     try {
         const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}`, {
             method: "PATCH",
-            headers: {"Content-Type": "application/json"},
+            headers: await withNoonaAuthHeaders({"Content-Type": "application/json"}),
             body: JSON.stringify(body),
         });
         return NextResponse.json(payload, {status});
@@ -59,6 +62,7 @@ export async function DELETE(_request: NextRequest, context: { params: Promise<{
     try {
         const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}`, {
             method: "DELETE",
+            headers: await withNoonaAuthHeaders(),
         });
         return NextResponse.json(payload, {status});
     } catch (error) {

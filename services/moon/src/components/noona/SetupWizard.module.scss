@@ -1,0 +1,43 @@
+.progressTrack {
+  position: relative;
+}
+
+.summaryOverlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 100dvh;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.summaryModal {
+  width: min(640px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  margin: 0 auto;
+  overflow: auto;
+}
+
+.progressIndeterminate {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  animation: noonaProgressIndeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes noonaProgressIndeterminate {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}

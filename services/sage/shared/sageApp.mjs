@@ -2,12 +2,14 @@
 
 import express from 'express'
 import cors from 'cors'
+import crypto from 'node:crypto'
 
-import { debugMSG, errMSG, log } from '../../../utilities/etc/logger.mjs'
-import { SetupValidationError } from './errors.mjs'
-import { createDiscordSetupClient } from './discordSetupClient.mjs'
-import { createRavenClient } from './ravenClient.mjs'
-import { createWizardStateClient } from './wizardStateClient.mjs'
+import {debugMSG, errMSG, log} from '../../../utilities/etc/logger.mjs'
+import {SetupValidationError} from './errors.mjs'
+import {createDiscordSetupClient} from './discordSetupClient.mjs'
+import {createRavenClient} from './ravenClient.mjs'
+import {createWizardStateClient} from './wizardStateClient.mjs'
+import {createVaultPacketClient, isVaultClientErrorStatus} from './vaultPacketClient.mjs'
 import {
     createDefaultWizardState,
     normalizeWizardMetadata,
@@ -459,6 +461,10 @@ export const createSageApp = ({
     raven: ravenOptions = {},
     wizardStateClient: wizardStateClientOverride,
     wizard: wizardOptions = {},
+                                  vaultClient: vaultClientOverride,
+                                  vault: vaultOptions = {},
+                                  auth: authOptions = {},
+                                  settings: settingsOptions = {},
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
     const setupClient =
@@ -597,6 +603,537 @@ export const createSageApp = ({
             null,
     })
 
+    const vaultEnv = vaultOptions.env ?? wizardEnv
+    let vaultClient = vaultClientOverride || vaultOptions.client || null
+
+    if (!vaultClient) {
+        const token =
+            vaultOptions.token ??
+            vaultEnv?.VAULT_API_TOKEN ??
+            vaultEnv?.VAULT_ACCESS_TOKEN ??
+            null
+
+        if (token) {
+            const baseCandidates = []
+            if (vaultOptions.baseUrl) {
+                baseCandidates.push(vaultOptions.baseUrl)
+            }
+            if (Array.isArray(vaultOptions.baseUrls)) {
+                baseCandidates.push(...vaultOptions.baseUrls)
+            }
+
+            try {
+                vaultClient = createVaultPacketClient({
+                    baseUrl: baseCandidates[0],
+                    baseUrls: baseCandidates.slice(1),
+                    token,
+                    fetchImpl: vaultOptions.fetchImpl ?? vaultOptions.fetch ?? fetch,
+                    env: vaultEnv,
+                    logger,
+                    serviceName,
+                    timeoutMs: vaultOptions.timeoutMs,
+                })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.warn?.(`[${serviceName}] ⚠️ Vault packet client unavailable: ${message}`)
+            }
+        } else if (vaultOptions.required) {
+            logger.warn?.(`[${serviceName}] ⚠️ Missing Vault token for packet client; settings/auth endpoints will be disabled.`)
+        }
+    }
+
+    const settingsCollection =
+        typeof settingsOptions.collection === 'string' && settingsOptions.collection.trim()
+            ? settingsOptions.collection.trim()
+            : 'noona_settings'
+
+    const sessionPrefix =
+        typeof authOptions.sessionPrefix === 'string' && authOptions.sessionPrefix.trim()
+            ? authOptions.sessionPrefix.trim()
+            : 'noona:session:'
+
+    const sessionTtlSeconds = (() => {
+        const fromOptions = Number(authOptions.sessionTtlSeconds)
+        if (Number.isFinite(fromOptions) && fromOptions > 0) {
+            return Math.floor(fromOptions)
+        }
+
+        const fromEnv = Number(vaultEnv?.NOONA_SESSION_TTL_SECONDS ?? vaultEnv?.AUTH_SESSION_TTL_SECONDS)
+        if (Number.isFinite(fromEnv) && fromEnv > 0) {
+            return Math.floor(fromEnv)
+        }
+
+        return 86400
+    })()
+    const inMemorySessionStore = new Map()
+    let pendingAdmin = null
+
+    const DEFAULT_NAMING_SETTINGS = Object.freeze({
+        key: 'downloads.naming',
+        titleTemplate: '{title}',
+        chapterTemplate: 'Chapter {chapter} [Pages {pages} {domain} - Noona].cbz',
+        pageTemplate: '{page_padded}{ext}',
+        pagePad: 3,
+        chapterPad: 4,
+    })
+
+    const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeUsername = (value) => normalizeString(value)
+    const normalizeUsernameKey = (value) => normalizeUsername(value).toLowerCase()
+    const normalizeRole = (value, fallback = 'member') => {
+        const normalized = normalizeString(value).toLowerCase()
+        if (normalized === 'admin' || normalized === 'member') {
+            return normalized
+        }
+        return fallback
+    }
+    const isAdminUser = (user) => normalizeString(user?.role).toLowerCase() === 'admin'
+    const normalizeUserLookupKey = (user) => {
+        const normalized = normalizeUsernameKey(user?.usernameNormalized)
+        if (normalized) {
+            return normalized
+        }
+        return normalizeUsernameKey(user?.username)
+    }
+    const parseUserTimestamp = (value) => {
+        const normalized = normalizeString(value)
+        if (!normalized) {
+            return 0
+        }
+        const parsed = Date.parse(normalized)
+        return Number.isFinite(parsed) ? parsed : 0
+    }
+    const listAuthUsers = async () => {
+        if (vaultClient?.users?.list) {
+            const users = await vaultClient.users.list()
+            if (!Array.isArray(users)) {
+                return []
+            }
+            return users.filter((entry) => entry && typeof entry === 'object')
+        }
+
+        if (!vaultClient?.mongo?.findMany) {
+            return []
+        }
+
+        const users = await vaultClient.mongo.findMany('noona_users', {})
+        if (!Array.isArray(users)) {
+            return []
+        }
+
+        return users.filter((entry) => entry && typeof entry === 'object')
+    }
+    const createAuthUser = async ({username, password, role}) => {
+        if (!vaultClient?.users?.create) {
+            throw new Error('Vault user management is not configured.')
+        }
+
+        return vaultClient.users.create({username, password, role})
+    }
+
+    const updateAuthUser = async (lookupUsername, updates = {}) => {
+        if (!vaultClient?.users?.update) {
+            throw new Error('Vault user management is not configured.')
+        }
+
+        return vaultClient.users.update(lookupUsername, updates)
+    }
+
+    const deleteAuthUser = async (lookupUsername) => {
+        if (!vaultClient?.users?.delete) {
+            throw new Error('Vault user management is not configured.')
+        }
+
+        return vaultClient.users.delete(lookupUsername)
+    }
+
+    const authenticateAuthUser = async ({username, password}) => {
+        if (!vaultClient?.users?.authenticate) {
+            throw new Error('Vault user authentication is not configured.')
+        }
+
+        return vaultClient.users.authenticate({username, password})
+    }
+
+    const vaultErrorStatus = (error, fallback = 502) => {
+        if (isVaultClientErrorStatus(error)) {
+            const status = Number(error.status)
+            if (Number.isFinite(status) && status > 0) {
+                return status
+            }
+        }
+
+        return fallback
+    }
+
+    const vaultErrorMessage = (error, fallback) => {
+        if (error && typeof error === 'object' && typeof error.payload?.error === 'string' && error.payload.error.trim()) {
+            return error.payload.error.trim()
+        }
+
+        if (error instanceof Error && error.message.trim()) {
+            return error.message.trim()
+        }
+
+        return fallback
+    }
+
+    const findUserByLookupKey = (users, lookupKey) => {
+        if (!lookupKey || !Array.isArray(users)) {
+            return null
+        }
+
+        return users.find((entry) => normalizeUserLookupKey(entry) === lookupKey) ?? null
+    }
+    const selectPrimaryAdmin = (users) => {
+        if (!Array.isArray(users)) {
+            return null
+        }
+
+        const admins = users
+            .filter((entry) => isAdminUser(entry))
+            .sort((left, right) => {
+                const leftUpdated = parseUserTimestamp(left?.updatedAt)
+                const rightUpdated = parseUserTimestamp(right?.updatedAt)
+                if (leftUpdated !== rightUpdated) {
+                    return rightUpdated - leftUpdated
+                }
+
+                const leftCreated = parseUserTimestamp(left?.createdAt)
+                const rightCreated = parseUserTimestamp(right?.createdAt)
+                return rightCreated - leftCreated
+            })
+
+        return admins[0] ?? null
+    }
+
+    const isValidUsername = (username) => /^[A-Za-z0-9._-]{3,64}$/.test(username)
+    const isValidPassword = (password) => typeof password === 'string' && password.length >= 8
+    const publicUser = (user, fallbackUsername = '') => ({
+        username: normalizeUsername(user?.username) || fallbackUsername,
+        usernameNormalized: normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername),
+        role: normalizeRole(user?.role, 'member'),
+        createdAt: normalizeString(user?.createdAt) || null,
+        updatedAt: normalizeString(user?.updatedAt) || null,
+    })
+    const toSessionUser = (user, fallbackUsername = '') => ({
+        username: normalizeUsername(user?.username) || fallbackUsername,
+        usernameNormalized: normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername),
+        role: normalizeRole(user?.role, 'member'),
+        createdAt:
+            normalizeString(user?.createdAt) ||
+            normalizeString(user?.updatedAt) ||
+            new Date().toISOString(),
+    })
+    const pendingAdminPublicUser = () => {
+        if (!pendingAdmin) {
+            return null
+        }
+
+        return {
+            username: pendingAdmin.username,
+            usernameNormalized: pendingAdmin.usernameNormalized,
+            role: 'admin',
+            createdAt: pendingAdmin.createdAt,
+            updatedAt: pendingAdmin.updatedAt,
+        }
+    }
+    const setPendingAdminCredentials = ({username, password}) => {
+        const now = new Date().toISOString()
+        const createdAt =
+            pendingAdmin && typeof pendingAdmin.createdAt === 'string' && pendingAdmin.createdAt.trim()
+                ? pendingAdmin.createdAt
+                : now
+        pendingAdmin = {
+            username,
+            usernameNormalized: normalizeUsernameKey(username),
+            password,
+            role: 'admin',
+            createdAt,
+            updatedAt: now,
+        }
+    }
+    const authenticatePendingAdmin = ({username, password}) => {
+        if (!pendingAdmin) {
+            return {authenticated: false, user: null}
+        }
+
+        if (normalizeUsernameKey(username) !== pendingAdmin.usernameNormalized) {
+            return {authenticated: false, user: null}
+        }
+
+        if (typeof password !== 'string' || password !== pendingAdmin.password) {
+            return {authenticated: false, user: null}
+        }
+
+        return {
+            authenticated: true,
+            user: pendingAdminPublicUser(),
+        }
+    }
+    const hasVaultUserApi = () =>
+        Boolean(vaultClient?.users?.list && vaultClient?.users?.create && vaultClient?.users?.update && vaultClient?.users?.authenticate)
+
+    const createSessionToken = () => crypto.randomBytes(32).toString('base64url')
+
+    const sessionKeyForToken = (token) => `${sessionPrefix}${token}`
+    const getStoredSession = (token) => {
+        const entry = inMemorySessionStore.get(token)
+        if (!entry || typeof entry !== 'object') {
+            return null
+        }
+
+        const expiresAt = Number(entry.expiresAt)
+        if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) {
+            inMemorySessionStore.delete(token)
+            return null
+        }
+
+        return entry.session && typeof entry.session === 'object' ? entry.session : null
+    }
+    const setStoredSession = (token, session, ttlSeconds = sessionTtlSeconds) => {
+        const ttl = Number(ttlSeconds)
+        const expiresAt = Number.isFinite(ttl) && ttl > 0 ? Date.now() + Math.floor(ttl * 1000) : null
+        inMemorySessionStore.set(token, {session, expiresAt})
+    }
+    const deleteStoredSession = (token) => {
+        inMemorySessionStore.delete(token)
+    }
+    const writeSession = async (token, session, ttlSeconds = sessionTtlSeconds) => {
+        setStoredSession(token, session, ttlSeconds)
+
+        if (!vaultClient?.redis?.set) {
+            return
+        }
+
+        try {
+            await vaultClient.redis.set(sessionKeyForToken(token), session, {ttl: ttlSeconds})
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn?.(`[${serviceName}] ⚠️ Failed to persist auth session in Vault Redis: ${message}`)
+        }
+    }
+    const readSession = async (token) => {
+        if (vaultClient?.redis?.get) {
+            try {
+                const fromRedis = await vaultClient.redis.get(sessionKeyForToken(token))
+                if (fromRedis && typeof fromRedis === 'object') {
+                    setStoredSession(token, fromRedis, sessionTtlSeconds)
+                    return fromRedis
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.warn?.(`[${serviceName}] ⚠️ Failed to read auth session from Vault Redis: ${message}`)
+            }
+        }
+
+        return getStoredSession(token)
+    }
+    const dropSession = async (token) => {
+        deleteStoredSession(token)
+
+        if (!vaultClient?.redis?.del) {
+            return
+        }
+
+        try {
+            await vaultClient.redis.del(sessionKeyForToken(token))
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn?.(`[${serviceName}] ⚠️ Failed to delete auth session from Vault Redis: ${message}`)
+        }
+    }
+
+    const ensureDefaultNamingSettings = async (timestamp) => {
+        if (!vaultClient?.mongo?.findOne || !vaultClient?.mongo?.update) {
+            return
+        }
+
+        const existingNaming = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_NAMING_SETTINGS.key,
+        })
+        if (!existingNaming) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_NAMING_SETTINGS.key},
+                {$set: {...DEFAULT_NAMING_SETTINGS, updatedAt: timestamp}},
+                {upsert: true},
+            )
+        }
+    }
+    const writeAdminToVault = async ({username, password}) => {
+        if (!hasVaultUserApi()) {
+            throw new Error('Vault user storage is not configured.')
+        }
+
+        const usernameNormalized = normalizeUsernameKey(username)
+        const now = new Date().toISOString()
+        const users = await listAuthUsers()
+        const existingUserByName = findUserByLookupKey(users, usernameNormalized)
+        const existingAdmin = selectPrimaryAdmin(users)
+        const targetUser = existingUserByName || existingAdmin || null
+        let created = false
+
+        if (targetUser) {
+            const targetLookup = normalizeUsername(targetUser.username) || normalizeUserLookupKey(targetUser)
+            if (!targetLookup) {
+                throw new Error('Unable to resolve existing admin account.')
+            }
+
+            await updateAuthUser(targetLookup, {
+                username,
+                password,
+                role: 'admin',
+            })
+        } else {
+            await createAuthUser({
+                username,
+                password,
+                role: 'admin',
+            })
+            created = true
+        }
+
+        const allUsersAfterWrite = await listAuthUsers()
+        for (const user of allUsersAfterWrite) {
+            if (!isAdminUser(user)) {
+                continue
+            }
+
+            const lookupKey = normalizeUserLookupKey(user)
+            if (lookupKey === usernameNormalized) {
+                continue
+            }
+
+            const demotionLookup = normalizeUsername(user?.username) || lookupKey
+            if (!demotionLookup) {
+                continue
+            }
+
+            await updateAuthUser(demotionLookup, {role: 'member'})
+        }
+
+        const verified = await authenticateAuthUser({username, password})
+        if (!verified?.authenticated || !isAdminUser(verified.user)) {
+            throw new Error('Bootstrap verification failed after account write.')
+        }
+
+        await ensureDefaultNamingSettings(now)
+
+        return {
+            created,
+            user: toSessionUser(verified.user, username),
+        }
+    }
+    const finalizePendingAdminToVault = async () => {
+        if (!pendingAdmin) {
+            return {persisted: false, created: false, user: null}
+        }
+
+        const snapshot = {
+            username: pendingAdmin.username,
+            password: pendingAdmin.password,
+        }
+        const payload = await writeAdminToVault(snapshot)
+        pendingAdmin = null
+        return {persisted: true, ...payload}
+    }
+
+    const resolveSetupCompleted = (() => {
+        const ttlMs = 3000
+        let cachedAt = 0
+        let cached = false
+
+        return async () => {
+            if (!wizardStateClient) {
+                return false
+            }
+
+            const now = Date.now()
+            if (now - cachedAt < ttlMs) {
+                return cached
+            }
+
+            try {
+                const state = await wizardStateClient.loadState({fallbackToDefault: true})
+                cached = state?.completed === true
+            } catch {
+                cached = false
+            } finally {
+                cachedAt = now
+            }
+
+            return cached
+        }
+    })()
+
+    const getBearerToken = (req) => {
+        const header = req.headers?.authorization
+        if (typeof header !== 'string') {
+            return null
+        }
+
+        const match = header.match(/^Bearer\s+(.+)$/i)
+        if (!match) {
+            return null
+        }
+
+        const token = match[1]?.trim()
+        return token ? token : null
+    }
+
+    const requireSession = async (req, res) => {
+        const token = getBearerToken(req)
+        if (!token) {
+            res.status(401).json({error: 'Unauthorized.'})
+            return null
+        }
+
+        const session = await readSession(token)
+        if (!session) {
+            res.status(401).json({error: 'Unauthorized.'})
+            return null
+        }
+
+        req.user = session
+        req.sessionToken = token
+        return session
+    }
+
+    const requireSessionIfSetupCompleted = async (req, res, next) => {
+        try {
+            const completed = await resolveSetupCompleted()
+            if (!completed) {
+                next()
+                return
+            }
+
+            const session = await requireSession(req, res)
+            if (!session) {
+                return
+            }
+
+            next()
+        } catch (error) {
+            logger.error(`[${serviceName}] ❌ Auth middleware failed: ${error.message}`)
+            res.status(502).json({error: 'Unable to validate session.'})
+        }
+    }
+
+    const requireAdminSession = async (req, res) => {
+        const session = await requireSession(req, res)
+        if (!session) {
+            return null
+        }
+
+        if (normalizeRole(session?.role, 'member') !== 'admin') {
+            res.status(403).json({error: 'Admin privileges are required.'})
+            return null
+        }
+
+        return session
+    }
+
     const app = express()
 
     app.use(cors())
@@ -605,6 +1142,452 @@ export const createSageApp = ({
     app.get('/health', (req, res) => {
         logger.debug(`[${serviceName}] ✅ Healthcheck OK`)
         res.status(200).send('Sage is live!')
+    })
+
+    app.post('/api/auth/bootstrap', async (req, res) => {
+        try {
+            const setupCompleted = await resolveSetupCompleted()
+            if (setupCompleted) {
+                res.status(409).json({error: 'Setup already completed.'})
+                return
+            }
+
+            const username = normalizeUsername(req.body?.username)
+            const password = typeof req.body?.password === 'string' ? req.body.password : ''
+
+            if (!username || !isValidUsername(username)) {
+                res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'})
+                return
+            }
+
+            if (!isValidPassword(password)) {
+                res.status(400).json({error: 'password must be at least 8 characters.'})
+                return
+            }
+
+            const created = pendingAdmin == null
+            setPendingAdminCredentials({username, password})
+
+            res.json({
+                ok: true,
+                created,
+                persisted: false,
+                username,
+                role: 'admin',
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to bootstrap admin user: ${error.message}`)
+            const message = error instanceof Error && error.message.trim()
+                ? error.message.trim()
+                : 'Unable to bootstrap admin user.'
+            const status = 502
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.get('/api/auth/bootstrap/status', async (_req, res) => {
+        try {
+            const setupCompleted = await resolveSetupCompleted()
+            const pendingUser = pendingAdminPublicUser()
+            if (pendingUser) {
+                res.json({
+                    setupCompleted: setupCompleted === true,
+                    adminExists: true,
+                    username: pendingUser.username,
+                    persisted: false,
+                })
+                return
+            }
+
+            if (!vaultClient?.users) {
+                res.json({
+                    setupCompleted: setupCompleted === true,
+                    adminExists: false,
+                    username: null,
+                    persisted: false,
+                })
+                return
+            }
+
+            const users = await listAuthUsers()
+            const existingAdmin = selectPrimaryAdmin(users)
+            const username = normalizeUsername(existingAdmin?.username) || null
+
+            res.json({
+                setupCompleted: setupCompleted === true,
+                adminExists: Boolean(existingAdmin),
+                username,
+                persisted: Boolean(existingAdmin),
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load bootstrap status: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to load bootstrap status.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/auth/bootstrap/finalize', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        if (!pendingAdmin) {
+            res.json({
+                ok: true,
+                persisted: false,
+                username: normalizeUsername(session?.username) || null,
+            })
+            return
+        }
+
+        if (!hasVaultUserApi()) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        try {
+            const persisted = await finalizePendingAdminToVault()
+            if (req.sessionToken && session && typeof session === 'object') {
+                await writeSession(req.sessionToken, session, sessionTtlSeconds)
+            }
+
+            res.json({
+                ok: true,
+                persisted: persisted.persisted === true,
+                created: persisted.created === true,
+                username: normalizeUsername(persisted.user?.username) || null,
+                role: normalizeRole(persisted.user?.role, 'admin'),
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to finalize bootstrap admin user: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to finalize admin user.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/auth/login', async (req, res) => {
+        try {
+            const username = normalizeUsername(req.body?.username)
+            const password = typeof req.body?.password === 'string' ? req.body.password : ''
+
+            if (!username || !password) {
+                res.status(400).json({error: 'username and password are required.'})
+                return
+            }
+
+            let authResult = authenticatePendingAdmin({username, password})
+
+            if (!authResult?.authenticated && vaultClient?.users?.authenticate) {
+                authResult = await authenticateAuthUser({username, password})
+            }
+
+            if (!authResult?.authenticated && !vaultClient?.users?.authenticate && !pendingAdmin) {
+                res.status(503).json({error: 'Vault storage is not configured.'})
+                return
+            }
+
+            if (!authResult?.authenticated || !authResult.user) {
+                res.status(401).json({error: 'Invalid credentials.'})
+                return
+            }
+
+            const token = createSessionToken()
+            const session = toSessionUser(authResult.user, username)
+            await writeSession(token, session, sessionTtlSeconds)
+            res.json({token, user: {username: session.username, role: session.role}})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to login: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to login.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.get('/api/auth/status', async (req, res) => {
+        try {
+            const session = await requireSession(req, res)
+            if (!session) return
+            res.json({user: session})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load auth status: ${error.message}`)
+            res.status(502).json({error: 'Unable to validate session.'})
+        }
+    })
+
+    app.post('/api/auth/logout', async (req, res) => {
+        try {
+            const session = await requireSession(req, res)
+            if (!session) return
+
+            await dropSession(req.sessionToken)
+            res.json({ok: true})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to logout: ${error.message}`)
+            res.status(502).json({error: 'Unable to logout.'})
+        }
+    })
+
+    app.get('/api/auth/users', async (req, res) => {
+        if (!vaultClient?.users) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        try {
+            const users = await listAuthUsers()
+            res.json({users: users.map((entry) => publicUser(entry)).filter((entry) => Boolean(entry.usernameNormalized))})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to list auth users: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to list users.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/auth/users', async (req, res) => {
+        if (!vaultClient?.users) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        const username = normalizeUsername(req.body?.username)
+        const password = typeof req.body?.password === 'string' ? req.body.password : ''
+        const role = normalizeRole(req.body?.role, 'member')
+
+        if (!isValidUsername(username)) {
+            res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'})
+            return
+        }
+
+        if (!isValidPassword(password)) {
+            res.status(400).json({error: 'password must be at least 8 characters.'})
+            return
+        }
+
+        try {
+            const payload = await createAuthUser({username, password, role})
+            res.status(201).json({ok: true, user: publicUser(payload?.user, username)})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to create auth user: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to create user.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.put('/api/auth/users/:username', async (req, res) => {
+        if (!vaultClient?.users) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        const lookupUsername = normalizeUsername(req.params?.username)
+        if (!lookupUsername) {
+            res.status(400).json({error: 'username is required.'})
+            return
+        }
+
+        const updates = {}
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'username')) {
+            const nextUsername = normalizeUsername(req.body?.username)
+            if (!isValidUsername(nextUsername)) {
+                res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'})
+                return
+            }
+            updates.username = nextUsername
+        }
+
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'password')) {
+            const nextPassword = typeof req.body?.password === 'string' ? req.body.password : ''
+            if (!isValidPassword(nextPassword)) {
+                res.status(400).json({error: 'password must be at least 8 characters.'})
+                return
+            }
+            updates.password = nextPassword
+        }
+
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role')) {
+            const nextRole = normalizeString(req.body?.role).toLowerCase()
+            if (nextRole !== 'admin' && nextRole !== 'member') {
+                res.status(400).json({error: 'role must be "admin" or "member".'})
+                return
+            }
+            updates.role = nextRole
+        }
+
+        if (Object.keys(updates).length === 0) {
+            res.status(400).json({error: 'At least one user field must be updated.'})
+            return
+        }
+
+        try {
+            const payload = await updateAuthUser(lookupUsername, updates)
+            res.json({ok: true, user: publicUser(payload?.user, updates.username || lookupUsername)})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to update auth user: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to update user.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.delete('/api/auth/users/:username', async (req, res) => {
+        if (!vaultClient?.users) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        const lookupUsername = normalizeUsername(req.params?.username)
+        const lookupKey = normalizeUsernameKey(lookupUsername)
+        if (!lookupKey) {
+            res.status(400).json({error: 'username is required.'})
+            return
+        }
+
+        if (lookupKey === normalizeUsernameKey(session.usernameNormalized || session.username)) {
+            res.status(400).json({error: 'Cannot delete the active session user.'})
+            return
+        }
+
+        try {
+            const payload = await deleteAuthUser(lookupUsername)
+            if (payload?.deleted !== true) {
+                res.status(404).json({error: 'User not found.'})
+                return
+            }
+
+            res.json({deleted: true})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to delete auth user: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to delete user.')
+            res.status(status).json({error: message})
+        }
+    })
+    app.use('/api/settings', requireSessionIfSetupCompleted)
+
+    app.get('/api/settings/downloads/naming', async (_req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const doc = await vaultClient.mongo.findOne(settingsCollection, {
+                key: DEFAULT_NAMING_SETTINGS.key,
+            })
+
+            res.json({
+                key: DEFAULT_NAMING_SETTINGS.key,
+                titleTemplate:
+                    typeof doc?.titleTemplate === 'string' && doc.titleTemplate.trim()
+                        ? doc.titleTemplate.trim()
+                        : DEFAULT_NAMING_SETTINGS.titleTemplate,
+                chapterTemplate:
+                    typeof doc?.chapterTemplate === 'string' && doc.chapterTemplate.trim()
+                        ? doc.chapterTemplate.trim()
+                        : DEFAULT_NAMING_SETTINGS.chapterTemplate,
+                pageTemplate:
+                    typeof doc?.pageTemplate === 'string' && doc.pageTemplate.trim()
+                        ? doc.pageTemplate.trim()
+                        : DEFAULT_NAMING_SETTINGS.pageTemplate,
+                pagePad:
+                    Number.isFinite(Number(doc?.pagePad)) && Number(doc.pagePad) > 0
+                        ? Math.floor(Number(doc.pagePad))
+                        : DEFAULT_NAMING_SETTINGS.pagePad,
+                chapterPad:
+                    Number.isFinite(Number(doc?.chapterPad)) && Number(doc.chapterPad) > 0
+                        ? Math.floor(Number(doc.chapterPad))
+                        : DEFAULT_NAMING_SETTINGS.chapterPad,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load naming settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to load naming settings.'})
+        }
+    })
+
+    app.put('/api/settings/downloads/naming', async (req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const current = await vaultClient.mongo.findOne(settingsCollection, {
+                key: DEFAULT_NAMING_SETTINGS.key,
+            })
+
+            const next = {
+                key: DEFAULT_NAMING_SETTINGS.key,
+                titleTemplate:
+                    typeof req.body?.titleTemplate === 'string'
+                        ? req.body.titleTemplate.trim()
+                        : typeof current?.titleTemplate === 'string'
+                            ? current.titleTemplate.trim()
+                            : DEFAULT_NAMING_SETTINGS.titleTemplate,
+                chapterTemplate:
+                    typeof req.body?.chapterTemplate === 'string'
+                        ? req.body.chapterTemplate.trim()
+                        : typeof current?.chapterTemplate === 'string'
+                            ? current.chapterTemplate.trim()
+                            : DEFAULT_NAMING_SETTINGS.chapterTemplate,
+                pageTemplate:
+                    typeof req.body?.pageTemplate === 'string'
+                        ? req.body.pageTemplate.trim()
+                        : typeof current?.pageTemplate === 'string'
+                            ? current.pageTemplate.trim()
+                            : DEFAULT_NAMING_SETTINGS.pageTemplate,
+                pagePad: Number.isFinite(Number(req.body?.pagePad))
+                    ? Math.max(1, Math.min(12, Math.floor(Number(req.body.pagePad))))
+                    : Number.isFinite(Number(current?.pagePad))
+                        ? Math.max(1, Math.min(12, Math.floor(Number(current.pagePad))))
+                        : DEFAULT_NAMING_SETTINGS.pagePad,
+                chapterPad: Number.isFinite(Number(req.body?.chapterPad))
+                    ? Math.max(1, Math.min(12, Math.floor(Number(req.body.chapterPad))))
+                    : Number.isFinite(Number(current?.chapterPad))
+                        ? Math.max(1, Math.min(12, Math.floor(Number(current.chapterPad))))
+                        : DEFAULT_NAMING_SETTINGS.chapterPad,
+            }
+
+            if (!next.titleTemplate) {
+                res.status(400).json({error: 'titleTemplate must not be empty.'})
+                return
+            }
+            if (!next.chapterTemplate) {
+                res.status(400).json({error: 'chapterTemplate must not be empty.'})
+                return
+            }
+            if (!next.pageTemplate) {
+                res.status(400).json({error: 'pageTemplate must not be empty.'})
+                return
+            }
+
+            const now = new Date().toISOString()
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_NAMING_SETTINGS.key},
+                {$set: {...next, updatedAt: now}},
+                {upsert: true},
+            )
+
+            res.json(next)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to update naming settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to update naming settings.'})
+        }
     })
 
     app.get('/api/pages', (req, res) => {
@@ -1236,6 +2219,8 @@ export const createSageApp = ({
         }
     })
 
+    app.use('/api/raven', requireSessionIfSetupCompleted)
+
     app.get('/api/raven/library', async (_req, res) => {
         try {
             const library = await ravenClient.getLibrary()
@@ -1447,6 +2432,10 @@ export const startSage = ({
     raven,
     wizard,
     wizardStateClient,
+                              vault,
+                              vaultClient,
+                              auth,
+                              settings,
 } = {}) => {
     const logger = resolveLogger(loggerOverrides)
     const app = createSageApp({
@@ -1459,6 +2448,10 @@ export const startSage = ({
         raven,
         wizard,
         wizardStateClient,
+        vault,
+        vaultClient,
+        auth,
+        settings,
     })
     const server = app.listen(port, () => {
         logger.info(`[${serviceName}] 🧠 Sage is live on port ${port}`)
@@ -1468,3 +2461,4 @@ export const startSage = ({
 }
 
 export { SetupValidationError } from './errors.mjs'
+

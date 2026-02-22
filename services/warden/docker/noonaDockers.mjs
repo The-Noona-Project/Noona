@@ -1,6 +1,6 @@
 // services/warden/docker/noonaDockers.mjs
 
-import { buildVaultTokenRegistry, stringifyTokenMap } from './vaultTokens.mjs';
+import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
 
 const DEBUG = process.env.DEBUG || 'false';
 const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
@@ -26,6 +26,15 @@ const rawList = [
     'noona-portal',
     'noona-vault'
 ];
+
+const SERVICE_DESCRIPTIONS = Object.freeze({
+    'noona-moon': 'Moon is the Noona web UI (front-end).',
+    'noona-sage': 'Sage is the setup gateway and API proxy for Warden, Raven, and Vault.',
+    'noona-portal': 'Portal is the external API gateway (Discord helpers, onboarding, integrations).',
+    'noona-raven': 'Raven handles scraping, downloads, and library management.',
+    'noona-vault': 'Vault stores secrets and shared settings for the stack.',
+    'noona-oracle': 'Oracle provides optional automation and helper services.',
+});
 
 const tokensByService = buildVaultTokenRegistry(rawList);
 
@@ -304,6 +313,7 @@ const serviceDefs = rawList.map(name => {
     return {
         name,
         image: `captainpax/${name}:latest`,
+        description: SERVICE_DESCRIPTIONS[name] ?? null,
         port: portMap[name],
         internalPort,
         env,

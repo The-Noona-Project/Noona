@@ -21,6 +21,7 @@ const createEnvField = (key, defaultValue, {
 const rawList = [
     {
         name: 'noona-redis',
+        description: 'Redis Stack used for caching, wizard state, and ephemeral service coordination.',
         image: 'redis/redis-stack:7.2.0-v19',
         port: 8001,
         internalPort: 8001,
@@ -46,6 +47,7 @@ const rawList = [
     },
     {
         name: 'noona-mongo',
+        description: 'MongoDB backing store used by Vault for persistent data.',
         image: 'mongo:8',
         port: 27017,
         internalPort: 27017,

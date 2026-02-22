@@ -1,14 +1,14 @@
 // services/sage/shared/wizardStateClient.mjs
 
 import {
-    DEFAULT_WIZARD_STATE_KEY,
-    WIZARD_STEP_KEYS,
-    applyWizardStateUpdates,
     appendWizardStepHistoryEntries,
+    applyWizardStateUpdates,
     createDefaultWizardState,
+    DEFAULT_WIZARD_STATE_KEY,
     normalizeWizardState,
     normalizeWizardStateUpdates,
     resolveWizardStateOperation,
+    WIZARD_STEP_KEYS,
 } from './wizardStateSchema.mjs'
 
 const normalizeUrl = (candidate) => {
@@ -108,6 +108,9 @@ export const createWizardStateClient = ({
         throw new Error('Vault API token is required to manage wizard state.')
     }
 
+    // Keep an in-process fallback so the setup wizard can run before Vault is installed.
+    let localState = null
+
     const defaults = resolveDefaultVaultUrls(env)
     const deduped = Array.from(
         new Set(
@@ -181,6 +184,7 @@ export const createWizardStateClient = ({
 
             if (result?.data) {
                 const state = normalizeWizardState(result.data)
+                localState = state
                 logger.debug?.(`[${serviceName}] 📥 Loaded wizard state from Vault (key=${redisKey}).`)
                 return state
             }
@@ -190,24 +194,34 @@ export const createWizardStateClient = ({
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            if (fallbackToDefault && /key not found in redis/i.test(message)) {
+            if (!fallbackToDefault) {
+                throw error
+            }
+            if (/key not found in redis/i.test(message)) {
                 logger.debug?.(`[${serviceName}] ℹ️ Wizard state not found in Vault, returning defaults.`)
             } else {
-                throw error
+                logger.warn?.(`[${serviceName}] Wizard state load failed (key=${redisKey}): ${message}`)
             }
         }
 
-        return createDefaultWizardState()
+        return localState ?? createDefaultWizardState()
     }
 
     const writeState = async (state) => {
         const payload = stampState(state)
-        await request({
-            storageType: 'redis',
-            operation: 'set',
-            payload: { key: redisKey, value: payload },
-        })
-        logger.debug?.(`[${serviceName}] 💾 Persisted wizard state to Vault (key=${redisKey}).`)
+        try {
+            await request({
+                storageType: 'redis',
+                operation: 'set',
+                payload: {key: redisKey, value: payload},
+            })
+            logger.debug?.(`[${serviceName}] 💾 Persisted wizard state to Vault (key=${redisKey}).`)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn?.(`[${serviceName}] Wizard state persistence failed (key=${redisKey}): ${message}`)
+        }
+
+        localState = payload
         return payload
     }
 

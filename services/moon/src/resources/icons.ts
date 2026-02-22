@@ -1,47 +1,43 @@
-import { IconType } from "react-icons";
+import {IconType} from "react-icons";
 
 import {
-    HiArrowUpRight,
-    HiOutlineLink,
-    HiArrowTopRightOnSquare,
-    HiEnvelope,
-    HiCalendarDays,
     HiArrowRight,
+    HiArrowTopRightOnSquare,
+    HiArrowUpRight,
+    HiCalendarDays,
+    HiEnvelope,
+    HiOutlineCog6Tooth,
+    HiOutlineDocument,
     HiOutlineEye,
     HiOutlineEyeSlash,
-    HiOutlineDocument,
     HiOutlineGlobeAsiaAustralia,
-  HiOutlineRocketLaunch,
+    HiOutlineLink,
+    HiOutlineRocketLaunch,
 } from "react-icons/hi2";
 
 import {
-    PiHouseDuotone,
-    PiUserCircleDuotone,
-    PiGridFourDuotone,
     PiBookBookmarkDuotone,
+    PiGridFourDuotone,
+    PiHouseDuotone,
     PiImageDuotone,
+    PiUserCircleDuotone,
 } from "react-icons/pi";
 
-import {
-    SiJavascript,
-    SiNextdotjs,
-    SiFigma,
-    SiSupabase,
-} from "react-icons/si";
+import {SiFigma, SiJavascript, SiNextdotjs, SiSupabase,} from "react-icons/si";
 
 import {
     FaDiscord,
-    FaGithub,
-    FaLinkedin,
-    FaX,
-    FaThreads,
-    FaInstagram,
-    FaXTwitter,
     FaFacebook,
+    FaGithub,
+    FaInstagram,
+    FaLinkedin,
     FaPinterest,
-    FaWhatsapp,
     FaReddit,
     FaTelegram,
+    FaThreads,
+    FaWhatsapp,
+    FaX,
+    FaXTwitter,
 } from "react-icons/fa6";
 
 export const iconLibrary: Record<string, IconType> = {
@@ -66,6 +62,7 @@ export const iconLibrary: Record<string, IconType> = {
     threads: FaThreads,
     arrowUpRightFromSquare: HiArrowTopRightOnSquare,
     document: HiOutlineDocument,
+    settings: HiOutlineCog6Tooth,
   rocket: HiOutlineRocketLaunch,
     javascript: SiJavascript,
     nextjs: SiNextdotjs,

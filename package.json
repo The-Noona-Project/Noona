@@ -4,15 +4,10 @@
   "type": "module",
   "scripts": {
     "docs": "node scripts/generate-docs.mjs",
-    "deploy:server": "node deployment/webServer.mjs",
-    "deploy:panel:dev": "vite --config deployment/panel/vite.config.ts",
-    "deploy:panel:build": "vite build --config deployment/panel/vite.config.ts",
-    "deploy:panel:preview": "vite preview --config deployment/panel/vite.config.ts",
     "docker:list": "node scripts/docker-images.mjs list",
     "docker:build": "node scripts/docker-images.mjs build",
     "docker:push": "node scripts/docker-images.mjs push",
-    "docker:publish": "node scripts/docker-images.mjs publish",
-    "test": "vitest --config deployment/panel/vite.config.ts run"
+    "docker:publish": "node scripts/docker-images.mjs publish"
   },
   "devDependencies": {
     "@babel/cli": "^7.26.0",
@@ -35,8 +30,11 @@
     "dockerode": "^4.0.9",
     "express": "^4.21.1",
     "ignore": "^7.0.5",
+    "ioredis": "^5.9.3",
+    "mongodb": "^7.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "redis": "^5.11.0",
     "tar-fs": "^3.1.1"
   }
 }

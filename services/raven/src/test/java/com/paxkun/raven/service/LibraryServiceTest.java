@@ -88,7 +88,9 @@ class LibraryServiceTest {
         title.setLastDownloaded("1");
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
-        when(vaultService.fetchLatestChapterFromSource(title.getSourceUrl())).thenReturn("2");
+        when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
+                Map.of("chapter_number", "2", "chapter_title", "Chapter 2", "href", "http://omniscient/2")
+        ));
 
         String result = libraryService.checkForNewChapters();
 
@@ -113,7 +115,9 @@ class LibraryServiceTest {
         title.setLastDownloaded("105");
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
-        when(vaultService.fetchLatestChapterFromSource(title.getSourceUrl())).thenReturn("105");
+        when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
+                Map.of("chapter_number", "105", "chapter_title", "Chapter 105", "href", "http://tower/105")
+        ));
 
         String result = libraryService.checkForNewChapters();
 
@@ -184,7 +188,9 @@ class LibraryServiceTest {
             assertThat(passedTitle.getTitleName()).isEqualTo("The Beginning After The End");
             return null;
         }).when(downloadService).downloadSingleChapter(any(NewTitle.class), anyString());
-        when(vaultService.fetchLatestChapterFromSource("http://tbate")).thenReturn("24");
+        when(downloadService.fetchChapters("http://tbate")).thenReturn(List.of(
+                Map.of("chapter_number", "24", "chapter_title", "Chapter 24", "href", "http://tbate/24")
+        ));
 
         List<NewTitle> titles = libraryService.getAllTitleObjects();
         assertThat(titles).hasSize(1);

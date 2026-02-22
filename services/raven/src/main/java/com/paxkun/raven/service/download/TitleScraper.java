@@ -46,25 +46,95 @@ public class TitleScraper {
                     .userAgent(USER_AGENT)
                     .timeout(15_000)
                     .get();
-            Elements mangaResults = doc.select("a.line-clamp-1.link.link-hover");
 
-            logger.info("SCRAPER", "Found " + mangaResults.size() + " manga search results for '" + titleName + "'");
+            Elements resultCards = doc.select("article.bg-base-300");
+            if (resultCards.isEmpty()) {
+                Elements mangaResults = doc.select("a.line-clamp-1.link.link-hover");
+                for (Element manga : mangaResults) {
+                    Element parent = manga.parent();
+                    if (parent != null) {
+                        resultCards.add(parent);
+                    }
+                }
+            }
+
+            logger.info("SCRAPER", "Found " + resultCards.size() + " manga search results for '" + titleName + "'");
 
             Set<String> seenHrefs = new HashSet<>();
             int index = 1;
-            for (Element manga : mangaResults) {
-                logger.debug("SCRAPER", "Processing search result iteration " + index + " of " + mangaResults.size());
-                String href = manga.absUrl("href");
+            for (Element card : resultCards) {
+                logger.debug("SCRAPER", "Processing search result iteration " + index + " of " + resultCards.size());
+
+                Element link = card.selectFirst("a[href^=https://weebcentral.com/series/]");
+                if (link == null) {
+                    continue;
+                }
+
+                String href = link.absUrl("href");
                 if (href == null || href.isBlank() || !seenHrefs.add(href)) {
                     continue;
                 }
+
+                String title = null;
+                Element titleAnchor = card.selectFirst("a.line-clamp-1.link.link-hover");
+                if (titleAnchor != null) {
+                    title = titleAnchor.text();
+                }
+                if (title == null || title.isBlank()) {
+                    Element mobileTitle = card.selectFirst("div.text-ellipsis");
+                    if (mobileTitle != null) {
+                        title = mobileTitle.text();
+                    }
+                }
+                if (title == null || title.isBlank()) {
+                    title = href;
+                }
+
+                String coverUrl = null;
+                Element img = card.selectFirst("img[src]");
+                if (img != null) {
+                    coverUrl = img.absUrl("src");
+                }
+
+                String type = null;
+                Element typeLabel = card.selectFirst("strong:matchesOwn((?i)^Type:?)");
+                if (typeLabel != null) {
+                    Element parent = typeLabel.parent();
+                    if (parent != null) {
+                        Element typeValue = parent.selectFirst("span");
+                        if (typeValue != null) {
+                            type = typeValue.text();
+                        } else {
+                            String raw = parent.text();
+                            type = raw != null ? raw.replaceFirst("(?i)^Type:?\\s*", "") : null;
+                        }
+                    }
+                }
+
+                if (type == null || type.isBlank()) {
+                    for (Element tooltip : card.select("span.tooltip[data-tip]")) {
+                        String normalized = normalizeMediaType(tooltip.attr("data-tip"));
+                        if (normalized != null) {
+                            type = normalized;
+                            break;
+                        }
+                    }
+                }
+
                 Map<String, String> data = new HashMap<>();
                 data.put("index", String.valueOf(index));
-                data.put("title", manga.text());
+                data.put("title", title);
                 data.put("href", href);
+                if (coverUrl != null && !coverUrl.isBlank()) {
+                    data.put("coverUrl", coverUrl);
+                }
+                String normalizedType = normalizeMediaType(type);
+                if (normalizedType != null) {
+                    data.put("type", normalizedType);
+                }
                 results.add(data);
 
-                logger.info("SCRAPER", "[" + index + "] " + manga.text() + " -> " + href);
+                logger.info("SCRAPER", "[" + index + "] " + title + " -> " + href);
                 index++;
             }
 
@@ -254,5 +324,63 @@ public class TitleScraper {
         }
 
         return "";
+    }
+
+    private String normalizeMediaType(String raw) {
+        if (raw == null) {
+            return null;
+        }
+
+        String trimmed = raw.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+
+        String cleaned = trimmed.replaceFirst("(?i)^Type:?\\s*", "").replaceAll("\\s+", " ").trim();
+        if (cleaned.isBlank()) {
+            return null;
+        }
+
+        String lower = cleaned.toLowerCase(Locale.ROOT);
+        return switch (lower) {
+            case "manga" -> "Manga";
+            case "manhwa" -> "Manhwa";
+            case "manhua" -> "Manhua";
+            default -> prettifyLabel(cleaned);
+        };
+    }
+
+    private String prettifyLabel(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.isBlank()) return null;
+
+        boolean hasUpper = false;
+        boolean hasLower = false;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            if (!Character.isLetter(ch)) continue;
+            if (Character.isUpperCase(ch)) hasUpper = true;
+            if (Character.isLowerCase(ch)) hasLower = true;
+        }
+
+        // Preserve already mixed-case labels (ex: "Light Novel").
+        if (hasUpper && hasLower) {
+            return trimmed;
+        }
+
+        String[] parts = trimmed.toLowerCase(Locale.ROOT).split("\\s+");
+        StringBuilder out = new StringBuilder();
+        for (String part : parts) {
+            if (part.isBlank()) continue;
+            if (out.length() > 0) out.append(' ');
+            out.append(Character.toUpperCase(part.charAt(0)));
+            if (part.length() > 1) {
+                out.append(part.substring(1));
+            }
+        }
+
+        String result = out.toString().trim();
+        return result.isBlank() ? trimmed : result;
     }
 }

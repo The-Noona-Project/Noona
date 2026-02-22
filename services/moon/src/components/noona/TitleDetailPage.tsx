@@ -4,6 +4,7 @@ import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
+import {AuthGate} from "./AuthGate";
 
 type RavenTitle = {
     title?: string | null;
@@ -16,6 +17,8 @@ type RavenTitle = {
     chaptersDownloaded?: number | null;
     downloadPath?: string | null;
     summary?: string | null;
+    coverUrl?: string | null;
+    type?: string | null;
 };
 
 type TitleFile = {
@@ -64,6 +67,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [deleteError, setDeleteError] = useState<string | null>(null);
 
     const fileCount = files?.files?.length ?? 0;
+    const coverUrl = normalizeString(title?.coverUrl).trim();
+    const mediaType = normalizeString(title?.type).trim();
 
     const latestFileTimestamp = useMemo(() => {
         const list = files?.files ?? [];
@@ -197,35 +202,62 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     if (!normalizedUuid) {
         return (
             <SetupModeGate>
-                <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
-                    <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
-                        <Column gap="8">
-                            <Heading as="h2" variant="heading-strong-l">
-                                Invalid title
-                            </Heading>
-                            <Text onBackground="neutral-weak">Missing UUID.</Text>
-                            <Button variant="primary" onClick={() => router.push("/libraries")}>
-                                Back to library
-                            </Button>
-                        </Column>
-                    </Card>
-                </Column>
+                <AuthGate>
+                    <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
+                        <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                            <Column gap="8">
+                                <Heading as="h2" variant="heading-strong-l">
+                                    Invalid title
+                                </Heading>
+                                <Text onBackground="neutral-weak">Missing UUID.</Text>
+                                <Button variant="primary" onClick={() => router.push("/libraries")}>
+                                    Back to library
+                                </Button>
+                            </Column>
+                        </Card>
+                    </Column>
+                </AuthGate>
             </SetupModeGate>
         );
     }
 
     return (
         <SetupModeGate>
-            <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
+            <AuthGate>
+                <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
-                    <Column gap="4" style={{minWidth: 0}}>
-                        <Heading variant="display-strong-s" wrap="balance">
-                            {normalizeString(title?.title ?? title?.titleName) || "Title"}
-                        </Heading>
-                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                            {normalizedUuid}
-                        </Text>
-                    </Column>
+                    <Row gap="16" vertical="center" style={{minWidth: 0}}>
+                        {coverUrl && (
+                            <img
+                                src={coverUrl}
+                                alt={`${normalizeString(title?.title ?? title?.titleName) || "Title"} cover`}
+                                style={{
+                                    width: 64,
+                                    height: 96,
+                                    objectFit: "cover",
+                                    borderRadius: 12,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    flex: "0 0 auto",
+                                }}
+                                loading="lazy"
+                            />
+                        )}
+                        <Column gap="8" style={{minWidth: 0}}>
+                            <Heading variant="display-strong-s" wrap="balance">
+                                {normalizeString(title?.title ?? title?.titleName) || "Title"}
+                            </Heading>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {mediaType && (
+                                    <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                        {mediaType}
+                                    </Badge>
+                                )}
+                                <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                    {normalizedUuid}
+                                </Badge>
+                            </Row>
+                        </Column>
+                    </Row>
                     <Row gap="12" style={{flexWrap: "wrap"}}>
                         <Button variant="secondary" onClick={() => router.push("/libraries")}>
                             Back
@@ -265,6 +297,11 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                     {typeof title?.lastDownloaded === "string" && title.lastDownloaded.trim() && (
                                         <Badge background="success-alpha-weak" onBackground="neutral-strong">
                                             last chapter: {title.lastDownloaded}
+                                        </Badge>
+                                    )}
+                                    {mediaType && (
+                                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            type: {mediaType}
                                         </Badge>
                                     )}
                                     {typeof title?.chapterCount === "number" && Number.isFinite(title.chapterCount) && (
@@ -419,6 +456,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                     </Column>
                 )}
             </Column>
+            </AuthGate>
         </SetupModeGate>
     );
 }
