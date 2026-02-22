@@ -1,7 +1,7 @@
 // services/warden/initWarden.mjs
-import { createWarden } from './shared/wardenCore.mjs';
-import { startWardenServer } from './shared/wardenServer.mjs';
-import { errMSG } from '../../utilities/etc/logger.mjs';
+import {createWarden} from './shared/wardenCore.mjs';
+import {startWardenServer} from './shared/wardenServer.mjs';
+import {errMSG} from '../../utilities/etc/logger.mjs';
 
 export function bootstrapWarden({
     createWardenImpl = createWarden,
@@ -24,7 +24,7 @@ export function bootstrapWarden({
     const shutdownAndExit = (code = 1) => {
         const exit = typeof processImpl?.exit === 'function' ? processImpl.exit : null;
         const shutdownAll = typeof warden?.shutdownAll === 'function'
-            ? warden.shutdownAll()
+            ? warden.shutdownAll({exit: false, trackedOnly: false})
             : null;
 
         if (shutdownAll?.then) {
@@ -45,12 +45,12 @@ export function bootstrapWarden({
     if (typeof processImpl?.on === 'function') {
         processImpl.on('SIGINT', () => {
             closeApiServer();
-            void warden.shutdownAll();
+            void warden.shutdownAll({trackedOnly: false});
         });
 
         processImpl.on('SIGTERM', () => {
             closeApiServer();
-            void warden.shutdownAll();
+            void warden.shutdownAll({trackedOnly: false});
         });
     }
 

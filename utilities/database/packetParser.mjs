@@ -6,10 +6,10 @@
 
 import connectMongo from './mongo/mongoClient.mjs';
 import redis from './redis/redisClient.mjs';
-import { log, warn, errMSG } from '../etc/logger.mjs';
+import {errMSG, log} from '../etc/logger.mjs';
 
 const allowedOps = {
-    mongo: ['insert', 'find', 'findMany', 'update', 'delete'],
+    mongo: ['insert', 'find', 'findMany', 'update', 'delete', 'listCollections'],
     redis: ['set', 'get', 'del'],
 };
 
@@ -34,6 +34,17 @@ export async function handlePacket(packet) {
         if (storageType === 'mongo') {
             const db = await connectMongo();
             const { collection, query = {}, data = {}, update = {}, upsert = false } = payload;
+
+            if (operation === 'listCollections') {
+                const collections = await db.listCollections({}, {nameOnly: true}).toArray();
+                const names = collections
+                    .map((entry) => (typeof entry?.name === 'string' ? entry.name.trim() : ''))
+                    .filter(Boolean)
+                    .sort((left, right) => left.localeCompare(right));
+
+                log('[Vault] 📚 Listed Mongo collections');
+                return {status: 'ok', collections: names};
+            }
 
             if (!collection) {
                 return { error: 'Mongo packet missing "collection"' };

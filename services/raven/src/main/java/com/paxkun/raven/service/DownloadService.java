@@ -5,8 +5,11 @@ import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import com.paxkun.raven.service.settings.DownloadNamingSettings;
 import com.paxkun.raven.service.settings.SettingsService;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.openqa.selenium.StaleElementReferenceException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
@@ -38,7 +41,10 @@ public class DownloadService {
     private static final String USER_AGENT = "Mozilla/5.0";
     private static final String REFERER = "https://weebcentral.com";
 
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
+    @Value("${raven.download.threads:${RAVEN_DOWNLOAD_THREADS:3}}")
+    private int configuredDownloadThreads;
+
+    private ExecutorService executor;
     private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
     private final Map<String, DownloadProgress> downloadProgress = new ConcurrentHashMap<>();
     private final Deque<DownloadProgress> progressHistory = new ConcurrentLinkedDeque<>();
@@ -46,6 +52,31 @@ public class DownloadService {
 
     private static final long SEARCH_TTL_MILLIS = TimeUnit.MINUTES.toMillis(10);
     private Supplier<Long> currentTimeSupplier = System::currentTimeMillis;
+
+    private synchronized ExecutorService ensureExecutor() {
+        if (executor != null && !executor.isShutdown() && !executor.isTerminated()) {
+            return executor;
+        }
+
+        int normalizedThreads = Math.max(1, configuredDownloadThreads);
+        configuredDownloadThreads = normalizedThreads;
+        executor = Executors.newFixedThreadPool(normalizedThreads);
+        return executor;
+    }
+
+    @PostConstruct
+    public void initExecutor() {
+        ensureExecutor();
+    }
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        if (executor == null) {
+            return;
+        }
+
+        executor.shutdownNow();
+    }
 
     public SearchTitle searchTitle(String titleName) {
         cleanupExpiredSearches();
@@ -122,7 +153,7 @@ public class DownloadService {
 
                 DownloadProgress progress = new DownloadProgress(titleName);
                 downloadProgress.put(titleName, progress);
-                Future<?> future = executor.submit(() -> runDownload(titleName, title, progress));
+                Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, title, progress));
                 activeDownloads.put(titleName, future);
                 queued.append(titleName).append(", ");
                 queuedTitles.add(sanitizedTitle);
@@ -165,7 +196,7 @@ public class DownloadService {
 
             DownloadProgress progress = new DownloadProgress(titleName);
             downloadProgress.put(titleName, progress);
-            Future<?> future = executor.submit(() -> runDownload(titleName, selectedTitle, progress));
+            Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, selectedTitle, progress));
             activeDownloads.put(titleName, future);
             searchSessions.remove(searchId);
             logger.debug(
@@ -662,6 +693,23 @@ public class DownloadService {
         }
         statuses.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
         return statuses;
+    }
+
+    public List<DownloadProgress> getDownloadHistory() {
+        List<DownloadProgress> history = new ArrayList<>();
+        for (DownloadProgress entry : progressHistory) {
+            history.add(entry.copy());
+        }
+        history.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt).reversed());
+        return history;
+    }
+
+    public int getConfiguredDownloadThreads() {
+        return Math.max(1, configuredDownloadThreads);
+    }
+
+    public int getActiveDownloadCount() {
+        return activeDownloads.size();
     }
 
     public void clearDownloadStatus(String titleName) {

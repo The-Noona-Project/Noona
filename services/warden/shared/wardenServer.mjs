@@ -1,15 +1,15 @@
 // services/warden/shared/wardenServer.mjs
 import http from 'node:http';
-import { URL } from 'node:url';
+import {URL} from 'node:url';
 
-import { errMSG, log, warn } from '../../../utilities/etc/logger.mjs';
+import {errMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 
 const defaultPort = () => Number.parseInt(process.env.WARDEN_API_PORT ?? '4001', 10);
 
 const DEFAULT_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
 };
 
 const resolveLogger = (overrides = {}) => ({
@@ -251,6 +251,199 @@ export const startWardenServer = ({
             } catch (error) {
                 logger.error(`[Warden API] Failed to install services: ${error.message}`);
                 sendJson(res, 500, { error: 'Failed to install requested services.' });
+            }
+            return;
+        }
+
+        if (
+            req.method === 'GET' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'config'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            try {
+                const config = await warden.getServiceConfig?.(serviceName);
+                if (!config) {
+                    sendJson(res, 404, {error: `Service ${serviceName} is not registered.`});
+                    return;
+                }
+
+                sendJson(res, 200, config);
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to load config for ${serviceName}: ${error.message}`);
+                sendJson(res, 500, {error: `Unable to retrieve configuration for ${serviceName}.`});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'PUT' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'config'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            try {
+                const result = await warden.updateServiceConfig?.(serviceName, body);
+                sendJson(res, 200, result ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to update config for ${serviceName}: ${error.message}`);
+                sendJson(res, 500, {error: `Unable to update configuration for ${serviceName}.`});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'restart'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            try {
+                const result = await warden.restartService?.(serviceName);
+                sendJson(res, 200, result ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to restart ${serviceName}: ${error.message}`);
+                sendJson(res, 500, {error: `Unable to restart ${serviceName}.`});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[3] === 'update'
+        ) {
+            const serviceName = decodeURIComponent(segments[2]);
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            try {
+                const result = await warden.updateServiceImage?.(serviceName, body);
+                sendJson(res, 200, result ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to update image for ${serviceName}: ${error.message}`);
+                sendJson(res, 500, {error: `Unable to update image for ${serviceName}.`});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'GET' &&
+            segments.length === 3 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[2] === 'updates'
+        ) {
+            try {
+                const updates = await warden.listServiceUpdates?.();
+                sendJson(res, 200, {updates: Array.isArray(updates) ? updates : []});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to list service updates: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to retrieve service updates.'});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[2] === 'updates' &&
+            segments[3] === 'check'
+        ) {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            const requestedServices = Array.isArray(body?.services) ? body.services : null;
+
+            try {
+                const updates = await warden.refreshServiceUpdates?.({services: requestedServices});
+                sendJson(res, 200, {updates: Array.isArray(updates) ? updates : []});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to check service updates: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to check service updates.'});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 3 &&
+            segments[0] === 'api' &&
+            segments[1] === 'ecosystem' &&
+            segments[2] === 'start'
+        ) {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            try {
+                const result = await warden.startEcosystem?.(body);
+                sendJson(res, 200, result ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to start ecosystem: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to start ecosystem.'});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 3 &&
+            segments[0] === 'api' &&
+            segments[1] === 'ecosystem' &&
+            segments[2] === 'stop'
+        ) {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            try {
+                const result = await warden.stopEcosystem?.(body);
+                sendJson(res, 200, {results: Array.isArray(result) ? result : []});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to stop ecosystem: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to stop ecosystem.'});
             }
             return;
         }

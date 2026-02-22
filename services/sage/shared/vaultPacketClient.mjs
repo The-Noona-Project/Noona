@@ -218,6 +218,16 @@ export const createVaultPacketClient = ({
             payload: {collection, query: query ?? {}},
         })
 
+    const mongoListCollections = async () => {
+        const payload = await request({
+            storageType: 'mongo',
+            operation: 'listCollections',
+            payload: {},
+        })
+
+        return Array.isArray(payload?.collections) ? payload.collections : []
+    }
+
     const redisSet = async (key, value, {ttl} = {}) =>
         request({
             storageType: 'redis',
@@ -323,6 +333,7 @@ export const createVaultPacketClient = ({
             insert: mongoInsert,
             update: mongoUpdate,
             delete: mongoDelete,
+            listCollections: mongoListCollections,
         },
         redis: {
             set: redisSet,

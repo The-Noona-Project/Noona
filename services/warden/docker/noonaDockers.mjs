@@ -17,6 +17,7 @@ const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
+const DEFAULT_RAVEN_DOWNLOAD_THREADS = process.env.RAVEN_DOWNLOAD_THREADS || '3';
 
 const rawList = [
     'noona-sage',
@@ -108,6 +109,7 @@ const serviceDefs = rawList.map(name => {
 
     if (name === 'noona-raven') {
         env.push(`VAULT_URL=${DEFAULT_RAVEN_VAULT_URL}`);
+        env.push(`RAVEN_DOWNLOAD_THREADS=${DEFAULT_RAVEN_DOWNLOAD_THREADS}`);
         envConfig.push(
             createEnvField('APPDATA', '', {
                 label: 'Raven Downloads Root',
@@ -129,6 +131,12 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Service URL',
                 warning:
                     'Change only if Vault is reachable for Raven at a non-default address inside the Docker network.',
+            }),
+            createEnvField('RAVEN_DOWNLOAD_THREADS', DEFAULT_RAVEN_DOWNLOAD_THREADS, {
+                label: 'Raven Download Threads',
+                description: 'Maximum concurrent download jobs Raven should run.',
+                warning: 'Changing this value requires restarting noona-raven.',
+                required: false,
             }),
         );
     }

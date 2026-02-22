@@ -306,6 +306,14 @@ export function LibrariesPage() {
         });
     }, [query, titles, typeFilter]);
 
+    const activeDownloads = useMemo(() => {
+        const list = downloads ?? [];
+        return list.filter((entry) => {
+            const status = normalizeString(entry.status).trim().toLowerCase();
+            return status !== "completed" && status !== "failed" && status !== "error" && status !== "cancelled" && status !== "canceled";
+        });
+    }, [downloads]);
+
     return (
         <SetupModeGate>
             <AuthGate>
@@ -356,9 +364,14 @@ export function LibrariesPage() {
                                 <Heading as="h2" variant="heading-strong-l">
                                     Downloads
                                 </Heading>
-                                <Button variant="secondary" onClick={() => void pollDownloads()}>
-                                    Refresh
-                                </Button>
+                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                    <Button variant="secondary" onClick={() => void pollDownloads()}>
+                                        Refresh
+                                    </Button>
+                                    <Button variant="secondary" onClick={() => router.push("/settings?tab=raven")}>
+                                        Download history
+                                    </Button>
+                                </Row>
                             </Row>
 
                             {downloadsError && (
@@ -373,15 +386,20 @@ export function LibrariesPage() {
                                 </Text>
                             )}
 
-                            {downloads && downloads.length === 0 && (
-                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                    No active downloads.
-                                </Text>
+                            {downloads && activeDownloads.length === 0 && (
+                                <Column gap="8">
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        No active downloads.
+                                    </Text>
+                                    <Button variant="secondary" onClick={() => router.push("/settings?tab=raven")}>
+                                        View download history
+                                    </Button>
+                                </Column>
                             )}
 
-                            {downloads && downloads.length > 0 && (
+                            {downloads && activeDownloads.length > 0 && (
                                 <Column gap="8">
-                                    {downloads.map((entry, idx) => {
+                                    {activeDownloads.map((entry, idx) => {
                                         const titleName = normalizeString(entry.title).trim() || "Untitled";
                                         const statusRaw = normalizeString(entry.status).trim() || "unknown";
                                         const status = statusRaw.toLowerCase();
@@ -524,7 +542,7 @@ export function LibrariesPage() {
                                 <SmartLink key={uuid || title} href={href}>
                                     <Card background="surface" border="neutral-alpha-weak" padding="l" radius="l"
                                           fillWidth>
-                                        <Row gap="12" vertical="center">
+                                        <Row gap="12" vertical="start">
                                             {coverUrl && (
                                                 <img
                                                     src={coverUrl}
@@ -541,8 +559,21 @@ export function LibrariesPage() {
                                                 />
                                             )}
                                             <Column gap="8" style={{minWidth: 0}}>
-                                                <Row horizontal="between" vertical="center" gap="8">
-                                                    <Heading as="h3" variant="heading-strong-m" wrap="balance">
+                                                <Row horizontal="between" vertical="start" gap="8"
+                                                     style={{flexWrap: "wrap"}}>
+                                                    <Heading
+                                                        as="h3"
+                                                        variant="heading-strong-m"
+                                                        wrap="balance"
+                                                        style={{
+                                                            minWidth: 0,
+                                                            lineHeight: 1.2,
+                                                            display: "-webkit-box",
+                                                            WebkitLineClamp: 3,
+                                                            WebkitBoxOrient: "vertical",
+                                                            overflow: "hidden",
+                                                        }}
+                                                    >
                                                         {title}
                                                     </Heading>
                                                     {type && (

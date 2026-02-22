@@ -66,6 +66,11 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
 
+    const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+    const [deletingFiles, setDeletingFiles] = useState(false);
+    const [deleteFilesError, setDeleteFilesError] = useState<string | null>(null);
+    const [deleteFilesMessage, setDeleteFilesMessage] = useState<string | null>(null);
+
     const fileCount = files?.files?.length ?? 0;
     const coverUrl = normalizeString(title?.coverUrl).trim();
     const mediaType = normalizeString(title?.type).trim();
@@ -88,6 +93,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setError(null);
         setTitle(null);
         setFiles(null);
+        setSelectedFiles(new Set());
+        setDeleteFilesError(null);
+        setDeleteFilesMessage(null);
 
         try {
             const [titleRes, filesRes] = await Promise.all([
@@ -196,6 +204,64 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             setDeleteError(message);
         } finally {
             setDeleting(false);
+        }
+    };
+
+    const toggleFileSelection = (name: string) => {
+        setSelectedFiles((prev) => {
+            const next = new Set(prev);
+            if (next.has(name)) next.delete(name);
+            else next.add(name);
+            return next;
+        });
+    };
+
+    const selectAllFiles = () => {
+        const fileList = files?.files ?? [];
+        setSelectedFiles(new Set(fileList.map((entry) => entry.name)));
+    };
+
+    const clearFileSelection = () => {
+        setSelectedFiles(new Set());
+    };
+
+    const deleteSelectedFiles = async (names: string[]) => {
+        const normalized = names.map((entry) => normalizeString(entry).trim()).filter(Boolean);
+        if (normalized.length === 0) return;
+
+        setDeletingFiles(true);
+        setDeleteFilesError(null);
+        setDeleteFilesMessage(null);
+        try {
+            const res = await fetch(`/api/noona/raven/title/${encodeURIComponent(normalizedUuid)}/files`, {
+                method: "DELETE",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({names: normalized}),
+            });
+
+            const json = (await res.json().catch(() => null)) as unknown;
+            if (!res.ok) {
+                const message =
+                    json && typeof json === "object" && "error" in json && typeof (json as {
+                        error?: unknown
+                    }).error === "string"
+                        ? String((json as { error?: unknown }).error)
+                        : `Delete failed (HTTP ${res.status}).`;
+                throw new Error(message);
+            }
+
+            setSelectedFiles((prev) => {
+                const next = new Set(prev);
+                for (const name of normalized) next.delete(name);
+                return next;
+            });
+            await load();
+            setDeleteFilesMessage(`Deleted ${normalized.length} file(s).`);
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setDeleteFilesError(message);
+        } finally {
+            setDeletingFiles(false);
         }
     };
 
@@ -386,9 +452,34 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
                         <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
-                                <Heading as="h2" variant="heading-strong-l">
-                                    Downloaded files
-                                </Heading>
+                                <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                    <Heading as="h2" variant="heading-strong-l">
+                                        Downloaded files
+                                    </Heading>
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={!files || files.files.length === 0 || deletingFiles}
+                                            onClick={() => selectAllFiles()}
+                                        >
+                                            Select all
+                                        </Button>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={selectedFiles.size === 0 || deletingFiles}
+                                            onClick={() => clearFileSelection()}
+                                        >
+                                            Clear selection
+                                        </Button>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={selectedFiles.size === 0 || deletingFiles}
+                                            onClick={() => void deleteSelectedFiles(Array.from(selectedFiles))}
+                                        >
+                                            {deletingFiles ? "Deleting..." : `Delete selected (${selectedFiles.size})`}
+                                        </Button>
+                                    </Row>
+                                </Row>
 
                                 {!files && (
                                     <Text onBackground="neutral-weak">No file metadata available yet.</Text>
@@ -400,6 +491,20 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
                                 {files && files.files.length > 0 && (
                                     <Column gap="8">
+                                        {(deleteFilesError || deleteFilesMessage) && (
+                                            <Column gap="4">
+                                                {deleteFilesError && (
+                                                    <Text onBackground="danger-strong" variant="body-default-xs">
+                                                        {deleteFilesError}
+                                                    </Text>
+                                                )}
+                                                {deleteFilesMessage && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        {deleteFilesMessage}
+                                                    </Text>
+                                                )}
+                                            </Column>
+                                        )}
                                         <Line background="neutral-alpha-weak"/>
                                         {files.files.map((file) => {
                                             const modified =
@@ -407,22 +512,41 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                                 (typeof file.modifiedAtMs === "number" && Number.isFinite(file.modifiedAtMs)
                                                     ? new Date(file.modifiedAtMs).toISOString()
                                                     : "");
+                                            const checked = selectedFiles.has(file.name);
 
                                             return (
                                                 <Row key={file.name} horizontal="between" gap="12">
-                                                    <Column gap="4" style={{minWidth: 0}}>
-                                                        <Text variant="body-default-s" wrap="balance">
-                                                            {file.name}
-                                                        </Text>
-                                                        {modified && (
-                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                                {modified}
+                                                    <Row gap="8" style={{minWidth: 0}}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={checked}
+                                                            onChange={() => toggleFileSelection(file.name)}
+                                                            aria-label={`Select ${file.name}`}
+                                                        />
+                                                        <Column gap="4" style={{minWidth: 0}}>
+                                                            <Text variant="body-default-s" wrap="balance">
+                                                                {file.name}
                                                             </Text>
-                                                        )}
-                                                    </Column>
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        {formatBytes(file.sizeBytes)}
-                                                    </Text>
+                                                            {modified && (
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs">
+                                                                    {modified}
+                                                                </Text>
+                                                            )}
+                                                        </Column>
+                                                    </Row>
+                                                    <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            {formatBytes(file.sizeBytes)}
+                                                        </Text>
+                                                        <Button
+                                                            variant="secondary"
+                                                            disabled={deletingFiles}
+                                                            onClick={() => void deleteSelectedFiles([file.name])}
+                                                        >
+                                                            Delete
+                                                        </Button>
+                                                    </Row>
                                                 </Row>
                                             );
                                         })}

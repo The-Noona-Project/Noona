@@ -203,6 +203,55 @@ public class LibraryService {
         }
     }
 
+    public int deleteDownloadedFiles(NewTitle title, List<String> names) {
+        if (title == null || names == null || names.isEmpty()) {
+            return 0;
+        }
+
+        String downloadPath = title.getDownloadPath();
+        if (downloadPath == null || downloadPath.isBlank()) {
+            downloadPath = resolveDownloadPath(title.getTitleName(), title.getType());
+        }
+
+        if (downloadPath == null || downloadPath.isBlank()) {
+            return 0;
+        }
+
+        Path titleFolder = Path.of(downloadPath).normalize();
+        if (!Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
+            return 0;
+        }
+
+        int deleted = 0;
+        Set<String> requested = new HashSet<>();
+        for (String rawName : names) {
+            if (rawName == null || rawName.isBlank()) {
+                continue;
+            }
+
+            String fileName = Path.of(rawName).getFileName().toString().trim();
+            if (fileName.isBlank() || !requested.add(fileName)) {
+                continue;
+            }
+
+            Path candidate = titleFolder.resolve(fileName).normalize();
+            if (!candidate.startsWith(titleFolder)) {
+                continue;
+            }
+
+            try {
+                if (Files.exists(candidate) && Files.isRegularFile(candidate)) {
+                    Files.delete(candidate);
+                    deleted++;
+                }
+            } catch (Exception e) {
+                logger.warn("LIBRARY", "⚠️ Failed to delete file " + fileName + ": " + e.getMessage());
+            }
+        }
+
+        return deleted;
+    }
+
     public NewTitle resolveOrCreateTitle(String titleName, String sourceUrl) {
         NewTitle existing = getTitle(titleName);
         if (existing != null) {

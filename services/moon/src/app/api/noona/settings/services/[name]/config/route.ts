@@ -4,19 +4,16 @@ import {withNoonaAuthHeaders} from "../../../../_auth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(request: NextRequest, context: { params: Promise<{ uuid: string }> }) {
+export async function GET(_request: NextRequest, context: { params: Promise<{ name: string }> }) {
     const routeParams = await context.params;
-    const uuid = typeof routeParams?.uuid === "string" ? routeParams.uuid.trim() : "";
+    const name = typeof routeParams?.name === "string" ? routeParams.name.trim() : "";
 
-    if (!uuid) {
-        return jsonError("Title UUID is required.", 400);
+    if (!name) {
+        return jsonError("Service name is required.", 400);
     }
 
-    const limit = request.nextUrl.searchParams.get("limit");
-    const suffix = limit ? `?limit=${encodeURIComponent(limit)}` : "";
-
     try {
-        const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}/files${suffix}`, {
+        const {status, payload} = await sageJson(`/api/settings/services/${encodeURIComponent(name)}/config`, {
             headers: await withNoonaAuthHeaders(),
         });
         return NextResponse.json(payload, {status});
@@ -26,12 +23,12 @@ export async function GET(request: NextRequest, context: { params: Promise<{ uui
     }
 }
 
-export async function DELETE(request: NextRequest, context: { params: Promise<{ uuid: string }> }) {
+export async function PUT(request: NextRequest, context: { params: Promise<{ name: string }> }) {
     const routeParams = await context.params;
-    const uuid = typeof routeParams?.uuid === "string" ? routeParams.uuid.trim() : "";
+    const name = typeof routeParams?.name === "string" ? routeParams.name.trim() : "";
 
-    if (!uuid) {
-        return jsonError("Title UUID is required.", 400);
+    if (!name) {
+        return jsonError("Service name is required.", 400);
     }
 
     let body: unknown = null;
@@ -42,8 +39,8 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
     }
 
     try {
-        const {status, payload} = await sageJson(`/api/raven/title/${encodeURIComponent(uuid)}/files`, {
-            method: "DELETE",
+        const {status, payload} = await sageJson(`/api/settings/services/${encodeURIComponent(name)}/config`, {
+            method: "PUT",
             headers: await withNoonaAuthHeaders({"Content-Type": "application/json"}),
             body: JSON.stringify(body ?? {}),
         });

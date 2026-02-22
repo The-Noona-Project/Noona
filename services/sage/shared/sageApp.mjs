@@ -448,6 +448,105 @@ const createSetupClient = ({
 
             return payload
         },
+        async getServiceConfig(name) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            if (!trimmed) {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/config`)
+            return await response.json().catch(() => ({}))
+        },
+        async updateServiceConfig(name, updates = {}) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            if (!trimmed) {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/config`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(updates ?? {}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
+        async restartService(name) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            if (!trimmed) {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/restart`, {
+                method: 'POST',
+            })
+
+            return await response.json().catch(() => ({}))
+        },
+        async listServiceUpdates() {
+            const response = await fetchFromWarden('/api/services/updates')
+            const payload = await response.json().catch(() => ({}))
+            return Array.isArray(payload?.updates) ? payload.updates : []
+        },
+        async checkServiceUpdates(services = null) {
+            const body = Array.isArray(services) ? {services} : {}
+            const response = await fetchFromWarden('/api/services/updates/check', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            })
+
+            const payload = await response.json().catch(() => ({}))
+            return Array.isArray(payload?.updates) ? payload.updates : []
+        },
+        async updateServiceImage(name, options = {}) {
+            if (!name || typeof name !== 'string') {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const trimmed = name.trim()
+            if (!trimmed) {
+                throw new SetupValidationError('Service name must be a non-empty string.')
+            }
+
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/update`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(options ?? {}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
+        async startEcosystem(options = {}) {
+            const response = await fetchFromWarden('/api/ecosystem/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(options ?? {}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
+        async stopEcosystem(options = {}) {
+            const response = await fetchFromWarden('/api/ecosystem/stop', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(options ?? {}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
     }
 }
 
@@ -1590,6 +1689,174 @@ export const createSageApp = ({
         }
     })
 
+    app.get('/api/settings/services', async (_req, res) => {
+        try {
+            const services = await setupClient.listServices({includeInstalled: true})
+            res.json({services: Array.isArray(services) ? services : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load service settings catalog: ${error.message}`)
+            res.status(502).json({error: 'Unable to load service settings.'})
+        }
+    })
+
+    app.get('/api/settings/services/updates', async (_req, res) => {
+        try {
+            const updates = await setupClient.listServiceUpdates()
+            res.json({updates: Array.isArray(updates) ? updates : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to list service updates: ${error.message}`)
+            res.status(502).json({error: 'Unable to load service updates.'})
+        }
+    })
+
+    app.post('/api/settings/services/updates/check', async (req, res) => {
+        const services = Array.isArray(req.body?.services) ? req.body.services : null
+
+        try {
+            const updates = await setupClient.checkServiceUpdates(services)
+            res.json({updates: Array.isArray(updates) ? updates : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to check service updates: ${error.message}`)
+            res.status(502).json({error: 'Unable to check service updates.'})
+        }
+    })
+
+    app.get('/api/settings/services/:name/config', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const config = await setupClient.getServiceConfig(name)
+            res.json(config ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to load service config.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to load service config for ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.put('/api/settings/services/:name/config', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const result = await setupClient.updateServiceConfig(name, req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to update service config.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to update service config for ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/services/:name/restart', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const result = await setupClient.restartService(name)
+            res.json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to restart service.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to restart service ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/services/:name/update-image', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const result = await setupClient.updateServiceImage(name, req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to update service image.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to update service image for ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/ecosystem/start', async (req, res) => {
+        try {
+            const result = await setupClient.startEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to start ecosystem: ${error.message}`)
+            res.status(502).json({error: 'Unable to start ecosystem.'})
+        }
+    })
+
+    app.post('/api/settings/ecosystem/stop', async (req, res) => {
+        try {
+            const result = await setupClient.stopEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to stop ecosystem: ${error.message}`)
+            res.status(502).json({error: 'Unable to stop ecosystem.'})
+        }
+    })
+
+    app.get('/api/settings/vault/collections', async (_req, res) => {
+        if (!vaultClient?.mongo?.listCollections) {
+            res.status(503).json({error: 'Vault collection viewer is not configured.'})
+            return
+        }
+
+        try {
+            const collections = await vaultClient.mongo.listCollections()
+            res.json({collections: Array.isArray(collections) ? collections : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Vault collections: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to load Vault collections.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.get('/api/settings/vault/collections/:name/documents', async (req, res) => {
+        if (!vaultClient?.mongo?.findMany) {
+            res.status(503).json({error: 'Vault collection viewer is not configured.'})
+            return
+        }
+
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Collection name is required.'})
+            return
+        }
+
+        const rawLimit = Number(req.query?.limit)
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 50
+
+        try {
+            const documents = await vaultClient.mongo.findMany(name, {})
+            const list = Array.isArray(documents) ? documents.slice(0, limit) : []
+            res.json({collection: name, limit, documents: list})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Vault documents for ${name}: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to load Vault collection documents.')
+            res.status(status).json({error: message})
+        }
+    })
+
     app.get('/api/pages', (req, res) => {
         const pages = [
             { name: 'Setup', path: '/setup' },
@@ -2345,6 +2612,39 @@ export const createSageApp = ({
         }
     })
 
+    app.delete('/api/raven/title/:uuid/files', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+        const names = Array.isArray(req.body?.names) ? req.body.names : []
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        const normalizedNames = names
+            .filter((entry) => typeof entry === 'string')
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+
+        if (normalizedNames.length === 0) {
+            res.status(400).json({error: 'names must include at least one file name.'})
+            return
+        }
+
+        try {
+            const result = await ravenClient.deleteTitleFiles(uuid, normalizedNames)
+            if (!result) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.json(result)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to delete Raven files for ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to delete Raven title files.'})
+        }
+    })
+
     app.post('/api/raven/search', async (req, res) => {
         const query = typeof req.body?.query === 'string' ? req.body.query.trim() : ''
 
@@ -2400,6 +2700,26 @@ export const createSageApp = ({
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load Raven download status: ${error.message}`)
             res.status(502).json({ error: 'Unable to retrieve Raven download status.' })
+        }
+    })
+
+    app.get('/api/raven/downloads/history', async (_req, res) => {
+        try {
+            const history = await ravenClient.getDownloadHistory()
+            res.json(history ?? [])
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven download history: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven download history.'})
+        }
+    })
+
+    app.get('/api/raven/downloads/summary', async (_req, res) => {
+        try {
+            const summary = await ravenClient.getDownloadSummary()
+            res.json(summary ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven download summary: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven download summary.'})
         }
     })
 

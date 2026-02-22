@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * DownloadController handles endpoints for searching and downloading manga titles and chapters.
@@ -92,6 +93,21 @@ public class DownloadController {
                 "DOWNLOAD_CONTROLLER",
                 "Returning " + status.size() + " progress entries");
         return ResponseEntity.ok(status);
+    }
+
+    @GetMapping("/status/history")
+    public ResponseEntity<List<DownloadProgress>> getHistory() {
+        logger.debug("DOWNLOAD_CONTROLLER", "History request received");
+        List<DownloadProgress> history = downloadService.getDownloadHistory();
+        return ResponseEntity.ok(history);
+    }
+
+    @GetMapping("/status/summary")
+    public ResponseEntity<Map<String, Object>> getStatusSummary() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Status summary request received");
+        return ResponseEntity.ok(Map.of(
+                "activeDownloads", downloadService.getActiveDownloadCount(),
+                "maxThreads", downloadService.getConfiguredDownloadThreads()));
     }
 
     /**

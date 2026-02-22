@@ -296,6 +296,37 @@ export const createRavenClient = ({
             return await parseResponsePayload(response)
         },
 
+        async deleteTitleFiles(uuid, names = []) {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : ''
+            if (!normalized) {
+                throw new Error('uuid is required.')
+            }
+
+            const encoded = encodeURIComponent(normalized)
+            const payload = Array.isArray(names)
+                ? names
+                    .filter((entry) => typeof entry === 'string')
+                    .map((entry) => entry.trim())
+                    .filter(Boolean)
+                : []
+
+            if (payload.length === 0) {
+                throw new Error('names must include at least one file name.')
+            }
+
+            const response = await fetchFromRaven(`/v1/library/title/${encoded}/files`, {
+                method: 'DELETE',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({names: payload}),
+            }, {acceptStatuses: [404]})
+
+            if (response.status === 404) {
+                return null
+            }
+
+            return await parseResponsePayload(response)
+        },
+
         async searchTitle(query) {
             if (!query || typeof query !== 'string') {
                 throw new Error('Search query must be a non-empty string.')
@@ -325,6 +356,16 @@ export const createRavenClient = ({
 
         async getDownloadStatus() {
             const response = await fetchFromRaven('/v1/download/status')
+            return await parseResponsePayload(response)
+        },
+
+        async getDownloadHistory() {
+            const response = await fetchFromRaven('/v1/download/status/history')
+            return await parseResponsePayload(response)
+        },
+
+        async getDownloadSummary() {
+            const response = await fetchFromRaven('/v1/download/status/summary')
             return await parseResponsePayload(response)
         },
     }

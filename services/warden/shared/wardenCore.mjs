@@ -147,6 +147,102 @@ function applyEnvOverrides(descriptor, overrides) {
     };
 }
 
+function parseEnvEntries(entries = []) {
+    const envMap = {};
+    for (const entry of entries) {
+        if (typeof entry !== 'string') {
+            continue;
+        }
+
+        const [rawKey, ...rest] = entry.split('=');
+        const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+        if (!key) {
+            continue;
+        }
+
+        envMap[key] = rest.join('=') ?? '';
+    }
+
+    return envMap;
+}
+
+function cloneServiceDescriptor(descriptor) {
+    return {
+        ...descriptor,
+        env: Array.isArray(descriptor?.env) ? [...descriptor.env] : [],
+        volumes: Array.isArray(descriptor?.volumes) ? [...descriptor.volumes] : undefined,
+        envConfig: cloneEnvConfig(descriptor?.envConfig),
+    };
+}
+
+function normalizeHostPort(value) {
+    if (value == null || value === '') {
+        return null;
+    }
+
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+        return null;
+    }
+
+    const rounded = Math.floor(parsed);
+    if (rounded < 1 || rounded > 65535) {
+        return null;
+    }
+
+    return rounded;
+}
+
+function parseImageReference(image) {
+    if (typeof image !== 'string') {
+        return null;
+    }
+
+    const trimmed = image.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    if (trimmed.includes('@')) {
+        const [withoutDigest] = trimmed.split('@');
+        return parseImageReference(withoutDigest);
+    }
+
+    const firstSlashIndex = trimmed.indexOf('/');
+    const firstSegment = firstSlashIndex >= 0 ? trimmed.slice(0, firstSlashIndex) : trimmed;
+    const isExplicitRegistry = firstSegment.includes('.') || firstSegment.includes(':') || firstSegment === 'localhost';
+
+    let registry = 'docker.io';
+    let repositoryWithTag = trimmed;
+
+    if (isExplicitRegistry && firstSlashIndex >= 0) {
+        registry = firstSegment;
+        repositoryWithTag = trimmed.slice(firstSlashIndex + 1);
+    }
+
+    const lastSlashIndex = repositoryWithTag.lastIndexOf('/');
+    const lastColonIndex = repositoryWithTag.lastIndexOf(':');
+    const hasTag = lastColonIndex > lastSlashIndex;
+    const repository = hasTag ? repositoryWithTag.slice(0, lastColonIndex) : repositoryWithTag;
+    const tag = hasTag ? repositoryWithTag.slice(lastColonIndex + 1) : 'latest';
+
+    if (!repository) {
+        return null;
+    }
+
+    const normalizedRepository =
+        registry === 'docker.io' && !repository.includes('/')
+            ? `library/${repository}`
+            : repository;
+
+    return {
+        raw: trimmed,
+        registry,
+        repository: normalizedRepository,
+        tag: tag || 'latest',
+    };
+}
+
 const timestamp = () => new Date().toISOString();
 
 export function createWarden(options = {}) {
@@ -167,6 +263,8 @@ export function createWarden(options = {}) {
         logLimit: logLimitOption,
         fetchImpl = fetch,
         wizardState: wizardStateOption = {},
+        setIntervalImpl = setInterval,
+        clearIntervalImpl = clearInterval,
     } = options;
 
     const services = normalizeServices(servicesOption);
@@ -175,6 +273,16 @@ export function createWarden(options = {}) {
     const serviceCatalog = createServiceCatalog(services);
     const fsModule = fsOption || fs;
     const serviceName = env.SERVICE_NAME || 'noona-warden';
+    const serviceRuntimeConfig = new Map();
+    const serviceUpdateSnapshots = new Map();
+    const updateCheckIntervalMs = (() => {
+        const candidate = Number.parseInt(env.SERVICE_UPDATE_CHECK_INTERVAL_MS ?? '3600000', 10);
+        if (Number.isFinite(candidate) && candidate >= 60000) {
+            return candidate;
+        }
+        return 3600000;
+    })();
+    let serviceUpdateTimer = null;
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
@@ -190,7 +298,9 @@ export function createWarden(options = {}) {
         'noona-sage',
         'noona-moon',
         'noona-vault',
+        'noona-portal',
         'noona-raven',
+        'noona-oracle',
     ];
     const dependencyGraph = new Map([
         ['noona-vault', ['noona-mongo', 'noona-redis']],
@@ -1057,6 +1167,261 @@ export function createWarden(options = {}) {
         return null;
     }
 
+    const normalizeEnvOverrideMap = (overrides) => {
+        if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+            return {};
+        }
+
+        const normalized = {};
+        for (const [rawKey, rawValue] of Object.entries(overrides)) {
+            if (typeof rawKey !== 'string') {
+                continue;
+            }
+
+            const key = rawKey.trim();
+            if (!key) {
+                continue;
+            }
+
+            normalized[key] = rawValue == null ? '' : String(rawValue);
+        }
+
+        return normalized;
+    };
+
+    const listRegisteredServiceNames = () =>
+        Array.from(serviceCatalog.keys()).sort((left, right) => left.localeCompare(right));
+
+    const resolveRuntimeConfig = (name) => {
+        const current = serviceRuntimeConfig.get(name);
+        if (!current || typeof current !== 'object') {
+            return {env: {}, hostPort: null};
+        }
+
+        return {
+            env: normalizeEnvOverrideMap(current.env),
+            hostPort: normalizeHostPort(current.hostPort),
+        };
+    };
+
+    const writeRuntimeConfig = (name, next = {}) => {
+        const envOverrides = normalizeEnvOverrideMap(next.env);
+        const hostPort = normalizeHostPort(next.hostPort);
+
+        if (Object.keys(envOverrides).length === 0 && hostPort == null) {
+            serviceRuntimeConfig.delete(name);
+            return {env: {}, hostPort: null};
+        }
+
+        const snapshot = {
+            env: envOverrides,
+            hostPort,
+        };
+
+        serviceRuntimeConfig.set(name, snapshot);
+        return snapshot;
+    };
+
+    const buildEffectiveServiceDescriptor = (name, {envOverrides = null} = {}) => {
+        const entry = serviceCatalog.get(name);
+        if (!entry) {
+            throw new Error(`Service ${name} is not registered with Warden.`);
+        }
+
+        const baseDescriptor = cloneServiceDescriptor(entry.descriptor);
+        const runtime = resolveRuntimeConfig(name);
+        const mergedOverrides = {
+            ...runtime.env,
+            ...normalizeEnvOverrideMap(envOverrides),
+        };
+
+        let descriptor = applyEnvOverrides(baseDescriptor, mergedOverrides);
+        const internalPort = descriptor.internalPort || descriptor.port || null;
+        const hostPort = normalizeHostPort(runtime.hostPort);
+
+        if (hostPort != null) {
+            descriptor = {
+                ...descriptor,
+                port: hostPort,
+                hostServiceUrl: `${hostServiceBase}:${hostPort}`,
+                exposed: internalPort ? {[`${internalPort}/tcp`]: {}} : {},
+                ports:
+                    internalPort && hostPort
+                        ? {[`${internalPort}/tcp`]: [{HostPort: String(hostPort)}]}
+                        : {},
+            };
+        }
+
+        return {
+            entry,
+            descriptor,
+            envOverrides: mergedOverrides,
+            runtime: {
+                env: mergedOverrides,
+                hostPort,
+            },
+        };
+    };
+
+    const getLocalImageDigests = async (dockerClient, image) => {
+        if (!dockerClient || !image) {
+            return [];
+        }
+
+        try {
+            const inspected = await dockerClient.getImage(image).inspect();
+            const values = Array.isArray(inspected?.RepoDigests) ? inspected.RepoDigests : [];
+            return values
+                .map((entry) => {
+                    if (typeof entry !== 'string') {
+                        return null;
+                    }
+                    const digest = entry.includes('@') ? entry.split('@')[1] : entry;
+                    const trimmed = digest ? digest.trim() : '';
+                    return trimmed || null;
+                })
+                .filter(Boolean);
+        } catch (error) {
+            const statusCode = Number(error?.statusCode);
+            if (statusCode === 404) {
+                return [];
+            }
+            throw error;
+        }
+    };
+
+    const fetchDockerHubDigest = async (imageReference) => {
+        if (!imageReference || imageReference.registry !== 'docker.io') {
+            return null;
+        }
+
+        const scope = `repository:${imageReference.repository}:pull`;
+        const tokenResponse = await fetchImpl(
+            `https://auth.docker.io/token?service=registry.docker.io&scope=${encodeURIComponent(scope)}`,
+            {method: 'GET'},
+        );
+
+        if (!tokenResponse.ok) {
+            throw new Error(`Docker Hub token request failed with status ${tokenResponse.status}`);
+        }
+
+        const tokenPayload = await tokenResponse.json().catch(() => ({}));
+        const token = typeof tokenPayload?.token === 'string' ? tokenPayload.token.trim() : '';
+        if (!token) {
+            throw new Error('Docker Hub token response did not include a token.');
+        }
+
+        const manifestResponse = await fetchImpl(
+            `https://registry-1.docker.io/v2/${imageReference.repository}/manifests/${encodeURIComponent(imageReference.tag)}`,
+            {
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: [
+                        'application/vnd.docker.distribution.manifest.v2+json',
+                        'application/vnd.docker.distribution.manifest.list.v2+json',
+                        'application/vnd.oci.image.manifest.v1+json',
+                        'application/vnd.oci.image.index.v1+json',
+                    ].join(', '),
+                },
+            },
+        );
+
+        if (!manifestResponse.ok) {
+            throw new Error(`Docker Hub manifest request failed with status ${manifestResponse.status}`);
+        }
+
+        const remoteDigest = manifestResponse.headers.get('docker-content-digest');
+        return typeof remoteDigest === 'string' && remoteDigest.trim()
+            ? remoteDigest.trim()
+            : null;
+    };
+
+    const checkServiceUpdate = async (name, {dockerClient = null} = {}) => {
+        const entry = serviceCatalog.get(name);
+        if (!entry) {
+            throw new Error(`Service ${name} is not registered with Warden.`);
+        }
+
+        const descriptor = buildEffectiveServiceDescriptor(name).descriptor;
+        const image = typeof descriptor.image === 'string' ? descriptor.image.trim() : '';
+        if (!image) {
+            const snapshot = {
+                service: name,
+                image: null,
+                checkedAt: timestamp(),
+                updateAvailable: false,
+                remoteDigest: null,
+                localDigests: [],
+                supported: false,
+                error: 'Service image is not configured.',
+            };
+            serviceUpdateSnapshots.set(name, snapshot);
+            return snapshot;
+        }
+
+        const resolvedImage = parseImageReference(image);
+        if (!resolvedImage || resolvedImage.registry !== 'docker.io') {
+            const snapshot = {
+                service: name,
+                image,
+                checkedAt: timestamp(),
+                updateAvailable: false,
+                remoteDigest: null,
+                localDigests: [],
+                supported: false,
+                error: 'Update check currently supports Docker Hub images only.',
+            };
+            serviceUpdateSnapshots.set(name, snapshot);
+            return snapshot;
+        }
+
+        const client = dockerClient || (await ensureDockerConnection());
+        const localDigests = await getLocalImageDigests(client, image);
+        const remoteDigest = await fetchDockerHubDigest(resolvedImage);
+        const updateAvailable = Boolean(remoteDigest) && !localDigests.includes(remoteDigest);
+
+        const snapshot = {
+            service: name,
+            image,
+            checkedAt: timestamp(),
+            updateAvailable,
+            remoteDigest,
+            localDigests,
+            supported: true,
+            error: null,
+        };
+
+        serviceUpdateSnapshots.set(name, snapshot);
+        return snapshot;
+    };
+
+    const startServiceUpdateTimer = () => {
+        if (typeof setIntervalImpl !== 'function' || serviceUpdateTimer) {
+            return;
+        }
+
+        serviceUpdateTimer = setIntervalImpl(() => {
+            Promise.resolve(api.refreshServiceUpdates()).catch((error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn?.(`[${serviceName}] âš ï¸ Scheduled service update check failed: ${message}`);
+            });
+        }, updateCheckIntervalMs);
+
+        if (serviceUpdateTimer && typeof serviceUpdateTimer.unref === 'function') {
+            serviceUpdateTimer.unref();
+        }
+    };
+
+    const stopServiceUpdateTimer = () => {
+        if (!serviceUpdateTimer || typeof clearIntervalImpl !== 'function') {
+            return;
+        }
+
+        clearIntervalImpl(serviceUpdateTimer);
+        serviceUpdateTimer = null;
+    };
+
     const api = {
         trackedContainers,
         networkName,
@@ -1068,6 +1433,13 @@ export function createWarden(options = {}) {
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
         if (!service) {
             return null;
+        }
+
+        const runtimeHostPort = normalizeHostPort(
+            service?.name ? resolveRuntimeConfig(service.name).hostPort : null,
+        );
+        if (runtimeHostPort != null) {
+            return `${hostServiceBase}:${runtimeHostPort}`;
         }
 
         if (service.hostServiceUrl) {
@@ -1312,17 +1684,21 @@ export function createWarden(options = {}) {
         const { includeInstalled = true } = options;
 
         const formatted = Array.from(serviceCatalog.values())
-            .map(({ category, descriptor }) => ({
-                name: descriptor.name,
-                category,
-                image: descriptor.image,
-                port: descriptor.port ?? null,
-                hostServiceUrl: api.resolveHostServiceUrl(descriptor),
-                description: descriptor.description ?? null,
-                health: descriptor.health ?? null,
-                envConfig: cloneEnvConfig(descriptor.envConfig),
-                required: requiredServiceSet.has(descriptor.name),
-            }))
+            .map(({category, descriptor}) => {
+                const effectiveDescriptor = buildEffectiveServiceDescriptor(descriptor.name).descriptor;
+
+                return {
+                    name: descriptor.name,
+                    category,
+                    image: effectiveDescriptor.image,
+                    port: effectiveDescriptor.port ?? null,
+                    hostServiceUrl: api.resolveHostServiceUrl(effectiveDescriptor),
+                    description: effectiveDescriptor.description ?? null,
+                    health: effectiveDescriptor.health ?? null,
+                    envConfig: cloneEnvConfig(effectiveDescriptor.envConfig),
+                    required: requiredServiceSet.has(descriptor.name),
+                };
+            })
             .sort((a, b) => a.name.localeCompare(b.name));
 
         let dockerClient = null;
@@ -1486,22 +1862,15 @@ export function createWarden(options = {}) {
     };
 
     const installSingleServiceByName = async (name, envOverrides = null) => {
-        const entry = serviceCatalog.get(name);
-
-        if (!entry) {
-            throw new Error(`Service ${name} is not registered with Warden.`);
-        }
-
-        const { descriptor, category } = entry;
+        const {entry, descriptor, envOverrides: combinedOverrides, runtime} = buildEffectiveServiceDescriptor(name, {
+            envOverrides,
+        });
+        const {category} = entry;
         const healthUrl = descriptor.health || null;
         let kavitaDetection = null;
         let kavitaDataMount = null;
-        let serviceDescriptor = {
-            ...descriptor,
-            env: Array.isArray(descriptor.env) ? [...descriptor.env] : descriptor.env,
-            volumes: Array.isArray(descriptor.volumes) ? [...descriptor.volumes] : descriptor.volumes,
-        };
-        let normalizedOverrides = envOverrides ? { ...envOverrides } : null;
+        let serviceDescriptor = cloneServiceDescriptor(descriptor);
+        let normalizedOverrides = {...combinedOverrides};
         let launchStartedAt = null;
         const upsertEnvValue = (entries, key, value) => {
             const list = Array.isArray(entries) ? [...entries] : [];
@@ -1707,11 +2076,16 @@ export function createWarden(options = {}) {
             name: descriptor.name,
             category,
             status: 'installed',
-            hostServiceUrl: api.resolveHostServiceUrl(descriptor),
+            hostServiceUrl: api.resolveHostServiceUrl(serviceDescriptor),
             image: descriptor.image,
-            port: descriptor.port ?? null,
+            port: serviceDescriptor.port ?? null,
             required: requiredServiceSet.has(descriptor.name),
         };
+
+        writeRuntimeConfig(descriptor.name, {
+            env: normalizedOverrides,
+            hostPort: runtime.hostPort,
+        });
 
         if (descriptor.name === 'noona-raven') {
             result.kavitaDataMount = kavitaDataMount;
@@ -1938,6 +2312,370 @@ export function createWarden(options = {}) {
             service: serviceName,
             entries,
             summary,
+        };
+    };
+
+    api.getServiceConfig = function getServiceConfig(name) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const entry = serviceCatalog.get(trimmedName);
+        if (!entry) {
+            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+        }
+
+        const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
+        const runtime = resolveRuntimeConfig(trimmedName);
+
+        return {
+            name: descriptor.name,
+            image: descriptor.image ?? null,
+            port: descriptor.port ?? null,
+            internalPort: descriptor.internalPort ?? descriptor.port ?? null,
+            hostServiceUrl: api.resolveHostServiceUrl(descriptor),
+            description: descriptor.description ?? null,
+            health: descriptor.health ?? null,
+            env: parseEnvEntries(descriptor.env),
+            envConfig: cloneEnvConfig(descriptor.envConfig),
+            runtimeConfig: {
+                hostPort: runtime.hostPort,
+                env: runtime.env,
+            },
+        };
+    };
+
+    api.updateServiceConfig = async function updateServiceConfig(name, updates = {}) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        if (!serviceCatalog.has(trimmedName)) {
+            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+        }
+
+        const runtime = resolveRuntimeConfig(trimmedName);
+        const nextRuntime = {
+            env: {...runtime.env},
+            hostPort: runtime.hostPort,
+        };
+
+        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
+            nextRuntime.env = normalizeEnvOverrideMap(updates?.env);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort')) {
+            const parsedHostPort = normalizeHostPort(updates?.hostPort);
+            if (updates?.hostPort != null && parsedHostPort == null) {
+                throw new Error('hostPort must be a valid TCP port between 1 and 65535.');
+            }
+            nextRuntime.hostPort = parsedHostPort;
+        }
+
+        writeRuntimeConfig(trimmedName, nextRuntime);
+
+        const restart = updates?.restart === true;
+        let restartResult = null;
+        if (restart) {
+            restartResult = await api.restartService(trimmedName);
+        }
+
+        return {
+            service: api.getServiceConfig(trimmedName),
+            restarted: Boolean(restartResult),
+        };
+    };
+
+    api.restartService = async function restartService(name) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
+        await api.startService(descriptor, descriptor.health || null, {recreate: true});
+
+        return {
+            service: trimmedName,
+            status: 'restarted',
+            hostServiceUrl: api.resolveHostServiceUrl(descriptor),
+        };
+    };
+
+    api.stopService = async function stopService(name, options = {}) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const removeContainer = options.remove !== false;
+        const dockerClient = await ensureDockerConnection();
+        const exists = await dockerUtils.containerExists(trimmedName, {dockerInstance: dockerClient});
+
+        if (!exists) {
+            trackedContainers.delete(trimmedName);
+            return {
+                service: trimmedName,
+                stopped: false,
+                removed: false,
+                reason: 'not-running',
+            };
+        }
+
+        if (removeContainer && typeof dockerUtils.removeContainers === 'function') {
+            await dockerUtils.removeContainers(trimmedName, {dockerInstance: dockerClient});
+        } else {
+            const container = dockerClient.getContainer(trimmedName);
+            try {
+                await container.stop();
+            } catch (error) {
+                const statusCode = Number(error?.statusCode);
+                if (statusCode !== 304 && statusCode !== 404) {
+                    throw error;
+                }
+            }
+
+            if (removeContainer) {
+                await container.remove({force: true});
+            }
+        }
+
+        trackedContainers.delete(trimmedName);
+        appendHistoryEntry(trimmedName, {
+            type: 'status',
+            status: 'stopped',
+            message: removeContainer ? 'Service stopped and removed.' : 'Service stopped.',
+            detail: null,
+            clearError: true,
+        });
+
+        return {
+            service: trimmedName,
+            stopped: true,
+            removed: removeContainer,
+            reason: null,
+        };
+    };
+
+    api.stopEcosystem = async function stopEcosystem(options = {}) {
+        const includeTrackedOnly = options?.trackedOnly === true;
+        const onResult = typeof options?.onResult === 'function' ? options.onResult : null;
+        const names = includeTrackedOnly
+            ? Array.from(trackedContainers)
+            : Array.from(new Set([
+                ...bootOrder,
+                ...listRegisteredServiceNames(),
+                ...Array.from(trackedContainers),
+            ]));
+
+        const normalizedNames = names
+            .filter((name) => typeof name === 'string' && name.trim())
+            .map((name) => name.trim());
+        const stopOrder = includeTrackedOnly
+            ? normalizedNames
+            : [...normalizedNames].reverse();
+
+        const results = [];
+
+        for (const service of stopOrder) {
+            let result;
+            try {
+                result = await api.stopService(service, {remove: true});
+            } catch (error) {
+                markDockerConnectionStale(error);
+                const message = error instanceof Error ? error.message : String(error);
+                result = {
+                    service,
+                    stopped: false,
+                    removed: false,
+                    reason: message,
+                    error: message,
+                };
+            }
+
+            results.push(result);
+
+            if (onResult) {
+                await onResult(result);
+            }
+        }
+
+        return results;
+    };
+
+    api.isSetupCompleted = async function isSetupCompleted() {
+        if (!wizardStateClient || typeof wizardStateClient.loadState !== 'function') {
+            return false;
+        }
+
+        try {
+            const state = await wizardStateClient.loadState({fallbackToDefault: false});
+            return state?.completed === true;
+        } catch {
+            return false;
+        }
+    };
+
+    api.refreshServiceUpdates = async function refreshServiceUpdates(options = {}) {
+        const requestedServices = Array.isArray(options?.services)
+            ? options.services
+            : listRegisteredServiceNames();
+
+        let dockerClient = null;
+        try {
+            dockerClient = await ensureDockerConnection();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] âš ï¸ Unable to connect to Docker for update check: ${message}`);
+        }
+
+        const results = [];
+        for (const candidate of requestedServices) {
+            const name = typeof candidate === 'string' ? candidate.trim() : '';
+            if (!name) {
+                continue;
+            }
+
+            if (!serviceCatalog.has(name)) {
+                results.push({
+                    service: name,
+                    checkedAt: timestamp(),
+                    supported: false,
+                    updateAvailable: false,
+                    error: 'Service is not registered with Warden.',
+                });
+                continue;
+            }
+
+            try {
+                const snapshot = await checkServiceUpdate(name, {dockerClient});
+                results.push(snapshot);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                const snapshot = {
+                    service: name,
+                    image: buildEffectiveServiceDescriptor(name).descriptor.image ?? null,
+                    checkedAt: timestamp(),
+                    updateAvailable: false,
+                    remoteDigest: null,
+                    localDigests: [],
+                    supported: true,
+                    error: message,
+                };
+                serviceUpdateSnapshots.set(name, snapshot);
+                results.push(snapshot);
+            }
+        }
+
+        return results;
+    };
+
+    api.listServiceUpdates = function listServiceUpdates() {
+        const snapshots = [];
+        for (const name of listRegisteredServiceNames()) {
+            const current = serviceUpdateSnapshots.get(name);
+            if (current) {
+                snapshots.push({...current});
+            } else {
+                snapshots.push({
+                    service: name,
+                    image: buildEffectiveServiceDescriptor(name).descriptor.image ?? null,
+                    checkedAt: null,
+                    updateAvailable: false,
+                    remoteDigest: null,
+                    localDigests: [],
+                    supported: true,
+                    error: null,
+                });
+            }
+        }
+
+        return snapshots;
+    };
+
+    api.updateServiceImage = async function updateServiceImage(name, options = {}) {
+        if (!name || typeof name !== 'string') {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const trimmedName = name.trim();
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
+        const image = typeof descriptor.image === 'string' ? descriptor.image.trim() : '';
+        if (!image) {
+            throw new Error(`Service ${trimmedName} does not define an image.`);
+        }
+
+        const dockerClient = await ensureDockerConnection();
+        const getImageId = async () => {
+            try {
+                const inspected = await dockerClient.getImage(image).inspect();
+                return typeof inspected?.Id === 'string' ? inspected.Id : null;
+            } catch (error) {
+                const statusCode = Number(error?.statusCode);
+                if (statusCode === 404) {
+                    return null;
+                }
+                throw error;
+            }
+        };
+
+        const beforeImageId = await getImageId();
+        await new Promise((resolve, reject) => {
+            dockerClient.pull(image, (error, stream) => {
+                if (error) {
+                    reject(error);
+                    return;
+                }
+
+                dockerClient.modem.followProgress(stream, (progressError) => {
+                    if (progressError) {
+                        reject(progressError);
+                        return;
+                    }
+                    resolve();
+                });
+            });
+        });
+        const afterImageId = await getImageId();
+
+        const restart = options?.restart !== false;
+        let restarted = false;
+        if (restart) {
+            await api.restartService(trimmedName);
+            restarted = true;
+        }
+
+        await api.refreshServiceUpdates({services: [trimmedName]}).catch(() => null);
+
+        return {
+            service: trimmedName,
+            image,
+            beforeImageId,
+            afterImageId,
+            updated: beforeImageId !== afterImageId,
+            restarted,
         };
     };
 
@@ -2518,26 +3256,20 @@ export function createWarden(options = {}) {
     };
 
     api.bootMinimal = async function bootMinimal() {
-        const moon = services.core['noona-moon'];
-        const sage = services.core['noona-sage'];
+        const moon = buildEffectiveServiceDescriptor('noona-moon').descriptor;
+        const sage = buildEffectiveServiceDescriptor('noona-sage').descriptor;
 
         await api.startService(sage, 'http://noona-sage:3004/health');
         await api.startService(moon, 'http://noona-moon:3000/');
     };
 
     api.bootFull = async function bootFull() {
-        const servicesMap = {
-            ...services.addon,
-            ...services.core,
-        };
-
         for (const name of bootOrder) {
-            const svc = servicesMap[name];
-            if (!svc) {
-                logger.warn(`Service ${name} not found in addonDockers or noonaDockers.`);
+            if (!serviceCatalog.has(name)) {
                 continue;
             }
 
+            const svc = buildEffectiveServiceDescriptor(name).descriptor;
             const healthUrl =
                 name === 'noona-redis'
                     ? 'http://noona-redis:8001/'
@@ -2549,36 +3281,50 @@ export function createWarden(options = {}) {
         }
     };
 
-    api.shutdownAll = async function shutdownAll() {
+    api.startEcosystem = async function startEcosystem(options = {}) {
+        const setupCompleted = options?.setupCompleted === true
+            ? true
+            : options?.setupCompleted === false
+                ? false
+                : await api.isSetupCompleted();
+        const shouldBootFull = options?.forceFull === true || SUPER_MODE || setupCompleted;
+
+        if (shouldBootFull) {
+            await api.bootFull();
+        } else {
+            await api.bootMinimal();
+        }
+
+        return {
+            mode: shouldBootFull ? 'full' : 'minimal',
+            setupCompleted,
+        };
+    };
+
+    api.shutdownAll = async function shutdownAll(options = {}) {
+        const shouldExit = options?.exit !== false;
+        const trackedOnly = options?.trackedOnly !== false;
         logger.warn(`Shutting down all containers...`);
-        let dockerClient = null;
+        stopServiceUpdateTimer();
 
-        try {
-            dockerClient = await ensureDockerConnection();
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            logger.warn?.(`[${serviceName}] ⚠️ Unable to establish Docker connection for shutdown: ${message}`);
-        }
-
-        for (const name of trackedContainers) {
-            try {
-                if (!dockerClient) {
-                    continue;
+        const results = await api.stopEcosystem({
+            trackedOnly,
+            onResult: async (result) => {
+                if (result?.stopped === true) {
+                    logger.log(`Stopped & removed ${result.service}`);
+                } else if (result?.reason && result?.reason !== 'not-running') {
+                    logger.warn(`Error stopping ${result.service}: ${result.reason}`);
                 }
-
-                const container = dockerClient.getContainer(name);
-                await container.stop();
-                await container.remove();
-                logger.log(`Stopped & removed ${name}`);
-            } catch (err) {
-                markDockerConnectionStale(err);
-                const message = err instanceof Error ? err.message : String(err);
-                logger.warn(`Error stopping ${name}: ${message}`);
-            }
-        }
+            },
+        });
 
         trackedContainers.clear();
-        processExit(0);
+
+        if (shouldExit) {
+            processExit(0);
+        }
+
+        return {results};
     };
 
     api.init = async function init() {
@@ -2586,16 +3332,24 @@ export function createWarden(options = {}) {
         await dockerUtils.ensureNetwork(dockerClient, networkName);
         await dockerUtils.attachSelfToNetwork(dockerClient, networkName);
 
-        if (SUPER_MODE) {
-            logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
+        const setupCompleted = await api.isSetupCompleted();
+        const shouldBootFull = SUPER_MODE || setupCompleted;
+
+        if (shouldBootFull) {
+            if (SUPER_MODE) {
+                logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
+            } else {
+                logger.log('[Warden] Setup marked complete — launching full stack.');
+            }
             await api.bootFull();
         } else {
             logger.log('[Warden] 🧪 Minimal mode — launching sage and moon only');
             await api.bootMinimal();
         }
 
+        startServiceUpdateTimer();
         logger.log(`✅ Warden is ready.`);
-        return { mode: SUPER_MODE ? 'super' : 'minimal' };
+        return {mode: shouldBootFull ? 'full' : 'minimal', setupCompleted};
     };
 
     return api;
