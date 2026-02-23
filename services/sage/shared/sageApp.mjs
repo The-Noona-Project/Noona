@@ -2498,6 +2498,16 @@ export const createSageApp = ({
         }
     })
 
+    app.post('/api/raven/library/checkForNew', async (_req, res) => {
+        try {
+            const result = await ravenClient.checkLibraryForNewChapters()
+            res.status(202).json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to check Raven library for updates: ${error.message}`)
+            res.status(502).json({error: 'Unable to check Raven library for updates.'})
+        }
+    })
+
     app.get('/api/raven/title/:uuid', async (req, res) => {
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
 
@@ -2517,6 +2527,28 @@ export const createSageApp = ({
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load Raven title ${uuid}: ${error.message}`)
             res.status(502).json({error: 'Unable to retrieve Raven title.'})
+        }
+    })
+
+    app.post('/api/raven/title/:uuid/checkForNew', async (req, res) => {
+        const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
+
+        if (!uuid) {
+            res.status(400).json({error: 'uuid is required.'})
+            return
+        }
+
+        try {
+            const result = await ravenClient.checkTitleForNewChapters(uuid)
+            if (!result) {
+                res.status(404).json({error: 'Title not found.'})
+                return
+            }
+
+            res.status(202).json(result)
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to check Raven title ${uuid}: ${error.message}`)
+            res.status(502).json({error: 'Unable to check Raven title for updates.'})
         }
     })
 

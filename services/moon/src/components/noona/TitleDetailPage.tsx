@@ -34,6 +34,14 @@ type TitleFilesResponse = {
     files: TitleFile[];
 };
 
+type TitleSyncResponse = {
+    status?: string | null;
+    message?: string | null;
+    totalQueued?: number | null;
+    newChaptersQueued?: number | null;
+    missingChaptersQueued?: number | null;
+};
+
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
 
 const formatBytes = (value: number | null | undefined) => {
@@ -70,6 +78,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [deletingFiles, setDeletingFiles] = useState(false);
     const [deleteFilesError, setDeleteFilesError] = useState<string | null>(null);
     const [deleteFilesMessage, setDeleteFilesMessage] = useState<string | null>(null);
+    const [syncingTitle, setSyncingTitle] = useState(false);
+    const [syncTitleMessage, setSyncTitleMessage] = useState<string | null>(null);
+    const [syncTitleError, setSyncTitleError] = useState<string | null>(null);
 
     const fileCount = files?.files?.length ?? 0;
     const coverUrl = normalizeString(title?.coverUrl).trim();
@@ -207,6 +218,53 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         }
     };
 
+    const checkForNewAndMissingChapters = async () => {
+        setSyncingTitle(true);
+        setSyncTitleMessage(null);
+        setSyncTitleError(null);
+
+        try {
+            const res = await fetch(`/api/noona/raven/title/${encodeURIComponent(normalizedUuid)}/checkForNew`, {
+                method: "POST",
+            });
+
+            const json = (await res.json().catch(() => null)) as unknown;
+            if (!res.ok) {
+                const message =
+                    json && typeof json === "object" && "error" in json && typeof (json as {
+                        error?: unknown
+                    }).error === "string"
+                        ? String((json as { error?: unknown }).error)
+                        : `Check failed (HTTP ${res.status}).`;
+                throw new Error(message);
+            }
+
+            const payload = json && typeof json === "object" ? (json as TitleSyncResponse) : null;
+            const totalQueued = typeof payload?.totalQueued === "number" && Number.isFinite(payload.totalQueued)
+                ? payload.totalQueued
+                : null;
+            const newCount =
+                typeof payload?.newChaptersQueued === "number" && Number.isFinite(payload.newChaptersQueued)
+                    ? payload.newChaptersQueued
+                    : null;
+            const missingCount =
+                typeof payload?.missingChaptersQueued === "number" && Number.isFinite(payload.missingChaptersQueued)
+                    ? payload.missingChaptersQueued
+                    : null;
+
+            const fallbackMessage = totalQueued != null && totalQueued > 0
+                ? `Queued ${totalQueued} chapter(s)${newCount != null && missingCount != null ? ` (${newCount} new, ${missingCount} missing)` : ""}.`
+                : "No new or missing chapters found.";
+            setSyncTitleMessage(normalizeString(payload?.message).trim() || fallbackMessage);
+            await load();
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setSyncTitleError(message);
+        } finally {
+            setSyncingTitle(false);
+        }
+    };
+
     const toggleFileSelection = (name: string) => {
         setSelectedFiles((prev) => {
             const next = new Set(prev);
@@ -290,7 +348,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     return (
         <SetupModeGate>
             <AuthGate>
-                <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
+                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
+                        m={{paddingX: "24"}}>
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
                     <Row gap="16" vertical="center" style={{minWidth: 0}}>
                         {coverUrl && (
@@ -328,11 +387,36 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                         <Button variant="secondary" onClick={() => router.push("/libraries")}>
                             Back
                         </Button>
+                        <Button
+                            variant="secondary"
+                            onClick={() => void checkForNewAndMissingChapters()}
+                            disabled={syncingTitle || loading}
+                        >
+                            {syncingTitle ? "Checking..." : "Check new/missing"}
+                        </Button>
                         <Button variant="secondary" onClick={() => void load()} disabled={loading}>
                             Refresh
                         </Button>
                     </Row>
                 </Row>
+
+                    {(syncTitleError || syncTitleMessage) && (
+                        <Card
+                            fillWidth
+                            background="surface"
+                            border={syncTitleError ? "danger-alpha-weak" : "neutral-alpha-weak"}
+                            padding="m"
+                            radius="l"
+                        >
+                            <Text
+                                variant="body-default-xs"
+                                onBackground={syncTitleError ? "danger-strong" : "neutral-weak"}
+                                wrap="balance"
+                            >
+                                {syncTitleError || syncTitleMessage}
+                            </Text>
+                        </Card>
+                    )}
 
                 {error && (
                     <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">

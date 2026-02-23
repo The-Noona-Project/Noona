@@ -167,14 +167,23 @@ public class LibraryController {
     public record DeleteTitleFilesRequest(List<String> names) {
     }
 
-    /**
-     * Endpoint to check all titles for new chapters.
-     * Calls Vault to get the library data, scrapes sources,
-     * and queues downloads for missing chapters.
-     */
+    @PostMapping("/v1/library/title/{uuid}/checkForNew")
+    public ResponseEntity<?> checkTitleForNewChapters(@PathVariable String uuid) {
+        if (uuid == null || uuid.isBlank()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "uuid is required."));
+        }
+
+        LibraryService.TitleSyncResult result = libraryService.checkForNewChaptersByUuid(uuid.trim());
+        if (result == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
     @PostMapping("/v1/library/checkForNew")
-    public ResponseEntity<String> checkForNewChapters() {
-        String result = libraryService.checkForNewChapters();
+    public ResponseEntity<LibraryService.LibrarySyncSummary> checkForNewChapters() {
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
         return ResponseEntity.ok(result);
     }
 }

@@ -64,7 +64,7 @@ class LibraryServiceTest {
                 .containsEntry("sourceUrl", title.getSourceUrl())
                 .containsEntry("lastDownloaded", chapter.getChapter())
                 .containsKey("lastDownloadedAt");
-        verify(loggerService).info("LIBRARY", "📚 Updated title [" + title.getTitleName() + "] to chapter " + chapter.getChapter());
+        verify(loggerService).info(eq("LIBRARY"), argThat(message -> message.contains("Updated title [" + title.getTitleName() + "]") && message.contains("chapter " + chapter.getChapter())));
     }
 
     @Test
@@ -72,10 +72,13 @@ class LibraryServiceTest {
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of());
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(Collections.emptyList());
 
-        String result = libraryService.checkForNewChapters();
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
-        assertEquals("No titles in Vault.", result);
-        verify(loggerService).warn("LIBRARY", "⚠️ No titles in Vault to check.");
+        assertEquals(0, result.checkedTitles());
+        assertEquals(0, result.updatedTitles());
+        assertEquals(0, result.queuedChapters());
+        assertEquals("No titles in library.", result.message());
+        verify(loggerService).warn("LIBRARY", "No titles in Vault to check.");
         verifyNoInteractions(downloadService);
     }
 
@@ -92,9 +95,14 @@ class LibraryServiceTest {
                 Map.of("chapter_number", "2", "chapter_title", "Chapter 2", "href", "http://omniscient/2")
         ));
 
-        String result = libraryService.checkForNewChapters();
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
-        assertEquals("⬇️ Downloaded 1 new chapters.", result);
+        assertEquals(1, result.checkedTitles());
+        assertEquals(1, result.updatedTitles());
+        assertEquals(1, result.queuedChapters());
+        assertEquals(1, result.newChaptersQueued());
+        assertEquals(0, result.missingChaptersQueued());
+        assertEquals("Queued 1 chapter(s) across 1 title(s).", result.message());
         verify(downloadService).downloadSingleChapter(title, "2");
 
         verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), mapCaptor.capture(), eq(true));
@@ -119,11 +127,14 @@ class LibraryServiceTest {
                 Map.of("chapter_number", "105", "chapter_title", "Chapter 105", "href", "http://tower/105")
         ));
 
-        String result = libraryService.checkForNewChapters();
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
-        assertEquals("✅ All titles up-to-date.", result);
+        assertEquals(1, result.checkedTitles());
+        assertEquals(0, result.updatedTitles());
+        assertEquals(0, result.queuedChapters());
+        assertEquals("All titles are up-to-date.", result.message());
         verify(downloadService, never()).downloadSingleChapter(any(), anyString());
-        verify(vaultService, never()).update(anyString(), anyMap(), anyMap(), anyBoolean());
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), anyMap(), eq(true));
     }
 
     @Test
@@ -197,8 +208,11 @@ class LibraryServiceTest {
         NewTitle title = titles.get(0);
         assertThat(title.getTitleName()).isEqualTo("The Beginning After The End");
 
-        String result = assertDoesNotThrow(() -> libraryService.checkForNewChapters());
-        assertEquals("⬇️ Downloaded 1 new chapters.", result);
+        LibraryService.LibrarySyncSummary result = assertDoesNotThrow(() -> libraryService.checkForNewChapters());
+        assertEquals(1, result.checkedTitles());
+        assertEquals(1, result.updatedTitles());
+        assertEquals(1, result.queuedChapters());
+        assertEquals("Queued 1 chapter(s) across 1 title(s).", result.message());
 
         verify(downloadService).downloadSingleChapter(argThat(t -> "The Beginning After The End".equals(t.getTitleName())), eq("24"));
     }

@@ -187,6 +187,14 @@ export const createRavenClient = ({
             return await parseResponsePayload(response)
         },
 
+        async checkLibraryForNewChapters() {
+            const response = await fetchFromRaven('/v1/library/checkForNew', {
+                method: 'POST',
+                headers: {Accept: 'application/json'},
+            })
+            return await parseResponsePayload(response)
+        },
+
         async getTitle(uuid) {
             const normalized = typeof uuid === 'string' ? uuid.trim() : ''
             if (!normalized) {
@@ -195,6 +203,25 @@ export const createRavenClient = ({
 
             const encoded = encodeURIComponent(normalized)
             const response = await fetchFromRaven(`/v1/library/title/${encoded}`, undefined, {acceptStatuses: [404]})
+            if (response.status === 404) {
+                return null
+            }
+
+            return await parseResponsePayload(response)
+        },
+
+        async checkTitleForNewChapters(uuid) {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : ''
+            if (!normalized) {
+                throw new Error('uuid is required.')
+            }
+
+            const encoded = encodeURIComponent(normalized)
+            const response = await fetchFromRaven(`/v1/library/title/${encoded}/checkForNew`, {
+                method: 'POST',
+                headers: {Accept: 'application/json'},
+            }, {acceptStatuses: [404]})
+
             if (response.status === 404) {
                 return null
             }

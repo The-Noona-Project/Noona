@@ -45,8 +45,14 @@ const createRavenStub = (overrides = {}) => ({
     async getLibrary() {
         throw new Error('getLibrary should not be called')
     },
+    async checkLibraryForNewChapters() {
+        throw new Error('checkLibraryForNewChapters should not be called')
+    },
     async getTitle() {
         throw new Error('getTitle should not be called')
+    },
+    async checkTitleForNewChapters() {
+        throw new Error('checkTitleForNewChapters should not be called')
     },
     async createTitle() {
         throw new Error('createTitle should not be called')
@@ -59,6 +65,9 @@ const createRavenStub = (overrides = {}) => ({
     },
     async listTitleFiles() {
         throw new Error('listTitleFiles should not be called')
+    },
+    async deleteTitleFiles() {
+        throw new Error('deleteTitleFiles should not be called')
     },
     async searchTitle() {
         throw new Error('searchTitle should not be called')
@@ -1410,6 +1419,46 @@ test('GET /api/raven/library surfaces Raven errors', async (t) => {
     assert.ok(payload.error.includes('Raven library'))
 })
 
+test('POST /api/raven/library/checkForNew proxies Raven library sync', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkLibraryForNewChapters() {
+                calls.push('sync')
+                return {checkedTitles: 2, queuedChapters: 5}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/checkForNew`, {method: 'POST'})
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {checkedTitles: 2, queuedChapters: 5})
+    assert.deepEqual(calls, ['sync'])
+})
+
+test('POST /api/raven/library/checkForNew surfaces Raven errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkLibraryForNewChapters() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/checkForNew`, {method: 'POST'})
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to check Raven library for updates'))
+})
+
 test('GET /api/raven/title/:uuid proxies Raven title lookups', async (t) => {
     const calls = []
     const app = createSageApp({
@@ -1445,6 +1494,46 @@ test('GET /api/raven/title/:uuid returns 404 for unknown titles', async (t) => {
     t.after(() => closeServer(server))
 
     const response = await fetch(`${baseUrl}/api/raven/title/missing`)
+    assert.equal(response.status, 404)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('not found'))
+})
+
+test('POST /api/raven/title/:uuid/checkForNew proxies title sync', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkTitleForNewChapters(uuid) {
+                calls.push(uuid)
+                return {uuid, status: 'updated', totalQueued: 3}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/title-123/checkForNew`, {method: 'POST'})
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {uuid: 'title-123', status: 'updated', totalQueued: 3})
+    assert.deepEqual(calls, ['title-123'])
+})
+
+test('POST /api/raven/title/:uuid/checkForNew returns 404 for unknown titles', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkTitleForNewChapters() {
+                return null
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/missing/checkForNew`, {method: 'POST'})
     assert.equal(response.status, 404)
     const payload = await response.json()
     assert.ok(payload.error.includes('not found'))

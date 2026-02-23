@@ -1,0 +1,326 @@
+warning: in the working copy of 'services/moon/src/components/noona/LibrariesPage.tsx', LF will be replaced by CRLF the next time Git touches it
+diff --git a/services/moon/src/components/noona/LibrariesPage.tsx b/services/moon/src/components/noona/LibrariesPage.tsx
+index 9bbfba1..1daa46e 100644
+--- a/services/moon/src/components/noona/LibrariesPage.tsx
++++ b/services/moon/src/components/noona/LibrariesPage.tsx
+@@ -45,7 +45,21 @@ type RavenDownloadProgress = {
+     lastUpdated?: number | null;
+ };
+
++type RavenTitleSyncResult = {
++    status?: string | null;
++    totalQueued?: number | null;
++};
++
++type RavenLibrarySyncResponse = {
++    message?: string | null;
++    queuedChapters?: number | null;
++    updatedTitles?: number | null;
++    results?: RavenTitleSyncResult[] | null;
++};
++
+ const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
++const TITLE_CARD_WIDTH = 240;
++const TITLE_CARD_HEIGHT = 340;
+
+ export function LibrariesPage() {
+     const router = useRouter();
+@@ -66,6 +80,9 @@ export function LibrariesPage() {
+
+     const [downloads, setDownloads] = useState<RavenDownloadProgress[] | null>(null);
+     const [downloadsError, setDownloadsError] = useState<string | null>(null);
++    const [syncingLibrary, setSyncingLibrary] = useState(false);
++    const [syncLibraryMessage, setSyncLibraryMessage] = useState<string | null>(null);
++    const [syncLibraryError, setSyncLibraryError] = useState<string | null>(null);
+
+     const load = async () => {
+         setError(null);
+@@ -279,6 +296,51 @@ export function LibrariesPage() {
+         }
+     };
+
++    const checkLibraryForNewChapters = async () => {
++        setSyncingLibrary(true);
++        setSyncLibraryMessage(null);
++        setSyncLibraryError(null);
++
++        try {
++            const res = await fetch("/api/noona/raven/library/checkForNew", {
++                method: "POST",
++            });
++
++            const json = (await res.json().catch(() => null)) as unknown;
++            if (!res.ok) {
++                const message =
++                    json && typeof json === "object" && "error" in json && typeof (json as {
++                        error?: unknown
++                    }).error === "string"
++                        ? String((json as { error?: unknown }).error)
++                        : `Sync failed (HTTP ${res.status}).`;
++                throw new Error(message);
++            }
++
++            const payload = json && typeof json === "object" ? (json as RavenLibrarySyncResponse) : null;
++            const queued = typeof payload?.queuedChapters === "number" && Number.isFinite(payload.queuedChapters)
++                ? payload.queuedChapters
++                : null;
++            const updatedTitles =
++                typeof payload?.updatedTitles === "number" && Number.isFinite(payload.updatedTitles)
++                    ? payload.updatedTitles
++                    : null;
++
++            const fallbackMessage =
++                queued != null && queued > 0
++                    ? `Queued ${queued} chapter(s) across ${updatedTitles ?? "multiple"} title(s).`
++                    : "No new or missing chapters found.";
++
++            setSyncLibraryMessage(normalizeString(payload?.message).trim() || fallbackMessage);
++            await Promise.all([load(), pollDownloads()]);
++        } catch (error_) {
++            const message = error_ instanceof Error ? error_.message : String(error_);
++            setSyncLibraryError(message);
++        } finally {
++            setSyncingLibrary(false);
++        }
++    };
++
+     const filtered = useMemo(() => {
+         const list = titles ?? [];
+         const needle = query.trim().toLowerCase();
+@@ -317,7 +379,8 @@ export function LibrariesPage() {
+     return (
+         <SetupModeGate>
+             <AuthGate>
+-                <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
++                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
++                        m={{paddingX: "24"}}>
+                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
+                     <Column gap="4" style={{minWidth: 0}}>
+                         <Heading variant="display-strong-s" wrap="balance">
+@@ -331,6 +394,10 @@ export function LibrariesPage() {
+                         <Button variant="primary" onClick={() => openAdd()}>
+                             Add to library
+                         </Button>
++                        <Button variant="secondary" onClick={() => void checkLibraryForNewChapters()}
++                                disabled={syncingLibrary}>
++                            {syncingLibrary ? "Checking..." : "Check new/missing"}
++                        </Button>
+                         <Button variant="secondary" onClick={() => void load()}>
+                             Refresh
+                         </Button>
+@@ -358,6 +425,24 @@ export function LibrariesPage() {
+                     onChange={(e) => setQuery(e.target.value)}
+                 />
+
++                    {(syncLibraryError || syncLibraryMessage) && (
++                        <Card
++                            fillWidth
++                            background="surface"
++                            border={syncLibraryError ? "danger-alpha-weak" : "neutral-alpha-weak"}
++                            padding="m"
++                            radius="l"
++                        >
++                            <Text
++                                variant="body-default-xs"
++                                onBackground={syncLibraryError ? "danger-strong" : "neutral-weak"}
++                                wrap="balance"
++                            >
++                                {syncLibraryError || syncLibraryMessage}
++                            </Text>
++                        </Card>
++                    )}
++
+                     <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                         <Column gap="12">
+                             <Row horizontal="between" vertical="center" gap="12">
+@@ -524,8 +609,11 @@ export function LibrariesPage() {
+                         gap="16"
+                         style={{
+                             display: "grid",
+-                            gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
++                            rowGap: "20px",
++                            gridTemplateColumns: `repeat(auto-fill, minmax(${TITLE_CARD_WIDTH}px, ${TITLE_CARD_WIDTH}px))`,
++                            justifyContent: "center",
+                         }}
++                        s={{style: {gridTemplateColumns: "1fr", justifyContent: "stretch"}}}
+                     >
+                         {filtered.map((entry) => {
+                             const uuid = normalizeString(entry.uuid);
+@@ -535,76 +623,121 @@ export function LibrariesPage() {
+                             const type = normalizeString(entry.type).trim();
+                             const chapterCount = typeof entry.chapterCount === "number" && Number.isFinite(entry.chapterCount) ? entry.chapterCount : null;
+                             const chaptersDownloaded = typeof entry.chaptersDownloaded === "number" && Number.isFinite(entry.chaptersDownloaded) ? entry.chaptersDownloaded : null;
++                            const downloadTotal = typeof chaptersDownloaded === "number" ? chaptersDownloaded : 0;
++                            const chapterTotalText = typeof chapterCount === "number"
++                                ? `${downloadTotal}/${chapterCount}`
++                                : `${downloadTotal}`;
+
+                             const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
+
+                             return (
+                                 <SmartLink key={uuid || title} href={href}>
+-                                    <Card background="surface" border="neutral-alpha-weak" padding="l" radius="l"
+-                                          fillWidth>
+-                                        <Row gap="12" vertical="start">
+-                                            {coverUrl && (
+-                                                <img
+-                                                    src={coverUrl}
+-                                                    alt={`${title} cover`}
+-                                                    style={{
+-                                                        width: 52,
+-                                                        height: 78,
+-                                                        objectFit: "cover",
+-                                                        borderRadius: 10,
+-                                                        border: "1px solid rgba(255,255,255,0.12)",
+-                                                        flex: "0 0 auto",
+-                                                    }}
+-                                                    loading="lazy"
+-                                                />
+-                                            )}
+-                                            <Column gap="8" style={{minWidth: 0}}>
+-                                                <Row horizontal="between" vertical="start" gap="8"
++                                    <Card
++                                        background="surface"
++                                        border="neutral-alpha-weak"
++                                        padding="0"
++                                        radius="l"
++                                        fillWidth
++                                        style={{
++                                            position: "relative",
++                                            overflow: "hidden",
++                                            width: "100%",
++                                            height: TITLE_CARD_HEIGHT,
++                                        }}
++                                    >
++                                        {coverUrl && (
++                                            <img
++                                                src={coverUrl}
++                                                alt={`${title} cover`}
++                                                style={{
++                                                    position: "absolute",
++                                                    inset: 0,
++                                                    width: "100%",
++                                                    height: "100%",
++                                                    objectFit: "cover",
++                                                }}
++                                                loading="lazy"
++                                            />
++                                        )}
++                                        {!coverUrl && (
++                                            <Row
++                                                fill
++                                                background="neutral-alpha-weak"
++                                                style={{
++                                                    position: "absolute",
++                                                    inset: 0,
++                                                }}
++                                            />
++                                        )}
++
++                                        <Column
++                                            fill
++                                            style={{
++                                                position: "absolute",
++                                                inset: 0,
++                                                justifyContent: "space-between",
++                                            }}
++                                        >
++                                            <Column
++                                                gap="8"
++                                                padding="12"
++                                                style={{
++                                                    background: "linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.15) 100%)",
++                                                }}
++                                            >
++                                                <Row horizontal="between" vertical="center" gap="8"
+                                                      style={{flexWrap: "wrap"}}>
+-                                                    <Heading
+-                                                        as="h3"
+-                                                        variant="heading-strong-m"
+-                                                        wrap="balance"
+-                                                        style={{
+-                                                            minWidth: 0,
+-                                                            lineHeight: 1.2,
+-                                                            display: "-webkit-box",
+-                                                            WebkitLineClamp: 3,
+-                                                            WebkitBoxOrient: "vertical",
+-                                                            overflow: "hidden",
+-                                                        }}
+-                                                    >
+-                                                        {title}
+-                                                    </Heading>
+                                                     {type && (
+                                                         <Badge background="neutral-alpha-weak"
+                                                                onBackground="neutral-strong">
+                                                             {type}
+                                                         </Badge>
+                                                     )}
++                                                    <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
++                                                        {chapterTotalText}
++                                                    </Badge>
+                                                 </Row>
+-
+-                                                {typeof chapterCount === "number" && (
+-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+-                                                        Chapters:{" "}
+-                                                        {typeof chaptersDownloaded === "number"
+-                                                            ? `${chaptersDownloaded}/${chapterCount}`
+-                                                            : chapterCount}
+-                                                    </Text>
+-                                                )}
+-
+-                                                {lastDownloaded && (
+-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+-                                                        Last downloaded: {lastDownloaded}
+-                                                    </Text>
+-                                                )}
+-                                                {uuid && (
+-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+-                                                        {uuid}
+-                                                    </Text>
+-                                                )}
++                                                <Heading
++                                                    as="h3"
++                                                    variant="heading-strong-m"
++                                                    wrap="balance"
++                                                    style={{
++                                                        minWidth: 0,
++                                                        lineHeight: 1.2,
++                                                        display: "-webkit-box",
++                                                        WebkitLineClamp: 2,
++                                                        WebkitBoxOrient: "vertical",
++                                                        overflow: "hidden",
++                                                    }}
++                                                >
++                                                    {title}
++                                                </Heading>
++                                                <Text onBackground="neutral-weak" variant="body-default-xs">
++                                                    Downloaded: {chapterTotalText}
++                                                </Text>
+                                             </Column>
+-                                        </Row>
++
++                                            <Row
++                                                padding="12"
++                                                style={{
++                                                    background: "linear-gradient(0deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0) 100%)",
++                                                }}
++                                            >
++                                                <Text
++                                                    onBackground="neutral-weak"
++                                                    variant="body-default-xs"
++                                                    style={{
++                                                        minWidth: 0,
++                                                        display: "-webkit-box",
++                                                        WebkitLineClamp: 1,
++                                                        WebkitBoxOrient: "vertical",
++                                                        overflow: "hidden",
++                                                    }}
++                                                >
++                                                    {lastDownloaded ? `Last: ${lastDownloaded}` : uuid || "No chapter metadata yet"}
++                                                </Text>
++                                            </Row>
++                                        </Column>
+                                     </Card>
+                                 </SmartLink>
+                             );
