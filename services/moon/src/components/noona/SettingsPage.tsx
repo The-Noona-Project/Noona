@@ -242,17 +242,15 @@ const parsePort = (raw: string): number | null | "invalid" => {
     if (rounded < 1 || rounded > 65535) return "invalid";
     return rounded;
 };
+const BG_SURFACE = "surface" as const;
+const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
+const BG_WARNING_ALPHA_WEAK = "warning-alpha-weak" as const;
 
 export function SettingsPage() {
     const searchParams = useSearchParams();
     const [activeTab, setActiveTab] = useState<TabId>(normalizeTab(searchParams.get("tab")));
     const [activeSection, setActiveSection] = useState<MainSectionId>("ecosystem");
     const [currentPermissions, setCurrentPermissions] = useState<MoonPermission[]>([]);
-    const [currentUser, setCurrentUser] = useState<{
-        username: string;
-        role: string;
-        permissions: MoonPermission[]
-    } | null>(null);
     const [authStateLoading, setAuthStateLoading] = useState(true);
 
     const [catalogLoading, setCatalogLoading] = useState(false);
@@ -373,7 +371,10 @@ export function SettingsPage() {
                 services?: ServiceCatalogEntry[];
                 error?: string
             } | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load services (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setCatalogError(parseError(json, `Failed to load services (HTTP ${res.status}).`));
+                return;
+            }
             setCatalog(Array.isArray(json?.services) ? json.services : []);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -388,7 +389,13 @@ export function SettingsPage() {
         try {
             const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/config`, {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as ServiceConfig | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load ${serviceName} config (HTTP ${res.status}).`));
+            if (!res.ok) {
+                patchEditor(serviceName, {
+                    loading: false,
+                    error: parseError(json, `Failed to load ${serviceName} config (HTTP ${res.status}).`),
+                });
+                return;
+            }
 
             const envDraft: Record<string, string> = {};
             if (json?.env && typeof json.env === "object") {
@@ -436,7 +443,10 @@ export function SettingsPage() {
                 body: JSON.stringify({env: editor.envDraft, hostPort: parsedPort, restart: true}),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to save ${serviceName} (HTTP ${res.status}).`));
+            if (!res.ok) {
+                patchEditor(serviceName, {error: parseError(json, `Failed to save ${serviceName} (HTTP ${res.status}).`)});
+                return;
+            }
             patchEditor(serviceName, {message: "Saved and restarted service."});
             await loadServiceConfig(serviceName);
         } catch (error_) {
@@ -452,7 +462,10 @@ export function SettingsPage() {
         try {
             const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/restart`, {method: "POST"});
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to restart ${serviceName} (HTTP ${res.status}).`));
+            if (!res.ok) {
+                patchEditor(serviceName, {error: parseError(json, `Failed to restart ${serviceName} (HTTP ${res.status}).`)});
+                return;
+            }
             patchEditor(serviceName, {message: "Service restarted."});
             await loadServiceConfig(serviceName);
         } catch (error_) {
@@ -470,7 +483,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/auth/status", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as AuthStatusResponse | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load account (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setAccountError(parseError(json, `Failed to load account (HTTP ${res.status}).`));
+                return;
+            }
 
             const username = normalizeString(json?.user?.username).trim();
             const role = normalizeString(json?.user?.role).trim() || "member";
@@ -478,13 +494,11 @@ export function SettingsPage() {
             if (!username) {
                 setAccountUser(null);
                 setAccountUsername("");
-                setCurrentUser(null);
                 setCurrentPermissions([]);
                 return;
             }
             setAccountUser({username, role});
             setAccountUsername(username);
-            setCurrentUser({username, role, permissions});
             setCurrentPermissions(permissions);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -538,7 +552,10 @@ export function SettingsPage() {
                 body: JSON.stringify(updatesPayload),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to update account (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setAccountError(parseError(json, `Failed to update account (HTTP ${res.status}).`));
+                return;
+            }
 
             const updatedUsername = normalizeString(json?.user?.username).trim() || nextUsername;
             const updatedRole = normalizeString(json?.user?.role).trim() || accountUser.role;
@@ -548,7 +565,6 @@ export function SettingsPage() {
             setAccountPassword("");
             setAccountConfirm("");
             setAccountMessage("Account updated.");
-            setCurrentUser({username: updatedUsername, role: updatedRole, permissions: updatedPermissions});
             setCurrentPermissions(updatedPermissions);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -565,7 +581,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/settings/downloads/naming", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as DownloadNamingSettings | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load naming settings (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setNamingError(parseError(json, `Failed to load naming settings (HTTP ${res.status}).`));
+                return;
+            }
 
             setTitleTemplate(normalizeString(json?.titleTemplate).trim() || "{title}");
             setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
@@ -597,7 +616,10 @@ export function SettingsPage() {
                 }),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to save naming settings (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setNamingError(parseError(json, `Failed to save naming settings (HTTP ${res.status}).`));
+                return;
+            }
             setNamingMessage("Naming schema saved.");
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -614,7 +636,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/settings/debug", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as DebugSettings | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load debug mode (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setDebugError(parseError(json, `Failed to load debug mode (HTTP ${res.status}).`));
+                return;
+            }
 
             setDebugEnabled(json?.enabled === true);
             setDebugUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
@@ -637,7 +662,10 @@ export function SettingsPage() {
                 body: JSON.stringify({enabled}),
             });
             const json = (await res.json().catch(() => null)) as DebugSettings | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to update debug mode (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setDebugError(parseError(json, `Failed to update debug mode (HTTP ${res.status}).`));
+                return;
+            }
 
             setDebugEnabled(json?.enabled === true);
             setDebugUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
@@ -656,7 +684,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/raven/downloads/summary", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as RavenDownloadSummary | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load summary (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setSummaryError(parseError(json, `Failed to load summary (HTTP ${res.status}).`));
+                return;
+            }
             setSummary(json ?? {});
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -672,7 +703,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/raven/downloads/history", {cache: "no-store"});
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to load history (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setHistoryError(parseError(json, `Failed to load history (HTTP ${res.status}).`));
+                return;
+            }
             setHistory(Array.isArray(json) ? json : []);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -688,7 +722,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/settings/vault/collections", {cache: "no-store"});
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to load collections (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setCollectionsError(parseError(json, `Failed to load collections (HTTP ${res.status}).`));
+                return;
+            }
 
             const next = Array.isArray(json?.collections) ? json.collections.filter((entry: unknown) => typeof entry === "string") : [];
             setCollections(next);
@@ -720,7 +757,10 @@ export function SettingsPage() {
                 {cache: "no-store"},
             );
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to load documents (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setDocumentsError(parseError(json, `Failed to load documents (HTTP ${res.status}).`));
+                return;
+            }
             setDocuments(Array.isArray(json?.documents) ? json.documents : []);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -766,7 +806,10 @@ export function SettingsPage() {
                 redirectTo?: string;
                 error?: string
             } | null;
-            if (!resetRes.ok) throw new Error(parseError(resetJson, `Failed to run factory reset (HTTP ${resetRes.status}).`));
+            if (!resetRes.ok) {
+                setFactoryResetError(parseError(resetJson, `Failed to run factory reset (HTTP ${resetRes.status}).`));
+                return;
+            }
 
             const redirectTo = normalizeString(resetJson?.redirectTo).trim() || window.location.origin || "/";
             setFactoryResetPassword("");
@@ -790,7 +833,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/auth/users", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as UsersListResponse | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to load users (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUsersError(parseError(json, `Failed to load users (HTTP ${res.status}).`));
+                return;
+            }
 
             const list = Array.isArray(json?.users) ? json.users : [];
             setManagedUsers(list);
@@ -877,7 +923,10 @@ export function SettingsPage() {
                 }),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to create user (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUsersError(parseError(json, `Failed to create user (HTTP ${res.status}).`));
+                return;
+            }
 
             setNewUserUsername("");
             setNewUserPassword("");
@@ -931,7 +980,10 @@ export function SettingsPage() {
                 body: JSON.stringify(payload),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to update user (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUsersError(parseError(json, `Failed to update user (HTTP ${res.status}).`));
+                return;
+            }
 
             setUsersMessage(`Updated ${lookup}.`);
             await loadManagedUsers();
@@ -961,7 +1013,10 @@ export function SettingsPage() {
                 method: "POST",
             });
             const json = (await res.json().catch(() => null)) as UserResetPasswordResponse | null;
-            if (!res.ok) throw new Error(parseError(json, `Failed to reset password (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUsersError(parseError(json, `Failed to reset password (HTTP ${res.status}).`));
+                return;
+            }
 
             const password = normalizeString(json?.password).trim();
             if (password) {
@@ -993,7 +1048,10 @@ export function SettingsPage() {
                 method: "DELETE",
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to delete user (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUsersError(parseError(json, `Failed to delete user (HTTP ${res.status}).`));
+                return;
+            }
 
             setGeneratedPasswords((prev) => {
                 const next = {...prev};
@@ -1016,7 +1074,10 @@ export function SettingsPage() {
         try {
             const res = await fetch("/api/noona/settings/services/updates", {cache: "no-store"});
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to load updates (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUpdatesError(parseError(json, `Failed to load updates (HTTP ${res.status}).`));
+                return;
+            }
             setUpdates(Array.isArray(json?.updates) ? json.updates : []);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -1038,7 +1099,10 @@ export function SettingsPage() {
                 body: JSON.stringify({services}),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to check updates (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUpdatesError(parseError(json, `Failed to check updates (HTTP ${res.status}).`));
+                return;
+            }
             setUpdates(Array.isArray(json?.updates) ? json.updates : []);
             setUpdatesMessage("Update check finished.");
         } catch (error_) {
@@ -1060,7 +1124,10 @@ export function SettingsPage() {
                 body: JSON.stringify({restart: true}),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to update ${serviceName} (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setUpdatesError(parseError(json, `Failed to update ${serviceName} (HTTP ${res.status}).`));
+                return;
+            }
             setUpdatesMessage(`Updated ${serviceName}.`);
             await loadUpdates();
         } catch (error_) {
@@ -1082,7 +1149,10 @@ export function SettingsPage() {
                 body: JSON.stringify({trackedOnly: false}),
             });
             const json = await res.json().catch(() => null);
-            if (!res.ok) throw new Error(parseError(json, `Failed to ${action} ecosystem (HTTP ${res.status}).`));
+            if (!res.ok) {
+                setGlobalError(parseError(json, `Failed to ${action} ecosystem (HTTP ${res.status}).`));
+                return;
+            }
             setGlobalMessage(action === "start" ? "Start request sent." : "Stop request sent.");
             await loadCatalog();
         } catch (error_) {
@@ -1162,11 +1232,11 @@ export function SettingsPage() {
         const roleFields = envConfig.filter((entry) => entry?.key && PORTAL_ROLE_KEYS.has(entry.key));
 
         return (
-            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                 <Column gap="12">
                     <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                         <Row gap="8" vertical="center">
-                            <Badge background="neutral-alpha-weak"
+                            <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                    onBackground="neutral-strong">{TAB_LABELS[activeTab]}</Badge>
                             <Heading as="h2" variant="heading-strong-l">{currentService}</Heading>
                         </Row>
@@ -1209,7 +1279,7 @@ export function SettingsPage() {
                         );
                     })}
                     {activeTab === "portal" && roleFields.length > 0 && (
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="m" radius="l">
                             <Column gap="8">
                                 <Heading as="h3" variant="heading-strong-m">Command role IDs</Heading>
                                 {roleFields.map((field) => {
@@ -1259,7 +1329,7 @@ export function SettingsPage() {
     const renderUserManagement = () => {
         if (!canManageUsers) {
             return (
-                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Text onBackground="neutral-weak" variant="body-default-xs">
                         You do not have permission to manage users.
                     </Text>
@@ -1273,7 +1343,7 @@ export function SettingsPage() {
 
         return (
             <Column fillWidth gap="16">
-                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Column gap="12">
                         <Heading as="h2" variant="heading-strong-l">Create user</Heading>
                         <Input
@@ -1313,7 +1383,7 @@ export function SettingsPage() {
                     </Column>
                 </Card>
 
-                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Column gap="12">
                         <Row horizontal="between" vertical="center">
                             <Heading as="h2" variant="heading-strong-l">Users</Heading>
@@ -1346,7 +1416,7 @@ export function SettingsPage() {
                                     const generatedPassword = generatedPasswords[key];
 
                                     return (
-                                        <Card key={key || fallbackUsername} fillWidth background="surface"
+                                        <Card key={key || fallbackUsername} fillWidth background={BG_SURFACE}
                                               border={isProtected ? "warning-alpha-weak" : "neutral-alpha-weak"}
                                               padding="m" radius="l">
                                             <Column gap="8">
@@ -1355,12 +1425,12 @@ export function SettingsPage() {
                                                     <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
                                                         <Heading as="h3"
                                                                  variant="heading-strong-m">{fallbackUsername}</Heading>
-                                                        <Badge background="neutral-alpha-weak"
+                                                        <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                                                onBackground="neutral-strong">
                                                             {normalizeString(entry.role).trim() || "member"}
                                                         </Badge>
                                                         {isProtected && (
-                                                            <Badge background="warning-alpha-weak"
+                                                            <Badge background={BG_WARNING_ALPHA_WEAK}
                                                                    onBackground="neutral-strong">
                                                                 Setup user (protected)
                                                             </Badge>
@@ -1455,7 +1525,7 @@ export function SettingsPage() {
 
                     <Row fillWidth gap="16" vertical="start" s={{style: {flexDirection: "column"}}}>
                         <Card
-                            background="surface"
+                            background={BG_SURFACE}
                             border="neutral-alpha-weak"
                             padding="m"
                             radius="l"
@@ -1513,7 +1583,8 @@ export function SettingsPage() {
 
                                     {activeTab === "general" && (
                                         <>
-                                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l"
+                                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak"
+                                                  padding="l"
                                                   radius="l">
                                                 <Column gap="12">
                                                     <Heading as="h2" variant="heading-strong-l">Ecosystem</Heading>
@@ -1533,7 +1604,8 @@ export function SettingsPage() {
                                                 </Column>
                                             </Card>
 
-                                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l"
+                                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak"
+                                                  padding="l"
                                                   radius="l">
                                                 <Column gap="12">
                                                     <Row horizontal="between" vertical="center" gap="12"
@@ -1582,7 +1654,7 @@ export function SettingsPage() {
                     {activeTab !== "general" && renderServiceConfig()}
 
                     {activeTab === "moon" && (
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
                                 <Heading as="h3" variant="heading-strong-l">Username/password change</Heading>
                                 {accountLoading && (
@@ -1631,7 +1703,7 @@ export function SettingsPage() {
 
                     {activeTab === "raven" && (
                         <>
-                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                                 <Column gap="12">
                                     <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                                         <Heading as="h3" variant="heading-strong-l">Naming schema</Heading>
@@ -1668,7 +1740,7 @@ export function SettingsPage() {
                                 </Column>
                             </Card>
 
-                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                                 <Column gap="8">
                                     <Row horizontal="between" vertical="center">
                                         <Heading as="h3" variant="heading-strong-l">Download workers</Heading>
@@ -1686,10 +1758,10 @@ export function SettingsPage() {
                                     )}
                                     {!summaryLoading && (
                                         <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
                                                 active: {typeof summary?.activeDownloads === "number" ? summary.activeDownloads : 0}
                                             </Badge>
-                                            <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
                                                 max
                                                 threads: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
                                             </Badge>
@@ -1698,7 +1770,7 @@ export function SettingsPage() {
                                 </Column>
                             </Card>
 
-                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                                 <Column gap="8" id="raven-history">
                                     <Row horizontal="between" vertical="center">
                                         <Heading as="h3" variant="heading-strong-l">Download history</Heading>
@@ -1726,14 +1798,14 @@ export function SettingsPage() {
                                                 const total = typeof entry.totalChapters === "number" && Number.isFinite(entry.totalChapters) ? entry.totalChapters : 0;
                                                 const done = typeof entry.completedChapters === "number" && Number.isFinite(entry.completedChapters) ? entry.completedChapters : 0;
                                                 return (
-                                                    <Card key={`${title}-${index}`} fillWidth background="surface"
+                                                    <Card key={`${title}-${index}`} fillWidth background={BG_SURFACE}
                                                           border="neutral-alpha-weak" padding="m" radius="l">
                                                         <Column gap="8">
                                                             <Row horizontal="between" vertical="center" gap="12"
                                                                  style={{flexWrap: "wrap"}}>
                                                                 <Text variant="heading-default-s"
                                                                       wrap="balance">{title}</Text>
-                                                                <Badge background="neutral-alpha-weak"
+                                                                <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                                                        onBackground="neutral-strong">{status}</Badge>
                                                             </Row>
                                                             <Text onBackground="neutral-weak"
@@ -1759,7 +1831,7 @@ export function SettingsPage() {
 
                     {activeTab === "vault" && (
                         <>
-                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                                 <Column gap="12">
                                     <Row horizontal="between" vertical="center">
                                         <Heading as="h3" variant="heading-strong-l">Collection viewer</Heading>
@@ -1803,7 +1875,7 @@ export function SettingsPage() {
                                                 <Column gap="8">
                                                     {documents.map((entry, index) => (
                                                         <Card key={`${collection}-${index}`} fillWidth
-                                                              background="surface"
+                                                              background={BG_SURFACE}
                                                               border="neutral-alpha-weak" padding="m" radius="l">
                                                             <Text variant="body-default-xs" style={{
                                                                 whiteSpace: "pre-wrap",
@@ -1820,7 +1892,7 @@ export function SettingsPage() {
                                 </Column>
                             </Card>
 
-                            <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                            <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
                                 <Column gap="12">
                                     <Heading as="h3" variant="heading-strong-l">Danger zone</Heading>
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
@@ -1868,7 +1940,7 @@ export function SettingsPage() {
                     )}
 
                     {activeTab === "warden" && (
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
                                 <Row horizontal="between" vertical="center" gap="12">
                                     <Heading as="h3" variant="heading-strong-l">Image updates</Heading>
@@ -1905,7 +1977,7 @@ export function SettingsPage() {
                                             const unsupported = entry.supported === false;
                                             return (
                                                 <Card key={`${service || "unknown"}-${index}`} fillWidth
-                                                      background="surface" border="neutral-alpha-weak" padding="m"
+                                                      background={BG_SURFACE} border="neutral-alpha-weak" padding="m"
                                                       radius="l">
                                                     <Column gap="8">
                                                         <Row horizontal="between" vertical="center" gap="12"
@@ -1922,7 +1994,7 @@ export function SettingsPage() {
                                                             </Row>
                                                             <Button
                                                                 variant="secondary"
-                                                                disabled={!service || unsupported || updating[service] === true}
+                                                                disabled={!service || unsupported || updating[service]}
                                                                 onClick={() => void updateImage(service)}
                                                             >
                                                                 {updating[service] ? "Updating..." : "Update service"}
@@ -1955,7 +2027,8 @@ export function SettingsPage() {
                             {activeSection === "users" && renderUserManagement()}
 
                             {!authStateLoading && !canAccessEcosystem && !canManageUsers && (
-                                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l"
+                                      radius="l">
                                     <Column gap="8">
                                         <Heading as="h2" variant="heading-strong-l">No settings access</Heading>
                                         <Text onBackground="neutral-weak" variant="body-default-xs">

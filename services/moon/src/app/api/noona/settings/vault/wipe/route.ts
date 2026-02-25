@@ -5,12 +5,7 @@ import {withNoonaAuthHeaders} from "../../../_auth";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-    let body: unknown = {};
-    try {
-        body = await request.json();
-    } catch {
-        body = {};
-    }
+    const body = await request.json().catch(() => ({}));
 
     try {
         const {status, payload} = await sageJson("/api/settings/vault/wipe", {

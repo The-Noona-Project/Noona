@@ -163,7 +163,8 @@ export const createRavenClient = ({
 
                 const accept = new Set([200, 201, 202, 204, ...acceptStatuses])
                 if (!accept.has(response.status)) {
-                    throw new Error(`Raven responded with status ${response.status}`)
+                    errors.push(`${candidate} (Raven responded with status ${response.status})`)
+                    continue
                 }
 
                 promoteCandidate(candidate, candidates)

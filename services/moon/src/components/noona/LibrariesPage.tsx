@@ -617,7 +617,7 @@ export function LibrariesPage() {
                     >
                         {filtered.map((entry) => {
                             const uuid = normalizeString(entry.uuid);
-                            const title = normalizeString(entry.title ?? entry.titleName) || uuid || "Untitled";
+                            const title = normalizeString(entry.title ?? entry.titleName).trim() || uuid || "Untitled";
                             const lastDownloaded = normalizeString(entry.lastDownloaded);
                             const coverUrl = normalizeString(entry.coverUrl).trim();
                             const type = normalizeString(entry.type).trim();
@@ -631,7 +631,13 @@ export function LibrariesPage() {
                             const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
 
                             return (
-                                <SmartLink key={uuid || title} href={href}>
+                                <SmartLink
+                                    key={uuid || title}
+                                    href={href}
+                                    unstyled
+                                    fillWidth
+                                    style={{display: "block", width: "100%"}}
+                                >
                                     <Card
                                         background="surface"
                                         border="neutral-alpha-weak"
@@ -681,6 +687,7 @@ export function LibrariesPage() {
                                             <Column
                                                 gap="8"
                                                 padding="12"
+                                                background="overlay"
                                                 style={{
                                                     background: "linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.15) 100%)",
                                                 }}
@@ -701,6 +708,7 @@ export function LibrariesPage() {
                                                 <Heading
                                                     as="h3"
                                                     variant="heading-strong-m"
+                                                    onBackground="neutral-strong"
                                                     wrap="balance"
                                                     style={{
                                                         minWidth: 0,
@@ -720,6 +728,7 @@ export function LibrariesPage() {
 
                                             <Row
                                                 padding="12"
+                                                background="overlay"
                                                 style={{
                                                     background: "linear-gradient(0deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0) 100%)",
                                                 }}

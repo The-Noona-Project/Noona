@@ -123,10 +123,11 @@ export const createVaultPacketClient = ({
 
                         if (response.status >= 400 && response.status < 500) {
                             firstClientError = firstClientError || error
-                            continue
+                        } else {
+                            const message = error instanceof Error ? error.message : String(error)
+                            errors.push(`${candidate} (${message})`)
                         }
-
-                        throw error
+                        continue
                     }
 
                     if (payload?.error) {

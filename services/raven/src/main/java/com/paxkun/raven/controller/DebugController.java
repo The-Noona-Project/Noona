@@ -43,17 +43,12 @@ public class DebugController {
 
         if (value instanceof String stringValue) {
             String normalized = stringValue.trim().toLowerCase(Locale.ROOT);
-            if (normalized.isEmpty()) {
-                return null;
-            }
-
-            if (normalized.equals("1") || normalized.equals("true") || normalized.equals("yes") || normalized.equals("on") || normalized.equals("super")) {
-                return true;
-            }
-
-            if (normalized.equals("0") || normalized.equals("false") || normalized.equals("no") || normalized.equals("off")) {
-                return false;
-            }
+            return switch (normalized) {
+                case "" -> null;
+                case "0", "false", "no", "off" -> false;
+                case "1", "true", "yes", "on", "super" -> true;
+                default -> null;
+            };
         }
 
         return null;

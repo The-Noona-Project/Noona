@@ -1,6 +1,6 @@
 "use client";
 
-import {type ChangeEvent, useEffect, useMemo, useRef, useState} from "react";
+import {type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
 import styles from "./SetupWizard.module.scss";
 
@@ -88,8 +88,8 @@ const parseMongoUriParts = (uri: string): { username: string | null; host: strin
     const username = authPart.split(":")[0] ?? null;
 
     return {
-        username: username && username.trim() ? username.trim() : null,
-        host: host && host.trim() ? host.trim() : null,
+        username: username?.trim() ? username.trim() : null,
+        host: host?.trim() ? host.trim() : null,
     };
 };
 
@@ -147,6 +147,12 @@ const buildInitialEnvState = (services: ServiceCatalogEntry[]) => {
 
 type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
 
+const BG_SURFACE = "surface" as const;
+const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
+const BG_DANGER_ALPHA_WEAK = "danger-alpha-weak" as const;
+const BG_BRAND_ALPHA_WEAK = "brand-alpha-weak" as const;
+const BG_SUCCESS_ALPHA_WEAK = "success-alpha-weak" as const;
+
 const clampPercent = (value: number) => {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(100, Math.round(value)));
@@ -168,7 +174,7 @@ const formatInstallStatusLabel = (value: string) => {
 };
 
 const formatInstallDetail = (detail: string | null | undefined): string | null => {
-    if (!detail || typeof detail !== "string") return null;
+    if (!detail) return null;
     let text = detail.trim();
     if (!text) return null;
 
@@ -180,7 +186,7 @@ const formatInstallDetail = (detail: string | null | undefined): string | null =
     }
 
     // Strip docker layer/image identifiers like "[4f4fb700ef54] ".
-    text = text.replace(/^\[[^\]]+\]\s*/, "").trim();
+    text = text.replace(/^\[[^\n]*?]\s*/, "").trim();
 
     // Drop trailing bare numbers like "Downloading 3".
     if (/\s\d+$/.test(text) && !/\d+\/\d+/.test(text)) {
@@ -209,7 +215,7 @@ function ProgressBar({
     return (
         <Row
             fillWidth
-            background="neutral-alpha-weak"
+            background={BG_NEUTRAL_ALPHA_WEAK}
             className={styles.progressTrack}
             style={{
                 height: 8,
@@ -254,7 +260,7 @@ const buildInstallPayload = ({
             if (!field?.key) continue;
             if (field.readOnly) continue;
             const raw = current[field.key];
-            const trimmed = typeof raw === "string" ? raw.trim() : "";
+            const trimmed = raw.trim();
             if (!trimmed) continue;
             env[field.key] = sanitizeEnvValue(trimmed);
         }
@@ -339,18 +345,18 @@ export function SetupWizard() {
         return result.ok ? [] : result.missing;
     }, [selected, values]);
 
-    const stopPolling = () => {
+    const stopPolling = useCallback(() => {
         if (pollRef.current != null) {
             window.clearInterval(pollRef.current);
             pollRef.current = null;
         }
-    };
+    }, []);
 
     const pollProgress = async () => {
         try {
             const res = await fetch("/api/noona/install/progress", {cache: "no-store"});
             const payload = (await res.json().catch(() => null)) as InstallProgress | null;
-            if (payload && Array.isArray(payload.items) && typeof payload.status === "string") {
+            if (payload && Array.isArray(payload.items)) {
                 setInstallProgress(payload);
             }
         } catch {
@@ -368,7 +374,8 @@ export function SetupWizard() {
                 const res = await fetch("/api/noona/services", {cache: "no-store"});
                 const json = (await res.json()) as CatalogResponse;
                 if (!res.ok) {
-                    throw new Error(json?.error || `Failed to load services (HTTP ${res.status}).`);
+                    setCatalogError(json?.error || `Failed to load services (HTTP ${res.status}).`);
+                    return;
                 }
 
                 const list = Array.isArray(json.services) ? json.services : [];
@@ -402,7 +409,7 @@ export function SetupWizard() {
         return () => {
             stopPolling();
         };
-    }, []);
+    }, [stopPolling]);
 
     const toggleSelected = (name: string) => {
         const service = servicesByName.get(name);
@@ -465,7 +472,8 @@ export function SetupWizard() {
                     typeof json?.error === "string" && json.error.trim()
                         ? json.error.trim()
                         : `Install failed (HTTP ${response.status}).`;
-                throw new Error(errorMessage);
+                setInstallError(errorMessage);
+                return;
             }
 
             setInstallResult(json);
@@ -537,18 +545,20 @@ export function SetupWizard() {
             const parsed = JSON.parse(raw) as unknown;
 
             if (!parsed || typeof parsed !== "object") {
-                throw new Error("Setup JSON must be an object.");
+                setConfigError("Setup JSON must be an object.");
+                return;
             }
 
             const payload = parsed as Partial<WizardConfigPayloadV1>;
             if (payload.version !== 1) {
-                throw new Error("Unsupported setup JSON version.");
+                setConfigError("Unsupported setup JSON version.");
+                return;
             }
 
             const nextSelected = new Set<string>();
             if (Array.isArray(payload.selected)) {
                 for (const entry of payload.selected) {
-                    if (typeof entry === "string" && entry.trim()) {
+                    if (entry.trim()) {
                         nextSelected.add(entry.trim());
                     }
                 }
@@ -563,12 +573,12 @@ export function SetupWizard() {
             const nextValues: Record<string, Record<string, string>> = {};
             if (payload.values && typeof payload.values === "object") {
                 for (const [serviceName, env] of Object.entries(payload.values)) {
-                    if (!serviceName || typeof serviceName !== "string") continue;
+                    if (!serviceName) continue;
                     if (!env || typeof env !== "object") continue;
 
                     const envMap: Record<string, string> = {};
                     for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
-                        if (typeof key !== "string" || !key.trim()) continue;
+                        if (!key.trim()) continue;
                         envMap[key] = sanitizeEnvValue(typeof value === "string" ? value : String(value ?? ""));
                     }
 
@@ -607,7 +617,8 @@ export function SetupWizard() {
                     typeof json?.error === "string" && json.error.trim()
                         ? json.error.trim()
                         : `Failed to complete setup (HTTP ${res.status}).`;
-                throw new Error(message);
+                setFinishError(message);
+                return;
             }
 
             window.location.assign("/");
@@ -638,10 +649,10 @@ export function SetupWizard() {
             </Column>
 
             {catalogError && (
-                <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
                     <Column gap="8">
                         <Row gap="8" vertical="center">
-                            <Badge background="danger-alpha-weak" onBackground="neutral-strong">
+                            <Badge background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">
                                 Backend unavailable
                             </Badge>
                             <Text onBackground="neutral-weak">Moon could not reach Warden/Sage.</Text>
@@ -663,7 +674,7 @@ export function SetupWizard() {
             {catalog && (
                 <Row fillWidth gap="24" s={{direction: "column"}}>
                     <Column flex={1} gap="16">
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="16">
                                 <Row horizontal="between" vertical="center" gap="12">
                                     <Heading as="h2" variant="heading-strong-l">
@@ -697,13 +708,13 @@ export function SetupWizard() {
                                                     <Row gap="8" vertical="center">
                                                         <Text variant="heading-default-s">{name}</Text>
                                                         {service.required && (
-                                                            <Badge background="brand-alpha-weak"
+                                                            <Badge background={BG_BRAND_ALPHA_WEAK}
                                                                    onBackground="neutral-strong">
                                                                 required
                                                             </Badge>
                                                         )}
                                                         {installed && (
-                                                            <Badge background="success-alpha-weak"
+                                                            <Badge background={BG_SUCCESS_ALPHA_WEAK}
                                                                    onBackground="neutral-strong">
                                                                 installed
                                                             </Badge>
@@ -736,7 +747,7 @@ export function SetupWizard() {
                             </Column>
                         </Card>
 
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
                                 <Heading as="h2" variant="heading-strong-l">
                                     Install
@@ -780,7 +791,7 @@ export function SetupWizard() {
                                             {missingPortalKeys.map((entry) => (
                                                 <Badge
                                                     key={`${entry.service}:${entry.key}`}
-                                                    background="danger-alpha-weak"
+                                                    background={BG_DANGER_ALPHA_WEAK}
                                                     onBackground="neutral-strong"
                                                 >
                                                     {entry.key}
@@ -822,7 +833,7 @@ export function SetupWizard() {
                                             indeterminate={installProgress.percent == null && installProgress.status !== "idle"}
                                             tone="brand-alpha-medium"
                                         />
-                                        <Line background="neutral-alpha-weak"/>
+                                        <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
                                         <Column gap="8">
                                             {installProgress.items.map((item) => {
                                                 const normalized = item.status?.trim().toLowerCase() ?? "";
@@ -897,7 +908,7 @@ export function SetupWizard() {
                                         <Card
                                             key={name}
                                             fillWidth
-                                            background="surface"
+                                            background={BG_SURFACE}
                                             border="neutral-alpha-weak"
                                             padding="l"
                                             radius="l"
@@ -928,7 +939,7 @@ export function SetupWizard() {
                                     <Card
                                         key={name}
                                         fillWidth
-                                        background="surface"
+                                        background={BG_SURFACE}
                                         border="neutral-alpha-weak"
                                         padding="l"
                                         radius="l"
@@ -957,7 +968,8 @@ export function SetupWizard() {
                                                     )}
                                                 </Column>
                                                 {ALWAYS_RUNNING.has(name) && (
-                                                    <Badge background="brand-alpha-weak" onBackground="neutral-strong">
+                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
+                                                           onBackground="neutral-strong">
                                                         running
                                                     </Badge>
                                                 )}
@@ -984,13 +996,13 @@ export function SetupWizard() {
                                                                 <Text
                                                                     variant="label-default-s">{field.label || key}</Text>
                                                                 {required && (
-                                                                    <Badge background="brand-alpha-weak"
+                                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
                                                                            onBackground="neutral-strong">
                                                                         required
                                                                     </Badge>
                                                                 )}
                                                                 {field.readOnly && (
-                                                                    <Badge background="neutral-alpha-weak"
+                                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                                                            onBackground="neutral-strong">
                                                                         read-only
                                                                     </Badge>
@@ -1039,7 +1051,7 @@ export function SetupWizard() {
 
             {installResult !== null && summaryOpen && (
                 <div className={styles.summaryOverlay}>
-                    <Card background="surface" border="neutral-alpha-weak" radius="l" padding="l"
+                    <Card background={BG_SURFACE} border="neutral-alpha-weak" radius="l" padding="l"
                           className={styles.summaryModal}>
                         <Column gap="12">
                             <Row horizontal="between" vertical="center" gap="12">
@@ -1055,11 +1067,11 @@ export function SetupWizard() {
                                 Final step: mark setup complete and return to the main app.
                             </Text>
 
-                            <Line background="neutral-alpha-weak"/>
+                            <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
 
                             <Column gap="12">
                                 <Row gap="8" vertical="center">
-                                    <Badge background="brand-alpha-weak" onBackground="neutral-strong">
+                                    <Badge background={BG_BRAND_ALPHA_WEAK} onBackground="neutral-strong">
                                         Finalize
                                     </Badge>
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
