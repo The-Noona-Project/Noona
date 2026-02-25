@@ -278,25 +278,45 @@ const portalRequiredKeys = Object.freeze([
     "KAVITA_API_KEY",
 ]);
 
+type MissingRequiredField = {
+    service: string;
+    key: string;
+};
+
 const validateSelection = ({
                                selected,
                                values,
+                               servicesByName,
                            }: {
     selected: Set<string>;
     values: Record<string, Record<string, string>>;
-}): { ok: true } | { ok: false; message: string; missing: Array<{ service: string; key: string }> } => {
-    const missing: Array<{ service: string; key: string }> = [];
+    servicesByName: Map<string, ServiceCatalogEntry>;
+}): { ok: true } | { ok: false; message: string; missing: MissingRequiredField[] } => {
+    const missing: MissingRequiredField[] = [];
 
     if (selected.size === 0) {
         return {ok: false, message: "Select at least one service to install.", missing};
     }
 
-    if (selected.has("noona-portal")) {
-        const portalEnv = values["noona-portal"] ?? {};
-        for (const key of portalRequiredKeys) {
-            const value = typeof portalEnv[key] === "string" ? portalEnv[key].trim() : "";
+    for (const serviceName of selected) {
+        const service = servicesByName.get(serviceName);
+        const envConfig = Array.isArray(service?.envConfig) ? service.envConfig : [];
+        const current = values[serviceName] ?? {};
+
+        for (const field of envConfig) {
+            if (!field?.key || field.readOnly) continue;
+
+            const isPortalRequired = serviceName === "noona-portal" && portalRequiredKeys.includes(field.key);
+            const required = isPortalRequired || field.required === true;
+            if (!required) continue;
+
+            if (serviceName === "noona-portal" && field.key === "VAULT_ACCESS_TOKEN") {
+                continue;
+            }
+
+            const value = typeof current[field.key] === "string" ? current[field.key].trim() : "";
             if (!value) {
-                missing.push({service: "noona-portal", key});
+                missing.push({service: serviceName, key: field.key});
             }
         }
     }
@@ -304,7 +324,7 @@ const validateSelection = ({
     if (missing.length > 0) {
         return {
             ok: false,
-            message: "Fill required Portal settings before installing.",
+            message: "Fill all required settings before installing.",
             missing,
         };
     }
@@ -344,10 +364,10 @@ export function SetupWizard() {
     const services = catalog ?? [];
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
 
-    const missingPortalKeys = useMemo(() => {
-        const result = validateSelection({selected, values});
+    const missingRequiredFields = useMemo(() => {
+        const result = validateSelection({selected, values, servicesByName});
         return result.ok ? [] : result.missing;
-    }, [selected, values]);
+    }, [selected, servicesByName, values]);
 
     const clearInstallProgressTimeout = useCallback(() => {
         if (installProgressTimeoutRef.current != null) {
@@ -501,7 +521,7 @@ export function SetupWizard() {
     const install = async () => {
         if (!catalog) return;
 
-        const validation = validateSelection({selected, values});
+        const validation = validateSelection({selected, values, servicesByName});
         if (!validation.ok) {
             setInstallError(validation.message);
             return;
@@ -889,19 +909,19 @@ export function SetupWizard() {
                                     </Text>
                                 )}
 
-                                {missingPortalKeys.length > 0 && (
+                                {missingRequiredFields.length > 0 && (
                                     <Column gap="8">
                                         <Text onBackground="neutral-weak">
-                                            Portal requires:
+                                            Required fields missing:
                                         </Text>
                                         <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            {missingPortalKeys.map((entry) => (
+                                            {missingRequiredFields.map((entry) => (
                                                 <Badge
                                                     key={`${entry.service}:${entry.key}`}
                                                     background={BG_DANGER_ALPHA_WEAK}
                                                     onBackground="neutral-strong"
                                                 >
-                                                    {entry.key}
+                                                    {entry.service}:{entry.key}
                                                 </Badge>
                                             ))}
                                         </Row>
@@ -1129,7 +1149,8 @@ export function SetupWizard() {
                                                                 placeholder={key}
                                                                 value={current}
                                                                 disabled={field.readOnly === true}
-                                                                required={required}
+                                                                required={false}
+                                                                aria-required={required}
                                                                 errorMessage={isMissing ? "Required value missing." : undefined}
                                                                 onChange={(e) => updateEnv(name, key, e.target.value)}
                                                             />
