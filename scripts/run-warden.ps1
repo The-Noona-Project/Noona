@@ -12,7 +12,7 @@ if (-not $ContainerName) { $ContainerName = 'noona-warden' }
 if (-not $WardenImage) { $WardenImage = 'captainpax/noona-warden:latest' }
 if (-not $DebugMode)
 {
-    $DebugMode = 'true'
+    $DebugMode = 'false'
 }
 if ($WardenPort) { $WardenPort = [int]$WardenPort } else { $WardenPort = 4001 }
 

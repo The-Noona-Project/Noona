@@ -224,9 +224,15 @@ export const createVaultPacketClient = ({
             operation: 'listCollections',
             payload: {},
         })
-
         return Array.isArray(payload?.collections) ? payload.collections : []
     }
+
+    const mongoWipe = async () =>
+        request({
+            storageType: 'mongo',
+            operation: 'wipe',
+            payload: {},
+        })
 
     const redisSet = async (key, value, {ttl} = {}) =>
         request({
@@ -258,6 +264,13 @@ export const createVaultPacketClient = ({
             storageType: 'redis',
             operation: 'del',
             payload: {key},
+        })
+
+    const redisWipe = async () =>
+        request({
+            storageType: 'redis',
+            operation: 'wipe',
+            payload: {},
         })
 
     const usersList = async ({role} = {}) => {
@@ -334,11 +347,13 @@ export const createVaultPacketClient = ({
             update: mongoUpdate,
             delete: mongoDelete,
             listCollections: mongoListCollections,
+            wipe: mongoWipe,
         },
         redis: {
             set: redisSet,
             get: redisGet,
             del: redisDel,
+            wipe: redisWipe,
         },
         users: {
             list: usersList,
@@ -348,6 +363,12 @@ export const createVaultPacketClient = ({
             delete: usersDelete,
             authenticate: usersAuthenticate,
         },
+        setDebug: async (enabled) =>
+            requestJson({
+                path: '/v1/vault/debug',
+                method: 'POST',
+                body: {enabled: !!enabled},
+            }),
     }
 }
 

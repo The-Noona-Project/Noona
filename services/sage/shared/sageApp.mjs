@@ -4,7 +4,7 @@ import express from 'express'
 import cors from 'cors'
 import crypto from 'node:crypto'
 
-import {debugMSG, errMSG, log} from '../../../utilities/etc/logger.mjs'
+import {debugMSG, errMSG, isDebugEnabled, log, setDebug} from '../../../utilities/etc/logger.mjs'
 import {SetupValidationError} from './errors.mjs'
 import {createDiscordSetupClient} from './discordSetupClient.mjs'
 import {createRavenClient} from './ravenClient.mjs'
@@ -547,6 +547,33 @@ const createSetupClient = ({
 
             return await response.json().catch(() => ({}))
         },
+        async restartEcosystem(options = {}) {
+            const response = await fetchFromWarden('/api/ecosystem/restart', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(options ?? {}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
+        async factoryResetEcosystem(options = {}) {
+            const response = await fetchFromWarden('/api/ecosystem/factory-reset', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(options ?? {}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
+        async setDebug(enabled) {
+            const response = await fetchFromWarden('/api/debug', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled: !!enabled}),
+            })
+
+            return await response.json().catch(() => ({}))
+        },
     }
 }
 
@@ -776,6 +803,11 @@ export const createSageApp = ({
         chapterPad: 4,
     })
 
+    const DEFAULT_DEBUG_SETTINGS = Object.freeze({
+        key: 'noona.debug',
+        enabled: isDebugEnabled(),
+    })
+
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
     const normalizeUsername = (value) => normalizeString(value)
     const normalizeUsernameKey = (value) => normalizeUsername(value).toLowerCase()
@@ -786,7 +818,130 @@ export const createSageApp = ({
         }
         return fallback
     }
-    const isAdminUser = (user) => normalizeString(user?.role).toLowerCase() === 'admin'
+    const parseBooleanInput = (value) => {
+        if (typeof value === 'boolean') {
+            return value
+        }
+
+        if (typeof value === 'number') {
+            return value > 0
+        }
+
+        if (typeof value === 'string') {
+            const normalized = value.trim().toLowerCase()
+            if (!normalized) {
+                return null
+            }
+
+            if (['1', 'true', 'yes', 'on', 'super'].includes(normalized)) {
+                return true
+            }
+
+            if (['0', 'false', 'no', 'off'].includes(normalized)) {
+                return false
+            }
+        }
+
+        return null
+    }
+    const MOON_OP_PERMISSION_KEYS = Object.freeze([
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+        'user_management',
+        'admin',
+    ])
+    const MOON_OP_PERMISSION_SET = new Set(MOON_OP_PERMISSION_KEYS)
+    const DEFAULT_MEMBER_PERMISSION_KEYS = Object.freeze([
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+    ])
+    const sortMoonPermissions = (permissions = []) => {
+        const present = new Set(Array.isArray(permissions) ? permissions : [])
+        return MOON_OP_PERMISSION_KEYS.filter((entry) => present.has(entry))
+    }
+    const normalizePermissionEntry = (value) => normalizeString(value).toLowerCase()
+    const normalizePermissionList = (value) => {
+        if (!Array.isArray(value)) {
+            return []
+        }
+
+        const normalized = []
+        for (const entry of value) {
+            const key = normalizePermissionEntry(entry)
+            if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+                continue
+            }
+            normalized.push(key)
+        }
+
+        return sortMoonPermissions(Array.from(new Set(normalized)))
+    }
+    const validatePermissionListInput = (value) => {
+        if (!Array.isArray(value)) {
+            return {ok: false, error: 'permissions must be provided as an array.'}
+        }
+
+        const normalized = []
+        for (const entry of value) {
+            const key = normalizePermissionEntry(entry)
+            if (!key) {
+                continue
+            }
+            if (!MOON_OP_PERMISSION_SET.has(key)) {
+                return {ok: false, error: `Unsupported permission: ${key}`}
+            }
+            normalized.push(key)
+        }
+
+        return {
+            ok: true,
+            permissions: sortMoonPermissions(Array.from(new Set(normalized))),
+        }
+    }
+    const defaultPermissionsForRole = (role) =>
+        normalizeRole(role, 'member') === 'admin'
+            ? [...MOON_OP_PERMISSION_KEYS]
+            : [...DEFAULT_MEMBER_PERMISSION_KEYS]
+    const inferRoleFromPermissions = (permissions, fallback = 'member') =>
+        Array.isArray(permissions) && permissions.includes('admin')
+            ? 'admin'
+            : normalizeRole(fallback, 'member') === 'admin'
+                ? 'member'
+                : normalizeRole(fallback, 'member')
+    const isBootstrapUserDoc = (user) => parseBooleanInput(user?.isBootstrapUser) === true
+    const resolveUserPermissions = (user, fallbackRole = 'member') => {
+        const normalizedRole = normalizeRole(user?.role, fallbackRole)
+        const existing = normalizePermissionList(user?.permissions)
+        const hasExplicitPermissions = Array.isArray(user?.permissions)
+        if (hasExplicitPermissions) {
+            if (existing.includes('admin')) {
+                return sortMoonPermissions(existing)
+            }
+            if (normalizedRole === 'admin') {
+                return sortMoonPermissions([...existing, 'admin'])
+            }
+            return sortMoonPermissions(existing.filter((entry) => entry !== 'admin'))
+        }
+
+        return defaultPermissionsForRole(normalizedRole)
+    }
+    const hasMoonPermission = (user, permission) => {
+        const key = normalizePermissionEntry(permission)
+        if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+            return false
+        }
+
+        const permissions = resolveUserPermissions(user, normalizeRole(user?.role, 'member'))
+        if (permissions.includes('admin')) {
+            return true
+        }
+        return permissions.includes(key)
+    }
+    const isAdminUser = (user) => hasMoonPermission(user, 'admin')
     const normalizeUserLookupKey = (user) => {
         const normalized = normalizeUsernameKey(user?.usernameNormalized)
         if (normalized) {
@@ -822,12 +977,12 @@ export const createSageApp = ({
 
         return users.filter((entry) => entry && typeof entry === 'object')
     }
-    const createAuthUser = async ({username, password, role}) => {
+    const createAuthUser = async ({username, password, role, permissions, isBootstrapUser}) => {
         if (!vaultClient?.users?.create) {
             throw new Error('Vault user management is not configured.')
         }
 
-        return vaultClient.users.create({username, password, role})
+        return vaultClient.users.create({username, password, role, permissions, isBootstrapUser})
     }
 
     const updateAuthUser = async (lookupUsername, updates = {}) => {
@@ -908,22 +1063,60 @@ export const createSageApp = ({
 
     const isValidUsername = (username) => /^[A-Za-z0-9._-]{3,64}$/.test(username)
     const isValidPassword = (password) => typeof password === 'string' && password.length >= 8
-    const publicUser = (user, fallbackUsername = '') => ({
-        username: normalizeUsername(user?.username) || fallbackUsername,
-        usernameNormalized: normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername),
-        role: normalizeRole(user?.role, 'member'),
-        createdAt: normalizeString(user?.createdAt) || null,
-        updatedAt: normalizeString(user?.updatedAt) || null,
-    })
-    const toSessionUser = (user, fallbackUsername = '') => ({
-        username: normalizeUsername(user?.username) || fallbackUsername,
-        usernameNormalized: normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername),
-        role: normalizeRole(user?.role, 'member'),
-        createdAt:
-            normalizeString(user?.createdAt) ||
-            normalizeString(user?.updatedAt) ||
-            new Date().toISOString(),
-    })
+    const publicUser = (user, fallbackUsername = '') => {
+        const username = normalizeUsername(user?.username) || fallbackUsername
+        const usernameNormalized = normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername)
+        const permissions = resolveUserPermissions(user, normalizeRole(user?.role, 'member'))
+        const role = inferRoleFromPermissions(permissions, normalizeRole(user?.role, 'member'))
+
+        return {
+            username,
+            usernameNormalized,
+            role,
+            permissions,
+            isBootstrapUser: isBootstrapUserDoc(user),
+            createdAt: normalizeString(user?.createdAt) || null,
+            updatedAt: normalizeString(user?.updatedAt) || null,
+        }
+    }
+    const toSessionUser = (user, fallbackUsername = '') => {
+        const base = publicUser(user, fallbackUsername)
+        return {
+            ...base,
+            createdAt: base.createdAt || normalizeString(user?.updatedAt) || new Date().toISOString(),
+        }
+    }
+    const resolveProtectedBootstrapLookupKey = (users) => {
+        if (!Array.isArray(users) || users.length === 0) {
+            return null
+        }
+
+        const explicit = users.find((entry) => isBootstrapUserDoc(entry))
+        if (explicit) {
+            return normalizeUserLookupKey(explicit)
+        }
+
+        const fallback = selectPrimaryAdmin(users)
+        return normalizeUserLookupKey(fallback)
+    }
+    const applyProtectedBootstrapUserFlag = (user, protectedLookupKey) => {
+        if (!user || typeof user !== 'object') {
+            return user
+        }
+
+        if (!protectedLookupKey) {
+            return user
+        }
+
+        if (normalizeUsernameKey(user?.usernameNormalized || user?.username) !== protectedLookupKey) {
+            return user
+        }
+
+        return {
+            ...user,
+            isBootstrapUser: true,
+        }
+    }
     const pendingAdminPublicUser = () => {
         if (!pendingAdmin) {
             return null
@@ -933,6 +1126,8 @@ export const createSageApp = ({
             username: pendingAdmin.username,
             usernameNormalized: pendingAdmin.usernameNormalized,
             role: 'admin',
+            permissions: [...MOON_OP_PERMISSION_KEYS],
+            isBootstrapUser: true,
             createdAt: pendingAdmin.createdAt,
             updatedAt: pendingAdmin.updatedAt,
         }
@@ -948,6 +1143,8 @@ export const createSageApp = ({
             usernameNormalized: normalizeUsernameKey(username),
             password,
             role: 'admin',
+            permissions: [...MOON_OP_PERMISSION_KEYS],
+            isBootstrapUser: true,
             createdAt,
             updatedAt: now,
         }
@@ -1043,7 +1240,7 @@ export const createSageApp = ({
         }
     }
 
-    const ensureDefaultNamingSettings = async (timestamp) => {
+    const ensureDefaultSettings = async (timestamp) => {
         if (!vaultClient?.mongo?.findOne || !vaultClient?.mongo?.update) {
             return
         }
@@ -1059,6 +1256,145 @@ export const createSageApp = ({
                 {upsert: true},
             )
         }
+
+        const existingDebug = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DEBUG_SETTINGS.key,
+        })
+        if (!existingDebug) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_DEBUG_SETTINGS.key},
+                {$set: {...DEFAULT_DEBUG_SETTINGS, updatedAt: timestamp}},
+                {upsert: true},
+            )
+        } else {
+            // If already exists, apply to current Sage process
+            if (typeof existingDebug.enabled === 'boolean') {
+                logger.debug(`[${serviceName}] 🛠️ Syncing live debug mode from Vault: ${existingDebug.enabled}`)
+                setDebug(existingDebug.enabled)
+            }
+        }
+    }
+    const readDebugSetting = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                key: DEFAULT_DEBUG_SETTINGS.key,
+                enabled: isDebugEnabled(),
+                updatedAt: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DEBUG_SETTINGS.key,
+        })
+
+        return {
+            key: DEFAULT_DEBUG_SETTINGS.key,
+            enabled: typeof doc?.enabled === 'boolean' ? doc.enabled : isDebugEnabled(),
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+        }
+    }
+    const applyDebugSetting = async (enabled) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        const timestamp = new Date().toISOString()
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DEFAULT_DEBUG_SETTINGS.key},
+            {
+                $set: {
+                    key: DEFAULT_DEBUG_SETTINGS.key,
+                    enabled,
+                    updatedAt: timestamp,
+                },
+            },
+            {upsert: true},
+        )
+
+        setDebug(enabled)
+
+        const propagationErrors = []
+        const propagate = async (target, task) => {
+            try {
+                await task()
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                propagationErrors.push(`${target}: ${message}`)
+            }
+        }
+
+        await propagate('warden', async () => {
+            if (typeof setupClient?.setDebug !== 'function') {
+                throw new Error('Warden debug endpoint is unavailable.')
+            }
+
+            await setupClient.setDebug(enabled)
+        })
+
+        if (typeof ravenClient?.setDebug === 'function') {
+            await propagate('raven', async () => {
+                await ravenClient.setDebug(enabled)
+            })
+        }
+
+        if (typeof vaultClient?.setDebug === 'function') {
+            await propagate('vault', async () => {
+                await vaultClient.setDebug(enabled)
+            })
+        }
+
+        if (propagationErrors.length > 0) {
+            throw new Error(`Saved debug mode, but propagation failed (${propagationErrors.join(' | ')})`)
+        }
+
+        return {
+            key: DEFAULT_DEBUG_SETTINGS.key,
+            enabled,
+            updatedAt: timestamp,
+        }
+    }
+    const resolveBaseRedirectUrl = () => {
+        const direct =
+            normalizeString(settingsOptions.baseUrl) ||
+            normalizeString(process.env.BASE_URL) ||
+            normalizeString(process.env.HOST_SERVICE_URL)
+
+        if (!direct) {
+            return '/'
+        }
+
+        if (/^https?:\/\//i.test(direct)) {
+            return direct
+        }
+
+        return `http://${direct}`
+    }
+    const queueEcosystemRestart = (options = {}) => {
+        if (typeof setupClient?.restartEcosystem !== 'function') {
+            logger.warn?.(`[${serviceName}] restartEcosystem is unavailable; skipping restart queue.`)
+            return false
+        }
+
+        Promise.resolve(setupClient.restartEcosystem(options)).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.error(`[${serviceName}] Failed to restart ecosystem after vault wipe: ${message}`)
+        })
+        return true
+    }
+    const verifySessionPassword = async ({session, password}) => {
+        if (!vaultClient?.users?.authenticate) {
+            throw new Error('Vault user authentication is not configured.')
+        }
+
+        const username = normalizeUsername(session?.username || session?.usernameNormalized)
+        if (!username) {
+            throw new Error('Session username is unavailable.')
+        }
+
+        const authenticated = await authenticateAuthUser({username, password})
+        return authenticated?.authenticated === true
     }
     const writeAdminToVault = async ({username, password}) => {
         if (!hasVaultUserApi()) {
@@ -1083,12 +1419,16 @@ export const createSageApp = ({
                 username,
                 password,
                 role: 'admin',
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+                isBootstrapUser: true,
             })
         } else {
             await createAuthUser({
                 username,
                 password,
                 role: 'admin',
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+                isBootstrapUser: true,
             })
             created = true
         }
@@ -1109,7 +1449,11 @@ export const createSageApp = ({
                 continue
             }
 
-            await updateAuthUser(demotionLookup, {role: 'member'})
+            await updateAuthUser(demotionLookup, {
+                role: 'member',
+                permissions: [...DEFAULT_MEMBER_PERMISSION_KEYS],
+                isBootstrapUser: false,
+            })
         }
 
         const verified = await authenticateAuthUser({username, password})
@@ -1117,7 +1461,7 @@ export const createSageApp = ({
             throw new Error('Bootstrap verification failed after account write.')
         }
 
-        await ensureDefaultNamingSettings(now)
+        await ensureDefaultSettings(now)
 
         return {
             created,
@@ -1194,9 +1538,11 @@ export const createSageApp = ({
             return null
         }
 
-        req.user = session
+        const fallbackUsername = normalizeUsername(session?.username || session?.usernameNormalized)
+        const normalizedSession = toSessionUser(session, fallbackUsername)
+        req.user = normalizedSession
         req.sessionToken = token
-        return session
+        return normalizedSession
     }
 
     const requireSessionIfSetupCompleted = async (req, res, next) => {
@@ -1225,12 +1571,92 @@ export const createSageApp = ({
             return null
         }
 
-        if (normalizeRole(session?.role, 'member') !== 'admin') {
+        if (!hasMoonPermission(session, 'admin')) {
             res.status(403).json({error: 'Admin privileges are required.'})
             return null
         }
 
         return session
+    }
+    const requirePermissionSession = async (req, res, permission, options = {}) => {
+        const session = await requireSession(req, res)
+        if (!session) {
+            return null
+        }
+
+        if (!hasMoonPermission(session, permission)) {
+            const errorMessage =
+                typeof options?.message === 'string' && options.message.trim()
+                    ? options.message.trim()
+                    : 'Insufficient permissions.'
+            res.status(403).json({error: errorMessage})
+            return null
+        }
+
+        return session
+    }
+    const requireAdminSessionIfSetupCompleted = async (req, res, next) => {
+        try {
+            const completed = await resolveSetupCompleted()
+            if (!completed) {
+                next()
+                return
+            }
+
+            const session = await requireAdminSession(req, res)
+            if (!session) {
+                return
+            }
+
+            next()
+        } catch (error) {
+            logger.error(`[${serviceName}] ❌ Admin auth middleware failed: ${error.message}`)
+            res.status(502).json({error: 'Unable to validate admin session.'})
+        }
+    }
+    const ensureMoonPermission = (req, res, permission, message) => {
+        const session = req.user
+        if (!session) {
+            return true
+        }
+
+        if (hasMoonPermission(session, permission)) {
+            return true
+        }
+
+        const errorMessage = typeof message === 'string' && message.trim()
+            ? message.trim()
+            : 'Insufficient permissions.'
+        res.status(403).json({error: errorMessage})
+        return false
+    }
+    const generateTemporaryPassword = (length = 16) => {
+        const uppercase = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+        const lowercase = 'abcdefghijkmnopqrstuvwxyz'
+        const numbers = '23456789'
+        const symbols = '!@#$%*-_'
+        const all = `${uppercase}${lowercase}${numbers}${symbols}`
+        const nextChar = (pool) => pool.charAt(Math.floor(Math.random() * pool.length))
+
+        const out = [
+            nextChar(uppercase),
+            nextChar(lowercase),
+            nextChar(numbers),
+            nextChar(symbols),
+        ]
+
+        while (out.length < Math.max(12, Math.floor(length))) {
+            out.push(nextChar(all))
+        }
+
+        for (let index = out.length - 1; index > 0; index -= 1) {
+            const swapIndex = Math.floor(Math.random() * (index + 1))
+            const temp = out[index]
+            out[index] = out[swapIndex]
+            out[swapIndex] = temp
+        }
+
+        return out.join('')
     }
 
     const app = express()
@@ -1393,8 +1819,20 @@ export const createSageApp = ({
 
             const token = createSessionToken()
             const session = toSessionUser(authResult.user, username)
+            if (!hasMoonPermission(session, 'moon_login')) {
+                res.status(403).json({error: 'Moon login permission is required for this account.'})
+                return
+            }
             await writeSession(token, session, sessionTtlSeconds)
-            res.json({token, user: {username: session.username, role: session.role}})
+            res.json({
+                token,
+                user: {
+                    username: session.username,
+                    role: session.role,
+                    permissions: session.permissions,
+                    isBootstrapUser: session.isBootstrapUser === true,
+                },
+            })
         } catch (error) {
             logger.error(`[${serviceName}] Failed to login: ${error.message}`)
             const status = vaultErrorStatus(error, 502)
@@ -1433,12 +1871,21 @@ export const createSageApp = ({
             return
         }
 
-        const session = await requireAdminSession(req, res)
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
         if (!session) return
 
         try {
             const users = await listAuthUsers()
-            res.json({users: users.map((entry) => publicUser(entry)).filter((entry) => Boolean(entry.usernameNormalized))})
+            const protectedLookupKey = resolveProtectedBootstrapLookupKey(users)
+            const mappedUsers = users
+                .map((entry) => applyProtectedBootstrapUserFlag(publicUser(entry), protectedLookupKey))
+                .filter((entry) => Boolean(entry.usernameNormalized))
+            res.json({
+                users: mappedUsers,
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+            })
         } catch (error) {
             logger.error(`[${serviceName}] Failed to list auth users: ${error.message}`)
             const status = vaultErrorStatus(error, 502)
@@ -1453,12 +1900,36 @@ export const createSageApp = ({
             return
         }
 
-        const session = await requireAdminSession(req, res)
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
         if (!session) return
 
         const username = normalizeUsername(req.body?.username)
         const password = typeof req.body?.password === 'string' ? req.body.password : ''
-        const role = normalizeRole(req.body?.role, 'member')
+        const hasRoleInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role')
+        let role = hasRoleInput ? normalizeRole(req.body?.role, 'member') : 'member'
+        const hasPermissionsInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'permissions')
+        let permissions = hasPermissionsInput ? [] : defaultPermissionsForRole(role)
+
+        if (hasPermissionsInput) {
+            const parsedPermissions = validatePermissionListInput(req.body?.permissions)
+            if (!parsedPermissions.ok) {
+                res.status(400).json({error: parsedPermissions.error})
+                return
+            }
+            permissions = parsedPermissions.permissions
+        }
+
+        if (role === 'admin' && !permissions.includes('admin')) {
+            permissions = sortMoonPermissions([...permissions, 'admin'])
+        }
+        if (role !== 'admin' && permissions.includes('admin')) {
+            role = 'admin'
+        }
+        if (role !== 'admin') {
+            permissions = sortMoonPermissions(permissions.filter((entry) => entry !== 'admin'))
+        }
 
         if (!isValidUsername(username)) {
             res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'})
@@ -1471,7 +1942,13 @@ export const createSageApp = ({
         }
 
         try {
-            const payload = await createAuthUser({username, password, role})
+            const payload = await createAuthUser({
+                username,
+                password,
+                role,
+                permissions,
+                isBootstrapUser: false,
+            })
             res.status(201).json({ok: true, user: publicUser(payload?.user, username)})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to create auth user: ${error.message}`)
@@ -1487,55 +1964,140 @@ export const createSageApp = ({
             return
         }
 
-        const session = await requireAdminSession(req, res)
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
         if (!session) return
 
         const lookupUsername = normalizeUsername(req.params?.username)
+        const lookupKey = normalizeUsernameKey(lookupUsername)
         if (!lookupUsername) {
             res.status(400).json({error: 'username is required.'})
             return
         }
 
-        const updates = {}
-        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'username')) {
-            const nextUsername = normalizeUsername(req.body?.username)
-            if (!isValidUsername(nextUsername)) {
-                res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'})
-                return
-            }
-            updates.username = nextUsername
-        }
+        const hasUsernameUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'username')
+        const hasPasswordUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'password')
+        const hasRoleUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role')
+        const hasPermissionsUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'permissions')
 
-        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'password')) {
-            const nextPassword = typeof req.body?.password === 'string' ? req.body.password : ''
-            if (!isValidPassword(nextPassword)) {
-                res.status(400).json({error: 'password must be at least 8 characters.'})
-                return
-            }
-            updates.password = nextPassword
-        }
-
-        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role')) {
-            const nextRole = normalizeString(req.body?.role).toLowerCase()
-            if (nextRole !== 'admin' && nextRole !== 'member') {
-                res.status(400).json({error: 'role must be "admin" or "member".'})
-                return
-            }
-            updates.role = nextRole
-        }
-
-        if (Object.keys(updates).length === 0) {
+        if (!hasUsernameUpdate && !hasPasswordUpdate && !hasRoleUpdate && !hasPermissionsUpdate) {
             res.status(400).json({error: 'At least one user field must be updated.'})
             return
         }
 
         try {
+            const users = await listAuthUsers()
+            const targetUser = findUserByLookupKey(users, lookupKey)
+            if (!targetUser) {
+                res.status(404).json({error: 'User not found.'})
+                return
+            }
+
+            const protectedLookupKey = resolveProtectedBootstrapLookupKey(users)
+            if (protectedLookupKey && normalizeUserLookupKey(targetUser) === protectedLookupKey) {
+                res.status(403).json({error: 'Setup wizard account is protected and cannot be modified.'})
+                return
+            }
+
+            const updates = {}
+            if (hasUsernameUpdate) {
+                const nextUsername = normalizeUsername(req.body?.username)
+                if (!isValidUsername(nextUsername)) {
+                    res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'})
+                    return
+                }
+                updates.username = nextUsername
+            }
+
+            if (hasPasswordUpdate) {
+                const nextPassword = typeof req.body?.password === 'string' ? req.body.password : ''
+                if (!isValidPassword(nextPassword)) {
+                    res.status(400).json({error: 'password must be at least 8 characters.'})
+                    return
+                }
+                updates.password = nextPassword
+            }
+
+            if (hasPermissionsUpdate) {
+                const parsedPermissions = validatePermissionListInput(req.body?.permissions)
+                if (!parsedPermissions.ok) {
+                    res.status(400).json({error: parsedPermissions.error})
+                    return
+                }
+                updates.permissions = parsedPermissions.permissions
+                updates.role = inferRoleFromPermissions(parsedPermissions.permissions, normalizeRole(targetUser?.role, 'member'))
+            } else if (hasRoleUpdate) {
+                updates.role = normalizeRole(req.body?.role, normalizeRole(targetUser?.role, 'member'))
+                updates.permissions = defaultPermissionsForRole(updates.role)
+            }
+
+            if (updates.role === 'admin' && Array.isArray(updates.permissions) && !updates.permissions.includes('admin')) {
+                updates.permissions = sortMoonPermissions([...updates.permissions, 'admin'])
+            }
+            if (updates.role !== 'admin' && Array.isArray(updates.permissions)) {
+                updates.permissions = sortMoonPermissions(updates.permissions.filter((entry) => entry !== 'admin'))
+            }
+
             const payload = await updateAuthUser(lookupUsername, updates)
-            res.json({ok: true, user: publicUser(payload?.user, updates.username || lookupUsername)})
+            const updated = publicUser(payload?.user, updates.username || lookupUsername)
+            if (req.sessionToken && lookupKey === normalizeUsernameKey(session?.usernameNormalized || session?.username)) {
+                await writeSession(req.sessionToken, toSessionUser(updated, updated.username), sessionTtlSeconds)
+            }
+
+            res.json({ok: true, user: updated})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to update auth user: ${error.message}`)
             const status = vaultErrorStatus(error, 502)
             const message = vaultErrorMessage(error, 'Unable to update user.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/auth/users/:username/reset-password', async (req, res) => {
+        if (!vaultClient?.users) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
+        if (!session) return
+
+        const lookupUsername = normalizeUsername(req.params?.username)
+        const lookupKey = normalizeUsernameKey(lookupUsername)
+        if (!lookupKey) {
+            res.status(400).json({error: 'username is required.'})
+            return
+        }
+
+        try {
+            const users = await listAuthUsers()
+            const targetUser = findUserByLookupKey(users, lookupKey)
+            if (!targetUser) {
+                res.status(404).json({error: 'User not found.'})
+                return
+            }
+
+            const protectedLookupKey = resolveProtectedBootstrapLookupKey(users)
+            if (protectedLookupKey && normalizeUserLookupKey(targetUser) === protectedLookupKey) {
+                res.status(403).json({error: 'Setup wizard account is protected and cannot be modified.'})
+                return
+            }
+
+            const password = generateTemporaryPassword()
+            const payload = await updateAuthUser(lookupUsername, {password})
+            const updated = publicUser(payload?.user, lookupUsername)
+            if (req.sessionToken && lookupKey === normalizeUsernameKey(session?.usernameNormalized || session?.username)) {
+                await writeSession(req.sessionToken, toSessionUser(updated, updated.username), sessionTtlSeconds)
+            }
+
+            res.json({ok: true, user: updated, password})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to reset auth user password: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to reset user password.')
             res.status(status).json({error: message})
         }
     })
@@ -1546,7 +2108,9 @@ export const createSageApp = ({
             return
         }
 
-        const session = await requireAdminSession(req, res)
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
         if (!session) return
 
         const lookupUsername = normalizeUsername(req.params?.username)
@@ -1556,12 +2120,25 @@ export const createSageApp = ({
             return
         }
 
-        if (lookupKey === normalizeUsernameKey(session.usernameNormalized || session.username)) {
-            res.status(400).json({error: 'Cannot delete the active session user.'})
-            return
-        }
-
         try {
+            const users = await listAuthUsers()
+            const targetUser = findUserByLookupKey(users, lookupKey)
+            if (!targetUser) {
+                res.status(404).json({error: 'User not found.'})
+                return
+            }
+
+            const protectedLookupKey = resolveProtectedBootstrapLookupKey(users)
+            if (protectedLookupKey && normalizeUserLookupKey(targetUser) === protectedLookupKey) {
+                res.status(403).json({error: 'Setup wizard account is protected and cannot be deleted.'})
+                return
+            }
+
+            if (lookupKey === normalizeUsernameKey(session.usernameNormalized || session.username)) {
+                res.status(400).json({error: 'Cannot delete the active session user.'})
+                return
+            }
+
             const payload = await deleteAuthUser(lookupUsername)
             if (payload?.deleted !== true) {
                 res.status(404).json({error: 'User not found.'})
@@ -1576,7 +2153,42 @@ export const createSageApp = ({
             res.status(status).json({error: message})
         }
     })
-    app.use('/api/settings', requireSessionIfSetupCompleted)
+    app.use('/api/settings', requireAdminSessionIfSetupCompleted)
+
+    app.get('/api/settings/debug', async (_req, res) => {
+        if (!vaultClient?.mongo?.findOne) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const setting = await readDebugSetting()
+            res.json(setting)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load debug setting: ${error.message}`)
+            res.status(502).json({error: 'Unable to load debug setting.'})
+        }
+    })
+
+    app.put('/api/settings/debug', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        const enabled = parseBooleanInput(req.body?.enabled)
+        if (enabled == null) {
+            res.status(400).json({error: 'enabled must be a boolean value.'})
+            return
+        }
+
+        try {
+            const setting = await applyDebugSetting(enabled)
+            res.json(setting)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to update debug setting: ${error.message}`)
+            const message = error instanceof Error ? error.message : 'Unable to update debug setting.'
+            res.status(502).json({error: message})
+        }
+    })
 
     app.get('/api/settings/downloads/naming', async (_req, res) => {
         if (!vaultClient) {
@@ -1798,7 +2410,7 @@ export const createSageApp = ({
             const result = await setupClient.startEcosystem(req.body ?? {})
             res.json(result ?? {})
         } catch (error) {
-            logger.error(`[${serviceName}] ⚠️ Failed to start ecosystem: ${error.message}`)
+            logger.error(`[${serviceName}] Failed to start ecosystem: ${error.message}`)
             res.status(502).json({error: 'Unable to start ecosystem.'})
         }
     })
@@ -1808,8 +2420,80 @@ export const createSageApp = ({
             const result = await setupClient.stopEcosystem(req.body ?? {})
             res.json(result ?? {})
         } catch (error) {
-            logger.error(`[${serviceName}] ⚠️ Failed to stop ecosystem: ${error.message}`)
+            logger.error(`[${serviceName}] Failed to stop ecosystem: ${error.message}`)
             res.status(502).json({error: 'Unable to stop ecosystem.'})
+        }
+    })
+
+    app.post('/api/settings/ecosystem/restart', async (req, res) => {
+        try {
+            const result = await setupClient.restartEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to restart ecosystem: ${error.message}`)
+            res.status(502).json({error: 'Unable to restart ecosystem.'})
+        }
+    })
+
+    app.post('/api/settings/factory-reset', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        if (!vaultClient?.mongo?.wipe || !vaultClient?.redis?.wipe) {
+            res.status(503).json({error: 'Vault wipe operations are not configured.'})
+            return
+        }
+
+        const password = typeof req.body?.password === 'string' ? req.body.password : ''
+        if (!password) {
+            res.status(400).json({error: 'password is required.'})
+            return
+        }
+
+        const deleteRavenDownloads = parseBooleanInput(req.body?.deleteRavenDownloads) === true
+        const deleteDockers = parseBooleanInput(req.body?.deleteDockers) === true
+
+        try {
+            const passwordValid = await verifySessionPassword({session, password})
+            if (!passwordValid) {
+                res.status(401).json({error: 'Invalid password.'})
+                return
+            }
+
+            await vaultClient.mongo.wipe()
+            await vaultClient.redis.wipe()
+
+            let factoryResetResult = null
+            if (typeof setupClient?.factoryResetEcosystem === 'function') {
+                factoryResetResult = await setupClient.factoryResetEcosystem({
+                    deleteRavenDownloads,
+                    deleteDockers,
+                    setupCompleted: false,
+                    forceFull: false,
+                })
+            } else if (typeof setupClient?.restartEcosystem === 'function') {
+                factoryResetResult = await setupClient.restartEcosystem({
+                    trackedOnly: false,
+                    setupCompleted: false,
+                    forceFull: false,
+                })
+            } else {
+                throw new Error('Warden factory reset endpoint is unavailable.')
+            }
+
+            res.status(202).json({
+                ok: true,
+                restartQueued: true,
+                deleteRavenDownloads,
+                deleteDockers,
+                redirectTo: resolveBaseRedirectUrl(),
+                result: factoryResetResult ?? null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to run factory reset: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to run factory reset.')
+            res.status(status).json({error: message})
         }
     })
 
@@ -1823,7 +2507,7 @@ export const createSageApp = ({
             const collections = await vaultClient.mongo.listCollections()
             res.json({collections: Array.isArray(collections) ? collections : []})
         } catch (error) {
-            logger.error(`[${serviceName}] ⚠️ Failed to load Vault collections: ${error.message}`)
+            logger.error(`[${serviceName}] Failed to load Vault collections: ${error.message}`)
             const status = vaultErrorStatus(error, 502)
             const message = vaultErrorMessage(error, 'Unable to load Vault collections.')
             res.status(status).json({error: message})
@@ -1850,20 +2534,74 @@ export const createSageApp = ({
             const list = Array.isArray(documents) ? documents.slice(0, limit) : []
             res.json({collection: name, limit, documents: list})
         } catch (error) {
-            logger.error(`[${serviceName}] ⚠️ Failed to load Vault documents for ${name}: ${error.message}`)
+            logger.error(`[${serviceName}] Failed to load Vault documents for ${name}: ${error.message}`)
             const status = vaultErrorStatus(error, 502)
             const message = vaultErrorMessage(error, 'Unable to load Vault collection documents.')
             res.status(status).json({error: message})
         }
     })
 
+    app.post('/api/settings/vault/wipe', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        if (!vaultClient?.mongo?.wipe || !vaultClient?.redis?.wipe) {
+            res.status(503).json({error: 'Vault wipe operations are not configured.'})
+            return
+        }
+
+        const target = normalizeString(req.body?.target).toLowerCase()
+        if (target !== 'mongo' && target !== 'redis') {
+            res.status(400).json({error: 'target must be either "mongo" or "redis".'})
+            return
+        }
+
+        const restartRaw = parseBooleanInput(req.body?.restart)
+        const shouldRestart = restartRaw == null ? true : restartRaw
+
+        const password = typeof req.body?.password === 'string' ? req.body.password : ''
+        if (!password) {
+            res.status(400).json({error: 'password is required.'})
+            return
+        }
+
+        try {
+            const passwordValid = await verifySessionPassword({session, password})
+            if (!passwordValid) {
+                res.status(401).json({error: 'Invalid password.'})
+                return
+            }
+
+            if (target === 'mongo') {
+                await vaultClient.mongo.wipe()
+            } else {
+                await vaultClient.redis.wipe()
+            }
+
+            if (shouldRestart) {
+                queueEcosystemRestart({trackedOnly: false, forceFull: true})
+            }
+
+            res.status(202).json({
+                ok: true,
+                target,
+                restartQueued: shouldRestart,
+                redirectTo: resolveBaseRedirectUrl(),
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to wipe ${target}: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, `Unable to wipe ${target}.`)
+            res.status(status).json({error: message})
+        }
+    })
     app.get('/api/pages', (req, res) => {
         const pages = [
             { name: 'Setup', path: '/setup' },
             { name: 'Dashboard', path: '/dashboard' },
         ]
 
-        logger.debug(`[${serviceName}] 🗂️ Serving ${pages.length} static page entries`)
+        logger.debug(`[${serviceName}] Serving ${pages.length} static page entries`)
         res.json(pages)
     })
 
@@ -2488,7 +3226,10 @@ export const createSageApp = ({
 
     app.use('/api/raven', requireSessionIfSetupCompleted)
 
-    app.get('/api/raven/library', async (_req, res) => {
+    app.get('/api/raven/library', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+            return
+        }
         try {
             const library = await ravenClient.getLibrary()
             res.json(library ?? [])
@@ -2498,7 +3239,10 @@ export const createSageApp = ({
         }
     })
 
-    app.post('/api/raven/library/checkForNew', async (_req, res) => {
+    app.post('/api/raven/library/checkForNew', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'check_download_missing_titles', 'Missing-title check permission is required.')) {
+            return
+        }
         try {
             const result = await ravenClient.checkLibraryForNewChapters()
             res.status(202).json(result ?? {})
@@ -2509,6 +3253,9 @@ export const createSageApp = ({
     })
 
     app.get('/api/raven/title/:uuid', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+            return
+        }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
 
         if (!uuid) {
@@ -2531,6 +3278,9 @@ export const createSageApp = ({
     })
 
     app.post('/api/raven/title/:uuid/checkForNew', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'check_download_missing_titles', 'Missing-title check permission is required.')) {
+            return
+        }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
 
         if (!uuid) {
@@ -2553,6 +3303,9 @@ export const createSageApp = ({
     })
 
     app.post('/api/raven/title', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+            return
+        }
         const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
         const sourceUrl = typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl.trim() : ''
 
@@ -2571,6 +3324,9 @@ export const createSageApp = ({
     })
 
     app.patch('/api/raven/title/:uuid', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+            return
+        }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
         const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
         const sourceUrl = typeof req.body?.sourceUrl === 'string' ? req.body.sourceUrl.trim() : ''
@@ -2600,6 +3356,9 @@ export const createSageApp = ({
     })
 
     app.delete('/api/raven/title/:uuid', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+            return
+        }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
 
         if (!uuid) {
@@ -2622,6 +3381,9 @@ export const createSageApp = ({
     })
 
     app.get('/api/raven/title/:uuid/files', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+            return
+        }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
         const limit = req.query?.limit
 
@@ -2645,6 +3407,9 @@ export const createSageApp = ({
     })
 
     app.delete('/api/raven/title/:uuid/files', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+            return
+        }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
         const names = Array.isArray(req.body?.names) ? req.body.names : []
 
@@ -2678,6 +3443,9 @@ export const createSageApp = ({
     })
 
     app.post('/api/raven/search', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'lookup_new_title', 'Lookup permission is required.')) {
+            return
+        }
         const query = typeof req.body?.query === 'string' ? req.body.query.trim() : ''
 
         if (!query) {
@@ -2695,6 +3463,9 @@ export const createSageApp = ({
     })
 
     app.post('/api/raven/download', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+            return
+        }
         const searchId = typeof req.body?.searchId === 'string' ? req.body.searchId.trim() : ''
         const optionIndexRaw = req.body?.optionIndex
         const optionIndex =
@@ -2725,7 +3496,10 @@ export const createSageApp = ({
         }
     })
 
-    app.get('/api/raven/downloads/status', async (_req, res) => {
+    app.get('/api/raven/downloads/status', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+            return
+        }
         try {
             const status = await ravenClient.getDownloadStatus()
             res.json(status ?? [])
@@ -2735,7 +3509,10 @@ export const createSageApp = ({
         }
     })
 
-    app.get('/api/raven/downloads/history', async (_req, res) => {
+    app.get('/api/raven/downloads/history', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+            return
+        }
         try {
             const history = await ravenClient.getDownloadHistory()
             res.json(history ?? [])
@@ -2745,7 +3522,10 @@ export const createSageApp = ({
         }
     })
 
-    app.get('/api/raven/downloads/summary', async (_req, res) => {
+    app.get('/api/raven/downloads/summary', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+            return
+        }
         try {
             const summary = await ravenClient.getDownloadSummary()
             res.json(summary ?? {})

@@ -1574,6 +1574,69 @@ test('init inspects tcp DOCKER_HOST endpoint when default socket fails', async (
     assert.deepEqual(dockerFactoryCalls, ['tcp://docker-proxy:2375']);
 });
 
+test('factoryResetEcosystem removes noona containers/images and restarts in clean mode', async () => {
+    const removedContainers = [];
+    const removedImages = [];
+
+    const dockerInstance = createStubDocker({
+        listContainers: async () => [
+            {Id: 'c-sage', Names: ['/noona-sage']},
+            {Id: 'c-raven', Names: ['/stack_noona-raven_1']},
+            {Id: 'c-warden', Names: ['/noona-warden']},
+        ],
+        getContainer: (id) => ({
+            remove: async () => {
+                removedContainers.push(id);
+            },
+        }),
+        listImages: async () => [
+            {Id: 'img-sage', RepoTags: ['captainpax/noona-sage:latest'], RepoDigests: []},
+            {Id: 'img-warden', RepoTags: ['captainpax/noona-warden:latest'], RepoDigests: []},
+            {Id: 'img-raven', RepoTags: ['<none>:<none>'], RepoDigests: ['captainpax/noona-raven@sha256:abc']},
+        ],
+        getImage: (id) => ({
+            remove: async () => {
+                removedImages.push(id);
+            },
+        }),
+    });
+
+    const warden = buildWarden({
+        dockerInstance,
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const stopCalls = [];
+    const startCalls = [];
+    warden.stopEcosystem = async (options = {}) => {
+        stopCalls.push(options);
+        return [{service: 'noona-sage', stopped: true, removed: true}];
+    };
+    warden.startEcosystem = async (options = {}) => {
+        startCalls.push(options);
+        return {mode: 'minimal', setupCompleted: false};
+    };
+
+    const result = await warden.factoryResetEcosystem({
+        deleteDockers: true,
+        deleteRavenDownloads: false,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(stopCalls, [{trackedOnly: false}]);
+    assert.deepEqual(startCalls, [{setupCompleted: false, forceFull: false}]);
+    assert.deepEqual(removedContainers.sort(), ['c-raven', 'c-sage']);
+    assert.deepEqual(removedImages.sort(), ['img-raven', 'img-sage']);
+    assert.equal(result.dockerCleanup.requested, true);
+    assert.equal(result.ravenDownloads.requested, false);
+});
+
 test('shutdownAll stops, removes, clears tracked containers and exits with code 0', async () => {
     const operations = [];
     const containers = {

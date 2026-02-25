@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect, useMemo, useRef, useState} from "react";
+import {type ChangeEvent, useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
 import styles from "./SetupWizard.module.scss";
 
@@ -51,7 +51,7 @@ type InstallRequestEntry = {
     env?: Record<string, string>;
 };
 
-type WizardClipboardPayloadV1 = {
+type WizardConfigPayloadV1 = {
     version: 1;
     selected: string[];
     values: Record<string, Record<string, string>>;
@@ -315,8 +315,8 @@ export function SetupWizard() {
 
     const [showAdvanced, setShowAdvanced] = useState(false);
 
-    const [clipboardMessage, setClipboardMessage] = useState<string | null>(null);
-    const [clipboardError, setClipboardError] = useState<string | null>(null);
+    const [configMessage, setConfigMessage] = useState<string | null>(null);
+    const [configError, setConfigError] = useState<string | null>(null);
 
     const [installing, setInstalling] = useState(false);
     const [installError, setInstallError] = useState<string | null>(null);
@@ -329,6 +329,7 @@ export function SetupWizard() {
 
     const pollRef = useRef<number | null>(null);
     const finishInFlightRef = useRef(false);
+    const configInputRef = useRef<HTMLInputElement | null>(null);
 
     const services = catalog ?? [];
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
@@ -479,56 +480,67 @@ export function SetupWizard() {
         }
     };
 
-    const copyConfigToClipboard = async () => {
-        setClipboardMessage(null);
-        setClipboardError(null);
+    const downloadConfigFile = () => {
+        setConfigMessage(null);
+        setConfigError(null);
 
         if (!catalog) {
-            setClipboardError("Services have not loaded yet.");
+            setConfigError("Services have not loaded yet.");
             return;
         }
 
         try {
-            if (!navigator?.clipboard?.writeText) {
-                throw new Error("Clipboard API is not available.");
-            }
-
-            const payload: WizardClipboardPayloadV1 = {
+            const payload: WizardConfigPayloadV1 = {
                 version: 1,
                 selected: Array.from(selected),
                 values,
             };
-
-            await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-            setClipboardMessage("Copied setup JSON to clipboard.");
+            const formatted = JSON.stringify(payload, null, 2);
+            const blob = new Blob([formatted], {type: "application/json"});
+            const url = URL.createObjectURL(blob);
+            const now = new Date().toISOString().replace(/[:.]/g, "-");
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `noona-setup-${now}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+            setConfigMessage("Downloaded setup JSON file.");
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            setClipboardError(message);
+            setConfigError(message);
         }
     };
 
-    const loadConfigFromClipboard = async () => {
-        setClipboardMessage(null);
-        setClipboardError(null);
+    const openConfigFilePicker = () => {
+        setConfigMessage(null);
+        setConfigError(null);
+        configInputRef.current?.click();
+    };
+
+    const loadConfigFromFile = async (event: ChangeEvent<HTMLInputElement>) => {
+        setConfigMessage(null);
+        setConfigError(null);
 
         if (!catalog) {
-            setClipboardError("Services have not loaded yet.");
+            setConfigError("Services have not loaded yet.");
+            event.target.value = "";
             return;
         }
 
-        try {
-            if (!navigator?.clipboard?.readText) {
-                throw new Error("Clipboard API is not available.");
-            }
+        const file = event.target.files?.[0];
+        if (!file) return;
 
-            const raw = await navigator.clipboard.readText();
+        try {
+            const raw = await file.text();
             const parsed = JSON.parse(raw) as unknown;
 
             if (!parsed || typeof parsed !== "object") {
-                throw new Error("Clipboard JSON must be an object.");
+                throw new Error("Setup JSON must be an object.");
             }
 
-            const payload = parsed as Partial<WizardClipboardPayloadV1>;
+            const payload = parsed as Partial<WizardConfigPayloadV1>;
             if (payload.version !== 1) {
                 throw new Error("Unsupported setup JSON version.");
             }
@@ -568,10 +580,12 @@ export function SetupWizard() {
             setValues((prev) =>
                 applyDerivedEnvState(Object.keys(nextValues).length > 0 ? {...prev, ...nextValues} : prev),
             );
-            setClipboardMessage("Loaded setup JSON from clipboard.");
+            setConfigMessage(`Loaded setup JSON from ${file.name}.`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            setClipboardError(message);
+            setConfigError(message);
+        } finally {
+            event.target.value = "";
         }
     };
 
@@ -729,23 +743,31 @@ export function SetupWizard() {
                                 </Heading>
 
                                 <Row gap="8" style={{flexWrap: "wrap"}}>
-                                    <Button size="s" variant="secondary" onClick={() => void copyConfigToClipboard()}>
-                                        Save JSON
+                                    <Button size="s" variant="secondary" onClick={() => downloadConfigFile()}>
+                                        Download JSON
                                     </Button>
-                                    <Button size="s" variant="secondary" onClick={() => void loadConfigFromClipboard()}>
-                                        Load JSON
+                                    <Button size="s" variant="secondary" onClick={() => openConfigFilePicker()}>
+                                        Upload JSON
                                     </Button>
+                                    <input
+                                        ref={configInputRef}
+                                        type="file"
+                                        accept="application/json,.json"
+                                        onChange={(event) => void loadConfigFromFile(event)}
+                                        style={{display: "none"}}
+                                        aria-label="Upload setup JSON file"
+                                    />
                                 </Row>
 
-                                {clipboardMessage && (
+                                {configMessage && (
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        {clipboardMessage}
+                                        {configMessage}
                                     </Text>
                                 )}
 
-                                {clipboardError && (
+                                {configError && (
                                     <Text onBackground="danger-strong" variant="body-default-xs">
-                                        {clipboardError}
+                                        {configError}
                                     </Text>
                                 )}
 

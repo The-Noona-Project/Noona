@@ -4,11 +4,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.stereotype.Service;
 
-import java.io.*;
-import java.nio.file.*;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.Locale;
+import java.util.Set;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -20,10 +26,12 @@ public class LoggerService implements InitializingBean {
     private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
     private static final DateTimeFormatter LOG_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final Path CONTAINER_FALLBACK = Path.of("/app", "downloads");
+    private static final Set<String> TRUTHY_DEBUG_VALUES = Set.of("1", "true", "yes", "on", "super");
 
     private Path downloadsRoot;
     private Path logsPath;
     private BufferedWriter writer;
+    private volatile boolean debugEnabled = parseDebugFlag(System.getenv("DEBUG"));
 
     @Override
     public void afterPropertiesSet() {
@@ -202,8 +210,27 @@ public class LoggerService implements InitializingBean {
         write("ERROR", tag, message + " | Exception: " + throwable.getMessage());
     }
 
+    private static boolean parseDebugFlag(String raw) {
+        if (raw == null) {
+            return false;
+        }
+
+        String normalized = raw.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+
+        return TRUTHY_DEBUG_VALUES.contains(normalized);
+    }
+
     public void debug(String tag, String message) {
-        write("DEBUG", tag, message);
+        if (debugEnabled) {
+            write("DEBUG", tag, message);
+        }
+    }
+
+    public boolean isDebugEnabled() {
+        return debugEnabled;
     }
 
     public Path getDownloadsRoot() {
@@ -222,5 +249,9 @@ public class LoggerService implements InitializingBean {
 
     protected String resolveKavitaDataMountEnv() {
         return System.getenv("KAVITA_DATA_MOUNT");
+    }
+
+    public void setDebugEnabled(boolean debugEnabled) {
+        this.debugEnabled = debugEnabled;
     }
 }

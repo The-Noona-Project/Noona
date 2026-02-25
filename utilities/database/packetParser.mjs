@@ -9,8 +9,8 @@ import redis from './redis/redisClient.mjs';
 import {errMSG, log} from '../etc/logger.mjs';
 
 const allowedOps = {
-    mongo: ['insert', 'find', 'findMany', 'update', 'delete', 'listCollections'],
-    redis: ['set', 'get', 'del'],
+    mongo: ['insert', 'find', 'findMany', 'update', 'delete', 'listCollections', 'wipe'],
+    redis: ['set', 'get', 'del', 'wipe'],
 };
 
 /**
@@ -33,7 +33,8 @@ export async function handlePacket(packet) {
     try {
         if (storageType === 'mongo') {
             const db = await connectMongo();
-            const { collection, query = {}, data = {}, update = {}, upsert = false } = payload;
+            const normalizedPayload = payload && typeof payload === 'object' ? payload : {};
+            const {collection, query = {}, data = {}, update = {}, upsert = false} = normalizedPayload;
 
             if (operation === 'listCollections') {
                 const collections = await db.listCollections({}, {nameOnly: true}).toArray();
@@ -42,8 +43,20 @@ export async function handlePacket(packet) {
                     .filter(Boolean)
                     .sort((left, right) => left.localeCompare(right));
 
-                log('[Vault] 📚 Listed Mongo collections');
+                log('[Vault] Listed Mongo collections');
                 return {status: 'ok', collections: names};
+            }
+
+            if (operation === 'wipe') {
+                const collections = await db.listCollections({}, {nameOnly: true}).toArray();
+                for (const entry of collections) {
+                    if (typeof entry?.name !== 'string' || !entry.name.trim()) {
+                        continue;
+                    }
+                    await db.collection(entry.name).drop();
+                }
+                log('[Vault] Wiped Mongo database (all collections dropped)');
+                return {status: 'ok', message: 'Mongo database wiped.'};
             }
 
             if (!collection) {
@@ -55,26 +68,26 @@ export async function handlePacket(packet) {
             switch (operation) {
                 case 'insert': {
                     const result = await col.insertOne(data);
-                    log(`[Vault] 🧾 Inserted into "${collection}"`);
+                    log(`[Vault] Inserted into "${collection}"`);
                     return { status: 'ok', insertedId: result.insertedId };
                 }
 
                 case 'find': {
                     const result = await col.findOne(query);
-                    log(`[Vault] 🔍 Queried "${collection}"`);
+                    log(`[Vault] Queried "${collection}"`);
                     return result ? { status: 'ok', data: result } : { error: 'No document found' };
                 }
 
                 case 'findMany': {
                     const cursor = col.find(query);
                     const results = await cursor.toArray();
-                    log(`[Vault] 📚 Queried many from "${collection}" (count=${results.length})`);
+                    log(`[Vault] Queried many from "${collection}" (count=${results.length})`);
                     return { status: 'ok', data: results };
                 }
 
                 case 'update': {
                     const result = await col.updateOne(query, update, { upsert });
-                    log(`[Vault] 🔧 Updated "${collection}"`);
+                    log(`[Vault] Updated "${collection}"`);
                     return {
                         status: 'ok',
                         matched: result.matchedCount,
@@ -88,24 +101,25 @@ export async function handlePacket(packet) {
                     }
 
                     const result = await col.deleteOne(query);
-                    log(`[Vault] ðŸ—‘ï¸ Deleted from "${collection}"`);
+                    log(`[Vault] Deleted from "${collection}"`);
                     return {status: 'ok', deleted: result.deletedCount};
                 }
             }
         }
 
         if (storageType === 'redis') {
-            const { key, value, ttl } = payload;
+            const normalizedPayload = payload && typeof payload === 'object' ? payload : {};
+            const {key, value, ttl} = normalizedPayload;
 
             switch (operation) {
                 case 'set': {
                     const payloadStr = JSON.stringify(value);
                     if (ttl) {
                         await redis.set(key, payloadStr, 'EX', parseInt(ttl, 10));
-                        log(`[Vault] 🧠 SET Redis key="${key}" with TTL=${ttl}s`);
+                        log(`[Vault] SET Redis key="${key}" with TTL=${ttl}s`);
                     } else {
                         await redis.set(key, payloadStr);
-                        log(`[Vault] 🧠 SET Redis key="${key}"`);
+                        log(`[Vault] SET Redis key="${key}"`);
                     }
                     return { status: 'ok' };
                 }
@@ -113,20 +127,26 @@ export async function handlePacket(packet) {
                 case 'get': {
                     const raw = await redis.get(key);
                     if (!raw) return { error: 'Key not found in Redis' };
-                    log(`[Vault] 📤 GET Redis key="${key}"`);
+                    log(`[Vault] GET Redis key="${key}"`);
                     return { status: 'ok', data: JSON.parse(raw) };
                 }
 
                 case 'del': {
                     const deleted = await redis.del(key);
-                    log(`[Vault] ❌ DEL Redis key="${key}"`);
+                    log(`[Vault] DEL Redis key="${key}"`);
                     return { status: 'ok', deleted };
+                }
+
+                case 'wipe': {
+                    await redis.flushdb();
+                    log('[Vault] Wiped Redis database');
+                    return {status: 'ok', message: 'Redis database wiped.'};
                 }
             }
         }
 
     } catch (err) {
-        errMSG(`[Vault] ❗ Packet processing error: ${err.message}`);
+        errMSG(`[Vault] Packet processing error: ${err.message}`);
         return { error: 'Internal server error' };
     }
 }

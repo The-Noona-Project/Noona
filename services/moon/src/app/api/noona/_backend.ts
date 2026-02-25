@@ -1,5 +1,46 @@
 import {NextResponse} from "next/server";
 
+type LogFn = (message: string) => void;
+
+const fallbackDebugMSG: LogFn = (message) => {
+    if (process.env.DEBUG === "true") {
+        console.debug(message);
+    }
+};
+
+const fallbackErrMSG: LogFn = (message) => {
+    console.error(message);
+};
+
+let logDebug: LogFn = fallbackDebugMSG;
+let logError: LogFn = fallbackErrMSG;
+
+const initSharedLogger = (() => {
+    let initialized = false;
+    return () => {
+        if (initialized) return;
+        initialized = true;
+        const dynamicImport = new Function("specifier", "return import(specifier);") as (
+            specifier: string,
+        ) => Promise<any>;
+
+        dynamicImport("noona-utilities/etc/logger.mjs")
+            .then((loggerModule) => {
+                if (typeof loggerModule.debugMSG === "function") {
+                    logDebug = loggerModule.debugMSG as LogFn;
+                }
+                if (typeof loggerModule.errMSG === "function") {
+                    logError = loggerModule.errMSG as LogFn;
+                }
+            })
+            .catch(() => {
+                // Keep console fallback when shared utilities package is unavailable.
+            });
+    };
+})();
+
+initSharedLogger();
+
 const DEFAULT_TIMEOUT_MS = 8000;
 let preferredWardenBaseUrl: string | null = null;
 let preferredSageBaseUrl: string | null = null;
@@ -103,6 +144,7 @@ const fetchFirstOk = async (
             const url = new URL(path, baseUrl).toString();
             const res = await fetchWithTimeout(url, init, timeoutMs);
             if (!res.ok) {
+                logDebug(`[Moon API] ${path} via ${baseUrl} responded with HTTP ${res.status}`);
                 if (res.status >= 400 && res.status < 500) {
                     // Keep trying other backends when no preferred target exists yet.
                     // This avoids false auth failures when one stale endpoint returns 4xx.
@@ -117,10 +159,12 @@ const fetchFirstOk = async (
                 continue;
             }
             options.onSuccess?.(baseUrl);
+            logDebug(`[Moon API] ${path} succeeded via ${baseUrl}`);
             return res;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             errors.push(`${baseUrl} (${message})`);
+            logError(`[Moon API] ${path} via ${baseUrl} failed: ${message}`);
         }
     }
 
@@ -128,7 +172,9 @@ const fetchFirstOk = async (
         return firstClientError;
     }
 
-    throw new Error(`All backends failed for ${path}: ${errors.join(" | ")}`);
+    const message = `All backends failed for ${path}: ${errors.join(" | ")}`;
+    logError(`[Moon API] ${message}`);
+    throw new Error(message);
 };
 
 export const wardenJson = async (

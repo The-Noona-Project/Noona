@@ -1,9 +1,9 @@
 // services/warden/tests/wardenServer.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
+import {once} from 'node:events';
 
-import { startWardenServer } from '../shared/wardenServer.mjs';
+import {startWardenServer} from '../shared/wardenServer.mjs';
 
 const listen = async (options = {}) => {
     const { server } = startWardenServer({
@@ -268,4 +268,93 @@ test('POST /api/services/noona-raven/detect returns detection payload', async (t
     const response = await fetch(`${baseUrl}/api/services/noona-raven/detect`, { method: 'POST' });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data/path' } });
+});
+
+test('GET /api/debug returns debug state payload', async (t) => {
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        getDebug() {
+            return {enabled: true, value: 'true'};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/debug`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: true, value: 'true'});
+});
+
+test('POST /api/debug updates warden debug mode', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async setDebug(enabled) {
+            calls.push(enabled);
+            return {enabled, value: enabled ? 'true' : 'false'};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/debug`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: false}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: false, value: 'false'});
+    assert.deepEqual(calls, [false]);
+});
+
+test('POST /api/ecosystem/restart delegates to warden restartEcosystem', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async restartEcosystem(options) {
+            calls.push(options);
+            return {ok: true};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/ecosystem/restart`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({trackedOnly: false}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {ok: true});
+    assert.deepEqual(calls, [{trackedOnly: false}]);
+});
+
+test('POST /api/ecosystem/factory-reset delegates to warden factoryResetEcosystem', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async factoryResetEcosystem(options) {
+            calls.push(options);
+            return {ok: true, cleaned: true};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/ecosystem/factory-reset`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({deleteDockers: true, deleteRavenDownloads: true}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {ok: true, cleaned: true});
+    assert.deepEqual(calls, [{deleteDockers: true, deleteRavenDownloads: true}]);
 });

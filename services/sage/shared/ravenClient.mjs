@@ -395,6 +395,14 @@ export const createRavenClient = ({
             const response = await fetchFromRaven('/v1/download/status/summary')
             return await parseResponsePayload(response)
         },
+        async setDebug(enabled) {
+            const response = await fetchFromRaven('/v1/debug', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled: !!enabled}),
+            })
+            return await parseResponsePayload(response)
+        },
     }
 }
 

@@ -7,6 +7,14 @@ import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 
 type TabId = "general" | "moon" | "raven" | "vault" | "sage" | "warden" | "portal";
+type MainSectionId = "ecosystem" | "users";
+type MoonPermission =
+    | "moon_login"
+    | "lookup_new_title"
+    | "download_new_title"
+    | "check_download_missing_titles"
+    | "user_management"
+    | "admin";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -55,6 +63,13 @@ type DownloadNamingSettings = {
     error?: string;
 };
 
+type DebugSettings = {
+    key?: string | null;
+    enabled?: boolean | null;
+    updatedAt?: string | null;
+    error?: string;
+};
+
 type RavenDownloadProgress = {
     title?: string | null;
     totalChapters?: number | null;
@@ -74,7 +89,32 @@ type AuthStatusResponse = {
     user?: {
         username?: string | null;
         role?: string | null;
+        permissions?: string[] | null;
+        isBootstrapUser?: boolean | null;
     } | null;
+    error?: string;
+};
+
+type ManagedUser = {
+    username?: string | null;
+    usernameNormalized?: string | null;
+    role?: string | null;
+    permissions?: string[] | null;
+    isBootstrapUser?: boolean | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+};
+
+type UsersListResponse = {
+    users?: ManagedUser[] | null;
+    permissions?: string[] | null;
+    error?: string;
+};
+
+type UserResetPasswordResponse = {
+    ok?: boolean;
+    user?: ManagedUser | null;
+    password?: string | null;
     error?: string;
 };
 
@@ -121,6 +161,35 @@ const TOKENS = [
     "{page_padded}",
     "{ext}",
 ];
+
+const MOON_PERMISSION_LABELS: Record<MoonPermission, string> = {
+    moon_login: "Moon login",
+    lookup_new_title: "Lookup new title",
+    download_new_title: "Download new title",
+    check_download_missing_titles: "Check/download for missing titles",
+    user_management: "User management",
+    admin: "Admin",
+};
+const MOON_PERMISSION_ORDER: MoonPermission[] = [
+    "moon_login",
+    "lookup_new_title",
+    "download_new_title",
+    "check_download_missing_titles",
+    "user_management",
+    "admin",
+];
+const isMoonPermission = (value: unknown): value is MoonPermission =>
+    typeof value === "string" && MOON_PERMISSION_ORDER.includes(value as MoonPermission);
+const normalizePermissions = (value: unknown): MoonPermission[] => {
+    if (!Array.isArray(value)) return [];
+    const unique = new Set<MoonPermission>();
+    for (const entry of value) {
+        if (isMoonPermission(entry)) unique.add(entry);
+    }
+    return MOON_PERMISSION_ORDER.filter((entry) => unique.has(entry));
+};
+const hasPermission = (permissions: MoonPermission[], permission: MoonPermission): boolean =>
+    permissions.includes("admin") || permissions.includes(permission);
 
 const PORTAL_ROLE_KEYS = new Set([
     "DISCORD_GUILD_ROLE_ID",
@@ -177,6 +246,14 @@ const parsePort = (raw: string): number | null | "invalid" => {
 export function SettingsPage() {
     const searchParams = useSearchParams();
     const [activeTab, setActiveTab] = useState<TabId>(normalizeTab(searchParams.get("tab")));
+    const [activeSection, setActiveSection] = useState<MainSectionId>("ecosystem");
+    const [currentPermissions, setCurrentPermissions] = useState<MoonPermission[]>([]);
+    const [currentUser, setCurrentUser] = useState<{
+        username: string;
+        role: string;
+        permissions: MoonPermission[]
+    } | null>(null);
+    const [authStateLoading, setAuthStateLoading] = useState(true);
 
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -186,6 +263,12 @@ export function SettingsPage() {
     const [globalMessage, setGlobalMessage] = useState<string | null>(null);
     const [globalError, setGlobalError] = useState<string | null>(null);
     const [ecosystemBusy, setEcosystemBusy] = useState(false);
+    const [debugLoading, setDebugLoading] = useState(false);
+    const [debugSaving, setDebugSaving] = useState(false);
+    const [debugEnabled, setDebugEnabled] = useState(false);
+    const [debugUpdatedAt, setDebugUpdatedAt] = useState<string | null>(null);
+    const [debugError, setDebugError] = useState<string | null>(null);
+    const [debugMessage, setDebugMessage] = useState<string | null>(null);
 
     const [accountLoading, setAccountLoading] = useState(false);
     const [accountUser, setAccountUser] = useState<{ username: string; role: string } | null>(null);
@@ -229,6 +312,26 @@ export function SettingsPage() {
     const [documentsLoading, setDocumentsLoading] = useState(false);
     const [documentsError, setDocumentsError] = useState<string | null>(null);
     const [documents, setDocuments] = useState<unknown[]>([]);
+    const [factoryResetPassword, setFactoryResetPassword] = useState("");
+    const [factoryResetBusy, setFactoryResetBusy] = useState(false);
+    const [factoryResetDeleteRavenDownloads, setFactoryResetDeleteRavenDownloads] = useState(false);
+    const [factoryResetDeleteDockers, setFactoryResetDeleteDockers] = useState(false);
+    const [factoryResetError, setFactoryResetError] = useState<string | null>(null);
+    const [factoryResetMessage, setFactoryResetMessage] = useState<string | null>(null);
+
+    const [usersLoading, setUsersLoading] = useState(false);
+    const [usersSaving, setUsersSaving] = useState(false);
+    const [usersError, setUsersError] = useState<string | null>(null);
+    const [usersMessage, setUsersMessage] = useState<string | null>(null);
+    const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
+    const [newUserUsername, setNewUserUsername] = useState("");
+    const [newUserPassword, setNewUserPassword] = useState("");
+    const [newUserPermissions, setNewUserPermissions] = useState<MoonPermission[]>(["moon_login"]);
+    const [editingUser, setEditingUser] = useState<Record<string, {
+        username: string;
+        permissions: MoonPermission[]
+    }>>({});
+    const [generatedPasswords, setGeneratedPasswords] = useState<Record<string, string>>({});
 
     const catalogByName = useMemo(() => {
         const out = new Map<string, ServiceCatalogEntry>();
@@ -243,6 +346,8 @@ export function SettingsPage() {
     const currentService = TAB_SERVICE[activeTab] ?? null;
     const currentEditor = currentService ? (editors[currentService] ?? defaultEditor()) : defaultEditor();
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
+    const canAccessEcosystem = hasPermission(currentPermissions, "admin");
+    const canManageUsers = hasPermission(currentPermissions, "user_management");
 
     const setTab = (tab: TabId) => {
         setActiveTab(tab);
@@ -360,6 +465,7 @@ export function SettingsPage() {
 
     const loadAuthStatus = async () => {
         setAccountLoading(true);
+        setAuthStateLoading(true);
         setAccountError(null);
         try {
             const res = await fetch("/api/noona/auth/status", {cache: "no-store"});
@@ -368,18 +474,24 @@ export function SettingsPage() {
 
             const username = normalizeString(json?.user?.username).trim();
             const role = normalizeString(json?.user?.role).trim() || "member";
+            const permissions = normalizePermissions(json?.user?.permissions);
             if (!username) {
                 setAccountUser(null);
                 setAccountUsername("");
+                setCurrentUser(null);
+                setCurrentPermissions([]);
                 return;
             }
             setAccountUser({username, role});
             setAccountUsername(username);
+            setCurrentUser({username, role, permissions});
+            setCurrentPermissions(permissions);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setAccountError(msg);
         } finally {
             setAccountLoading(false);
+            setAuthStateLoading(false);
         }
     };
 
@@ -430,11 +542,14 @@ export function SettingsPage() {
 
             const updatedUsername = normalizeString(json?.user?.username).trim() || nextUsername;
             const updatedRole = normalizeString(json?.user?.role).trim() || accountUser.role;
+            const updatedPermissions = normalizePermissions(json?.user?.permissions);
             setAccountUser({username: updatedUsername, role: updatedRole});
             setAccountUsername(updatedUsername);
             setAccountPassword("");
             setAccountConfirm("");
             setAccountMessage("Account updated.");
+            setCurrentUser({username: updatedUsername, role: updatedRole, permissions: updatedPermissions});
+            setCurrentPermissions(updatedPermissions);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setAccountError(msg);
@@ -489,6 +604,49 @@ export function SettingsPage() {
             setNamingError(msg);
         } finally {
             setNamingSaving(false);
+        }
+    };
+
+    const loadDebugSetting = async () => {
+        setDebugLoading(true);
+        setDebugError(null);
+        setDebugMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/debug", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as DebugSettings | null;
+            if (!res.ok) throw new Error(parseError(json, `Failed to load debug mode (HTTP ${res.status}).`));
+
+            setDebugEnabled(json?.enabled === true);
+            setDebugUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDebugError(msg);
+        } finally {
+            setDebugLoading(false);
+        }
+    };
+
+    const setDebugMode = async (enabled: boolean) => {
+        setDebugSaving(true);
+        setDebugError(null);
+        setDebugMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/debug", {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled}),
+            });
+            const json = (await res.json().catch(() => null)) as DebugSettings | null;
+            if (!res.ok) throw new Error(parseError(json, `Failed to update debug mode (HTTP ${res.status}).`));
+
+            setDebugEnabled(json?.enabled === true);
+            setDebugUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
+            setDebugMessage(enabled ? "Debug mode enabled live." : "Debug mode disabled live.");
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDebugError(msg);
+        } finally {
+            setDebugSaving(false);
         }
     };
 
@@ -569,6 +727,286 @@ export function SettingsPage() {
             setDocumentsError(msg);
         } finally {
             setDocumentsLoading(false);
+        }
+    };
+
+    const runFactoryReset = async () => {
+        setFactoryResetError(null);
+        setFactoryResetMessage(null);
+
+        const password = factoryResetPassword.trim();
+        if (!password) {
+            setFactoryResetError("Password is required.");
+            return;
+        }
+
+        const confirmationParts = [
+            "Factory reset will wipe Mongo and Redis, then restart Noona as a clean build.",
+            factoryResetDeleteRavenDownloads ? "Raven downloads will be deleted." : null,
+            factoryResetDeleteDockers ? "Noona Docker containers/images (excluding Warden) will be deleted." : null,
+            "Continue?",
+        ].filter(Boolean);
+        const confirmed = window.confirm(confirmationParts.join(" "));
+        if (!confirmed) {
+            return;
+        }
+
+        setFactoryResetBusy(true);
+        try {
+            const resetRes = await fetch("/api/noona/settings/factory-reset", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    password,
+                    deleteRavenDownloads: factoryResetDeleteRavenDownloads,
+                    deleteDockers: factoryResetDeleteDockers,
+                }),
+            });
+            const resetJson = (await resetRes.json().catch(() => null)) as {
+                redirectTo?: string;
+                error?: string
+            } | null;
+            if (!resetRes.ok) throw new Error(parseError(resetJson, `Failed to run factory reset (HTTP ${resetRes.status}).`));
+
+            const redirectTo = normalizeString(resetJson?.redirectTo).trim() || window.location.origin || "/";
+            setFactoryResetPassword("");
+            setFactoryResetMessage("Factory reset complete. Restarting ecosystem...");
+            window.location.assign(redirectTo);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setFactoryResetError(msg);
+        } finally {
+            setFactoryResetBusy(false);
+        }
+    };
+
+    const userLookupKey = (user: ManagedUser): string =>
+        normalizeString(user.usernameNormalized).trim().toLowerCase() ||
+        normalizeString(user.username).trim().toLowerCase();
+
+    const loadManagedUsers = async () => {
+        setUsersLoading(true);
+        setUsersError(null);
+        try {
+            const res = await fetch("/api/noona/auth/users", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as UsersListResponse | null;
+            if (!res.ok) throw new Error(parseError(json, `Failed to load users (HTTP ${res.status}).`));
+
+            const list = Array.isArray(json?.users) ? json.users : [];
+            setManagedUsers(list);
+            setEditingUser(() => {
+                const next: Record<string, { username: string; permissions: MoonPermission[] }> = {};
+                for (const entry of list) {
+                    const key = userLookupKey(entry);
+                    if (!key) continue;
+                    next[key] = {
+                        username: normalizeString(entry.username).trim(),
+                        permissions: normalizePermissions(entry.permissions),
+                    };
+                }
+                return next;
+            });
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUsersError(msg);
+        } finally {
+            setUsersLoading(false);
+        }
+    };
+
+    const toggleNewUserPermission = (permission: MoonPermission) => {
+        setNewUserPermissions((prev) => {
+            const has = prev.includes(permission);
+            if (has) {
+                return prev.filter((entry) => entry !== permission);
+            }
+            return MOON_PERMISSION_ORDER.filter((entry) => entry === permission || prev.includes(entry));
+        });
+    };
+
+    const toggleEditingPermission = (key: string, permission: MoonPermission) => {
+        setEditingUser((prev) => {
+            const current = prev[key];
+            if (!current) return prev;
+            const has = current.permissions.includes(permission);
+            const permissions = has
+                ? current.permissions.filter((entry) => entry !== permission)
+                : MOON_PERMISSION_ORDER.filter((entry) => entry === permission || current.permissions.includes(entry));
+            return {
+                ...prev,
+                [key]: {
+                    ...current,
+                    permissions,
+                },
+            };
+        });
+    };
+
+    const setEditingUsername = (key: string, username: string) => {
+        setEditingUser((prev) => ({
+            ...prev,
+            [key]: {
+                ...(prev[key] ?? {username: "", permissions: []}),
+                username,
+            },
+        }));
+    };
+
+    const createManagedUser = async () => {
+        const username = newUserUsername.trim();
+        if (!/^[A-Za-z0-9._-]{3,64}$/.test(username)) {
+            setUsersError("Username must be 3-64 characters (letters, numbers, ., _, -).");
+            return;
+        }
+        if (newUserPassword.length < 8) {
+            setUsersError("Password must be at least 8 characters.");
+            return;
+        }
+
+        setUsersSaving(true);
+        setUsersError(null);
+        setUsersMessage(null);
+        try {
+            const res = await fetch("/api/noona/auth/users", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    username,
+                    password: newUserPassword,
+                    permissions: newUserPermissions,
+                }),
+            });
+            const json = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(parseError(json, `Failed to create user (HTTP ${res.status}).`));
+
+            setNewUserUsername("");
+            setNewUserPassword("");
+            setNewUserPermissions(["moon_login"]);
+            setUsersMessage(`Created ${username}.`);
+            await loadManagedUsers();
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUsersError(msg);
+        } finally {
+            setUsersSaving(false);
+        }
+    };
+
+    const saveManagedUser = async (entry: ManagedUser) => {
+        if (entry.isBootstrapUser === true) return;
+        const key = userLookupKey(entry);
+        const lookup = normalizeString(entry.username).trim();
+        const draft = editingUser[key];
+        if (!lookup || !draft) return;
+
+        const nextUsername = draft.username.trim();
+        if (!/^[A-Za-z0-9._-]{3,64}$/.test(nextUsername)) {
+            setUsersError("Username must be 3-64 characters (letters, numbers, ., _, -).");
+            return;
+        }
+
+        const currentPermissions = normalizePermissions(entry.permissions);
+        const nextPermissions = normalizePermissions(draft.permissions);
+        const payload: { username?: string; permissions?: MoonPermission[] } = {};
+        if (nextUsername !== normalizeString(entry.username).trim()) {
+            payload.username = nextUsername;
+        }
+        if (JSON.stringify(currentPermissions) !== JSON.stringify(nextPermissions)) {
+            payload.permissions = nextPermissions;
+        }
+
+        if (!payload.username && !payload.permissions) {
+            setUsersMessage(`No changes for ${lookup}.`);
+            setUsersError(null);
+            return;
+        }
+
+        setUsersSaving(true);
+        setUsersError(null);
+        setUsersMessage(null);
+        try {
+            const res = await fetch(`/api/noona/auth/users/${encodeURIComponent(lookup)}`, {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload),
+            });
+            const json = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(parseError(json, `Failed to update user (HTTP ${res.status}).`));
+
+            setUsersMessage(`Updated ${lookup}.`);
+            await loadManagedUsers();
+            await loadAuthStatus();
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUsersError(msg);
+        } finally {
+            setUsersSaving(false);
+        }
+    };
+
+    const resetManagedUserPassword = async (entry: ManagedUser) => {
+        if (entry.isBootstrapUser === true) return;
+        const lookup = normalizeString(entry.username).trim();
+        const key = userLookupKey(entry);
+        if (!lookup || !key) return;
+
+        const confirmed = window.confirm(`Reset password for ${lookup}?`);
+        if (!confirmed) return;
+
+        setUsersSaving(true);
+        setUsersError(null);
+        setUsersMessage(null);
+        try {
+            const res = await fetch(`/api/noona/auth/users/${encodeURIComponent(lookup)}/reset-password`, {
+                method: "POST",
+            });
+            const json = (await res.json().catch(() => null)) as UserResetPasswordResponse | null;
+            if (!res.ok) throw new Error(parseError(json, `Failed to reset password (HTTP ${res.status}).`));
+
+            const password = normalizeString(json?.password).trim();
+            if (password) {
+                setGeneratedPasswords((prev) => ({...prev, [key]: password}));
+            }
+            setUsersMessage(`Password reset for ${lookup}.`);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUsersError(msg);
+        } finally {
+            setUsersSaving(false);
+        }
+    };
+
+    const deleteManagedUser = async (entry: ManagedUser) => {
+        if (entry.isBootstrapUser === true) return;
+        const lookup = normalizeString(entry.username).trim();
+        const key = userLookupKey(entry);
+        if (!lookup || !key) return;
+
+        const confirmed = window.confirm(`Delete user ${lookup}?`);
+        if (!confirmed) return;
+
+        setUsersSaving(true);
+        setUsersError(null);
+        setUsersMessage(null);
+        try {
+            const res = await fetch(`/api/noona/auth/users/${encodeURIComponent(lookup)}`, {
+                method: "DELETE",
+            });
+            const json = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(parseError(json, `Failed to delete user (HTTP ${res.status}).`));
+
+            setGeneratedPasswords((prev) => {
+                const next = {...prev};
+                delete next[key];
+                return next;
+            });
+            setUsersMessage(`Deleted ${lookup}.`);
+            await loadManagedUsers();
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUsersError(msg);
+        } finally {
+            setUsersSaving(false);
         }
     };
 
@@ -660,13 +1098,22 @@ export function SettingsPage() {
     }, [searchParams]);
 
     useEffect(() => {
-        void loadCatalog();
+        void loadAuthStatus();
     }, []);
 
     useEffect(() => {
+        if (authStateLoading || !canAccessEcosystem) return;
+        void loadCatalog();
+    }, [authStateLoading, canAccessEcosystem]);
+
+    useEffect(() => {
+        if (!canAccessEcosystem) return;
         const serviceName = TAB_SERVICE[activeTab];
         if (serviceName) {
             void loadServiceConfig(serviceName);
+        }
+        if (activeTab === "general") {
+            void loadDebugSetting();
         }
         if (activeTab === "moon") {
             void loadAuthStatus();
@@ -680,13 +1127,29 @@ export function SettingsPage() {
         if (activeTab === "warden") {
             void loadUpdates();
         }
-    }, [activeTab]);
+    }, [activeTab, canAccessEcosystem]);
 
     useEffect(() => {
         if (activeTab !== "vault") return;
         if (!collection.trim()) return;
         void loadDocuments(collection);
     }, [activeTab, collection]);
+
+    useEffect(() => {
+        if (authStateLoading) return;
+        if (activeSection === "ecosystem" && !canAccessEcosystem && canManageUsers) {
+            setActiveSection("users");
+            return;
+        }
+        if (activeSection === "users" && !canManageUsers && canAccessEcosystem) {
+            setActiveSection("ecosystem");
+        }
+    }, [activeSection, authStateLoading, canAccessEcosystem, canManageUsers]);
+
+    useEffect(() => {
+        if (activeSection !== "users" || !canManageUsers) return;
+        void loadManagedUsers();
+    }, [activeSection, canManageUsers]);
 
     const renderServiceConfig = () => {
         if (!currentService) return null;
@@ -793,6 +1256,185 @@ export function SettingsPage() {
         );
     };
 
+    const renderUserManagement = () => {
+        if (!canManageUsers) {
+            return (
+                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        You do not have permission to manage users.
+                    </Text>
+                </Card>
+            );
+        }
+
+        const sortedUsers = [...managedUsers].sort((left, right) =>
+            normalizeString(left.username).localeCompare(normalizeString(right.username)),
+        );
+
+        return (
+            <Column fillWidth gap="16">
+                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Heading as="h2" variant="heading-strong-l">Create user</Heading>
+                        <Input
+                            id="new-user-username"
+                            name="new-user-username"
+                            label="Username"
+                            value={newUserUsername}
+                            onChange={(event) => setNewUserUsername(event.target.value)}
+                        />
+                        <Input
+                            id="new-user-password"
+                            name="new-user-password"
+                            label="Password"
+                            type="password"
+                            value={newUserPassword}
+                            onChange={(event) => setNewUserPassword(event.target.value)}
+                        />
+                        <Column gap="8">
+                            <Text onBackground="neutral-weak" variant="body-default-xs">Permissions</Text>
+                            <Row gap="12" style={{flexWrap: "wrap"}}>
+                                {MOON_PERMISSION_ORDER.map((permission) => (
+                                    <label key={`new-user-permission-${permission}`}
+                                           style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
+                                        <input
+                                            type="checkbox"
+                                            checked={newUserPermissions.includes(permission)}
+                                            onChange={() => toggleNewUserPermission(permission)}
+                                        />
+                                        <Text variant="body-default-xs">{MOON_PERMISSION_LABELS[permission]}</Text>
+                                    </label>
+                                ))}
+                            </Row>
+                        </Column>
+                        <Button variant="primary" disabled={usersSaving} onClick={() => void createManagedUser()}>
+                            {usersSaving ? "Saving..." : "Create user"}
+                        </Button>
+                    </Column>
+                </Card>
+
+                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center">
+                            <Heading as="h2" variant="heading-strong-l">Users</Heading>
+                            <Button variant="secondary" disabled={usersLoading || usersSaving}
+                                    onClick={() => void loadManagedUsers()}>
+                                {usersLoading ? "Loading..." : "Refresh users"}
+                            </Button>
+                        </Row>
+                        {usersError && <Text onBackground="danger-strong" variant="body-default-xs">{usersError}</Text>}
+                        {usersMessage &&
+                            <Text onBackground="neutral-weak" variant="body-default-xs">{usersMessage}</Text>}
+                        {usersLoading && (
+                            <Row fillWidth horizontal="center" paddingY="16">
+                                <Spinner/>
+                            </Row>
+                        )}
+                        {!usersLoading && sortedUsers.length === 0 && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">No users found.</Text>
+                        )}
+                        {!usersLoading && sortedUsers.length > 0 && (
+                            <Column gap="12">
+                                {sortedUsers.map((entry) => {
+                                    const key = userLookupKey(entry);
+                                    const fallbackUsername = normalizeString(entry.username).trim();
+                                    const draft = editingUser[key] ?? {
+                                        username: fallbackUsername,
+                                        permissions: normalizePermissions(entry.permissions),
+                                    };
+                                    const isProtected = entry.isBootstrapUser === true;
+                                    const generatedPassword = generatedPasswords[key];
+
+                                    return (
+                                        <Card key={key || fallbackUsername} fillWidth background="surface"
+                                              border={isProtected ? "warning-alpha-weak" : "neutral-alpha-weak"}
+                                              padding="m" radius="l">
+                                            <Column gap="8">
+                                                <Row horizontal="between" vertical="center" gap="12"
+                                                     style={{flexWrap: "wrap"}}>
+                                                    <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                                        <Heading as="h3"
+                                                                 variant="heading-strong-m">{fallbackUsername}</Heading>
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            {normalizeString(entry.role).trim() || "member"}
+                                                        </Badge>
+                                                        {isProtected && (
+                                                            <Badge background="warning-alpha-weak"
+                                                                   onBackground="neutral-strong">
+                                                                Setup user (protected)
+                                                            </Badge>
+                                                        )}
+                                                    </Row>
+                                                    {(formatIso(entry.updatedAt) || formatIso(entry.createdAt)) && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            {formatIso(entry.updatedAt) ? `updated ${formatIso(entry.updatedAt)}` : `created ${formatIso(entry.createdAt)}`}
+                                                        </Text>
+                                                    )}
+                                                </Row>
+                                                <Input
+                                                    id={`user-username-${key}`}
+                                                    name={`user-username-${key}`}
+                                                    label="Username"
+                                                    value={draft.username}
+                                                    disabled={isProtected || usersSaving}
+                                                    onChange={(event) => setEditingUsername(key, event.target.value)}
+                                                />
+                                                <Column gap="8">
+                                                    <Text onBackground="neutral-weak"
+                                                          variant="body-default-xs">Permissions</Text>
+                                                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                                                        {MOON_PERMISSION_ORDER.map((permission) => (
+                                                            <label key={`${key}-permission-${permission}`}
+                                                                   style={{
+                                                                       display: "flex",
+                                                                       alignItems: "center",
+                                                                       gap: "0.5rem",
+                                                                       opacity: isProtected ? 0.7 : 1,
+                                                                   }}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={draft.permissions.includes(permission)}
+                                                                    disabled={isProtected || usersSaving}
+                                                                    onChange={() => toggleEditingPermission(key, permission)}
+                                                                />
+                                                                <Text
+                                                                    variant="body-default-xs">{MOON_PERMISSION_LABELS[permission]}</Text>
+                                                            </label>
+                                                        ))}
+                                                    </Row>
+                                                </Column>
+                                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                    <Button variant="primary" disabled={isProtected || usersSaving}
+                                                            onClick={() => void saveManagedUser(entry)}>
+                                                        Save user
+                                                    </Button>
+                                                    <Button variant="secondary" disabled={isProtected || usersSaving}
+                                                            onClick={() => void resetManagedUserPassword(entry)}>
+                                                        Reset password
+                                                    </Button>
+                                                    <Button variant="secondary" disabled={isProtected || usersSaving}
+                                                            onClick={() => void deleteManagedUser(entry)}>
+                                                        Delete user
+                                                    </Button>
+                                                </Row>
+                                                {generatedPassword && (
+                                                    <Text onBackground="warning-strong" variant="body-default-xs">
+                                                        New password: {generatedPassword}
+                                                    </Text>
+                                                )}
+                                            </Column>
+                                        </Card>
+                                    );
+                                })}
+                            </Column>
+                        )}
+                    </Column>
+                </Card>
+            </Column>
+        );
+    };
+
     return (
         <SetupModeGate>
             <AuthGate>
@@ -804,50 +1446,137 @@ export function SettingsPage() {
                                 Manage services, account credentials, updates, and tooling.
                             </Text>
                         </Column>
-                        <Button variant="secondary" disabled={catalogLoading} onClick={() => void loadCatalog()}>
-                            Refresh services
-                        </Button>
-                    </Row>
-
-                    {catalogError && <Text onBackground="danger-strong" variant="body-default-xs">{catalogError}</Text>}
-                    {globalError && <Text onBackground="danger-strong" variant="body-default-xs">{globalError}</Text>}
-                    {globalMessage &&
-                        <Text onBackground="neutral-weak" variant="body-default-xs">{globalMessage}</Text>}
-
-                    <Row gap="8" style={{flexWrap: "wrap"}}>
-                        {TAB_ORDER.map((tab) => (
-                            <Button key={tab} variant={activeTab === tab ? "primary" : "secondary"}
-                                    onClick={() => setTab(tab)}>
-                                {TAB_LABELS[tab]}
+                        {canAccessEcosystem && (
+                            <Button variant="secondary" disabled={catalogLoading} onClick={() => void loadCatalog()}>
+                                Refresh services
                             </Button>
-                        ))}
+                        )}
                     </Row>
 
-                    {catalogLoading && (
-                        <Row fillWidth horizontal="center" paddingY="24">
-                            <Spinner/>
-                        </Row>
-                    )}
-
-                    {activeTab === "general" && (
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="12">
-                                <Heading as="h2" variant="heading-strong-l">Ecosystem</Heading>
-                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                    Start or stop the full ecosystem from Warden.
-                                </Text>
-                                <Row gap="12" style={{flexWrap: "wrap"}}>
-                                    <Button variant="primary" disabled={ecosystemBusy}
-                                            onClick={() => void ecosystemAction("start")}>
-                                        {ecosystemBusy ? "Working..." : "Start ecosystem"}
+                    <Row fillWidth gap="16" vertical="start" s={{style: {flexDirection: "column"}}}>
+                        <Card
+                            background="surface"
+                            border="neutral-alpha-weak"
+                            padding="m"
+                            radius="l"
+                            style={{width: "18rem", maxWidth: "100%", position: "sticky", top: "1rem"}}
+                            s={{style: {width: "100%", position: "static", top: "auto"}}}
+                        >
+                            <Column gap="8">
+                                {canAccessEcosystem && (
+                                    <Button
+                                        fillWidth
+                                        variant={activeSection === "ecosystem" ? "primary" : "secondary"}
+                                        onClick={() => setActiveSection("ecosystem")}
+                                    >
+                                        Ecosystem Settings
                                     </Button>
-                                    <Button variant="secondary" disabled={ecosystemBusy}
-                                            onClick={() => void ecosystemAction("stop")}>
-                                        {ecosystemBusy ? "Working..." : "Stop ecosystem"}
-                                    </Button>
-                                </Row>
+                                )}
+                                <Button
+                                    fillWidth
+                                    variant={activeSection === "users" ? "primary" : "secondary"}
+                                    disabled={!canManageUsers}
+                                    onClick={() => setActiveSection("users")}
+                                >
+                                    User Management
+                                </Button>
                             </Column>
                         </Card>
+
+                        <Column fillWidth gap="16">
+                            {activeSection === "ecosystem" && canAccessEcosystem && (
+                                <>
+                                    {catalogError &&
+                                        <Text onBackground="danger-strong"
+                                              variant="body-default-xs">{catalogError}</Text>}
+                                    {globalError &&
+                                        <Text onBackground="danger-strong"
+                                              variant="body-default-xs">{globalError}</Text>}
+                                    {globalMessage &&
+                                        <Text onBackground="neutral-weak"
+                                              variant="body-default-xs">{globalMessage}</Text>}
+
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        {TAB_ORDER.map((tab) => (
+                                            <Button key={tab} variant={activeTab === tab ? "primary" : "secondary"}
+                                                    onClick={() => setTab(tab)}>
+                                                {TAB_LABELS[tab]}
+                                            </Button>
+                                        ))}
+                                    </Row>
+
+                                    {catalogLoading && (
+                                        <Row fillWidth horizontal="center" paddingY="24">
+                                            <Spinner/>
+                                        </Row>
+                                    )}
+
+                                    {activeTab === "general" && (
+                                        <>
+                                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l"
+                                                  radius="l">
+                                                <Column gap="12">
+                                                    <Heading as="h2" variant="heading-strong-l">Ecosystem</Heading>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Start or stop the full ecosystem from Warden.
+                                                    </Text>
+                                                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                                                        <Button variant="primary" disabled={ecosystemBusy}
+                                                                onClick={() => void ecosystemAction("start")}>
+                                                            {ecosystemBusy ? "Working..." : "Start ecosystem"}
+                                                        </Button>
+                                                        <Button variant="secondary" disabled={ecosystemBusy}
+                                                                onClick={() => void ecosystemAction("stop")}>
+                                                            {ecosystemBusy ? "Working..." : "Stop ecosystem"}
+                                                        </Button>
+                                                    </Row>
+                                                </Column>
+                                            </Card>
+
+                                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l"
+                                                  radius="l">
+                                                <Column gap="12">
+                                                    <Row horizontal="between" vertical="center" gap="12"
+                                                         style={{flexWrap: "wrap"}}>
+                                                        <Heading as="h2" variant="heading-strong-l">Debug mode</Heading>
+                                                        <Badge
+                                                            background={debugEnabled ? "warning-alpha-weak" : "neutral-alpha-weak"}
+                                                            onBackground="neutral-strong"
+                                                        >
+                                                            {debugEnabled ? "enabled" : "disabled"}
+                                                        </Badge>
+                                                    </Row>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Toggle live debug logging across Sage, Warden, Raven, and Vault.
+                                                    </Text>
+                                                    {formatIso(debugUpdatedAt) && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            last updated: {formatIso(debugUpdatedAt)}
+                                                        </Text>
+                                                    )}
+                                                    {debugError && <Text onBackground="danger-strong"
+                                                                         variant="body-default-xs">{debugError}</Text>}
+                                                    {debugMessage && <Text onBackground="neutral-weak"
+                                                                           variant="body-default-xs">{debugMessage}</Text>}
+                                                    {debugLoading && (
+                                                        <Row fillWidth horizontal="center" paddingY="12">
+                                                            <Spinner/>
+                                                        </Row>
+                                                    )}
+                                                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                                                        <Button variant="primary" disabled={debugLoading || debugSaving}
+                                                                onClick={() => void setDebugMode(!debugEnabled)}>
+                                                            {debugSaving ? "Updating..." : debugEnabled ? "Disable debug mode" : "Enable debug mode"}
+                                                        </Button>
+                                                        <Button variant="secondary"
+                                                                disabled={debugLoading || debugSaving}
+                                                                onClick={() => void loadDebugSetting()}>
+                                                            Refresh
+                                                        </Button>
+                                                    </Row>
+                                                </Column>
+                                            </Card>
+                                        </>
                     )}
 
                     {activeTab !== "general" && renderServiceConfig()}
@@ -1029,65 +1758,113 @@ export function SettingsPage() {
                     )}
 
                     {activeTab === "vault" && (
-                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="12">
-                                <Row horizontal="between" vertical="center">
-                                    <Heading as="h3" variant="heading-strong-l">Collection viewer</Heading>
-                                    <Button variant="secondary" disabled={collectionsLoading}
-                                            onClick={() => void loadCollections()}>
-                                        Refresh collections
-                                    </Button>
-                                </Row>
-                                {collectionsError && <Text onBackground="danger-strong"
-                                                           variant="body-default-xs">{collectionsError}</Text>}
-                                {collectionsLoading && (
-                                    <Row fillWidth horizontal="center" paddingY="12">
-                                        <Spinner/>
+                        <>
+                            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center">
+                                        <Heading as="h3" variant="heading-strong-l">Collection viewer</Heading>
+                                        <Button variant="secondary" disabled={collectionsLoading}
+                                                onClick={() => void loadCollections()}>
+                                            Refresh collections
+                                        </Button>
                                     </Row>
-                                )}
-                                {!collectionsLoading && (
-                                    <Column gap="12">
-                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            {collections.map((name) => (
-                                                <Button key={name}
-                                                        variant={collection === name ? "primary" : "secondary"}
-                                                        onClick={() => setCollection(name)}>
-                                                    {name}
-                                                </Button>
-                                            ))}
+                                    {collectionsError && <Text onBackground="danger-strong"
+                                                               variant="body-default-xs">{collectionsError}</Text>}
+                                    {collectionsLoading && (
+                                        <Row fillWidth horizontal="center" paddingY="12">
+                                            <Spinner/>
                                         </Row>
-                                        {collection && (
-                                            <Row gap="12" style={{flexWrap: "wrap"}}>
-                                                <Input id="vault-limit" name="vault-limit" type="number"
-                                                       label="Document limit" value={limit}
-                                                       onChange={(e) => setLimit(e.target.value)}/>
-                                                <Button variant="secondary" disabled={documentsLoading}
-                                                        onClick={() => void loadDocuments(collection, limit)}>
-                                                    {documentsLoading ? "Loading..." : "Load documents"}
-                                                </Button>
-                                            </Row>
-                                        )}
-                                        {documentsError && <Text onBackground="danger-strong"
-                                                                 variant="body-default-xs">{documentsError}</Text>}
-                                        {documents.length > 0 && (
-                                            <Column gap="8">
-                                                {documents.map((entry, index) => (
-                                                    <Card key={`${collection}-${index}`} fillWidth background="surface"
-                                                          border="neutral-alpha-weak" padding="m" radius="l">
-                                                        <Text variant="body-default-xs" style={{
-                                                            whiteSpace: "pre-wrap",
-                                                            fontFamily: "var(--font-code)"
-                                                        }}>
-                                                            {JSON.stringify(entry, null, 2)}
-                                                        </Text>
-                                                    </Card>
+                                    )}
+                                    {!collectionsLoading && (
+                                        <Column gap="12">
+                                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                {collections.map((name) => (
+                                                    <Button key={name}
+                                                            variant={collection === name ? "primary" : "secondary"}
+                                                            onClick={() => setCollection(name)}>
+                                                        {name}
+                                                    </Button>
                                                 ))}
-                                            </Column>
-                                        )}
-                                    </Column>
-                                )}
-                            </Column>
-                        </Card>
+                                            </Row>
+                                            {collection && (
+                                                <Row gap="12" style={{flexWrap: "wrap"}}>
+                                                    <Input id="vault-limit" name="vault-limit" type="number"
+                                                           label="Document limit" value={limit}
+                                                           onChange={(e) => setLimit(e.target.value)}/>
+                                                    <Button variant="secondary" disabled={documentsLoading}
+                                                            onClick={() => void loadDocuments(collection, limit)}>
+                                                        {documentsLoading ? "Loading..." : "Load documents"}
+                                                    </Button>
+                                                </Row>
+                                            )}
+                                            {documentsError && <Text onBackground="danger-strong"
+                                                                     variant="body-default-xs">{documentsError}</Text>}
+                                            {documents.length > 0 && (
+                                                <Column gap="8">
+                                                    {documents.map((entry, index) => (
+                                                        <Card key={`${collection}-${index}`} fillWidth
+                                                              background="surface"
+                                                              border="neutral-alpha-weak" padding="m" radius="l">
+                                                            <Text variant="body-default-xs" style={{
+                                                                whiteSpace: "pre-wrap",
+                                                                fontFamily: "var(--font-code)"
+                                                            }}>
+                                                                {JSON.stringify(entry, null, 2)}
+                                                            </Text>
+                                                        </Card>
+                                                    ))}
+                                                </Column>
+                                            )}
+                                        </Column>
+                                    )}
+                                </Column>
+                            </Card>
+
+                            <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
+                                    <Heading as="h3" variant="heading-strong-l">Danger zone</Heading>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Factory reset wipes Vault storage and restarts Noona as a clean build.
+                                    </Text>
+                                    <Input
+                                        id="vault-factory-reset-password"
+                                        name="vault-factory-reset-password"
+                                        type="password"
+                                        label="Confirm with password"
+                                        value={factoryResetPassword}
+                                        onChange={(event) => setFactoryResetPassword(event.target.value)}
+                                    />
+                                    <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
+                                        <input
+                                            type="checkbox"
+                                            checked={factoryResetDeleteRavenDownloads}
+                                            onChange={(event) => setFactoryResetDeleteRavenDownloads(event.target.checked)}
+                                        />
+                                        <Text variant="body-default-xs">Delete Raven&apos;s downloads</Text>
+                                    </label>
+                                    <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
+                                        <input
+                                            type="checkbox"
+                                            checked={factoryResetDeleteDockers}
+                                            onChange={(event) => setFactoryResetDeleteDockers(event.target.checked)}
+                                        />
+                                        <Text variant="body-default-xs">Delete dockers</Text>
+                                    </label>
+                                    {factoryResetError &&
+                                        <Text onBackground="danger-strong"
+                                              variant="body-default-xs">{factoryResetError}</Text>}
+                                    {factoryResetMessage &&
+                                        <Text onBackground="neutral-weak"
+                                              variant="body-default-xs">{factoryResetMessage}</Text>}
+                                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                                        <Button variant="secondary" disabled={factoryResetBusy}
+                                                onClick={() => void runFactoryReset()}>
+                                            {factoryResetBusy ? "Resetting..." : "Factory Reset"}
+                                        </Button>
+                                    </Row>
+                                </Column>
+                            </Card>
+                        </>
                     )}
 
                     {activeTab === "warden" && (
@@ -1172,6 +1949,24 @@ export function SettingsPage() {
                             </Column>
                         </Card>
                     )}
+                                </>
+                            )}
+
+                            {activeSection === "users" && renderUserManagement()}
+
+                            {!authStateLoading && !canAccessEcosystem && !canManageUsers && (
+                                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                                    <Column gap="8">
+                                        <Heading as="h2" variant="heading-strong-l">No settings access</Heading>
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Your account does not currently have access to ecosystem settings or user
+                                            management.
+                                        </Text>
+                                    </Column>
+                                </Card>
+                            )}
+                        </Column>
+                    </Row>
                 </Column>
             </AuthGate>
         </SetupModeGate>

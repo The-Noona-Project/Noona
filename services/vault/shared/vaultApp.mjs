@@ -19,6 +19,33 @@ const fallbackLogger = {
     debug: (...args) => (console.debug ? console.debug(...args) : console.log(...args)),
 };
 
+const parseBooleanInput = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return value > 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) {
+            return null;
+        }
+
+        if (['1', 'true', 'yes', 'on', 'super'].includes(normalized)) {
+            return true;
+        }
+
+        if (['0', 'false', 'no', 'off'].includes(normalized)) {
+            return false;
+        }
+    }
+
+    return null;
+};
+
 const VALID_USERNAME_PATTERN = /^[A-Za-z0-9._-]{3,64}$/;
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
 const normalizeUsername = (value) => normalizeString(value);
@@ -30,6 +57,68 @@ const normalizeRole = (value, fallback = 'member') => {
     }
     return fallback;
 };
+const MOON_OP_PERMISSION_KEYS = Object.freeze([
+    'moon_login',
+    'lookup_new_title',
+    'download_new_title',
+    'check_download_missing_titles',
+    'user_management',
+    'admin',
+]);
+const MOON_OP_PERMISSION_SET = new Set(MOON_OP_PERMISSION_KEYS);
+const DEFAULT_MEMBER_PERMISSION_KEYS = Object.freeze([
+    'moon_login',
+    'lookup_new_title',
+    'download_new_title',
+    'check_download_missing_titles',
+]);
+const sortMoonPermissions = (permissions = []) => {
+    const present = new Set(Array.isArray(permissions) ? permissions : []);
+    return MOON_OP_PERMISSION_KEYS.filter((entry) => present.has(entry));
+};
+const normalizePermissionEntry = (value) => normalizeString(value).toLowerCase();
+const normalizePermissionList = (value) => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    const normalized = [];
+    for (const entry of value) {
+        const key = normalizePermissionEntry(entry);
+        if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+            continue;
+        }
+        normalized.push(key);
+    }
+
+    return sortMoonPermissions(Array.from(new Set(normalized)));
+};
+const validatePermissionListInput = (value) => {
+    if (!Array.isArray(value)) {
+        return {ok: false, error: 'permissions must be provided as an array.'};
+    }
+
+    const normalized = [];
+    for (const entry of value) {
+        const key = normalizePermissionEntry(entry);
+        if (!key) {
+            continue;
+        }
+        if (!MOON_OP_PERMISSION_SET.has(key)) {
+            return {ok: false, error: `Unsupported permission: ${key}`};
+        }
+        normalized.push(key);
+    }
+
+    return {
+        ok: true,
+        permissions: sortMoonPermissions(Array.from(new Set(normalized))),
+    };
+};
+const defaultPermissionsForRole = (role) =>
+    normalizeRole(role, 'member') === 'admin'
+        ? [...MOON_OP_PERMISSION_KEYS]
+        : [...DEFAULT_MEMBER_PERMISSION_KEYS];
 const isValidUsername = (username) => VALID_USERNAME_PATTERN.test(username);
 const isValidPassword = (password) => typeof password === 'string' && password.length >= 8;
 const parseUserTimestamp = (value) => {
@@ -93,10 +182,26 @@ const sanitizeUser = (user) => {
         return null;
     }
 
+    const role = normalizeRole(user.role, 'member');
+    let permissions = normalizePermissionList(user.permissions);
+    const hasExplicitPermissions = Array.isArray(user.permissions);
+    if (!hasExplicitPermissions && permissions.length === 0) {
+        permissions = defaultPermissionsForRole(role);
+    }
+    if (role === 'admin' && !permissions.includes('admin')) {
+        permissions = sortMoonPermissions([...permissions, 'admin']);
+    }
+    if (role !== 'admin') {
+        permissions = sortMoonPermissions(permissions.filter((entry) => entry !== 'admin'));
+    }
+    const normalizedRole = permissions.includes('admin') ? 'admin' : 'member';
+
     return {
         username: normalizeUsername(user.username),
         usernameNormalized: normalizeUsernameKey(user.usernameNormalized || user.username),
-        role: normalizeRole(user.role, 'member'),
+        role: normalizedRole,
+        permissions,
+        isBootstrapUser: parseBooleanInput(user?.isBootstrapUser) === true,
         createdAt: normalizeString(user.createdAt) || null,
         updatedAt: normalizeString(user.updatedAt) || null,
     };
@@ -162,6 +267,8 @@ export function createVaultApp(options = {}) {
         log,
         warn,
         debug,
+        isDebugEnabled,
+        setDebug,
     } = options;
 
     const logger = {
@@ -196,6 +303,19 @@ export function createVaultApp(options = {}) {
     app.use(express.json());
 
     const requireAuth = createRequireAuth({ serviceByToken, debug: logger.debug });
+    const getDebugState =
+        typeof isDebugEnabled === 'function'
+            ? isDebugEnabled
+            : typeof loggerOption?.isDebugEnabled === 'function'
+                ? loggerOption.isDebugEnabled
+                : () => false;
+    const applyDebugState =
+        typeof setDebug === 'function'
+            ? setDebug
+            : typeof loggerOption?.setDebug === 'function'
+                ? loggerOption.setDebug
+                : () => {
+                };
 
     const resolvePacketHandler = async () => {
         if (handlePacket) {
@@ -207,6 +327,22 @@ export function createVaultApp(options = {}) {
 
     app.get('/v1/vault/health', (req, res) => {
         res.send('Vault is up and running');
+    });
+
+    app.get('/v1/vault/debug', requireAuth, (req, res) => {
+        res.json({enabled: getDebugState() === true});
+    });
+
+    app.post('/v1/vault/debug', requireAuth, (req, res) => {
+        const enabled = parseBooleanInput(req.body?.enabled);
+        if (enabled == null) {
+            res.status(400).json({error: 'enabled must be a boolean value.'});
+            return;
+        }
+
+        applyDebugState(enabled);
+        logger.debug(`[Vault] Debug mode set to ${enabled} by ${req.serviceName}`);
+        res.json({enabled: getDebugState() === true});
     });
 
     app.post('/v1/vault/handle', requireAuth, async (req, res) => {
@@ -356,7 +492,7 @@ export function createVaultApp(options = {}) {
 
             const users = await listAuthUsers();
             const filtered = roleFilter
-                ? users.filter((entry) => normalizeRole(entry?.role, 'member') === roleFilter)
+                ? users.filter((entry) => sanitizeUser(entry)?.role === roleFilter)
                 : users;
 
             res.json({users: sortUsersByRecency(filtered).map((entry) => sanitizeUser(entry)).filter(Boolean)});
@@ -396,6 +532,8 @@ export function createVaultApp(options = {}) {
         const roleInput = req.body && Object.prototype.hasOwnProperty.call(req.body, 'role')
             ? req.body.role
             : 'member';
+        const hasPermissionsInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'permissions');
+        const hasBootstrapFlagInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'isBootstrapUser');
 
         if (!isValidUsername(username)) {
             res.status(400).json({error: 'username must be 3-64 characters (letters, numbers, ., _, -).'});
@@ -412,7 +550,35 @@ export function createVaultApp(options = {}) {
             res.status(400).json({error: 'role must be "admin" or "member".'});
             return;
         }
-        const role = normalizeRole(roleRaw, 'member');
+        let role = normalizeRole(roleRaw, 'member');
+        let permissions = defaultPermissionsForRole(role);
+        if (hasPermissionsInput) {
+            const parsedPermissions = validatePermissionListInput(req.body?.permissions);
+            if (!parsedPermissions.ok) {
+                res.status(400).json({error: parsedPermissions.error});
+                return;
+            }
+            permissions = parsedPermissions.permissions;
+        }
+        if (role === 'admin' && !permissions.includes('admin')) {
+            permissions = sortMoonPermissions([...permissions, 'admin']);
+        }
+        if (role !== 'admin' && permissions.includes('admin')) {
+            role = 'admin';
+        }
+        if (role !== 'admin') {
+            permissions = sortMoonPermissions(permissions.filter((entry) => entry !== 'admin'));
+        }
+
+        let isBootstrapUser = false;
+        if (hasBootstrapFlagInput) {
+            const parsedFlag = parseBooleanInput(req.body?.isBootstrapUser);
+            if (parsedFlag == null) {
+                res.status(400).json({error: 'isBootstrapUser must be a boolean value.'});
+                return;
+            }
+            isBootstrapUser = parsedFlag;
+        }
 
         try {
             const usernameNormalized = normalizeUsernameKey(username);
@@ -434,6 +600,8 @@ export function createVaultApp(options = {}) {
                         usernameNormalized,
                         passwordHash: hashPassword(password),
                         role,
+                        permissions,
+                        isBootstrapUser,
                         createdAt: now,
                         updatedAt: now,
                         createdBy: req.serviceName,
@@ -452,6 +620,8 @@ export function createVaultApp(options = {}) {
                     username,
                     usernameNormalized,
                     role,
+                    permissions,
+                    isBootstrapUser,
                     createdAt: now,
                     updatedAt: now,
                 }),
@@ -473,9 +643,11 @@ export function createVaultApp(options = {}) {
         const hasUsernameUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'username');
         const hasPasswordUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'password');
         const hasRoleUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role');
+        const hasPermissionsUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'permissions');
+        const hasBootstrapFlagUpdate = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'isBootstrapUser');
 
-        if (!hasUsernameUpdate && !hasPasswordUpdate && !hasRoleUpdate) {
-            res.status(400).json({error: 'At least one of username, password, or role is required.'});
+        if (!hasUsernameUpdate && !hasPasswordUpdate && !hasRoleUpdate && !hasPermissionsUpdate && !hasBootstrapFlagUpdate) {
+            res.status(400).json({error: 'At least one user field must be updated.'});
             return;
         }
 
@@ -505,6 +677,45 @@ export function createVaultApp(options = {}) {
                 return;
             }
 
+            const currentRole = normalizeRole(targetUser?.role, 'member');
+            let nextRole = hasRoleUpdate ? normalizeRole(req.body?.role, currentRole) : currentRole;
+            let nextPermissions = normalizePermissionList(targetUser?.permissions);
+            const targetHasExplicitPermissions = Array.isArray(targetUser?.permissions);
+            if (!targetHasExplicitPermissions && nextPermissions.length === 0) {
+                nextPermissions = defaultPermissionsForRole(currentRole);
+            }
+
+            if (hasPermissionsUpdate) {
+                const parsedPermissions = validatePermissionListInput(req.body?.permissions);
+                if (!parsedPermissions.ok) {
+                    res.status(400).json({error: parsedPermissions.error});
+                    return;
+                }
+                nextPermissions = parsedPermissions.permissions;
+                if (!hasRoleUpdate) {
+                    nextRole = nextPermissions.includes('admin') ? 'admin' : 'member';
+                }
+            } else if (hasRoleUpdate) {
+                nextPermissions = defaultPermissionsForRole(nextRole);
+            }
+
+            if (nextRole === 'admin' && !nextPermissions.includes('admin')) {
+                nextPermissions = sortMoonPermissions([...nextPermissions, 'admin']);
+            }
+            if (nextRole !== 'admin') {
+                nextPermissions = sortMoonPermissions(nextPermissions.filter((entry) => entry !== 'admin'));
+            }
+
+            let nextBootstrapFlag = parseBooleanInput(targetUser?.isBootstrapUser) === true;
+            if (hasBootstrapFlagUpdate) {
+                const parsedFlag = parseBooleanInput(req.body?.isBootstrapUser);
+                if (parsedFlag == null) {
+                    res.status(400).json({error: 'isBootstrapUser must be a boolean value.'});
+                    return;
+                }
+                nextBootstrapFlag = parsedFlag;
+            }
+
             const updateSet = {
                 updatedAt: new Date().toISOString(),
                 updatedBy: req.serviceName,
@@ -527,16 +738,22 @@ export function createVaultApp(options = {}) {
                 changed = true;
             }
 
-            if (hasRoleUpdate) {
-                const roleRaw = normalizeString(req.body?.role).toLowerCase();
-                if (roleRaw !== 'admin' && roleRaw !== 'member') {
-                    res.status(400).json({error: 'role must be "admin" or "member".'});
-                    return;
-                }
-                if (normalizeRole(targetUser.role, 'member') !== roleRaw) {
-                    updateSet.role = roleRaw;
+            const normalizedTarget = sanitizeUser(targetUser) ?? {};
+            if (hasRoleUpdate || hasPermissionsUpdate) {
+                if (normalizeRole(normalizedTarget.role, 'member') !== nextRole) {
+                    updateSet.role = nextRole;
                     changed = true;
                 }
+                const currentPermissions = normalizePermissionList(normalizedTarget.permissions);
+                if (JSON.stringify(currentPermissions) !== JSON.stringify(nextPermissions)) {
+                    updateSet.permissions = nextPermissions;
+                    changed = true;
+                }
+            }
+
+            if (hasBootstrapFlagUpdate && Boolean(normalizedTarget.isBootstrapUser) !== Boolean(nextBootstrapFlag)) {
+                updateSet.isBootstrapUser = nextBootstrapFlag;
+                changed = true;
             }
 
             if (!changed) {
@@ -544,6 +761,9 @@ export function createVaultApp(options = {}) {
                     ...targetUser,
                     username: nextUsername,
                     usernameNormalized: nextLookupKey,
+                    role: nextRole,
+                    permissions: nextPermissions,
+                    isBootstrapUser: nextBootstrapFlag,
                 };
                 res.json({ok: true, user: sanitizeUser(stableUser)});
                 return;
@@ -577,6 +797,9 @@ export function createVaultApp(options = {}) {
                 ...updateSet,
                 username: nextUsername,
                 usernameNormalized: nextLookupKey,
+                role: nextRole,
+                permissions: nextPermissions,
+                isBootstrapUser: nextBootstrapFlag,
             };
             res.json({ok: true, user: sanitizeUser(refreshedUser ?? fallbackUser)});
         } catch (error) {

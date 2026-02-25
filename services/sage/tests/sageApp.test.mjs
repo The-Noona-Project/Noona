@@ -113,6 +113,44 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
         }
         return fallback
     }
+    const MOON_OP_PERMISSION_KEYS = [
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+        'user_management',
+        'admin',
+    ]
+    const DEFAULT_MEMBER_PERMISSION_KEYS = [
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+    ]
+    const sortPermissions = (permissions = []) => {
+        const set = new Set(Array.isArray(permissions) ? permissions : [])
+        return MOON_OP_PERMISSION_KEYS.filter((entry) => set.has(entry))
+    }
+    const normalizePermissionKey = (value) => normalizeString(value).toLowerCase()
+    const normalizePermissions = (value) => {
+        if (!Array.isArray(value)) {
+            return []
+        }
+
+        const next = []
+        for (const entry of value) {
+            const key = normalizePermissionKey(entry)
+            if (!key || !MOON_OP_PERMISSION_KEYS.includes(key)) {
+                continue
+            }
+            next.push(key)
+        }
+        return sortPermissions(Array.from(new Set(next)))
+    }
+    const defaultPermissionsForRole = (role) =>
+        normalizeRole(role, 'member') === 'admin'
+            ? [...MOON_OP_PERMISSION_KEYS]
+            : [...DEFAULT_MEMBER_PERMISSION_KEYS]
 
     const hashPassword = (password) => {
         const salt = crypto.randomBytes(16)
@@ -152,7 +190,29 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
     const toPublicUser = (user) => ({
         username: normalizeUsername(user?.username),
         usernameNormalized: lookupKeyForUser(user),
-        role: normalizeRole(user?.role, 'member'),
+        role: (() => {
+            const normalizedRole = normalizeRole(user?.role, 'member')
+            const permissions = normalizePermissions(user?.permissions)
+            if (permissions.includes('admin')) return 'admin'
+            if (normalizedRole === 'admin') return 'admin'
+            return 'member'
+        })(),
+        permissions: (() => {
+            const normalizedRole = normalizeRole(user?.role, 'member')
+            const existing = normalizePermissions(user?.permissions)
+            const hasExplicitPermissions = Array.isArray(user?.permissions)
+            if (hasExplicitPermissions) {
+                if (existing.includes('admin')) {
+                    return existing
+                }
+                if (normalizedRole === 'admin') {
+                    return sortPermissions([...existing, 'admin'])
+                }
+                return sortPermissions(existing.filter((entry) => entry !== 'admin'))
+            }
+            return defaultPermissionsForRole(normalizedRole)
+        })(),
+        isBootstrapUser: Boolean(user?.isBootstrapUser),
         createdAt: normalizeString(user?.createdAt) || null,
         updatedAt: normalizeString(user?.updatedAt) || null,
     })
@@ -244,7 +304,9 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
                     if (idx < 0) return null
                     return toPublicUser(userDocs[idx])
                 },
-                async create({username, password, role = 'member'} = {}) {
+                async create(payload = {}) {
+                    const {username, password, role = 'member', permissions, isBootstrapUser = false} = payload
+                    const hasPermissionsInput = Object.prototype.hasOwnProperty.call(payload ?? {}, 'permissions')
                     const usernameTrimmed = normalizeUsername(username)
                     const lookupKey = normalizeUsernameKey(usernameTrimmed)
                     if (!lookupKey) {
@@ -255,11 +317,26 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
                     }
 
                     const now = new Date().toISOString()
+                    let nextRole = normalizeRole(role, 'member')
+                    let nextPermissions = hasPermissionsInput
+                        ? normalizePermissions(permissions)
+                        : defaultPermissionsForRole(nextRole)
+                    if (nextRole === 'admin' && !nextPermissions.includes('admin')) {
+                        nextPermissions = sortPermissions([...nextPermissions, 'admin'])
+                    }
+                    if (nextRole !== 'admin' && nextPermissions.includes('admin')) {
+                        nextRole = 'admin'
+                    }
+                    if (nextRole !== 'admin') {
+                        nextPermissions = sortPermissions(nextPermissions.filter((entry) => entry !== 'admin'))
+                    }
                     const doc = {
                         username: usernameTrimmed,
                         usernameNormalized: lookupKey,
                         passwordHash: hashPassword(password),
-                        role: normalizeRole(role, 'member'),
+                        role: nextRole,
+                        permissions: nextPermissions,
+                        isBootstrapUser: Boolean(isBootstrapUser),
                         createdAt: now,
                         updatedAt: now,
                     }
@@ -290,6 +367,25 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
 
                     if (Object.prototype.hasOwnProperty.call(updates, 'role')) {
                         target.role = normalizeRole(updates.role, normalizeRole(target.role, 'member'))
+                    }
+                    if (Object.prototype.hasOwnProperty.call(updates, 'permissions')) {
+                        target.permissions = normalizePermissions(updates.permissions)
+                    }
+                    if (Object.prototype.hasOwnProperty.call(updates, 'isBootstrapUser')) {
+                        target.isBootstrapUser = Boolean(updates.isBootstrapUser)
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(updates, 'role') && !Object.prototype.hasOwnProperty.call(updates, 'permissions')) {
+                        target.permissions = defaultPermissionsForRole(target.role)
+                    }
+                    if (Object.prototype.hasOwnProperty.call(updates, 'permissions') && !Object.prototype.hasOwnProperty.call(updates, 'role')) {
+                        target.role = target.permissions.includes('admin') ? 'admin' : 'member'
+                    }
+                    if (normalizeRole(target.role, 'member') === 'admin' && !normalizePermissions(target.permissions).includes('admin')) {
+                        target.permissions = sortPermissions([...normalizePermissions(target.permissions), 'admin'])
+                    }
+                    if (normalizeRole(target.role, 'member') !== 'admin') {
+                        target.permissions = sortPermissions(normalizePermissions(target.permissions).filter((entry) => entry !== 'admin'))
                     }
 
                     target.updatedAt = new Date().toISOString()
@@ -2305,6 +2401,306 @@ test('auth user management routes create, update, list, and delete users through
     })
     assert.equal(deleteResponse.status, 200)
     assert.deepEqual(await deleteResponse.json(), {deleted: true})
+})
+
+test('auth user management protects setup account and can reset non-protected user passwords', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'ReaderOne',
+            password: 'Password123',
+            role: 'member',
+            permissions: ['moon_login'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const resetResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne/reset-password`, {
+        method: 'POST',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(resetResponse.status, 200)
+    const resetPayload = await resetResponse.json()
+    assert.equal(resetPayload.ok, true)
+    assert.equal(resetPayload.user.username, 'ReaderOne')
+    assert.ok(typeof resetPayload.password === 'string' && resetPayload.password.length >= 12)
+
+    const readerLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'ReaderOne', password: resetPayload.password}),
+    })
+    assert.equal(readerLoginResponse.status, 200)
+
+    const protectedUpdateResponse = await fetch(`${baseUrl}/api/auth/users/CaptainPax`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'CaptainPax2'}),
+    })
+    assert.equal(protectedUpdateResponse.status, 403)
+
+    const protectedResetResponse = await fetch(`${baseUrl}/api/auth/users/CaptainPax/reset-password`, {
+        method: 'POST',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(protectedResetResponse.status, 403)
+
+    const protectedDeleteResponse = await fetch(`${baseUrl}/api/auth/users/CaptainPax`, {
+        method: 'DELETE',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(protectedDeleteResponse.status, 403)
+})
+
+test('auth user management routes require user_management permission', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'ReaderOne',
+            password: 'Password123',
+            role: 'member',
+            permissions: ['moon_login'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const readerLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123'}),
+    })
+    assert.equal(readerLoginResponse.status, 200)
+    const readerPayload = await readerLoginResponse.json()
+    const readerToken = readerPayload.token
+    assert.ok(typeof readerToken === 'string' && readerToken.length > 10)
+
+    const forbiddenListResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${readerToken}`},
+    })
+    assert.equal(forbiddenListResponse.status, 403)
+})
+
+test('login requires moon_login permission', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'NoLoginUser',
+            password: 'Password123',
+            role: 'member',
+            permissions: [],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'NoLoginUser', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 403)
+    const payload = await loginResponse.json()
+    assert.equal(payload.error, 'Moon login permission is required for this account.')
+})
+
+test('settings debug routes read and update live debug mode', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{key: 'noona.debug', enabled: false, updatedAt: '2026-01-01T00:00:00.000Z'}],
+    })
+    const debugCalls = []
+    const setupClient = {
+        async setDebug(enabled) {
+            debugCalls.push(enabled)
+            return {enabled}
+        },
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient,
+        ravenClient: createRavenStub({
+            async setDebug() {
+                return {enabled: true}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const getRes = await fetch(`${baseUrl}/api/settings/debug`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getRes.status, 200)
+    assert.deepEqual(await getRes.json(), {
+        key: 'noona.debug',
+        enabled: false,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const putRes = await fetch(`${baseUrl}/api/settings/debug`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({enabled: true}),
+    })
+    assert.equal(putRes.status, 200)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.key, 'noona.debug')
+    assert.equal(putPayload.enabled, true)
+    assert.ok(typeof putPayload.updatedAt === 'string')
+    assert.deepEqual(debugCalls, [true])
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'noona.debug')
+    assert.ok(stored)
+    assert.equal(stored.enabled, true)
+})
+
+test('settings factory reset route requires valid password and wipes storage before restart', async (t) => {
+    const vault = createVaultAuthStub()
+    const wipeCalls = []
+    vault.client.mongo.wipe = async () => {
+        wipeCalls.push('mongo')
+        return {status: 'ok'}
+    }
+    vault.client.redis.wipe = async () => {
+        wipeCalls.push('redis')
+        return {status: 'ok'}
+    }
+
+    const restartCalls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async factoryResetEcosystem(options = {}) {
+                restartCalls.push(options)
+                return {ok: true}
+            },
+        },
+        settings: {
+            baseUrl: 'https://noona.local',
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token, password} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const badRes = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({password: 'WrongPassword123'}),
+    })
+    assert.equal(badRes.status, 401)
+    const badPayload = await badRes.json()
+    assert.equal(badPayload.error, 'Invalid password.')
+
+    const okRes = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({password, deleteRavenDownloads: true, deleteDockers: true}),
+    })
+    assert.equal(okRes.status, 202)
+    const okPayload = await okRes.json()
+    assert.equal(okPayload.ok, true)
+    assert.equal(okPayload.restartQueued, true)
+    assert.equal(okPayload.deleteRavenDownloads, true)
+    assert.equal(okPayload.deleteDockers, true)
+    assert.equal(okPayload.redirectTo, 'https://noona.local')
+
+    assert.deepEqual(wipeCalls, ['mongo', 'redis'])
+    assert.deepEqual(restartCalls, [{
+        deleteRavenDownloads: true,
+        deleteDockers: true,
+        setupCompleted: false,
+        forceFull: false,
+    }])
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {

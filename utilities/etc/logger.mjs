@@ -13,8 +13,10 @@ const fallbackChalk = {
 
 let chalkLib = fallbackChalk;
 
-await import('chalk')
-    .then(module => {
+const importModule = new Function('specifier', 'return import(specifier);');
+
+await importModule('chalk')
+    .then((module) => {
         const resolved = module?.default ?? module;
         if (resolved) {
             chalkLib = resolved;
@@ -35,6 +37,38 @@ function colorize(color, value) {
 
     const fn = chalkLib?.[color];
     return typeof fn === 'function' ? fn(value) : value;
+}
+
+const TRUTHY_DEBUG_VALUES = new Set(['1', 'true', 'yes', 'on', 'super']);
+
+function normalizeDebugSetting(value) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return value > 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) {
+            return false;
+        }
+        return TRUTHY_DEBUG_VALUES.has(normalized);
+    }
+
+    return false;
+}
+
+let debugEnabled = normalizeDebugSetting(process.env.DEBUG);
+
+export function setDebug(enabled) {
+    debugEnabled = normalizeDebugSetting(enabled);
+}
+
+export function isDebugEnabled() {
+    return debugEnabled;
 }
 
 function formatPrefix(level = '') {
@@ -68,7 +102,7 @@ export function errMSG(...args) {
 }
 
 export function debugMSG(...args) {
-    if (process.env.DEBUG === 'true') {
+    if (debugEnabled) {
         const prefix = formatPrefix('DEBUG');
         console.log(colorize('dim', prefix), ...args);
     }

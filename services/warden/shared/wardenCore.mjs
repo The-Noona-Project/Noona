@@ -14,7 +14,12 @@ import {
     runContainerWithLogs,
     waitForHealthyStatus,
 } from '../docker/dockerUtilties.mjs';
-import {log, warn} from '../../../utilities/etc/logger.mjs';
+import {
+    isDebugEnabled as isLoggerDebugEnabled,
+    log,
+    setDebug as setLoggerDebug,
+    warn,
+} from '../../../utilities/etc/logger.mjs';
 import {
     defaultDockerSocketDetector,
     isTcpDockerSocket,
@@ -245,6 +250,32 @@ function parseImageReference(image) {
 
 const timestamp = () => new Date().toISOString();
 
+const TRUTHY_DEBUG_VALUES = new Set(['1', 'true', 'yes', 'on', 'super']);
+const NOONA_CONTAINER_NAME_PATTERN = /(^|[._-])noona-[a-z0-9-]+([._-]\d+)?$/i;
+const NOONA_WARDEN_CONTAINER_PATTERN = /(^|[._-])noona-warden([._-]\d+)?$/i;
+const NOONA_IMAGE_PATTERN = /(^|\/)noona-[a-z0-9-]+(?=[:@]|$)/i;
+const NOONA_WARDEN_IMAGE_PATTERN = /(^|\/)noona-warden(?=[:@]|$)/i;
+
+const isDebugFlagEnabled = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return value > 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) {
+            return false;
+        }
+        return TRUTHY_DEBUG_VALUES.has(normalized);
+    }
+
+    return false;
+};
+
 export function createWarden(options = {}) {
     const {
         dockerInstance = new Docker(),
@@ -291,6 +322,8 @@ export function createWarden(options = {}) {
     const BOOT_MODE = rawBootMode === 'super' ? 'super' : 'minimal';
     const DEBUG = rawBootMode === 'super' ? 'super' : (rawDebug || 'false');
     const SUPER_MODE = BOOT_MODE === 'super' || DEBUG === 'super';
+    let runtimeDebug = DEBUG;
+    setLoggerDebug(isDebugFlagEnabled(runtimeDebug));
     const hostServiceBase = env.HOST_SERVICE_URL ?? 'http://localhost';
     const bootOrder = superBootOrderOption || [
         'noona-redis',
@@ -530,6 +563,295 @@ export function createWarden(options = {}) {
         if (code === 'ECONNREFUSED' || code === 'ENOENT' || /ECONNREFUSED|ENOENT/.test(message)) {
             dockerConnectionVerified = false;
         }
+    };
+
+    const normalizeContainerName = (rawName) =>
+        typeof rawName === 'string' ? rawName.replace(/^\//, '').trim().toLowerCase() : '';
+
+    const isNoonaContainerName = (rawName) => NOONA_CONTAINER_NAME_PATTERN.test(normalizeContainerName(rawName));
+    const isWardenContainerName = (rawName) =>
+        NOONA_WARDEN_CONTAINER_PATTERN.test(normalizeContainerName(rawName));
+
+    const normalizeImageReference = (value) =>
+        typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+    const isNoonaImageReference = (value) => NOONA_IMAGE_PATTERN.test(normalizeImageReference(value));
+    const isWardenImageReference = (value) => NOONA_WARDEN_IMAGE_PATTERN.test(normalizeImageReference(value));
+
+    const parseEnvArray = (entries = []) => {
+        const out = {};
+        for (const entry of entries) {
+            if (typeof entry !== 'string') {
+                continue;
+            }
+
+            const [rawKey, ...rest] = entry.split('=');
+            const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+            if (!key) {
+                continue;
+            }
+
+            out[key] = rest.join('=') ?? '';
+        }
+        return out;
+    };
+
+    const isUnsafeDeletionPath = (candidate) => {
+        if (typeof candidate !== 'string') {
+            return true;
+        }
+
+        const trimmed = candidate.trim();
+        if (!trimmed) {
+            return true;
+        }
+
+        if (trimmed === '/' || trimmed === '\\' || trimmed === '.' || trimmed === '..') {
+            return true;
+        }
+
+        if (/^[A-Za-z]:[\\\\/]*$/.test(trimmed)) {
+            return true;
+        }
+
+        return false;
+    };
+
+    const inspectContainerSafe = async (dockerClient, name) => {
+        try {
+            return await dockerClient.getContainer(name).inspect();
+        } catch (error) {
+            const statusCode = Number(error?.statusCode);
+            if (statusCode === 404) {
+                return null;
+            }
+            throw error;
+        }
+    };
+
+    const collectRavenDownloadMounts = async (dockerClient) => {
+        const inspection = await inspectContainerSafe(dockerClient, 'noona-raven');
+        if (!inspection) {
+            return [];
+        }
+
+        const envMap = parseEnvArray(inspection?.Config?.Env || []);
+        const appData = typeof envMap.APPDATA === 'string' ? envMap.APPDATA.trim() : '';
+        const defaultDestinations = new Set(['/kavita-data', '/data', '/app/downloads']);
+        if (appData && appData.startsWith('/')) {
+            defaultDestinations.add(appData);
+        }
+
+        const mounts = Array.isArray(inspection?.Mounts) ? inspection.Mounts : [];
+        return mounts
+            .map((mount) => ({
+                type: typeof mount?.Type === 'string' ? mount.Type.trim().toLowerCase() : '',
+                name: typeof mount?.Name === 'string' ? mount.Name.trim() : '',
+                source: typeof mount?.Source === 'string' ? mount.Source.trim() : '',
+                destination: typeof mount?.Destination === 'string' ? mount.Destination.trim() : '',
+            }))
+            .filter((mount) => mount.destination && defaultDestinations.has(mount.destination));
+    };
+
+    const wipePathWithFs = async (targetPath) => {
+        if (isUnsafeDeletionPath(targetPath)) {
+            return {
+                deleted: false,
+                path: targetPath,
+                reason: 'unsafe-path',
+            };
+        }
+
+        const rmFn = fsModule?.promises?.rm;
+        if (typeof rmFn !== 'function') {
+            return {
+                deleted: false,
+                path: targetPath,
+                reason: 'fs-rm-unavailable',
+            };
+        }
+
+        try {
+            await rmFn(targetPath, {recursive: true, force: true});
+            return {deleted: true, path: targetPath, via: 'fs'};
+        } catch (error) {
+            return {
+                deleted: false,
+                path: targetPath,
+                reason: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const wipePathWithHelperContainer = async (dockerClient, sourcePath) => {
+        if (isUnsafeDeletionPath(sourcePath)) {
+            return {
+                deleted: false,
+                path: sourcePath,
+                reason: 'unsafe-path',
+            };
+        }
+
+        const helperImage = 'busybox:1.36';
+        const helperName = `noona-factory-reset-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+
+        try {
+            await dockerUtils.pullImageIfNeeded?.(helperImage, {dockerInstance: dockerClient});
+        } catch {
+            // Continue without forcing an image pull; createContainer may still work if image exists locally.
+        }
+
+        let helperContainer = null;
+        try {
+            helperContainer = await dockerClient.createContainer({
+                name: helperName,
+                Image: helperImage,
+                Cmd: ['sh', '-lc', 'find /target -mindepth 1 -maxdepth 1 -exec rm -rf {} +'],
+                HostConfig: {
+                    AutoRemove: true,
+                    Binds: [`${sourcePath}:/target`],
+                },
+            });
+
+            await helperContainer.start();
+            await helperContainer.wait();
+            return {deleted: true, path: sourcePath, via: 'helper-container'};
+        } catch (error) {
+            return {
+                deleted: false,
+                path: sourcePath,
+                reason: error instanceof Error ? error.message : String(error),
+            };
+        } finally {
+            try {
+                if (helperContainer) {
+                    await helperContainer.remove({force: true});
+                }
+            } catch {
+                // ignore cleanup errors
+            }
+        }
+    };
+
+    const deleteRavenDownloads = async (dockerClient, mounts = []) => {
+        const entries = [];
+
+        for (const mount of mounts) {
+            if (mount?.type === 'volume' && mount.name) {
+                try {
+                    await dockerClient.getVolume(mount.name).remove({force: true});
+                    entries.push({
+                        target: mount.name,
+                        destination: mount.destination,
+                        type: 'volume',
+                        deleted: true,
+                        via: 'docker-volume-remove',
+                    });
+                } catch (error) {
+                    entries.push({
+                        target: mount.name,
+                        destination: mount.destination,
+                        type: 'volume',
+                        deleted: false,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                }
+                continue;
+            }
+
+            if (mount?.type === 'bind' && mount.source) {
+                let result = await wipePathWithFs(mount.source);
+                if (!result.deleted) {
+                    result = await wipePathWithHelperContainer(dockerClient, mount.source);
+                }
+
+                entries.push({
+                    target: mount.source,
+                    destination: mount.destination,
+                    type: 'bind',
+                    ...result,
+                });
+            }
+        }
+
+        return {
+            requested: true,
+            mountCount: mounts.length,
+            entries,
+            deleted: entries.length > 0 && entries.every((entry) => entry.deleted === true),
+        };
+    };
+
+    const removeNoonaDockerArtifacts = async (dockerClient) => {
+        const removedContainers = [];
+        const removedImages = [];
+        const containerErrors = [];
+        const imageErrors = [];
+
+        try {
+            const containers = await dockerClient.listContainers({all: true});
+            for (const container of containers) {
+                const names = Array.isArray(container?.Names) ? container.Names : [];
+                const matchesNoona = names.some((name) => isNoonaContainerName(name));
+                const isWarden = names.some((name) => isWardenContainerName(name));
+                if (!matchesNoona || isWarden) {
+                    continue;
+                }
+
+                try {
+                    await dockerClient.getContainer(container.Id).remove({force: true});
+                    removedContainers.push(container.Id);
+                } catch (error) {
+                    containerErrors.push({
+                        id: container.Id,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                }
+            }
+        } catch (error) {
+            containerErrors.push({
+                id: null,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+
+        try {
+            const images = await dockerClient.listImages({all: true});
+            for (const image of images) {
+                const tags = Array.isArray(image?.RepoTags) ? image.RepoTags : [];
+                const digests = Array.isArray(image?.RepoDigests) ? image.RepoDigests : [];
+                const references = [...tags, ...digests];
+                const hasNoonaReference = references.some((ref) => isNoonaImageReference(ref));
+                const hasWardenReference = references.some((ref) => isWardenImageReference(ref));
+
+                if (!hasNoonaReference || hasWardenReference) {
+                    continue;
+                }
+
+                try {
+                    await dockerClient.getImage(image.Id).remove({force: true});
+                    removedImages.push(image.Id);
+                } catch (error) {
+                    imageErrors.push({
+                        id: image.Id,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                }
+            }
+        } catch (error) {
+            imageErrors.push({
+                id: null,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+
+        return {
+            requested: true,
+            containersRemoved: removedContainers,
+            imagesRemoved: removedImages,
+            containerErrors,
+            imageErrors,
+        };
     };
 
     const resolvedLogLimit = (() => {
@@ -1425,9 +1747,45 @@ export function createWarden(options = {}) {
     const api = {
         trackedContainers,
         networkName,
-        DEBUG,
         SUPER_MODE,
         BOOT_MODE,
+    };
+
+    Object.defineProperty(api, 'DEBUG', {
+        enumerable: true,
+        get: () => runtimeDebug,
+    });
+
+    api.getDebug = function getDebug() {
+        return {
+            enabled: isLoggerDebugEnabled(),
+            value: runtimeDebug,
+        };
+    };
+
+    api.setDebug = function setDebug(enabled, options = {}) {
+        const nextEnabled = isDebugFlagEnabled(enabled);
+        runtimeDebug = nextEnabled ? 'true' : 'false';
+        setLoggerDebug(nextEnabled);
+
+        if (options?.persist !== false) {
+            const nextDebugValue = runtimeDebug;
+            for (const registeredServiceName of listRegisteredServiceNames()) {
+                const runtime = resolveRuntimeConfig(registeredServiceName);
+                writeRuntimeConfig(registeredServiceName, {
+                    env: {
+                        ...runtime.env,
+                        DEBUG: nextDebugValue,
+                    },
+                    hostPort: runtime.hostPort,
+                });
+            }
+        }
+
+        return {
+            enabled: nextEnabled,
+            value: runtimeDebug,
+        };
     };
 
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
@@ -1601,7 +1959,7 @@ export function createWarden(options = {}) {
                     service,
                     networkName,
                     trackedContainers,
-                    DEBUG,
+                    runtimeDebug,
                     {
                         dockerInstance: dockerClient,
                         onLog: (raw, context = {}) => {
@@ -2519,6 +2877,71 @@ export function createWarden(options = {}) {
         }
 
         return results;
+    };
+
+    api.restartEcosystem = async function restartEcosystem(options = {}) {
+        const stopResults = await api.stopEcosystem({...options, trackedOnly: false});
+        const startResults = await api.startEcosystem(options);
+
+        return {
+            stopped: stopResults,
+            started: startResults,
+        };
+    };
+
+    api.factoryResetEcosystem = async function factoryResetEcosystem(options = {}) {
+        const deleteRavenDownloadsRequested = options?.deleteRavenDownloads === true;
+        const deleteDockersRequested = options?.deleteDockers === true;
+        const dockerClient = await ensureDockerConnection();
+
+        let ravenMounts = [];
+        if (deleteRavenDownloadsRequested) {
+            try {
+                ravenMounts = await collectRavenDownloadMounts(dockerClient);
+            } catch (error) {
+                logger.warn?.(
+                    `[${serviceName}] Failed to inspect Raven mounts during factory reset: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`,
+                );
+            }
+        }
+
+        const stopped = await api.stopEcosystem({
+            trackedOnly: false,
+        });
+
+        const ravenDownloads = deleteRavenDownloadsRequested
+            ? await deleteRavenDownloads(dockerClient, ravenMounts)
+            : {
+                requested: false,
+                mountCount: 0,
+                entries: [],
+                deleted: false,
+            };
+
+        const dockerCleanup = deleteDockersRequested
+            ? await removeNoonaDockerArtifacts(dockerClient)
+            : {
+                requested: false,
+                containersRemoved: [],
+                imagesRemoved: [],
+                containerErrors: [],
+                imageErrors: [],
+            };
+
+        const started = await api.startEcosystem({
+            setupCompleted: false,
+            forceFull: false,
+        });
+
+        return {
+            ok: true,
+            stopped,
+            ravenDownloads,
+            dockerCleanup,
+            started,
+        };
     };
 
     api.isSetupCompleted = async function isSetupCompleted() {

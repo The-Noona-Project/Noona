@@ -334,6 +334,84 @@ test('GET /v1/vault/health responds with status message', async () => {
     );
 });
 
+test('GET /v1/vault/debug returns current debug state', async () => {
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        isDebugEnabled: () => true,
+        handlePacket: async () => ({}),
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/debug`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: true});
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('POST /v1/vault/debug updates debug state', async () => {
+    let enabled = false;
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        isDebugEnabled: () => enabled,
+        setDebug: value => {
+            enabled = value === true;
+        },
+        handlePacket: async () => ({}),
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/debug`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({enabled: true}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: true});
+    assert.equal(enabled, true);
+
+    const badResponse = await fetch(`http://127.0.0.1:${port}/v1/vault/debug`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({enabled: 'maybe'}),
+    });
+    assert.equal(badResponse.status, 400);
+    const badPayload = await badResponse.json();
+    assert.equal(badPayload.error, 'enabled must be a boolean value.');
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('POST /v1/vault/handle returns array payloads from handler', async () => {
     const packets = [];
     const mockResult = {

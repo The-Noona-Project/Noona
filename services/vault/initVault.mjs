@@ -6,11 +6,15 @@
  */
 
 import dotenv from 'dotenv';
-import { log, warn, debugMSG } from '../../utilities/etc/logger.mjs';
-import { createVaultApp } from './shared/vaultApp.mjs';
+import {debugMSG, isDebugEnabled, log, setDebug, warn} from '../../utilities/etc/logger.mjs';
+import {createVaultApp} from './shared/vaultApp.mjs';
 
 dotenv.config();
 
-const { app, port } = createVaultApp({ logger: { log, warn, debug: debugMSG } });
+const {app, port} = createVaultApp({
+    logger: {log, warn, debug: debugMSG},
+    isDebugEnabled,
+    setDebug,
+});
 
 app.listen(port, () => log(`Vault listening on port ${port}`));

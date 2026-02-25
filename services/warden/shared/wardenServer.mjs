@@ -27,6 +27,53 @@ const sendJson = (res, statusCode, payload) => {
     res.end(JSON.stringify(payload));
 };
 
+const parseDebugValue = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return value > 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) {
+            return null;
+        }
+
+        if (['1', 'true', 'yes', 'on', 'super'].includes(normalized)) {
+            return true;
+        }
+
+        if (['0', 'false', 'no', 'off'].includes(normalized)) {
+            return false;
+        }
+    }
+
+    return null;
+};
+
+const readDebugState = (warden) => {
+    if (typeof warden?.getDebug === 'function') {
+        const payload = warden.getDebug();
+        if (payload && typeof payload === 'object') {
+            return payload;
+        }
+    }
+
+    const parsed = parseDebugValue(warden?.DEBUG);
+    const enabled =
+        typeof warden?.isDebugEnabled === 'function'
+            ? warden.isDebugEnabled() === true
+            : parsed === true;
+
+    return {
+        enabled,
+        value: enabled ? 'true' : 'false',
+    };
+};
+
 const parseJsonBody = (req) => new Promise((resolve, reject) => {
     const chunks = [];
 
@@ -79,6 +126,42 @@ export const startWardenServer = ({
 
         if (req.method === 'GET' && url.pathname === '/health') {
             sendJson(res, 200, { status: 'ok' });
+            return;
+        }
+
+        if (req.method === 'GET' && url.pathname === '/api/debug') {
+            sendJson(res, 200, readDebugState(warden));
+            return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/debug') {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            const enabled = parseDebugValue(body?.enabled);
+            if (enabled == null) {
+                sendJson(res, 400, {error: 'enabled must be a boolean value.'});
+                return;
+            }
+
+            try {
+                const result = await warden.setDebug?.(enabled);
+                if (result && typeof result === 'object') {
+                    sendJson(res, 200, result);
+                    return;
+                }
+
+                sendJson(res, 200, readDebugState(warden));
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to update debug mode: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to update debug mode.'});
+            }
             return;
         }
 
@@ -444,6 +527,58 @@ export const startWardenServer = ({
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to stop ecosystem: ${error.message}`);
                 sendJson(res, 500, {error: 'Unable to stop ecosystem.'});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 3 &&
+            segments[0] === 'api' &&
+            segments[1] === 'ecosystem' &&
+            segments[2] === 'factory-reset'
+        ) {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            try {
+                const result = await warden.factoryResetEcosystem?.(body);
+                sendJson(res, 200, result ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to run ecosystem factory reset: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to run ecosystem factory reset.'});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'POST' &&
+            segments.length === 3 &&
+            segments[0] === 'api' &&
+            segments[1] === 'ecosystem' &&
+            segments[2] === 'restart'
+        ) {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            try {
+                const result = await warden.restartEcosystem?.(body);
+                sendJson(res, 200, result ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to restart ecosystem: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to restart ecosystem.'});
             }
             return;
         }
