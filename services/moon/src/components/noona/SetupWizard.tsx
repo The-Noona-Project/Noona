@@ -152,6 +152,7 @@ const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
 const BG_DANGER_ALPHA_WEAK = "danger-alpha-weak" as const;
 const BG_BRAND_ALPHA_WEAK = "brand-alpha-weak" as const;
 const BG_SUCCESS_ALPHA_WEAK = "success-alpha-weak" as const;
+const INSTALL_PROGRESS_START_TIMEOUT_MS = 60_000;
 
 const clampPercent = (value: number) => {
     if (!Number.isFinite(value)) return 0;
@@ -286,8 +287,7 @@ const validateSelection = ({
 }): { ok: true } | { ok: false; message: string; missing: Array<{ service: string; key: string }> } => {
     const missing: Array<{ service: string; key: string }> = [];
 
-    const targets = Array.from(selected).filter((name) => !ALWAYS_RUNNING.has(name));
-    if (targets.length === 0) {
+    if (selected.size === 0) {
         return {ok: false, message: "Select at least one service to install.", missing};
     }
 
@@ -334,6 +334,10 @@ export function SetupWizard() {
     const [finishError, setFinishError] = useState<string | null>(null);
 
     const pollRef = useRef<number | null>(null);
+    const installRequestRef = useRef<AbortController | null>(null);
+    const installProgressTimeoutRef = useRef<number | null>(null);
+    const installTargetsRef = useRef<Set<string>>(new Set());
+    const installProgressStartedRef = useRef(false);
     const finishInFlightRef = useRef(false);
     const configInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -344,6 +348,26 @@ export function SetupWizard() {
         const result = validateSelection({selected, values});
         return result.ok ? [] : result.missing;
     }, [selected, values]);
+
+    const clearInstallProgressTimeout = useCallback(() => {
+        if (installProgressTimeoutRef.current != null) {
+            window.clearTimeout(installProgressTimeoutRef.current);
+            installProgressTimeoutRef.current = null;
+        }
+    }, []);
+
+    const resetInstallSession = useCallback(() => {
+        installTargetsRef.current = new Set();
+        installProgressStartedRef.current = false;
+        clearInstallProgressTimeout();
+    }, [clearInstallProgressTimeout]);
+
+    const abortInstallRequest = useCallback(() => {
+        if (installRequestRef.current) {
+            installRequestRef.current.abort();
+            installRequestRef.current = null;
+        }
+    }, []);
 
     const stopPolling = useCallback(() => {
         if (pollRef.current != null) {
@@ -357,7 +381,42 @@ export function SetupWizard() {
             const res = await fetch("/api/noona/install/progress", {cache: "no-store"});
             const payload = (await res.json().catch(() => null)) as InstallProgress | null;
             if (payload && Array.isArray(payload.items)) {
+                const activeTargets = installTargetsRef.current;
+                const sessionActive = activeTargets.size > 0;
+                const hasRelevantItems = payload.items.some((item) => activeTargets.has(item.name));
+
+                const normalizedStatus = payload.status?.trim().toLowerCase() ?? "";
+                const isFinished = normalizedStatus === "complete" || normalizedStatus === "error";
+
+                if (sessionActive && !hasRelevantItems && !installProgressStartedRef.current && !isFinished) {
+                    return;
+                }
+
+                if (sessionActive && hasRelevantItems) {
+                    installProgressStartedRef.current = true;
+                    clearInstallProgressTimeout();
+                }
+
                 setInstallProgress(payload);
+
+                if (
+                    sessionActive &&
+                    (normalizedStatus === "complete" || normalizedStatus === "error")
+                ) {
+                    stopPolling();
+                    resetInstallSession();
+                    setInstalling(false);
+
+                    if (normalizedStatus === "complete") {
+                        setInstallError(null);
+                        setInstallResult((prev: unknown | null) => prev ?? {status: "complete", results: []});
+                        setSummaryOpen(true);
+                    } else {
+                        setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
+                    }
+
+                    abortInstallRequest();
+                }
             }
         } catch {
             // Keep polling; transient failures are expected during Docker pulls.
@@ -408,8 +467,11 @@ export function SetupWizard() {
     useEffect(() => {
         return () => {
             stopPolling();
+            clearInstallProgressTimeout();
+            abortInstallRequest();
+            resetInstallSession();
         };
-    }, [stopPolling]);
+    }, [abortInstallRequest, clearInstallProgressTimeout, resetInstallSession, stopPolling]);
 
     const toggleSelected = (name: string) => {
         const service = servicesByName.get(name);
@@ -445,6 +507,17 @@ export function SetupWizard() {
             return;
         }
 
+        const payload = buildInstallPayload({services: catalog, selected, values});
+
+        if (payload.length === 0) {
+            setInstallResult({status: "complete", results: []});
+            setSummaryOpen(true);
+            setInstalling(false);
+            return;
+        }
+
+        const targetNames = new Set(selected);
+
         setInstalling(true);
         setInstallError(null);
         setInstallResult(null);
@@ -452,16 +525,36 @@ export function SetupWizard() {
         setSummaryOpen(false);
 
         stopPolling();
+        abortInstallRequest();
+        resetInstallSession();
+
+        installTargetsRef.current = targetNames;
+        if (targetNames.size > 0) {
+            installProgressTimeoutRef.current = window.setTimeout(() => {
+                if (installProgressStartedRef.current) return;
+
+                stopPolling();
+                resetInstallSession();
+                setInstalling(false);
+                setInstallError(
+                    "Install request was sent, but Warden did not report progress. Ensure noona-warden and noona-sage are running, then retry.",
+                );
+                abortInstallRequest();
+            }, INSTALL_PROGRESS_START_TIMEOUT_MS);
+        }
+
         pollRef.current = window.setInterval(pollProgress, 1200);
         void pollProgress();
 
-        const payload = buildInstallPayload({services: catalog, selected, values});
+        const controller = new AbortController();
+        installRequestRef.current = controller;
 
         try {
             const responsePromise = fetch("/api/noona/install", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({services: payload}),
+                signal: controller.signal,
             });
 
             const response = await responsePromise;
@@ -472,19 +565,33 @@ export function SetupWizard() {
                     typeof json?.error === "string" && json.error.trim()
                         ? json.error.trim()
                         : `Install failed (HTTP ${response.status}).`;
+                stopPolling();
+                resetInstallSession();
+                setInstalling(false);
                 setInstallError(errorMessage);
                 return;
             }
 
             setInstallResult(json);
             setSummaryOpen(true);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            setInstallError(message);
-        } finally {
             stopPolling();
+            resetInstallSession();
             setInstalling(false);
             void pollProgress();
+        } catch (error) {
+            if (controller.signal.aborted) {
+                return;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            stopPolling();
+            resetInstallSession();
+            setInstalling(false);
+            setInstallError(message);
+        } finally {
+            if (installRequestRef.current === controller) {
+                installRequestRef.current = null;
+            }
+            clearInstallProgressTimeout();
         }
     };
 
@@ -804,7 +911,7 @@ export function SetupWizard() {
                                 <Button
                                     size="m"
                                     variant="primary"
-                                    disabled={installing || missingPortalKeys.length > 0}
+                                    disabled={installing}
                                     onClick={() => void install()}
                                 >
                                     {installing
@@ -813,6 +920,12 @@ export function SetupWizard() {
                                             : "Installing..."
                                         : "Install selected services"}
                                 </Button>
+
+                                {installing && !installProgress && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Waiting for Warden to report install progress...
+                                    </Text>
+                                )}
 
                                 {installError && (
                                     <Text onBackground="danger-strong">{installError}</Text>

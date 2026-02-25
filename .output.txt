@@ -1,326 +1,233 @@
-warning: in the working copy of 'services/moon/src/components/noona/LibrariesPage.tsx', LF will be replaced by CRLF the next time Git touches it
-diff --git a/services/moon/src/components/noona/LibrariesPage.tsx b/services/moon/src/components/noona/LibrariesPage.tsx
-index 9bbfba1..1daa46e 100644
---- a/services/moon/src/components/noona/LibrariesPage.tsx
-+++ b/services/moon/src/components/noona/LibrariesPage.tsx
-@@ -45,7 +45,21 @@ type RavenDownloadProgress = {
-     lastUpdated?: number | null;
+diff --git a/services/moon/src/components/noona/SetupWizard.tsx b/services/moon/src/components/noona/SetupWizard.tsx
+index 8b42cff..a4266ea 100644
+--- a/services/moon/src/components/noona/SetupWizard.tsx
++++ b/services/moon/src/components/noona/SetupWizard.tsx
+@@ -150,10 +150,11 @@ type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alph
+ const BG_SURFACE = "surface" as const;
+ const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
+ const BG_DANGER_ALPHA_WEAK = "danger-alpha-weak" as const;
+ const BG_BRAND_ALPHA_WEAK = "brand-alpha-weak" as const;
+ const BG_SUCCESS_ALPHA_WEAK = "success-alpha-weak" as const;
++const INSTALL_PROGRESS_START_TIMEOUT_MS = 60_000;
+
+ const clampPercent = (value: number) => {
+     if (!Number.isFinite(value)) return 0;
+     return Math.max(0, Math.min(100, Math.round(value)));
  };
+@@ -332,10 +333,14 @@ export function SetupWizard() {
 
-+type RavenTitleSyncResult = {
-+    status?: string | null;
-+    totalQueued?: number | null;
-+};
+     const [finishing, setFinishing] = useState(false);
+     const [finishError, setFinishError] = useState<string | null>(null);
+
+     const pollRef = useRef<number | null>(null);
++    const installRequestRef = useRef<AbortController | null>(null);
++    const installProgressTimeoutRef = useRef<number | null>(null);
++    const installTargetsRef = useRef<Set<string>>(new Set());
++    const installProgressStartedRef = useRef(false);
+     const finishInFlightRef = useRef(false);
+     const configInputRef = useRef<HTMLInputElement | null>(null);
+
+     const services = catalog ?? [];
+     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
+@@ -343,10 +348,30 @@ export function SetupWizard() {
+     const missingPortalKeys = useMemo(() => {
+         const result = validateSelection({selected, values});
+         return result.ok ? [] : result.missing;
+     }, [selected, values]);
+
++    const clearInstallProgressTimeout = useCallback(() => {
++        if (installProgressTimeoutRef.current != null) {
++            window.clearTimeout(installProgressTimeoutRef.current);
++            installProgressTimeoutRef.current = null;
++        }
++    }, []);
 +
-+type RavenLibrarySyncResponse = {
-+    message?: string | null;
-+    queuedChapters?: number | null;
-+    updatedTitles?: number | null;
-+    results?: RavenTitleSyncResult[] | null;
-+};
++    const resetInstallSession = useCallback(() => {
++        installTargetsRef.current = new Set();
++        installProgressStartedRef.current = false;
++        clearInstallProgressTimeout();
++    }, [clearInstallProgressTimeout]);
 +
- const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-+const TITLE_CARD_WIDTH = 240;
-+const TITLE_CARD_HEIGHT = 340;
++    const abortInstallRequest = useCallback(() => {
++        if (installRequestRef.current) {
++            installRequestRef.current.abort();
++            installRequestRef.current = null;
++        }
++    }, []);
++
+     const stopPolling = useCallback(() => {
+         if (pollRef.current != null) {
+             window.clearInterval(pollRef.current);
+             pollRef.current = null;
+         }
+@@ -355,11 +380,44 @@ export function SetupWizard() {
+     const pollProgress = async () => {
+         try {
+             const res = await fetch("/api/noona/install/progress", {cache: "no-store"});
+             const payload = (await res.json().catch(() => null)) as InstallProgress | null;
+             if (payload && Array.isArray(payload.items)) {
++                const activeTargets = installTargetsRef.current;
++                const sessionActive = activeTargets.size > 0;
++                const hasRelevantItems = payload.items.some((item) => activeTargets.has(item.name));
++
++                if (sessionActive && !hasRelevantItems && !installProgressStartedRef.current) {
++                    return;
++                }
++
++                if (sessionActive && hasRelevantItems) {
++                    installProgressStartedRef.current = true;
++                    clearInstallProgressTimeout();
++                }
++
+                 setInstallProgress(payload);
++
++                const normalizedStatus = payload.status?.trim().toLowerCase() ?? "";
++                if (
++                    sessionActive &&
++                    (normalizedStatus === "complete" || normalizedStatus === "error")
++                ) {
++                    stopPolling();
++                    resetInstallSession();
++                    setInstalling(false);
++
++                    if (normalizedStatus === "complete") {
++                        setInstallError(null);
++                        setInstallResult((prev: unknown | null) => prev ?? {status: "complete", results: []});
++                        setSummaryOpen(true);
++                    } else {
++                        setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
++                    }
++
++                    abortInstallRequest();
++                }
+             }
+         } catch {
+             // Keep polling; transient failures are expected during Docker pulls.
+         }
+     };
+@@ -406,12 +464,15 @@ export function SetupWizard() {
+     }, []);
 
- export function LibrariesPage() {
-     const router = useRouter();
-@@ -66,6 +80,9 @@ export function LibrariesPage() {
+     useEffect(() => {
+         return () => {
+             stopPolling();
++            clearInstallProgressTimeout();
++            abortInstallRequest();
++            resetInstallSession();
+         };
+-    }, [stopPolling]);
++    }, [abortInstallRequest, clearInstallProgressTimeout, resetInstallSession, stopPolling]);
 
-     const [downloads, setDownloads] = useState<RavenDownloadProgress[] | null>(null);
-     const [downloadsError, setDownloadsError] = useState<string | null>(null);
-+    const [syncingLibrary, setSyncingLibrary] = useState(false);
-+    const [syncLibraryMessage, setSyncLibraryMessage] = useState<string | null>(null);
-+    const [syncLibraryError, setSyncLibraryError] = useState<string | null>(null);
+     const toggleSelected = (name: string) => {
+         const service = servicesByName.get(name);
+         if (ALWAYS_RUNNING.has(name) || service?.required) {
+             return;
+@@ -443,50 +504,87 @@ export function SetupWizard() {
+         if (!validation.ok) {
+             setInstallError(validation.message);
+             return;
+         }
 
-     const load = async () => {
-         setError(null);
-@@ -279,6 +296,51 @@ export function LibrariesPage() {
++        const payload = buildInstallPayload({services: catalog, selected, values});
++        const targetNames = new Set(selected);
++
+         setInstalling(true);
+         setInstallError(null);
+         setInstallResult(null);
+         setInstallProgress(null);
+         setSummaryOpen(false);
+
+         stopPolling();
++        abortInstallRequest();
++        resetInstallSession();
++
++        installTargetsRef.current = targetNames;
++        if (targetNames.size > 0) {
++            installProgressTimeoutRef.current = window.setTimeout(() => {
++                if (installProgressStartedRef.current) return;
++
++                stopPolling();
++                resetInstallSession();
++                setInstalling(false);
++                setInstallError(
++                    "Install request was sent, but Warden did not report progress. Ensure noona-warden and noona-sage are running, then retry.",
++                );
++                abortInstallRequest();
++            }, INSTALL_PROGRESS_START_TIMEOUT_MS);
++        }
++
+         pollRef.current = window.setInterval(pollProgress, 1200);
+         void pollProgress();
+
+-        const payload = buildInstallPayload({services: catalog, selected, values});
++        const controller = new AbortController();
++        installRequestRef.current = controller;
+
+         try {
+             const responsePromise = fetch("/api/noona/install", {
+                 method: "POST",
+                 headers: {"Content-Type": "application/json"},
+                 body: JSON.stringify({services: payload}),
++                signal: controller.signal,
+             });
+
+             const response = await responsePromise;
+             const json = await response.json().catch(() => ({}));
+
+             if (!response.ok) {
+                 const errorMessage =
+                     typeof json?.error === "string" && json.error.trim()
+                         ? json.error.trim()
+                         : `Install failed (HTTP ${response.status}).`;
++                stopPolling();
++                resetInstallSession();
++                setInstalling(false);
+                 setInstallError(errorMessage);
+                 return;
+             }
+
+             setInstallResult(json);
+             setSummaryOpen(true);
++            stopPolling();
++            resetInstallSession();
++            setInstalling(false);
++            void pollProgress();
+         } catch (error) {
++            if (controller.signal.aborted) {
++                return;
++            }
+             const message = error instanceof Error ? error.message : String(error);
+-            setInstallError(message);
+-        } finally {
+             stopPolling();
++            resetInstallSession();
+             setInstalling(false);
+-            void pollProgress();
++            setInstallError(message);
++        } finally {
++            if (installRequestRef.current === controller) {
++                installRequestRef.current = null;
++            }
++            clearInstallProgressTimeout();
          }
      };
 
-+    const checkLibraryForNewChapters = async () => {
-+        setSyncingLibrary(true);
-+        setSyncLibraryMessage(null);
-+        setSyncLibraryError(null);
-+
-+        try {
-+            const res = await fetch("/api/noona/raven/library/checkForNew", {
-+                method: "POST",
-+            });
-+
-+            const json = (await res.json().catch(() => null)) as unknown;
-+            if (!res.ok) {
-+                const message =
-+                    json && typeof json === "object" && "error" in json && typeof (json as {
-+                        error?: unknown
-+                    }).error === "string"
-+                        ? String((json as { error?: unknown }).error)
-+                        : `Sync failed (HTTP ${res.status}).`;
-+                throw new Error(message);
-+            }
-+
-+            const payload = json && typeof json === "object" ? (json as RavenLibrarySyncResponse) : null;
-+            const queued = typeof payload?.queuedChapters === "number" && Number.isFinite(payload.queuedChapters)
-+                ? payload.queuedChapters
-+                : null;
-+            const updatedTitles =
-+                typeof payload?.updatedTitles === "number" && Number.isFinite(payload.updatedTitles)
-+                    ? payload.updatedTitles
-+                    : null;
-+
-+            const fallbackMessage =
-+                queued != null && queued > 0
-+                    ? `Queued ${queued} chapter(s) across ${updatedTitles ?? "multiple"} title(s).`
-+                    : "No new or missing chapters found.";
-+
-+            setSyncLibraryMessage(normalizeString(payload?.message).trim() || fallbackMessage);
-+            await Promise.all([load(), pollDownloads()]);
-+        } catch (error_) {
-+            const message = error_ instanceof Error ? error_.message : String(error_);
-+            setSyncLibraryError(message);
-+        } finally {
-+            setSyncingLibrary(false);
-+        }
-+    };
-+
-     const filtered = useMemo(() => {
-         const list = titles ?? [];
-         const needle = query.trim().toLowerCase();
-@@ -317,7 +379,8 @@ export function LibrariesPage() {
-     return (
-         <SetupModeGate>
-             <AuthGate>
--                <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
-+                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
-+                        m={{paddingX: "24"}}>
-                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
-                     <Column gap="4" style={{minWidth: 0}}>
-                         <Heading variant="display-strong-s" wrap="balance">
-@@ -331,6 +394,10 @@ export function LibrariesPage() {
-                         <Button variant="primary" onClick={() => openAdd()}>
-                             Add to library
-                         </Button>
-+                        <Button variant="secondary" onClick={() => void checkLibraryForNewChapters()}
-+                                disabled={syncingLibrary}>
-+                            {syncingLibrary ? "Checking..." : "Check new/missing"}
-+                        </Button>
-                         <Button variant="secondary" onClick={() => void load()}>
-                             Refresh
-                         </Button>
-@@ -358,6 +425,24 @@ export function LibrariesPage() {
-                     onChange={(e) => setQuery(e.target.value)}
-                 />
+     const downloadConfigFile = () => {
+         setConfigMessage(null);
+@@ -812,10 +910,16 @@ export function SetupWizard() {
+                                             ? "Downloading..."
+                                             : "Installing..."
+                                         : "Install selected services"}
+                                 </Button>
 
-+                    {(syncLibraryError || syncLibraryMessage) && (
-+                        <Card
-+                            fillWidth
-+                            background="surface"
-+                            border={syncLibraryError ? "danger-alpha-weak" : "neutral-alpha-weak"}
-+                            padding="m"
-+                            radius="l"
-+                        >
-+                            <Text
-+                                variant="body-default-xs"
-+                                onBackground={syncLibraryError ? "danger-strong" : "neutral-weak"}
-+                                wrap="balance"
-+                            >
-+                                {syncLibraryError || syncLibraryMessage}
-+                            </Text>
-+                        </Card>
-+                    )}
++                                {installing && !installProgress && (
++                                    <Text onBackground="neutral-weak" variant="body-default-xs">
++                                        Waiting for Warden to report install progress...
++                                    </Text>
++                                )}
 +
-                     <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
-                         <Column gap="12">
-                             <Row horizontal="between" vertical="center" gap="12">
-@@ -524,8 +609,11 @@ export function LibrariesPage() {
-                         gap="16"
-                         style={{
-                             display: "grid",
--                            gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-+                            rowGap: "20px",
-+                            gridTemplateColumns: `repeat(auto-fill, minmax(${TITLE_CARD_WIDTH}px, ${TITLE_CARD_WIDTH}px))`,
-+                            justifyContent: "center",
-                         }}
-+                        s={{style: {gridTemplateColumns: "1fr", justifyContent: "stretch"}}}
-                     >
-                         {filtered.map((entry) => {
-                             const uuid = normalizeString(entry.uuid);
-@@ -535,76 +623,121 @@ export function LibrariesPage() {
-                             const type = normalizeString(entry.type).trim();
-                             const chapterCount = typeof entry.chapterCount === "number" && Number.isFinite(entry.chapterCount) ? entry.chapterCount : null;
-                             const chaptersDownloaded = typeof entry.chaptersDownloaded === "number" && Number.isFinite(entry.chaptersDownloaded) ? entry.chaptersDownloaded : null;
-+                            const downloadTotal = typeof chaptersDownloaded === "number" ? chaptersDownloaded : 0;
-+                            const chapterTotalText = typeof chapterCount === "number"
-+                                ? `${downloadTotal}/${chapterCount}`
-+                                : `${downloadTotal}`;
+                                 {installError && (
+                                     <Text onBackground="danger-strong">{installError}</Text>
+                                 )}
 
-                             const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
-
-                             return (
-                                 <SmartLink key={uuid || title} href={href}>
--                                    <Card background="surface" border="neutral-alpha-weak" padding="l" radius="l"
--                                          fillWidth>
--                                        <Row gap="12" vertical="start">
--                                            {coverUrl && (
--                                                <img
--                                                    src={coverUrl}
--                                                    alt={`${title} cover`}
--                                                    style={{
--                                                        width: 52,
--                                                        height: 78,
--                                                        objectFit: "cover",
--                                                        borderRadius: 10,
--                                                        border: "1px solid rgba(255,255,255,0.12)",
--                                                        flex: "0 0 auto",
--                                                    }}
--                                                    loading="lazy"
--                                                />
--                                            )}
--                                            <Column gap="8" style={{minWidth: 0}}>
--                                                <Row horizontal="between" vertical="start" gap="8"
-+                                    <Card
-+                                        background="surface"
-+                                        border="neutral-alpha-weak"
-+                                        padding="0"
-+                                        radius="l"
-+                                        fillWidth
-+                                        style={{
-+                                            position: "relative",
-+                                            overflow: "hidden",
-+                                            width: "100%",
-+                                            height: TITLE_CARD_HEIGHT,
-+                                        }}
-+                                    >
-+                                        {coverUrl && (
-+                                            <img
-+                                                src={coverUrl}
-+                                                alt={`${title} cover`}
-+                                                style={{
-+                                                    position: "absolute",
-+                                                    inset: 0,
-+                                                    width: "100%",
-+                                                    height: "100%",
-+                                                    objectFit: "cover",
-+                                                }}
-+                                                loading="lazy"
-+                                            />
-+                                        )}
-+                                        {!coverUrl && (
-+                                            <Row
-+                                                fill
-+                                                background="neutral-alpha-weak"
-+                                                style={{
-+                                                    position: "absolute",
-+                                                    inset: 0,
-+                                                }}
-+                                            />
-+                                        )}
-+
-+                                        <Column
-+                                            fill
-+                                            style={{
-+                                                position: "absolute",
-+                                                inset: 0,
-+                                                justifyContent: "space-between",
-+                                            }}
-+                                        >
-+                                            <Column
-+                                                gap="8"
-+                                                padding="12"
-+                                                style={{
-+                                                    background: "linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.15) 100%)",
-+                                                }}
-+                                            >
-+                                                <Row horizontal="between" vertical="center" gap="8"
-                                                      style={{flexWrap: "wrap"}}>
--                                                    <Heading
--                                                        as="h3"
--                                                        variant="heading-strong-m"
--                                                        wrap="balance"
--                                                        style={{
--                                                            minWidth: 0,
--                                                            lineHeight: 1.2,
--                                                            display: "-webkit-box",
--                                                            WebkitLineClamp: 3,
--                                                            WebkitBoxOrient: "vertical",
--                                                            overflow: "hidden",
--                                                        }}
--                                                    >
--                                                        {title}
--                                                    </Heading>
-                                                     {type && (
-                                                         <Badge background="neutral-alpha-weak"
-                                                                onBackground="neutral-strong">
-                                                             {type}
-                                                         </Badge>
-                                                     )}
-+                                                    <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-+                                                        {chapterTotalText}
-+                                                    </Badge>
-                                                 </Row>
--
--                                                {typeof chapterCount === "number" && (
--                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
--                                                        Chapters:{" "}
--                                                        {typeof chaptersDownloaded === "number"
--                                                            ? `${chaptersDownloaded}/${chapterCount}`
--                                                            : chapterCount}
--                                                    </Text>
--                                                )}
--
--                                                {lastDownloaded && (
--                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
--                                                        Last downloaded: {lastDownloaded}
--                                                    </Text>
--                                                )}
--                                                {uuid && (
--                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
--                                                        {uuid}
--                                                    </Text>
--                                                )}
-+                                                <Heading
-+                                                    as="h3"
-+                                                    variant="heading-strong-m"
-+                                                    wrap="balance"
-+                                                    style={{
-+                                                        minWidth: 0,
-+                                                        lineHeight: 1.2,
-+                                                        display: "-webkit-box",
-+                                                        WebkitLineClamp: 2,
-+                                                        WebkitBoxOrient: "vertical",
-+                                                        overflow: "hidden",
-+                                                    }}
-+                                                >
-+                                                    {title}
-+                                                </Heading>
-+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-+                                                    Downloaded: {chapterTotalText}
-+                                                </Text>
-                                             </Column>
--                                        </Row>
-+
-+                                            <Row
-+                                                padding="12"
-+                                                style={{
-+                                                    background: "linear-gradient(0deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0) 100%)",
-+                                                }}
-+                                            >
-+                                                <Text
-+                                                    onBackground="neutral-weak"
-+                                                    variant="body-default-xs"
-+                                                    style={{
-+                                                        minWidth: 0,
-+                                                        display: "-webkit-box",
-+                                                        WebkitLineClamp: 1,
-+                                                        WebkitBoxOrient: "vertical",
-+                                                        overflow: "hidden",
-+                                                    }}
-+                                                >
-+                                                    {lastDownloaded ? `Last: ${lastDownloaded}` : uuid || "No chapter metadata yet"}
-+                                                </Text>
-+                                            </Row>
-+                                        </Column>
-                                     </Card>
-                                 </SmartLink>
-                             );
+                                 {installProgress && (
