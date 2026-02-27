@@ -198,7 +198,7 @@ public class DownloadService {
             downloadProgress.put(titleName, progress);
             Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, selectedTitle, progress));
             activeDownloads.put(titleName, future);
-            searchSessions.remove(searchId);
+            // Keep the search session so clients can queue multiple selected options from one search result.
             logger.debug(
                     "DOWNLOAD_SERVICE",
                     "Queued single title | title=" + sanitizedTitle +

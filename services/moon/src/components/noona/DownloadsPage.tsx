@@ -480,7 +480,15 @@ export function DownloadsPage() {
                             )}
 
                             {downloads && activeDownloads.length > 0 && (
-                                <Column gap="8">
+                                <Row
+                                    fillWidth
+                                    gap="12"
+                                    style={{
+                                        display: "grid",
+                                        gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                                        alignItems: "stretch",
+                                    }}
+                                >
                                     {activeDownloads.map((entry, idx) => {
                                         const titleName = normalizeString(entry.title).trim() || "Untitled";
                                         const statusRaw = normalizeString(entry.status).trim() || "unknown";
@@ -575,7 +583,7 @@ export function DownloadsPage() {
                                             </Card>
                                         );
                                     })}
-                                </Column>
+                                </Row>
                             )}
                         </Column>
                     </Card>
@@ -667,27 +675,25 @@ export function DownloadsPage() {
                     </Card>
 
                     {addOpen && (
-                        <Row
-                            fillWidth
-                            fillHeight
+                        <Column
                             role="presentation"
                             onClick={(event) => {
                                 if (event.target === event.currentTarget) {
                                     closeAdd();
                                 }
                             }}
-                            horizontal="center"
-                            vertical="center"
                             style={{
                                 position: "fixed",
                                 inset: 0,
+                                width: "100vw",
+                                height: "100vh",
                                 background: "rgba(3, 8, 18, 0.76)",
                                 backdropFilter: "blur(6px)",
-                                zIndex: 70,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
+                                zIndex: 120,
+                                display: "grid",
+                                placeItems: "center",
                                 padding: "clamp(12px, 2vw, 28px)",
+                                overflowY: "auto",
                             }}
                         >
                             <Card
@@ -695,9 +701,8 @@ export function DownloadsPage() {
                                 border="neutral-alpha-weak"
                                 padding="0"
                                 radius="l"
-                                fillWidth
                                 style={{
-                                    width: "min(960px, 100%)",
+                                    width: "min(960px, calc(100vw - 24px))",
                                     maxHeight: "min(90vh, 920px)",
                                     overflow: "hidden",
                                 }}
@@ -913,7 +918,7 @@ export function DownloadsPage() {
                                     </Column>
                                 </Column>
                             </Card>
-                        </Row>
+                        </Column>
                     )}
                 </Column>
             </AuthGate>

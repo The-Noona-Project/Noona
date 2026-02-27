@@ -76,40 +76,53 @@ class DownloadServiceTest {
         assertThat(response).isEqualTo("⚠️ Search session expired or not found. Please search again.");
     }
 
-    /**
-     * Verifies session clearing after successful download queuing
-     */
     @Test
-    void queueDownloadAllChaptersClearsSessionAfterUse() throws InterruptedException {
-        Map<String, String> title = new HashMap<>();
-        title.put("title", "Solo Leveling");
-        title.put("href", "http://example.com/solo");
+    void queueDownloadAllChaptersAllowsMultipleSelectionsFromSameSession() throws InterruptedException {
+        Map<String, String> soloLeveling = new HashMap<>();
+        soloLeveling.put("title", "Solo Leveling");
+        soloLeveling.put("href", "http://example.com/solo");
+
+        Map<String, String> trigun = new HashMap<>();
+        trigun.put("title", "Trigun");
+        trigun.put("href", "http://example.com/trigun");
 
         when(titleScraper.searchManga("solo"))
-                .thenReturn(new ArrayList<>(List.of(title)));
+                .thenReturn(new ArrayList<>(List.of(soloLeveling, trigun)));
         when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
         when(titleScraper.getChapters("http://example.com/solo"))
                 .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(titleScraper.getChapters("http://example.com/trigun"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/trigun/1")));
         when(sourceFinder.findSource(anyString())).thenReturn(Collections.emptyList());
-        NewTitle stubTitle = new NewTitle();
-        stubTitle.setTitleName("Solo Leveling");
-        stubTitle.setUuid("uuid");
-        stubTitle.setSourceUrl("http://example.com/solo");
-        stubTitle.setLastDownloaded("0");
+
+        NewTitle soloStubTitle = new NewTitle();
+        soloStubTitle.setTitleName("Solo Leveling");
+        soloStubTitle.setUuid("solo-uuid");
+        soloStubTitle.setSourceUrl("http://example.com/solo");
+        soloStubTitle.setLastDownloaded("0");
         lenient().when(libraryService.resolveOrCreateTitle(eq("Solo Leveling"), eq("http://example.com/solo")))
-                .thenReturn(stubTitle);
+                .thenReturn(soloStubTitle);
+
+        NewTitle trigunStubTitle = new NewTitle();
+        trigunStubTitle.setTitleName("Trigun");
+        trigunStubTitle.setUuid("trigun-uuid");
+        trigunStubTitle.setSourceUrl("http://example.com/trigun");
+        trigunStubTitle.setLastDownloaded("0");
+        lenient().when(libraryService.resolveOrCreateTitle(eq("Trigun"), eq("http://example.com/trigun")))
+                .thenReturn(trigunStubTitle);
 
         SearchTitle searchTitle = downloadService.searchTitle("solo");
         String searchId = searchTitle.getSearchId();
 
-        String response = downloadService.queueDownloadAllChapters(searchId, 1);
-        assertThat(response).isEqualTo("✅ Download queued for: Solo Leveling");
+        String firstResponse = downloadService.queueDownloadAllChapters(searchId, 1);
+        assertThat(firstResponse).isEqualTo("✅ Download queued for: Solo Leveling");
 
-        String secondResponse = downloadService.queueDownloadAllChapters(searchId, 1);
-        assertThat(secondResponse).isEqualTo("⚠️ Search session expired or not found. Please search again.");
+        String secondResponse = downloadService.queueDownloadAllChapters(searchId, 2);
+        assertThat(secondResponse).isEqualTo("✅ Download queued for: Trigun");
 
-        // Ensure the async download completes before the @TempDir cleanup runs.
+        // Ensure async downloads complete before @TempDir cleanup runs.
         waitForStatus("Solo Leveling", "completed");
+        waitForStatus("Trigun", "completed");
     }
 
     /**

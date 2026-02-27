@@ -604,6 +604,55 @@ export function SetupWizard() {
         const controller = new AbortController();
         installRequestRef.current = controller;
 
+        const inspectProgressAfterInstallFailure = async (): Promise<"running" | "complete" | "error" | null> => {
+            try {
+                const progressRes = await fetch("/api/noona/install/progress", {cache: "no-store"});
+                const progressPayload = (await progressRes.json().catch(() => null)) as InstallProgress | null;
+                if (!progressPayload || !Array.isArray(progressPayload.items)) {
+                    return null;
+                }
+
+                const hasRelevantItems = progressPayload.items.some((item) => targetNames.has(item.name));
+                if (!hasRelevantItems) {
+                    return null;
+                }
+
+                const normalizedStatus = normalizeInstallStatus(progressPayload.status);
+                setInstallProgress(progressPayload);
+
+                if (normalizedStatus === "complete") {
+                    stopPolling();
+                    resetInstallSession();
+                    setInstalling(false);
+                    setInstallError(null);
+                    setInstallResult((prev) => prev ?? {results: []});
+                    setSummaryOpen(true);
+                    return "complete";
+                }
+
+                if (normalizedStatus === "error") {
+                    stopPolling();
+                    resetInstallSession();
+                    setInstalling(false);
+                    setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
+                    return "error";
+                }
+
+                if (normalizedStatus && normalizedStatus !== "idle") {
+                    installProgressStartedRef.current = true;
+                    clearInstallProgressTimeout();
+                    setInstallError(
+                        "Install request timed out at the gateway, but Warden is still installing services. Monitoring continues automatically.",
+                    );
+                    return "running";
+                }
+            } catch {
+                // Fall back to regular error handling below.
+            }
+
+            return null;
+        };
+
         try {
             const responsePromise = fetch("/api/noona/install", {
                 method: "POST",
@@ -616,6 +665,13 @@ export function SetupWizard() {
             const json = (await response.json().catch(() => ({}))) as InstallResponse & { error?: string };
 
             if (!response.ok) {
+                if ([502, 503, 504, 524].includes(response.status)) {
+                    const progressState = await inspectProgressAfterInstallFailure();
+                    if (progressState) {
+                        return;
+                    }
+                }
+
                 const errorMessage =
                     typeof json?.error === "string" && json.error.trim()
                         ? json.error.trim()
@@ -650,6 +706,12 @@ export function SetupWizard() {
             if (controller.signal.aborted) {
                 return;
             }
+
+            const progressState = await inspectProgressAfterInstallFailure();
+            if (progressState) {
+                return;
+            }
+
             const message = error instanceof Error ? error.message : String(error);
             stopPolling();
             resetInstallSession();
