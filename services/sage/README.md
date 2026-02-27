@@ -1,17 +1,51 @@
-# Sage
+# Sage (Noona Stack 2.2)
 
-Sage exposes orchestration and discovery endpoints for Moon and other Noona services.
+Sage is the setup and proxy service for Noona. It fronts Warden install APIs, Discord setup helpers, and Raven
+download/library routes for Moon and other clients.
 
-## Raven integration
+## Quick Navigation
 
-Sage automatically resolves the Raven base URL by querying Warden for installed services and
-falling back to common Docker hostnames. When running Sage without Warden or when Raven is
-exposed through a custom address, set one of the following environment variables:
+- [Service rules](AGENTS.md)
+- [Stack overview](../../README.md)
+- [Entrypoint](initSage.mjs)
+- [App builder](shared/sageApp.mjs)
+- [Route modules](routes/)
+- [Tests](tests/)
+- [Root docs](../../docs/)
 
-- `RAVEN_BASE_URL` – Explicit base URL (e.g., `http://127.0.0.1:8080`).
-- `RAVEN_INTERNAL_BASE_URL` – Optional internal network URL preferred over fallbacks.
-- `RAVEN_DOCKER_URL` – Docker-specific hostname or overlay address for Raven.
+## Core Responsibilities
 
-You can also define `RAVEN_HOST`/`RAVEN_PORT` or `RAVEN_SERVICE_HOST` to compose a host and port
-pair. These overrides ensure Sage can proxy library, search, and download requests through Raven
-when auto-discovery fails.
+- Proxy setup/install/status requests to Warden.
+- Expose Discord setup validation helpers for Portal onboarding.
+- Proxy Raven search/download/library/status routes.
+- Normalize downstream failures into consistent API responses.
+
+## Common Endpoint Groups
+
+- Setup: `/api/setup/*`
+- Discord setup helpers: `/api/setup/services/noona-portal/discord/*`
+- Raven proxy: `/api/raven/*`
+
+## Key Environment Variables
+
+| Variable                                       | Purpose                                  |
+|------------------------------------------------|------------------------------------------|
+| `API_PORT`                                     | Sage listener port (defaults in runtime) |
+| `SERVICE_NAME`                                 | Service label used in logs               |
+| `WARDEN_BASE_URL`                              | Preferred Warden base URL override       |
+| `RAVEN_BASE_URL`                               | Preferred Raven base URL override        |
+| `RAVEN_INTERNAL_BASE_URL` / `RAVEN_DOCKER_URL` | Additional Raven discovery overrides     |
+
+## Local Commands
+
+```bash
+cd services/sage
+npm install
+npm run start
+npm test
+```
+
+## Documentation Rule
+
+When adding or changing Sage routes, update this README and include links to the exact route/client files touched so
+Moon and platform maintainers can trace behavior quickly.

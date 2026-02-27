@@ -3,8 +3,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createWizardStatePublisher } from '../shared/wizardStateClient.mjs'
-import { createDefaultWizardState } from '../shared/wizardStateSchema.mjs'
+import {createWizardStateClient, createWizardStatePublisher} from '../shared/wizardStateClient.mjs'
+import {createDefaultWizardState} from '../shared/wizardStateSchema.mjs'
 
 test('trackServiceStatus prefers layer-aware messages for step detail', async () => {
     const updates = []
@@ -40,4 +40,42 @@ test('trackServiceStatus prefers layer-aware messages for step detail', async ()
         `Detail should include layer identifier, received: ${detailUpdate.detail}`,
     )
     assert.ok(detailUpdate.detail?.includes('Downloading'))
+})
+
+test('createWizardStateClient retries the next Vault endpoint after a timeout', async () => {
+    const state = createDefaultWizardState()
+    const calls = []
+
+    const fetchImpl = (url, options) => {
+        calls.push(url)
+        if (String(url).includes('vault-primary.local')) {
+            return new Promise((_, reject) => {
+                options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), {once: true})
+            })
+        }
+
+        return Promise.resolve(
+            new Response(
+                JSON.stringify({data: state}),
+                {
+                    status: 200,
+                    headers: {'Content-Type': 'application/json'},
+                },
+            ),
+        )
+    }
+
+    const client = createWizardStateClient({
+        token: 'test-token',
+        baseUrls: ['http://vault-primary.local:3005', 'http://vault-secondary.local:3005'],
+        fetchImpl,
+        timeoutMs: 5,
+        env: {},
+    })
+
+    const loaded = await client.loadState({fallbackToDefault: true})
+    assert.equal(loaded?.foundation?.status, 'pending')
+    assert.equal(calls.length, 2)
+    assert.ok(calls[0].includes('vault-primary.local'))
+    assert.ok(calls[1].includes('vault-secondary.local'))
 })

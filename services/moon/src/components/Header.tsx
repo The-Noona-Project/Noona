@@ -10,18 +10,16 @@ import {ThemeToggle} from "./ThemeToggle";
 import styles from "./Header.module.scss";
 
 type TimeDisplayProps = {
-    timeZone: string;
-    locale?: string; // Optionally allow locale, defaulting to 'en-GB'
+    locale?: string;
 };
 
-const TimeDisplay: React.FC<TimeDisplayProps> = ({timeZone, locale = "en-GB"}) => {
+const TimeDisplay: React.FC<TimeDisplayProps> = ({locale}) => {
     const [currentTime, setCurrentTime] = useState("");
 
     useEffect(() => {
         const updateTime = () => {
             const now = new Date();
             const options: Intl.DateTimeFormatOptions = {
-                timeZone,
                 hour: "2-digit",
                 minute: "2-digit",
                 second: "2-digit",
@@ -35,7 +33,7 @@ const TimeDisplay: React.FC<TimeDisplayProps> = ({timeZone, locale = "en-GB"}) =
         const intervalId = setInterval(updateTime, 1000);
 
         return () => clearInterval(intervalId);
-    }, [timeZone, locale]);
+    }, [locale]);
 
     return <>{currentTime}</>;
 };
@@ -140,6 +138,25 @@ export const Header = () => {
                                     </Row>
                                 </>
                             )}
+                            {showMainNav && routes["/downloads"] && (
+                                <>
+                                    <Row s={{hide: true}}>
+                                        <ToggleButton
+                                            prefixIcon="document"
+                                            href="/downloads"
+                                            label="Downloads"
+                                            selected={pathname.startsWith("/downloads")}
+                                        />
+                                    </Row>
+                                    <Row hide s={{hide: false}}>
+                                        <ToggleButton
+                                            prefixIcon="document"
+                                            href="/downloads"
+                                            selected={pathname.startsWith("/downloads")}
+                                        />
+                                    </Row>
+                                </>
+                            )}
                             {showMainNav && routes["/settings"] && (
                                 <>
                                     <Row s={{hide: true}}>
@@ -196,7 +213,7 @@ export const Header = () => {
                         gap="20"
                     >
                         <Flex s={{hide: true}}>
-                            {display.time && <TimeDisplay timeZone={person.location}/>}
+                            {display.time && <TimeDisplay/>}
                         </Flex>
                     </Flex>
                 </Flex>

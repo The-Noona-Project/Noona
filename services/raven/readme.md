@@ -1,176 +1,58 @@
-# 🦅 Raven
+# Raven (Noona Stack 2.2)
 
-**Raven** is the **manga downloader and scraper microservice** for the Noona project.  
-It powers automatic searching, scraping, and downloading of manga chapters into organized `.cbz` files for your personal library.
+Raven is Noona's downloader and library worker service. It searches supported sources, queues chapter jobs, builds
+`.cbz` files, and reports live/ historical download status.
 
----
+## Quick Navigation
 
-## ✨ **What does Raven do?**
+- [Service rules](AGENTS.md)
+- [Stack overview](../../README.md)
+- [Spring entrypoint](src/main/java/com/paxkun/raven/RavenApplication.java)
+- [Controllers](src/main/java/com/paxkun/raven/controller/)
+- [Download services](src/main/java/com/paxkun/raven/service/download/)
+- [Library services](src/main/java/com/paxkun/raven/service/library/)
+- [Gradle build config](build.gradle)
+- [Tests](src/test/java/com/paxkun/raven/)
 
-✅ Provides an **API to search and download manga** from supported sources (currently [WeebCentral](https://weebcentral.com))  
-✅ Organizes downloaded chapters into a clean, structured library  
-✅ Uses **headless Selenium & Jsoup** for scraping  
-✅ Integrates seamlessly as the dedicated scraper within the Noona ecosystem  
-✅ Names chapters dynamically with **page count, source domain, and powered by Noona**
+## Download Workflow
 
----
+1. Search titles.
+2. Select a source option.
+3. Queue chapter downloads.
+4. Track progress/status.
+5. Update local library metadata.
 
-## 🔄 **Download Flow**
+## API Surface (Direct Raven)
 
-1. **Search**
+- `GET /v1/download/health`
+- `GET /v1/download/search/{titleName}`
+- `GET /v1/download/select/{searchId}/{optionIndex}`
+- `GET /v1/download/status`
+- `DELETE /v1/download/status/{title}`
+- `GET /v1/library/health`
+- `GET /v1/library/getall`
+- `GET /v1/library/get/{titleName}`
 
-   - Client calls `/v1/download/search/{titleName}`
-   - Raven scrapes WeebCentral for matching titles using Selenium + Jsoup
-
-2. **Select**
-
-   - Client selects a title by index via `/v1/download/select/{searchId}/{optionIndex}`
-   - Raven retrieves the URL, finds chapters, and initiates download
-
-3. **Download**
-
-   - For each chapter:
-     - Scrapes and downloads all pages
-     - Packages them into a `.cbz` archive with clean naming:
-       ```
-       Chapter {Number} [Pages {Count} {Source} - Noona].cbz
-       ```
-     - Updates Raven's library with the latest `lastDownloaded` chapter
-   - Adds the title & chapter to the local library
-
----
-
-## 🔗 **API Endpoints**
-
-| Method | Endpoint                                             | Description |
-| ------ | ---------------------------------------------------- | ----------- |
-| GET    | `/v1/download/health`                                | Health check for the download module. |
-| GET    | `/v1/download/search/{titleName}`                    | Search WeebCentral for a manga title. Returns options and a generated `searchId`. |
-| GET    | `/v1/download/select/{searchId}/{optionIndex}`       | Download all chapters from a previously searched title. |
-| GET    | `/v1/download/status`                                | View active downloads plus recent history, including progress metadata. |
-| DELETE | `/v1/download/status/{title}`                        | Clear a progress entry (useful for pruning stale history). |
-| GET    | `/v1/library/health`                                 | Health check for the library module. |
-| GET    | `/v1/library/getall`                                 | Get all titles currently in the library. |
-| GET    | `/v1/library/get/{titleName}`                        | Get details of a specific title by name. |
-
----
-
-## 📁 **Download Output Example**
-
-Downloaded files are saved under:
-
-````
-
-/downloads/{Title}/Chapter {Number} \[Pages {Count} from {Source} - Noona].cbz
-
-```
-
-For example:
-
-```
-
-Chapter 120 [Pages 34 hot.planeptune.us - Noona].cbz
-
-```
-
----
-
-## 🗂️ **Project Structure**
-
-Example folder tree (`tree /f` in `services/raven`):
-
-```
-
-C:.
-│   build.gradle
-│   gradlew
-│   gradlew\.bat
-│   settings.gradle
-│
-├───gradle
-│   └───wrapper
-│           gradle-wrapper.jar
-│           gradle-wrapper.properties
-│
-└───src
-├───main
-│   ├───java
-│   │   └───com.paxkun.raven
-│   │       │   RavenApplication.java
-│   │       ├───controller
-│   │       │       DownloadController.java
-│   │       │       LibraryController.java
-│   │       └───service
-│   │           │   DownloadService.java
-│   │           │   LibraryService.java
-│   │           ├───download
-│   │           │       DownloadChapter.java
-│   │           │       SearchTitle.java
-│   │           │       SourceFinder.java
-│   │           │       TitleScraper.java
-│   │           └───library
-│   │                   NewChapter.java
-│   │                   NewTitle.java
-│   └───resources
-│       │   application.properties
-└───test
-└───java.com.paxkun.raven
-RavenApplicationTests.java
-
-````
-
----
-
-## 🚀 **Running Raven**
-
-### 🛠️ **Prerequisites**
- 
-- Docker Desktop
-
----
-
-### 🔧 **Build**
-From project root:
+## Build & Test
 ```bash
-docker build --no-cache -f deployment/raven.Dockerfile -t captainpax/noona-raven . 
-````
+cd services/raven
+./gradlew clean build
+./gradlew test
+```
 
-### ▶️ **Run Locally**
-From project root:
+## Docker (from repository root)
 ```bash
-docker run -p 8080:8080 `                                        
->>   -v ${env:APPDATA}:/app/downloads `
->>   captainpax/noona-raven
+docker build --no-cache -f raven.Dockerfile -t captainpax/noona-raven .
+docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads captainpax/noona-raven
 ```
 
-### ✅ **Verify health**
+## Runtime Notes
 
-Visit:
+- Java toolchain targets Java 21.
+- Selenium + headless Chrome are required for scraping flows.
+- Persist downloads by mounting a host directory to `/app/downloads`.
 
-* [http://localhost:8080/v1/download/health](http://localhost:8080/v1/download/health)
-* [http://localhost:8080/v1/download/status](http://localhost:8080/v1/download/status)
-* [http://localhost:8080/v1/library/health](http://localhost:8080/v1/library/health)
+## Documentation Rule
 
-You should see:
-
-```
-Raven Download API is up and running!
-Raven Library API is up and running!
-```
-
----
-
-## 📝 **Notes**
-
-* Logs are saved under `/downloads/logs` with automatic rotation.
-* Uses **headless Chrome with Selenium**; ensure your environment supports it.
-* Future enhancements:
-
-   * Volume packaging into volume-level CBZ files
-   * Persistent database integration for the library
-
----
-
-### 👤 **Maintained by Pax**
-
-🚀 *Powered by Noona.*
+If you change endpoint contracts, chapter naming, or scraper source behavior, update this README and the linked
+controller/service files in the same PR.

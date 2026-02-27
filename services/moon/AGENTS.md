@@ -31,3 +31,11 @@
 - The recommended size for <Button> and <IconButton> is `m`, only diverge when the UI is either spacious or very compact.
 - Only use responsive spacings (gaps, margins and paddings) when distances need collapse on smaller screens. Most of the time, for general UI elements (cards, groups, etc.), static spacings are enough. Responsive spacings are reserved mostly for large layout elements, like the content area of the page, where 40px looks good on desktop but feels enormous on mobile.
 - Adding `align="center"` to a <Row> or <Column> will make ALL nested text elements align to center. It can have uninteded effects when adding them to top-level layout elements. To center the inner element, use the `horizontal="center"` prop, which will add the `justify-content` property correctly, NOT the `text-align` property.
+
+## Documentation Addendum
+
+- Keep [README.md](README.md) updated when main tabs, route groups, or API proxy flows change.
+- The Moon README should keep a short `## Quick Navigation` section with markdown links to key routes, components, and
+  API folders so GitHub browsing stays fast.
+- If you add or move major Moon pages (`/libraries`, `/downloads`, `/settings`, `/setupwizard`), update
+  both [README.md](README.md) and the root [../../README.md](../../README.md).

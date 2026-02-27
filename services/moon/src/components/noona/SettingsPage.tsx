@@ -5,6 +5,7 @@ import {useSearchParams} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Row, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
+import {emitNoonaSiteNotification} from "./SiteNotifications";
 
 type TabId = "general" | "moon" | "raven" | "vault" | "sage" | "warden" | "portal";
 type MainSectionId = "ecosystem" | "users";
@@ -22,6 +23,11 @@ type ServiceCatalogEntry = {
     image?: string | null;
     health?: string | null;
     installed?: boolean;
+};
+
+type ServiceCatalogResponse = {
+    services?: ServiceCatalogEntry[] | null;
+    error?: string;
 };
 
 type EnvConfigField = {
@@ -70,21 +76,6 @@ type DebugSettings = {
     error?: string;
 };
 
-type RavenDownloadProgress = {
-    title?: string | null;
-    totalChapters?: number | null;
-    completedChapters?: number | null;
-    status?: string | null;
-    completedAt?: number | null;
-    errorMessage?: string | null;
-};
-
-type RavenDownloadSummary = {
-    activeDownloads?: number;
-    maxThreads?: number;
-    error?: string;
-};
-
 type AuthStatusResponse = {
     user?: {
         username?: string | null;
@@ -116,6 +107,17 @@ type UserResetPasswordResponse = {
     user?: ManagedUser | null;
     password?: string | null;
     error?: string;
+};
+
+type FactoryResetProgressPhase = "queued" | "waiting" | "recovering";
+
+type FactoryResetProgressState = {
+    phase: FactoryResetProgressPhase;
+    percent: number;
+    detail: string;
+    startedAt: number;
+    sawDisconnect: boolean;
+    stableSuccessCount: number;
 };
 
 type ServiceEditorState = {
@@ -217,10 +219,6 @@ const formatIso = (value: unknown): string => {
     const parsed = Date.parse(raw);
     return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : raw;
 };
-const formatEpochMs = (value: unknown): string => {
-    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
-    return new Date(value).toLocaleString();
-};
 const isSecretKey = (key: string) => /TOKEN|PASSWORD|API_KEY|SECRET/i.test(key);
 const defaultEditor = (): ServiceEditorState => ({
     loading: false,
@@ -242,6 +240,28 @@ const parsePort = (raw: string): number | null | "invalid" => {
     if (rounded < 1 || rounded > 65535) return "invalid";
     return rounded;
 };
+const clampPercent = (value: number): number => {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.round(value)));
+};
+const shouldTrackFactoryResetRecovery = (message: string): boolean => {
+    const normalized = normalizeString(message).toLowerCase();
+    if (!normalized) return false;
+    if (
+        normalized.includes("failed to fetch")
+        || normalized.includes("networkerror")
+        || normalized.includes("load failed")
+    ) return true;
+    if (!normalized.includes("/api/settings/factory-reset")) return false;
+    return (
+        normalized.includes("operation was aborted")
+        || normalized.includes("fetch failed")
+        || normalized.includes("all backends failed")
+    );
+};
+const FACTORY_RESET_PROGRESS_POLL_MS = 2500;
+const FACTORY_RESET_PROGRESS_TIMEOUT_MS = 8 * 60 * 1000;
+const FACTORY_RESET_REQUIRED_SERVICES = ["noona-warden", "noona-sage", "noona-moon"] as const;
 const BG_SURFACE = "surface" as const;
 const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
 const BG_WARNING_ALPHA_WEAK = "warning-alpha-weak" as const;
@@ -250,6 +270,7 @@ export function SettingsPage() {
     const searchParams = useSearchParams();
     const [activeTab, setActiveTab] = useState<TabId>(normalizeTab(searchParams.get("tab")));
     const [activeSection, setActiveSection] = useState<MainSectionId>("ecosystem");
+    const [navOpen, setNavOpen] = useState(false);
     const [currentPermissions, setCurrentPermissions] = useState<MoonPermission[]>([]);
     const [authStateLoading, setAuthStateLoading] = useState(true);
 
@@ -294,14 +315,6 @@ export function SettingsPage() {
     const [pagePad, setPagePad] = useState("3");
     const [chapterPad, setChapterPad] = useState("4");
 
-    const [summaryLoading, setSummaryLoading] = useState(false);
-    const [summaryError, setSummaryError] = useState<string | null>(null);
-    const [summary, setSummary] = useState<RavenDownloadSummary | null>(null);
-
-    const [historyLoading, setHistoryLoading] = useState(false);
-    const [historyError, setHistoryError] = useState<string | null>(null);
-    const [history, setHistory] = useState<RavenDownloadProgress[]>([]);
-
     const [collectionsLoading, setCollectionsLoading] = useState(false);
     const [collectionsError, setCollectionsError] = useState<string | null>(null);
     const [collections, setCollections] = useState<string[]>([]);
@@ -316,6 +329,7 @@ export function SettingsPage() {
     const [factoryResetDeleteDockers, setFactoryResetDeleteDockers] = useState(false);
     const [factoryResetError, setFactoryResetError] = useState<string | null>(null);
     const [factoryResetMessage, setFactoryResetMessage] = useState<string | null>(null);
+    const [factoryResetProgress, setFactoryResetProgress] = useState<FactoryResetProgressState | null>(null);
 
     const [usersLoading, setUsersLoading] = useState(false);
     const [usersSaving, setUsersSaving] = useState(false);
@@ -346,6 +360,7 @@ export function SettingsPage() {
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
     const canAccessEcosystem = hasPermission(currentPermissions, "admin");
     const canManageUsers = hasPermission(currentPermissions, "user_management");
+    const canShowNav = canAccessEcosystem || canManageUsers;
 
     const setTab = (tab: TabId) => {
         setActiveTab(tab);
@@ -678,44 +693,6 @@ export function SettingsPage() {
         }
     };
 
-    const loadSummary = async () => {
-        setSummaryLoading(true);
-        setSummaryError(null);
-        try {
-            const res = await fetch("/api/noona/raven/downloads/summary", {cache: "no-store"});
-            const json = (await res.json().catch(() => null)) as RavenDownloadSummary | null;
-            if (!res.ok) {
-                setSummaryError(parseError(json, `Failed to load summary (HTTP ${res.status}).`));
-                return;
-            }
-            setSummary(json ?? {});
-        } catch (error_) {
-            const msg = error_ instanceof Error ? error_.message : String(error_);
-            setSummaryError(msg);
-        } finally {
-            setSummaryLoading(false);
-        }
-    };
-
-    const loadHistory = async () => {
-        setHistoryLoading(true);
-        setHistoryError(null);
-        try {
-            const res = await fetch("/api/noona/raven/downloads/history", {cache: "no-store"});
-            const json = await res.json().catch(() => null);
-            if (!res.ok) {
-                setHistoryError(parseError(json, `Failed to load history (HTTP ${res.status}).`));
-                return;
-            }
-            setHistory(Array.isArray(json) ? json : []);
-        } catch (error_) {
-            const msg = error_ instanceof Error ? error_.message : String(error_);
-            setHistoryError(msg);
-        } finally {
-            setHistoryLoading(false);
-        }
-    };
-
     const loadCollections = async () => {
         setCollectionsLoading(true);
         setCollectionsError(null);
@@ -770,9 +747,23 @@ export function SettingsPage() {
         }
     };
 
+    const beginFactoryResetRecovery = (detail: string) => {
+        setFactoryResetPassword("");
+        setFactoryResetMessage("Factory reset queued. Monitoring restart progress...");
+        setFactoryResetProgress({
+            phase: "queued",
+            percent: 8,
+            detail,
+            startedAt: Date.now(),
+            sawDisconnect: false,
+            stableSuccessCount: 0,
+        });
+    };
+
     const runFactoryReset = async () => {
         setFactoryResetError(null);
         setFactoryResetMessage(null);
+        setFactoryResetProgress(null);
 
         const password = factoryResetPassword.trim();
         if (!password) {
@@ -802,23 +793,27 @@ export function SettingsPage() {
                     deleteDockers: factoryResetDeleteDockers,
                 }),
             });
-            const resetJson = (await resetRes.json().catch(() => null)) as {
-                redirectTo?: string;
-                error?: string
-            } | null;
+            const resetJson = (await resetRes.json().catch(() => null)) as { error?: string } | null;
             if (!resetRes.ok) {
-                setFactoryResetError(parseError(resetJson, `Failed to run factory reset (HTTP ${resetRes.status}).`));
+                const message = parseError(resetJson, `Failed to run factory reset (HTTP ${resetRes.status}).`);
+                const shouldTrack = resetRes.status >= 500 && shouldTrackFactoryResetRecovery(message);
+                if (shouldTrack) {
+                    beginFactoryResetRecovery("Connection dropped while restart was starting. Waiting for services...");
+                    return;
+                }
+                setFactoryResetError(message);
+                setFactoryResetBusy(false);
                 return;
             }
 
-            const redirectTo = normalizeString(resetJson?.redirectTo).trim() || window.location.origin || "/";
-            setFactoryResetPassword("");
-            setFactoryResetMessage("Factory reset complete. Restarting ecosystem...");
-            window.location.assign(redirectTo);
+            beginFactoryResetRecovery("Factory reset accepted. Waiting for services to restart...");
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
+            if (shouldTrackFactoryResetRecovery(msg)) {
+                beginFactoryResetRecovery("Lost connection while reset was running. Waiting for services...");
+                return;
+            }
             setFactoryResetError(msg);
-        } finally {
             setFactoryResetBusy(false);
         }
     };
@@ -1103,8 +1098,38 @@ export function SettingsPage() {
                 setUpdatesError(parseError(json, `Failed to check updates (HTTP ${res.status}).`));
                 return;
             }
-            setUpdates(Array.isArray(json?.updates) ? json.updates : []);
+            const nextUpdates = Array.isArray(json?.updates) ? (json.updates as ServiceUpdateSnapshot[]) : [];
+            setUpdates(nextUpdates);
             setUpdatesMessage("Update check finished.");
+
+            const availableUpdates = nextUpdates
+                .filter((entry) => entry?.supported !== false && entry?.updateAvailable === true)
+                .map((entry) => ({
+                    service: normalizeString(entry?.service).trim(),
+                    checkedAt: normalizeString(entry?.checkedAt).trim(),
+                }))
+                .filter((entry) => entry.service.length > 0);
+
+            if (availableUpdates.length > 0) {
+                const services = availableUpdates
+                    .map((entry) => entry.service)
+                    .sort((left, right) => left.localeCompare(right));
+                const signature = availableUpdates
+                    .map((entry) => `${entry.service}:${entry.checkedAt}`)
+                    .sort((left, right) => left.localeCompare(right))
+                    .join("|");
+
+                emitNoonaSiteNotification({
+                    variant: "warning",
+                    title: "Update available",
+                    message:
+                        services.length === 1
+                            ? `${services[0]} has a new image update available.`
+                            : `${services.length} services have new image updates available.`,
+                    durationMs: 9000,
+                    dedupeKey: `update-found:${signature || services.join(",")}`,
+                });
+            }
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setUpdatesError(msg);
@@ -1129,6 +1154,19 @@ export function SettingsPage() {
                 return;
             }
             setUpdatesMessage(`Updated ${serviceName}.`);
+
+            const didUpdate = (json as { updated?: boolean } | null)?.updated === true;
+            const restarted = (json as { restarted?: boolean } | null)?.restarted === true;
+
+            emitNoonaSiteNotification({
+                variant: didUpdate ? "success" : "info",
+                title: "Update download complete",
+                message: didUpdate
+                    ? `${serviceName} image download completed${restarted ? " and service restarted." : "."}`
+                    : `${serviceName} is already on the latest image.`,
+                dedupeKey: `update-download:${serviceName}:${didUpdate ? "updated" : "current"}:${restarted ? "restarted" : "not-restarted"}`,
+            });
+
             await loadUpdates();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -1189,7 +1227,7 @@ export function SettingsPage() {
             void loadAuthStatus();
         }
         if (activeTab === "raven") {
-            void Promise.all([loadNaming(), loadSummary(), loadHistory()]);
+            void loadNaming();
         }
         if (activeTab === "vault") {
             void loadCollections();
@@ -1220,6 +1258,138 @@ export function SettingsPage() {
         if (activeSection !== "users" || !canManageUsers) return;
         void loadManagedUsers();
     }, [activeSection, canManageUsers]);
+
+    useEffect(() => {
+        if (!factoryResetProgress) return;
+
+        let cancelled = false;
+        let timer: number | null = null;
+
+        const pollRecovery = async () => {
+            if (cancelled) return;
+
+            const elapsed = Date.now() - factoryResetProgress.startedAt;
+            if (elapsed >= FACTORY_RESET_PROGRESS_TIMEOUT_MS) {
+                setFactoryResetBusy(false);
+                setFactoryResetProgress(null);
+                setFactoryResetMessage(null);
+                setFactoryResetError("Timed out waiting for ecosystem restart. Check services and try again.");
+                return;
+            }
+
+            try {
+                const res = await fetch("/api/noona/services", {cache: "no-store"});
+                const json = (await res.json().catch(() => null)) as ServiceCatalogResponse | null;
+                if (!res.ok) {
+                    throw new Error(parseError(json, `Failed to probe restart status (HTTP ${res.status}).`));
+                }
+
+                const services = Array.isArray(json?.services) ? json.services : [];
+                const byName = new Map<string, ServiceCatalogEntry>();
+                for (const entry of services) {
+                    const key = normalizeString(entry?.name).trim();
+                    if (!key) continue;
+                    byName.set(key, entry);
+                }
+
+                const requiredCount = FACTORY_RESET_REQUIRED_SERVICES.length;
+                const installedCount = FACTORY_RESET_REQUIRED_SERVICES
+                    .filter((serviceName) => byName.get(serviceName)?.installed === true)
+                    .length;
+
+                let shouldRefresh = false;
+                setFactoryResetProgress((prev) => {
+                    if (!prev) return prev;
+                    if (!prev.sawDisconnect) {
+                        return {
+                            ...prev,
+                            phase: "queued",
+                            percent: Math.max(prev.percent, 14),
+                            detail: "Factory reset queued. Waiting for restart to begin...",
+                        };
+                    }
+
+                    if (installedCount < requiredCount) {
+                        return {
+                            ...prev,
+                            phase: "recovering",
+                            percent: clampPercent(45 + Math.round((installedCount / requiredCount) * 45)),
+                            detail: `Restarting services (${installedCount}/${requiredCount})...`,
+                            stableSuccessCount: 0,
+                        };
+                    }
+
+                    const stableSuccessCount = prev.stableSuccessCount + 1;
+                    shouldRefresh = stableSuccessCount >= 2;
+
+                    return {
+                        ...prev,
+                        phase: "recovering",
+                        percent: 100,
+                        detail: shouldRefresh
+                            ? "Restart complete. Reloading Noona..."
+                            : "Services are back. Verifying stability...",
+                        stableSuccessCount,
+                    };
+                });
+
+                if (shouldRefresh) {
+                    setFactoryResetMessage("Restart complete. Reloading Noona...");
+                    window.location.assign("/");
+                    return;
+                }
+            } catch {
+                const elapsedSeconds = Math.max(1, Math.floor((Date.now() - factoryResetProgress.startedAt) / 1000));
+                setFactoryResetProgress((prev) => {
+                    if (!prev) return prev;
+                    return {
+                        ...prev,
+                        phase: "waiting",
+                        percent: Math.max(prev.percent, 25),
+                        detail: `Waiting for services to restart (${elapsedSeconds}s)...`,
+                        sawDisconnect: true,
+                        stableSuccessCount: 0,
+                    };
+                });
+            }
+
+            timer = window.setTimeout(() => {
+                void pollRecovery();
+            }, FACTORY_RESET_PROGRESS_POLL_MS);
+        };
+
+        timer = window.setTimeout(() => {
+            void pollRecovery();
+        }, FACTORY_RESET_PROGRESS_POLL_MS);
+
+        return () => {
+            cancelled = true;
+            if (timer != null) {
+                window.clearTimeout(timer);
+            }
+        };
+    }, [factoryResetProgress?.startedAt]);
+
+    useEffect(() => {
+        if (!canShowNav && navOpen) {
+            setNavOpen(false);
+        }
+    }, [canShowNav, navOpen]);
+
+    useEffect(() => {
+        if (!navOpen) return;
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setNavOpen(false);
+            }
+        };
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown);
+        };
+    }, [navOpen]);
 
     const renderServiceConfig = () => {
         if (!currentService) return null;
@@ -1516,42 +1686,104 @@ export function SettingsPage() {
                                 Manage services, account credentials, updates, and tooling.
                             </Text>
                         </Column>
-                        {canAccessEcosystem && (
-                            <Button variant="secondary" disabled={catalogLoading} onClick={() => void loadCatalog()}>
-                                Refresh services
-                            </Button>
-                        )}
+                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                            {canShowNav && (
+                                <Button
+                                    variant={navOpen ? "primary" : "secondary"}
+                                    onClick={() => setNavOpen((prev) => !prev)}
+                                    aria-expanded={navOpen}
+                                    aria-controls="settings-navigation"
+                                >
+                                    {navOpen ? "Close navigation" : "Open navigation"}
+                                </Button>
+                            )}
+                            {canAccessEcosystem && (
+                                <Button variant="secondary" disabled={catalogLoading}
+                                        onClick={() => void loadCatalog()}>
+                                    Refresh services
+                                </Button>
+                            )}
+                        </Row>
                     </Row>
 
-                    <Row fillWidth gap="16" vertical="start" s={{style: {flexDirection: "column"}}}>
-                        <Card
-                            background={BG_SURFACE}
-                            border="neutral-alpha-weak"
-                            padding="m"
-                            radius="l"
-                            style={{width: "18rem", maxWidth: "100%", position: "sticky", top: "1rem"}}
-                            s={{style: {width: "100%", position: "static", top: "auto"}}}
-                        >
-                            <Column gap="8">
-                                {canAccessEcosystem && (
-                                    <Button
-                                        fillWidth
-                                        variant={activeSection === "ecosystem" ? "primary" : "secondary"}
-                                        onClick={() => setActiveSection("ecosystem")}
-                                    >
-                                        Ecosystem Settings
-                                    </Button>
-                                )}
-                                <Button
+                    <Row fillWidth gap="16" vertical="start">
+                        {navOpen && (
+                            <Row
+                                fill
+                                style={{
+                                    position: "fixed",
+                                    inset: 0,
+                                    background: "rgba(15, 23, 42, 0.45)",
+                                    zIndex: 30,
+                                }}
+                                onClick={() => setNavOpen(false)}
+                                aria-hidden
+                            />
+                        )}
+                        {canShowNav && (
+                            <Row
+                                id="settings-navigation"
+                                style={{
+                                    position: "fixed",
+                                    inset: "0 auto 0 0",
+                                    width: "min(20rem, 92vw)",
+                                    padding: "1rem",
+                                    zIndex: 40,
+                                    transform: navOpen ? "translateX(0)" : "translateX(-105%)",
+                                    transition: "transform 220ms ease",
+                                    pointerEvents: navOpen ? "auto" : "none",
+                                }}
+                                aria-hidden={!navOpen}
+                            >
+                                <Card
                                     fillWidth
-                                    variant={activeSection === "users" ? "primary" : "secondary"}
-                                    disabled={!canManageUsers}
-                                    onClick={() => setActiveSection("users")}
+                                    background={BG_SURFACE}
+                                    border="neutral-alpha-weak"
+                                    padding="m"
+                                    radius="l"
+                                    style={{
+                                        height: "fit-content",
+                                        maxHeight: "calc(100dvh - 2rem)",
+                                        overflowY: "auto",
+                                        boxShadow: "0 20px 48px rgba(15, 23, 42, 0.28)",
+                                    }}
                                 >
-                                    User Management
-                                </Button>
-                            </Column>
-                        </Card>
+                                    <Column gap="8">
+                                        <Row horizontal="between" vertical="center" gap="8">
+                                            <Text variant="label-default-s" onBackground="neutral-weak">
+                                                Navigation
+                                            </Text>
+                                            <Button size="s" variant="secondary" onClick={() => setNavOpen(false)}>
+                                                Close
+                                            </Button>
+                                        </Row>
+                                        {canAccessEcosystem && (
+                                            <Button
+                                                fillWidth
+                                                variant={activeSection === "ecosystem" ? "primary" : "secondary"}
+                                                onClick={() => {
+                                                    setActiveSection("ecosystem");
+                                                    setNavOpen(false);
+                                                }}
+                                            >
+                                                Ecosystem Settings
+                                            </Button>
+                                        )}
+                                        <Button
+                                            fillWidth
+                                            variant={activeSection === "users" ? "primary" : "secondary"}
+                                            disabled={!canManageUsers}
+                                            onClick={() => {
+                                                setActiveSection("users");
+                                                setNavOpen(false);
+                                            }}
+                                        >
+                                            User Management
+                                        </Button>
+                                    </Column>
+                                </Card>
+                            </Row>
+                        )}
 
                         <Column fillWidth gap="16">
                             {activeSection === "ecosystem" && canAccessEcosystem && (
@@ -1741,89 +1973,17 @@ export function SettingsPage() {
                             </Card>
 
                             <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="8">
-                                    <Row horizontal="between" vertical="center">
-                                        <Heading as="h3" variant="heading-strong-l">Download workers</Heading>
-                                        <Button variant="secondary" disabled={summaryLoading}
-                                                onClick={() => void loadSummary()}>
-                                            Refresh
+                                <Column gap="12">
+                                    <Heading as="h3" variant="heading-strong-l">Downloads moved</Heading>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Queue controls, worker status, and Raven download history now live in the
+                                        Downloads tab.
+                                    </Text>
+                                    <Row>
+                                        <Button variant="secondary" href="/downloads">
+                                            Open downloads
                                         </Button>
                                     </Row>
-                                    {summaryError && <Text onBackground="danger-strong"
-                                                           variant="body-default-xs">{summaryError}</Text>}
-                                    {summaryLoading && (
-                                        <Row fillWidth horizontal="center" paddingY="12">
-                                            <Spinner/>
-                                        </Row>
-                                    )}
-                                    {!summaryLoading && (
-                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
-                                                active: {typeof summary?.activeDownloads === "number" ? summary.activeDownloads : 0}
-                                            </Badge>
-                                            <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
-                                                max
-                                                threads: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
-                                            </Badge>
-                                        </Row>
-                                    )}
-                                </Column>
-                            </Card>
-
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="8" id="raven-history">
-                                    <Row horizontal="between" vertical="center">
-                                        <Heading as="h3" variant="heading-strong-l">Download history</Heading>
-                                        <Button variant="secondary" disabled={historyLoading}
-                                                onClick={() => void loadHistory()}>
-                                            Refresh
-                                        </Button>
-                                    </Row>
-                                    {historyError && <Text onBackground="danger-strong"
-                                                           variant="body-default-xs">{historyError}</Text>}
-                                    {historyLoading && (
-                                        <Row fillWidth horizontal="center" paddingY="12">
-                                            <Spinner/>
-                                        </Row>
-                                    )}
-                                    {!historyLoading && history.length === 0 && (
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">No history
-                                            yet.</Text>
-                                    )}
-                                    {!historyLoading && history.length > 0 && (
-                                        <Column gap="8">
-                                            {history.map((entry, index) => {
-                                                const title = normalizeString(entry.title).trim() || "Untitled";
-                                                const status = normalizeString(entry.status).trim() || "unknown";
-                                                const total = typeof entry.totalChapters === "number" && Number.isFinite(entry.totalChapters) ? entry.totalChapters : 0;
-                                                const done = typeof entry.completedChapters === "number" && Number.isFinite(entry.completedChapters) ? entry.completedChapters : 0;
-                                                return (
-                                                    <Card key={`${title}-${index}`} fillWidth background={BG_SURFACE}
-                                                          border="neutral-alpha-weak" padding="m" radius="l">
-                                                        <Column gap="8">
-                                                            <Row horizontal="between" vertical="center" gap="12"
-                                                                 style={{flexWrap: "wrap"}}>
-                                                                <Text variant="heading-default-s"
-                                                                      wrap="balance">{title}</Text>
-                                                                <Badge background={BG_NEUTRAL_ALPHA_WEAK}
-                                                                       onBackground="neutral-strong">{status}</Badge>
-                                                            </Row>
-                                                            <Text onBackground="neutral-weak"
-                                                                  variant="body-default-xs">Chapters: {done}/{total || "?"}</Text>
-                                                            {formatEpochMs(entry.completedAt) && (
-                                                                <Text onBackground="neutral-weak"
-                                                                      variant="body-default-xs">Completed: {formatEpochMs(entry.completedAt)}</Text>
-                                                            )}
-                                                            {normalizeString(entry.errorMessage).trim() && (
-                                                                <Text onBackground="danger-strong"
-                                                                      variant="body-default-xs">{normalizeString(entry.errorMessage).trim()}</Text>
-                                                            )}
-                                                        </Column>
-                                                    </Card>
-                                                );
-                                            })}
-                                        </Column>
-                                    )}
                                 </Column>
                             </Card>
                         </>
@@ -1904,12 +2064,14 @@ export function SettingsPage() {
                                         type="password"
                                         label="Confirm with password"
                                         value={factoryResetPassword}
+                                        disabled={factoryResetBusy}
                                         onChange={(event) => setFactoryResetPassword(event.target.value)}
                                     />
                                     <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
                                         <input
                                             type="checkbox"
                                             checked={factoryResetDeleteRavenDownloads}
+                                            disabled={factoryResetBusy}
                                             onChange={(event) => setFactoryResetDeleteRavenDownloads(event.target.checked)}
                                         />
                                         <Text variant="body-default-xs">Delete Raven&apos;s downloads</Text>
@@ -1918,10 +2080,36 @@ export function SettingsPage() {
                                         <input
                                             type="checkbox"
                                             checked={factoryResetDeleteDockers}
+                                            disabled={factoryResetBusy}
                                             onChange={(event) => setFactoryResetDeleteDockers(event.target.checked)}
                                         />
                                         <Text variant="body-default-xs">Delete dockers</Text>
                                     </label>
+                                    {factoryResetProgress && (
+                                        <Card fillWidth background={BG_SURFACE} border={BG_WARNING_ALPHA_WEAK}
+                                              padding="m"
+                                              radius="l">
+                                            <Column gap="8">
+                                                <Row horizontal="between" vertical="center">
+                                                    <Text variant="label-default-s">Restart progress</Text>
+                                                    <Text onBackground="neutral-weak"
+                                                          variant="body-default-xs">{clampPercent(factoryResetProgress.percent)}%</Text>
+                                                </Row>
+                                                <Row fillWidth background={BG_NEUTRAL_ALPHA_WEAK} style={{
+                                                    height: 8,
+                                                    borderRadius: 999,
+                                                    overflow: "hidden",
+                                                }}>
+                                                    <Row background={BG_WARNING_ALPHA_WEAK} style={{
+                                                        height: "100%",
+                                                        width: `${clampPercent(factoryResetProgress.percent)}%`,
+                                                    }}/>
+                                                </Row>
+                                                <Text onBackground="neutral-weak"
+                                                      variant="body-default-xs">{factoryResetProgress.detail}</Text>
+                                            </Column>
+                                        </Card>
+                                    )}
                                     {factoryResetError &&
                                         <Text onBackground="danger-strong"
                                               variant="body-default-xs">{factoryResetError}</Text>}
@@ -1931,7 +2119,7 @@ export function SettingsPage() {
                                     <Row gap="12" style={{flexWrap: "wrap"}}>
                                         <Button variant="secondary" disabled={factoryResetBusy}
                                                 onClick={() => void runFactoryReset()}>
-                                            {factoryResetBusy ? "Resetting..." : "Factory Reset"}
+                                            {factoryResetProgress ? "Restarting..." : factoryResetBusy ? "Resetting..." : "Factory Reset"}
                                         </Button>
                                     </Row>
                                 </Column>

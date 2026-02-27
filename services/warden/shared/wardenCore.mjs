@@ -1,5 +1,6 @@
 // services/warden/shared/wardenCore.mjs
 import fs from 'node:fs';
+import path from 'node:path';
 
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
@@ -37,6 +38,13 @@ const describeSocketReference = (value) => {
     const prefix = isTcpDockerSocket(value) ? 'endpoint' : 'socket';
     return `${prefix} ${value}`;
 };
+
+const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
+const DEFAULT_VAULT_DATA_FOLDER_NAME = 'vault';
+const DEFAULT_RAVEN_DATA_FOLDER_NAME = 'raven';
+const RAVEN_CONTAINER_PATHS = new Set(['/kavita-data', '/data', '/app/downloads', '/downloads']);
+const VAULT_REDIS_HOST_MOUNT_PATH_KEY = 'VAULT_REDIS_HOST_MOUNT_PATH';
+const VAULT_MONGO_HOST_MOUNT_PATH_KEY = 'VAULT_MONGO_HOST_MOUNT_PATH';
 
 function normalizeServices(servicesOption = {}) {
     const { addon = addonDockers, core = noonaDockers } = servicesOption;
@@ -169,6 +177,94 @@ function parseEnvEntries(entries = []) {
     }
 
     return envMap;
+}
+
+function normalizePathValue(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeContainerPath(value) {
+    const normalized = normalizePathValue(value).replace(/\\/g, '/');
+    if (!normalized) {
+        return '';
+    }
+    return normalized.replace(/\/+$/, '') || '/';
+}
+
+function isWindowsAbsolutePath(value) {
+    return WINDOWS_DRIVE_PATH_PATTERN.test(value);
+}
+
+function toAbsoluteHostPath(value, {cwd = process.cwd()} = {}) {
+    const trimmed = normalizePathValue(value);
+    if (!trimmed) {
+        return null;
+    }
+
+    if (isWindowsAbsolutePath(trimmed) || path.isAbsolute(trimmed)) {
+        return path.normalize(trimmed);
+    }
+
+    return path.normalize(path.resolve(cwd, trimmed));
+}
+
+function isLikelyNamedDockerVolume(source) {
+    const trimmed = normalizePathValue(source);
+    if (!trimmed) {
+        return true;
+    }
+
+    if (trimmed.startsWith('.')) {
+        return false;
+    }
+
+    if (isWindowsAbsolutePath(trimmed) || path.isAbsolute(trimmed)) {
+        return false;
+    }
+
+    return !trimmed.includes('/') && !trimmed.includes('\\');
+}
+
+function normalizeVaultFolderName(value, fallback = DEFAULT_VAULT_DATA_FOLDER_NAME) {
+    const trimmed = normalizePathValue(value);
+    if (!trimmed) {
+        return fallback;
+    }
+
+    if (trimmed === '.' || trimmed === '..' || trimmed.includes('/') || trimmed.includes('\\')) {
+        return fallback;
+    }
+
+    const cleaned = trimmed.replace(/[:*?"<>|]/g, '').trim();
+    return cleaned || fallback;
+}
+
+function upsertEnvEntry(entries, key, value) {
+    const list = Array.isArray(entries) ? [...entries] : [];
+    const prefix = `${key}=`;
+    const filtered = list.filter((entry) => !(typeof entry === 'string' && entry.startsWith(prefix)));
+    filtered.push(`${key}=${value ?? ''}`);
+    return filtered;
+}
+
+function upsertBindMount(entries, destination, mountEntry) {
+    const list = Array.isArray(entries) ? [...entries] : [];
+    const marker = `:${destination}`;
+    const filtered = list.filter((entry) => {
+        if (typeof entry !== 'string') {
+            return true;
+        }
+
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            return false;
+        }
+
+        return !(trimmed.endsWith(marker) || trimmed.includes(`${marker}:`));
+    });
+
+    filtered.push(mountEntry);
+    return filtered;
 }
 
 function cloneServiceDescriptor(descriptor) {
@@ -618,6 +714,10 @@ export function createWarden(options = {}) {
     };
 
     const inspectContainerSafe = async (dockerClient, name) => {
+        if (!dockerClient || typeof dockerClient.getContainer !== 'function') {
+            return null;
+        }
+
         try {
             return await dockerClient.getContainer(name).inspect();
         } catch (error) {
@@ -651,6 +751,214 @@ export function createWarden(options = {}) {
                 destination: typeof mount?.Destination === 'string' ? mount.Destination.trim() : '',
             }))
             .filter((mount) => mount.destination && defaultDestinations.has(mount.destination));
+    };
+
+    const hasNoonaWorkspaceMarkers = (candidateRoot) => {
+        if (typeof fsModule?.existsSync !== 'function') {
+            return false;
+        }
+
+        try {
+            return fsModule.existsSync(path.join(candidateRoot, 'services', 'raven'));
+        } catch {
+            return false;
+        }
+    };
+
+    const resolveNoonaWorkspaceRoot = () => {
+        const seen = new Set();
+        const candidates = [];
+
+        const pushCandidate = (candidate) => {
+            const trimmed = normalizePathValue(candidate);
+            if (!trimmed) {
+                return;
+            }
+
+            const normalized = path.normalize(trimmed);
+            if (seen.has(normalized)) {
+                return;
+            }
+
+            seen.add(normalized);
+            candidates.push(normalized);
+        };
+
+        pushCandidate(env.NOONA_ROOT_DIR);
+        pushCandidate(env.NOONA_DATA_DIR);
+        pushCandidate(process.cwd());
+        pushCandidate(path.resolve(process.cwd(), '..'));
+        pushCandidate(path.resolve(process.cwd(), '..', '..'));
+
+        for (const candidate of candidates) {
+            if (hasNoonaWorkspaceMarkers(candidate)) {
+                return candidate;
+            }
+        }
+
+        return candidates[0] || path.resolve(process.cwd());
+    };
+
+    const defaultRavenHostMountPath = path.join(resolveNoonaWorkspaceRoot(), DEFAULT_RAVEN_DATA_FOLDER_NAME);
+
+    const isLikelyRavenContainerPath = (candidate, appData = '') => {
+        const normalizedCandidate = normalizeContainerPath(candidate).toLowerCase();
+        if (!normalizedCandidate) {
+            return false;
+        }
+
+        if (RAVEN_CONTAINER_PATHS.has(normalizedCandidate)) {
+            return true;
+        }
+
+        const normalizedAppData = normalizeContainerPath(appData).toLowerCase();
+        if (normalizedAppData && normalizedCandidate === normalizedAppData && normalizedCandidate.startsWith('/')) {
+            return true;
+        }
+
+        return false;
+    };
+
+    const resolveRavenHostMountFromEnv = (envMap = {}, options = {}) => {
+        const appData = normalizePathValue(envMap?.APPDATA);
+        const rawMount = normalizePathValue(envMap?.KAVITA_DATA_MOUNT);
+
+        if (rawMount && !isLikelyRavenContainerPath(rawMount, appData)) {
+            return toAbsoluteHostPath(rawMount, options);
+        }
+
+        if (appData && !isLikelyRavenContainerPath(appData, appData)) {
+            return toAbsoluteHostPath(appData, options);
+        }
+
+        return null;
+    };
+
+    const resolveRavenHostMountFromInstallOverrides = (installOverridesByName) => {
+        if (!(installOverridesByName instanceof Map)) {
+            return null;
+        }
+
+        const ravenOverrides = installOverridesByName.get('noona-raven');
+        if (!ravenOverrides || typeof ravenOverrides !== 'object') {
+            return null;
+        }
+
+        return resolveRavenHostMountFromEnv(ravenOverrides, {cwd: process.cwd()});
+    };
+
+    const resolveVaultDataFolderName = (installOverridesByName) => {
+        if (installOverridesByName instanceof Map) {
+            const installVaultEnv = installOverridesByName.get('noona-vault');
+            if (installVaultEnv && typeof installVaultEnv === 'object') {
+                const fromInstall = normalizePathValue(installVaultEnv.VAULT_DATA_FOLDER);
+                if (fromInstall) {
+                    return normalizeVaultFolderName(fromInstall);
+                }
+            }
+        }
+
+        const runtimeVaultEnv = resolveRuntimeConfig('noona-vault').env;
+        const fromRuntime = normalizePathValue(runtimeVaultEnv?.VAULT_DATA_FOLDER);
+        if (fromRuntime) {
+            return normalizeVaultFolderName(fromRuntime);
+        }
+
+        const fromProcessEnv = normalizePathValue(env.VAULT_DATA_FOLDER);
+        return normalizeVaultFolderName(fromProcessEnv || DEFAULT_VAULT_DATA_FOLDER_NAME);
+    };
+
+    const resolveExplicitVaultHostMountPath = ({envKey, installOverridesByName} = {}) => {
+        if (!envKey) {
+            return null;
+        }
+
+        if (installOverridesByName instanceof Map) {
+            const installVaultEnv = installOverridesByName.get('noona-vault');
+            if (installVaultEnv && typeof installVaultEnv === 'object') {
+                const fromInstall = normalizePathValue(installVaultEnv[envKey]);
+                if (fromInstall) {
+                    return toAbsoluteHostPath(fromInstall, {cwd: process.cwd()});
+                }
+            }
+        }
+
+        const runtimeVaultEnv = resolveRuntimeConfig('noona-vault').env;
+        const fromRuntime = normalizePathValue(runtimeVaultEnv?.[envKey]);
+        if (fromRuntime) {
+            return toAbsoluteHostPath(fromRuntime, {cwd: process.cwd()});
+        }
+
+        return null;
+    };
+
+    const resolveRavenHostMountForVaultData = async (dockerClient, installOverridesByName) => {
+        const fromInstall = resolveRavenHostMountFromInstallOverrides(installOverridesByName);
+        if (fromInstall) {
+            return fromInstall;
+        }
+
+        const runtimeRavenEnv = resolveRuntimeConfig('noona-raven').env;
+        const fromRuntime = resolveRavenHostMountFromEnv(runtimeRavenEnv, {cwd: process.cwd()});
+        if (fromRuntime) {
+            return fromRuntime;
+        }
+
+        const mounts = await collectRavenDownloadMounts(dockerClient);
+        const bindMount = mounts.find((mount) => mount?.type === 'bind' && mount?.source);
+        if (bindMount?.source && !isLikelyNamedDockerVolume(bindMount.source)) {
+            const fromContainer = toAbsoluteHostPath(bindMount.source, {cwd: process.cwd()});
+            if (fromContainer) {
+                return fromContainer;
+            }
+        }
+
+        return path.normalize(defaultRavenHostMountPath);
+    };
+
+    const applyVaultDataMountForService = async (service, {dockerClient, installOverridesByName} = {}) => {
+        if (!service?.name) {
+            return service;
+        }
+
+        const mountSpecByService = {
+            'noona-redis': {
+                destination: '/data',
+                subdir: 'redis',
+                vaultMountEnvKey: VAULT_REDIS_HOST_MOUNT_PATH_KEY,
+            },
+            'noona-mongo': {
+                destination: '/data/db',
+                subdir: 'mongo',
+                vaultMountEnvKey: VAULT_MONGO_HOST_MOUNT_PATH_KEY,
+            },
+        };
+
+        const mountSpec = mountSpecByService[service.name];
+        if (!mountSpec) {
+            return service;
+        }
+
+        const folderName = resolveVaultDataFolderName(installOverridesByName);
+        const explicitHostMount = resolveExplicitVaultHostMountPath({
+            envKey: mountSpec.vaultMountEnvKey,
+            installOverridesByName,
+        });
+        let hostMount = explicitHostMount;
+        if (!hostMount) {
+            const ravenHostMount = await resolveRavenHostMountForVaultData(dockerClient, installOverridesByName);
+            const noonaRoot = path.dirname(ravenHostMount);
+            const vaultRoot = path.join(noonaRoot, folderName);
+            hostMount = path.join(vaultRoot, mountSpec.subdir);
+        }
+
+        const bind = `${hostMount}:${mountSpec.destination}`;
+
+        return {
+            ...service,
+            env: upsertEnvEntry(service.env, 'VAULT_DATA_FOLDER', folderName),
+            volumes: upsertBindMount(service.volumes, mountSpec.destination, bind),
+        };
     };
 
     const wipePathWithFs = async (targetPath) => {
@@ -778,7 +1086,7 @@ export function createWarden(options = {}) {
             requested: true,
             mountCount: mounts.length,
             entries,
-            deleted: entries.length > 0 && entries.every((entry) => entry.deleted === true),
+            deleted: entries.every((entry) => entry.deleted === true),
         };
     };
 
@@ -1718,16 +2026,22 @@ export function createWarden(options = {}) {
         return snapshot;
     };
 
+    const runScheduledServiceUpdateRefresh = () => {
+        Promise.resolve(api.refreshServiceUpdates()).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] âšï¸ Scheduled service update check failed: ${message}`);
+        });
+    };
+
     const startServiceUpdateTimer = () => {
         if (typeof setIntervalImpl !== 'function' || serviceUpdateTimer) {
             return;
         }
 
+        runScheduledServiceUpdateRefresh();
+
         serviceUpdateTimer = setIntervalImpl(() => {
-            Promise.resolve(api.refreshServiceUpdates()).catch((error) => {
-                const message = error instanceof Error ? error.message : String(error);
-                logger.warn?.(`[${serviceName}] âš ï¸ Scheduled service update check failed: ${message}`);
-            });
+            runScheduledServiceUpdateRefresh();
         }, updateCheckIntervalMs);
 
         if (serviceUpdateTimer && typeof serviceUpdateTimer.unref === 'function') {
@@ -1829,7 +2143,12 @@ export function createWarden(options = {}) {
         });
 
         const dockerClient = await ensureDockerConnection();
-        const hostServiceUrl = api.resolveHostServiceUrl(service);
+        const installOverridesByName = options?.installOverridesByName;
+        const effectiveService = await applyVaultDataMountForService(service, {
+            dockerClient,
+            installOverridesByName,
+        });
+        const hostServiceUrl = api.resolveHostServiceUrl(effectiveService);
         const recreate = options?.recreate === true;
         let alreadyRunning = false;
 
@@ -1881,12 +2200,12 @@ export function createWarden(options = {}) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'pulling',
-                message: `Checking Docker image ${service.image}`,
-                detail: service.image,
+                message: `Checking Docker image ${effectiveService.image}`,
+                detail: effectiveService.image,
             });
 
             try {
-                await dockerUtils.pullImageIfNeeded(service.image, {
+                await dockerUtils.pullImageIfNeeded(effectiveService.image, {
                     dockerInstance: dockerClient,
                     onProgress: (event = {}) => {
                         const explicitLayerId =
@@ -1956,7 +2275,7 @@ export function createWarden(options = {}) {
 
             try {
                 await dockerUtils.runContainerWithLogs(
-                    service,
+                    effectiveService,
                     networkName,
                     trackedContainers,
                     runtimeDebug,
@@ -2219,7 +2538,9 @@ export function createWarden(options = {}) {
         return order;
     };
 
-    const installSingleServiceByName = async (name, envOverrides = null) => {
+    const installSingleServiceByName = async (name, envOverrides = null, options = {}) => {
+        const installOverridesByName =
+            options?.installOverridesByName instanceof Map ? options.installOverridesByName : null;
         const {entry, descriptor, envOverrides: combinedOverrides, runtime} = buildEffectiveServiceDescriptor(name, {
             envOverrides,
         });
@@ -2401,7 +2722,10 @@ export function createWarden(options = {}) {
 
         try {
             const recreate = normalizedOverrides && Object.keys(normalizedOverrides).length > 0;
-            await api.startService(serviceDescriptor, healthUrl, {recreate});
+            await api.startService(serviceDescriptor, healthUrl, {
+                recreate,
+                installOverridesByName,
+            });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             appendHistoryEntry(descriptor.name, {
@@ -2513,7 +2837,9 @@ export function createWarden(options = {}) {
 
             attempted.add(serviceName);
             const overrides = overridesByName.get(serviceName) || null;
-            const result = await installSingleServiceByName(serviceName, overrides);
+            const result = await installSingleServiceByName(serviceName, overrides, {
+                installOverridesByName: overridesByName,
+            });
 
             if (serviceName === trimmedName) {
                 targetResult = result;
@@ -2601,7 +2927,9 @@ export function createWarden(options = {}) {
 
             try {
                 const overrides = overridesByName.get(serviceName) || null;
-                const result = await installSingleServiceByName(serviceName, overrides);
+                const result = await installSingleServiceByName(serviceName, overrides, {
+                    installOverridesByName: overridesByName,
+                });
                 results.push(result);
             } catch (error) {
                 results.push({

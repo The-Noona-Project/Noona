@@ -1,6 +1,7 @@
 // services/warden/tests/wardenCore.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import {createWarden, defaultDockerSocketDetector} from '../shared/wardenCore.mjs';
 import {attachSelfToNetwork} from '../docker/dockerUtilties.mjs';
@@ -472,6 +473,178 @@ test('installServices merges environment overrides before starting services', as
     const resultNames = results.map((entry) => entry.name);
     assert.ok(resultNames.includes('noona-vault'));
     assert.ok(resultNames.includes('noona-sage'));
+});
+
+test('installServices mounts Redis and Mongo under a Vault folder next to Raven mount', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                env: [...(service.env || [])],
+                volumes: [...(service.volumes || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const services = {
+        addon: {
+            'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
+            'noona-mongo': {name: 'noona-mongo', image: 'mongo', port: 27017},
+        },
+        core: {
+            'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            'noona-raven': {name: 'noona-raven', image: 'raven'},
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services,
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.installServices([
+        {name: 'noona-vault', env: {VAULT_DATA_FOLDER: 'vault-store'}},
+        {name: 'noona-raven', env: {KAVITA_DATA_MOUNT: '/srv/noona/raven'}},
+    ]);
+
+    const redisStart = started.find((entry) => entry.name === 'noona-redis');
+    const mongoStart = started.find((entry) => entry.name === 'noona-mongo');
+    assert.ok(redisStart, 'Redis should be started');
+    assert.ok(mongoStart, 'Mongo should be started');
+
+    const expectedVaultRoot = path.join(path.dirname(path.normalize('/srv/noona/raven')), 'vault-store');
+    const expectedRedisMount = `${path.join(expectedVaultRoot, 'redis')}:/data`;
+    const expectedMongoMount = `${path.join(expectedVaultRoot, 'mongo')}:/data/db`;
+
+    assert.ok(redisStart.volumes.includes(expectedRedisMount));
+    assert.ok(mongoStart.volumes.includes(expectedMongoMount));
+    assert.ok(redisStart.env.includes('VAULT_DATA_FOLDER=vault-store'));
+    assert.ok(mongoStart.env.includes('VAULT_DATA_FOLDER=vault-store'));
+});
+
+test('installServices respects explicit Redis and Mongo host mount folder overrides from Vault settings', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                env: [...(service.env || [])],
+                volumes: [...(service.volumes || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const services = {
+        addon: {
+            'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
+            'noona-mongo': {name: 'noona-mongo', image: 'mongo', port: 27017},
+        },
+        core: {
+            'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            'noona-raven': {name: 'noona-raven', image: 'raven'},
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services,
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.installServices([
+        {
+            name: 'noona-vault',
+            env: {
+                VAULT_DATA_FOLDER: 'vault-store',
+                VAULT_REDIS_HOST_MOUNT_PATH: './data/redis-custom',
+                VAULT_MONGO_HOST_MOUNT_PATH: './data/mongo-custom',
+            },
+        },
+        {name: 'noona-raven', env: {KAVITA_DATA_MOUNT: '/srv/noona/raven'}},
+    ]);
+
+    const redisStart = started.find((entry) => entry.name === 'noona-redis');
+    const mongoStart = started.find((entry) => entry.name === 'noona-mongo');
+    assert.ok(redisStart, 'Redis should be started');
+    assert.ok(mongoStart, 'Mongo should be started');
+
+    const expectedRedisMount = `${path.resolve(process.cwd(), 'data/redis-custom')}:/data`;
+    const expectedMongoMount = `${path.resolve(process.cwd(), 'data/mongo-custom')}:/data/db`;
+    assert.ok(redisStart.volumes.includes(expectedRedisMount));
+    assert.ok(mongoStart.volumes.includes(expectedMongoMount));
+});
+
+test('startService defaults Redis Vault folder name to "vault"', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push(service);
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services: {addon: {}, core: {}},
+        dockerInstance: createStubDocker({
+            getContainer: () => ({
+                inspect: async () => {
+                    const error = new Error('Not found');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            }),
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.startService({name: 'noona-redis', image: 'redis', env: []});
+
+    assert.equal(started.length, 1);
+    const [service] = started;
+    assert.ok(service.env.includes('VAULT_DATA_FOLDER=vault'));
+    assert.ok(Array.isArray(service.volumes));
+    const mount = service.volumes.find((entry) => typeof entry === 'string' && entry.endsWith(':/data'));
+    assert.ok(mount, 'Redis should include a /data bind mount');
+    assert.match(mount, /vault[\\/]+redis:\/data$/);
 });
 
 test('installServices reports invalid environment overrides', async () => {
@@ -1428,6 +1601,61 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
     assert.ok(events.includes('✅ Warden is ready.'));
 });
 
+
+test('init performs an immediate service update refresh before scheduling interval checks', async () => {
+    let scheduledCallback = null;
+    let unrefCalled = false;
+
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (_service, _network, trackedContainers) => {
+            trackedContainers.add('tracked');
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {name: 'noona-moon'},
+                'noona-sage': {name: 'noona-sage'},
+            },
+        },
+        setIntervalImpl: (callback) => {
+            scheduledCallback = callback;
+            return {
+                unref: () => {
+                    unrefCalled = true;
+                },
+            };
+        },
+    });
+
+    const refreshCalls = [];
+    warden.refreshServiceUpdates = async () => {
+        refreshCalls.push('refresh');
+        return [];
+    };
+
+    warden.startService = async () => {
+    };
+
+    await warden.init();
+
+    assert.equal(refreshCalls.length, 1);
+    assert.equal(typeof scheduledCallback, 'function');
+    assert.equal(unrefCalled, true);
+});
+
 test('init falls back to alternate docker socket when default ping fails', async () => {
     const failingDocker = createStubDocker({
         ping: async () => {
@@ -1635,6 +1863,43 @@ test('factoryResetEcosystem removes noona containers/images and restarts in clea
     assert.deepEqual(removedImages.sort(), ['img-raven', 'img-sage']);
     assert.equal(result.dockerCleanup.requested, true);
     assert.equal(result.ravenDownloads.requested, false);
+});
+
+test('factoryResetEcosystem marks Raven cleanup successful when no Raven mounts are present', async () => {
+    const dockerInstance = createStubDocker({
+        getContainer: () => ({
+            inspect: async () => {
+                const error = new Error('Not found');
+                error.statusCode = 404;
+                throw error;
+            },
+        }),
+    });
+
+    const warden = buildWarden({
+        dockerInstance,
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.stopEcosystem = async () => [];
+    warden.startEcosystem = async () => ({mode: 'minimal', setupCompleted: false});
+
+    const result = await warden.factoryResetEcosystem({
+        deleteDockers: false,
+        deleteRavenDownloads: true,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ravenDownloads.requested, true);
+    assert.equal(result.ravenDownloads.mountCount, 0);
+    assert.equal(result.ravenDownloads.deleted, true);
+    assert.deepEqual(result.ravenDownloads.entries, []);
 });
 
 test('shutdownAll stops, removes, clears tracked containers and exits with code 0', async () => {

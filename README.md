@@ -1,132 +1,70 @@
-# Noona 2.1
+# Noona Stack 2.2
 
-Noona is a full-stack companion platform for [Kavita](https://www.kavitareader.com/) servers. The project began life as a lightweight Discord bot that automated new reader sign ups. Since then it has grown into a distributed, service-oriented platform that helps server owners manage their libraries and gives readers a rich, AI-assisted experience across Discord and the web.
+Noona is a multi-service platform for orchestration, onboarding, library automation, and download management.
 
-> **Project status**: Personal learning project under active development. Expect rapid iteration, experimental features, and breaking changes as new ideas and technologies are evaluated.
+## Quick Navigation
 
----
+- [Repository rules](AGENTS.md)
+- [Warden orchestrator](services/warden/readme.md)
+- [Moon web UI](services/moon/README.md)
+- [Portal API gateway](services/portal/README.md)
+- [Sage setup/proxy service](services/sage/README.md)
+- [Raven downloader](services/raven/readme.md)
+- [Vault data and auth broker](services/vault/readme.md)
+- [Project docs](docs/)
 
-## Highlights
-- **Discord-first onboarding** – Invite the bot and let readers register, request titles, and check library status from Discord.
-- **Kavita integration** – Query, update, and upload content directly into your Kavita library once requests are approved.
-- **AI companion** – Chat with Noona to locate series (e.g., *"Is Naruto on PaxKun?"*), get summaries, and receive tailored reading suggestions.
-- **Reader suggestion workflow** – Collect reader requests, surface them to moderators, and track approvals and fulfillment end to end.
-- **OnceUI deployment wizard** – A React + OnceUI dashboard (built from `deployment/panel/`) that replaces the retired Moon UI and streams install/update lifecycle events directly from Warden.
-- **Distributed deployment** – Run the stack as a master/node cluster to spread workloads across machines via Docker Swarm.
-- **Observability baked in** – Prometheus + Grafana dashboards capture service health, download status, and usage metrics.
+## Services
 
-## Service Architecture
+| Service | Runtime              | README                                                 | Responsibility                                               |
+|---------|----------------------|--------------------------------------------------------|--------------------------------------------------------------|
+| Warden  | Node.js              | [services/warden/readme.md](services/warden/readme.md) | Container lifecycle, install order, stack orchestration APIs |
+| Moon    | Next.js + Once UI    | [services/moon/README.md](services/moon/README.md)     | Web GUI for `/libraries`, `/downloads`, `/settings`, setup   |
+| Portal  | Node.js + Discord.js | [services/portal/README.md](services/portal/README.md) | Discord onboarding and Kavita/Vault bridging                 |
+| Sage    | Node.js + Express    | [services/sage/README.md](services/sage/README.md)     | Warden and Raven proxy APIs for setup and downloads          |
+| Raven   | Spring Boot (Java)   | [services/raven/readme.md](services/raven/readme.md)   | Search, scrape, download, library metadata updates           |
+| Vault   | Node.js + Express    | [services/vault/readme.md](services/vault/readme.md)   | Token-authenticated packet handling, users, secrets          |
 
-Noona is organized into seven primary services that communicate through authenticated APIs. Warden orchestrates the environment and the other six services focus on specialized responsibilities.
+## Stack 2.2 Baseline
 
-| Service | Role |
-| --- | --- |
-| **Warden** | Orchestrator for the entire stack. Builds Docker images, provisions containers, enforces boot order, performs health checks, and manages rolling updates across master and node deployments. |
-| **Vault** | Authentication and data access gateway. Issues JWTs to services, brokers reads/writes to MongoDB and Redis, and secures internal APIs. |
-| **Portal** | External integrations hub. Handles Discord command logic, listens for guild events, and bridges to Kavita's APIs. |
-| **Sage** | Monitoring and logging backbone using Prometheus for metrics collection and Grafana for visualization. |
-| **Deployment panel (OnceUI)** | Bundled from the OnceUI template in `deployment/panel/` and served by the deployment server. Replaces the Moon frontend while relaying install/start/stop commands through Warden and streaming NDJSON status updates. |
-| **Raven** | Custom Java-based scraper/downloader. Automates content acquisition, metadata enrichment, and CBZ packaging. |
-| **Oracle** | AI assistant layer powered by LangChain, LocalAI/AnythingLLM for conversational insights and recommendations. |
+- Core services: Warden, Moon, Portal, Sage, Raven, Vault.
+- Shared modules live in [utilities/](utilities/).
+- Stack-level docs live in [docs/](docs/).
+- Service Dockerfiles are at repo root (`warden.Dockerfile`, `moon.Dockerfile`, etc.).
 
-### Master/Node Topology
+## Local Workflow
 
-Warden supports a distributed layout:
-- **Master node** (`wardenState=master`) – Hosts orchestration logic and exposes control APIs.
-- **Worker nodes** (`wardenState=node`) – Join the cluster and execute workloads dispatched by the master. Configure workers with the master's URL so they can securely retrieve instructions and service tokens.
+1. Start Warden first:
 
-This design allows you to keep the core management stack on a primary machine while scaling resource-intensive jobs—such as scraping or AI inference—across additional hosts.
+```bash
+cd services/warden
+DEBUG=false node initWarden.mjs
+```
 
-## Technology Stack
+2. Start the full stack profile:
 
-| Area | Key Tools |
-| --- | --- |
-| Orchestration | Docker, Docker Swarm, RSA key pairs for secure service auth |
-| Backend Services | Node.js 23 (Warden, Vault, Portal, Sage), Python 3 (Oracle), Java 21/24 (Raven) |
-| Datastores | MongoDB, Redis |
-| Integrations | Discord.js, Axios, Kavita REST APIs |
-| Frontend | React, Vite, Tailwind CSS, OnceUI design system |
-| Observability | Prometheus, Grafana |
-| AI | LangChain, LocalAI, (planned) AnythingLLM |
+```bash
+cd services/warden
+DEBUG=super node initWarden.mjs
+```
 
-## Deployment
+3. Open Moon when healthy: `http://localhost:3000`.
 
-- **Docker Hub**: [captainpax/noona-warden](https://hub.docker.com/repository/docker/captainpax/noona-warden)
-- **Example Kavita instance**: [pax-kun.com](https://pax-kun.com/)
-- **Repo**: [github.com/The-Noona-Project/Noona](https://github.com/The-Noona-Project/Noona)
+## Root Scripts
 
-The `deployment/` directory contains Dockerfiles for single-service containers and the lightweight deployment control surface. The consolidated `dockerManager.mjs` module powers the Express server in `deployment/webServer.mjs`, which now serves the OnceUI deployment wizard bundled from `deployment/panel/`.
+- Generate docs: `npm run docs`
+- List docker targets: `npm run docker:list`
+- Build docker images: `npm run docker:build`
+- Push docker images: `npm run docker:push`
+- Build + push helper: `npm run docker:publish`
 
-### Warden bootstrap options
+## Repo Map
 
-The OnceUI deployment panel calls the Warden API on port `4001`, so make sure **noona-warden** is running before opening the UI:
+- [services/](services/) - Service source, tests, and service-level docs
+- [utilities/](utilities/) - Shared helpers and modules
+- [docs/](docs/) - Deployment and operations documentation
+- [scripts/](scripts/) - Monorepo tooling and automation scripts
 
-1. **Minimal mode (core services only)**
-   ```bash
-   DEBUG=false node initWarden.mjs
-   ```
-2. **Super mode (full stack)**
-   ```bash
-   DEBUG=super node initWarden.mjs
-   ```
-3. **Containerized helper** – start the published image without cloning the repo:
-   ```bash
-   # macOS / Linux
-   ./scripts/run-warden.sh
+## Documentation Rule
 
-   # Windows (PowerShell)
-   pwsh ./scripts/run-warden.ps1
-   ```
-
-   The wrapper scripts ensure the `noona-network` exists, publish the API on `4001:4001`, and mount your Docker socket. Override `DOCKER_SOCK_PATH` if Docker Desktop exposes a named pipe such as `//./pipe/docker_engine` so the container can reach your host daemon.
-
-### Deployment control panel workflow
-
-1. Install dependencies (first run only):
-   ```bash
-   npm install
-   ```
-2. Build the OnceUI deployment panel (required whenever `deployment/panel/` changes):
-   ```bash
-   npm run deploy:panel:build
-   ```
-   You can iterate on UI changes via `npm run deploy:panel:dev`, which starts Vite's dev server and hot-reloads the OnceUI template.
-3. Start the deployment server:
-   ```bash
-   npm run deploy:server
-   ```
-4. Open [http://localhost:4300](http://localhost:4300) in your browser. The root route serves the bundled OnceUI dashboard in `deployment/dist/index.html`.
-
-For a walkthrough of the wizard layout, prerequisites, and endpoint mappings, read [docs/onceui-deployment-wizard.md](docs/onceui-deployment-wizard.md).
-
-From the control panel you can:
-
-- Inspect current state via **Refresh status** (`GET /api/services`) and **Load settings** (`GET /api/settings`).
-- Trigger builds, pushes, pulls, starts, stops, cleans, and destructive deletes. Each card posts to the corresponding `/api/*` endpoint and renders NDJSON log output in real time, including container log tails.
-- Apply JSON patches to deployment defaults through the settings editor, which submits to `PATCH /api/settings`.
-
-Leave the service selection blank to operate on the full stack, or provide comma-separated names (or `all`) to target specific workloads. Debug level and boot mode overrides flow straight to the Docker helpers so you can reproduce production-like orchestrations locally.
-
-## Roadmap & Vision
-
-1. **Stabilize the 2.0+ refactor** – Consolidate services under a single repository, improve inter-service contracts, and ship production-ready Docker images.
-2. **Enhance AI experiences** – Expand Oracle's capabilities, integrate richer embeddings, and offer contextual conversation history across Discord and the deployment UI.
-3. **Deepen automation** – Extend Raven's scraping sources, streamline metadata enrichment via [Komf](https://github.com/Snd-R/komf), and provide self-serve request approvals.
-4. **Community tooling** – Publish deployment templates, infrastructure guides, and monitoring dashboards for other Kavita server owners.
-
-This is a passion project that doubles as a testbed for new technologies. Contributions, ideas, and feedback are welcome—whether you're exploring Noona for your own library or just curious about the stack.
-
-## Getting Involved
-
-1. **Clone the repository** and explore the services under `services/` and shared utilities under `utilities/`.
-2. **Spin up individual services** using the Dockerfiles in `deployment/single/` to experiment locally. Review `docs/deployment.md` for the OnceUI control panel workflow instead of the older Moon-specific guides.
-3. **Join the conversation** by opening issues, suggesting features, or sharing how you're using Noona with your Kavita instance.
-
-Thanks for checking out Noona. This project is growing quickly, and I hope it becomes a powerful companion for the Kavita community.
-
-## Documentation
-
-- Run `npm install` at the repository root (if you haven't already) to set up the shared tooling dependencies.
-- Execute `npm run docs` to regenerate `docs/docs.json`, which now aggregates both the JSDoc output from the Node.js services and parsed Javadoc comments from the Raven (Java) service.
-- Review [docs/deployment.md](docs/deployment.md) for the OnceUI deployment experience and troubleshooting tips built into the deployment wizard stream.
-- Follow [docs/onceui-deployment-wizard.md](docs/onceui-deployment-wizard.md) for the UI flow, endpoint triggers, and prerequisites that replaced the legacy Moon setup guides.
+When any major service behavior changes, update that service README and keep this file's links current so GitHub
+navigation stays accurate.

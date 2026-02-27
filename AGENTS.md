@@ -1,68 +1,52 @@
-# Agent Guidelines
+# Repository Agent Guidelines
 
-## Repository Overview
-- Root contains top-level documentation and configuration files such as `README.md`, `LICENSE`, and `coderabbit.yaml`.
-- Primary code is organized under the `services` and `utilities` directories. Deployment-related manifests live under `deployment`, while higher-level project documentation is under `docs`.
+This repository contains Noona Stack 2.2. Follow these rules when editing.
 
-## System Architecture
-The Noona platform is orchestrated by the **Warden** control plane. Warden bootstraps and supervises the service suite by reading container descriptors, launching workloads, and exposing lifecycle APIs. Control requests are routed through Warden, which then propagates install/start/stop commands to:
+## Core Rules
 
-- **Moon** – front-end client served once Warden reports UI containers healthy. See `services/moon/AGENTS.md` for UI conventions.
-- **Portal** – external API gateway receiving traffic from Moon and third parties. Review `services/portal/AGENTS.md` for API guidance.
-- **Sage** – analytics and rules engine invoked by Portal; coordination details live in `services/sage/AGENTS.md`.
-- **Raven** – async job/notification processor consuming events emitted by Portal/Sage. Refer to `services/raven/AGENTS.md`.
-- **Vault** – secrets broker that Warden provisions before dependent services start; see `services/vault/AGENTS.md`.
+- Keep changes scoped to the requested task.
+- Preserve unrelated user changes; do not revert work you did not make.
+- Check for nested `AGENTS.md` files before editing a service directory.
+- Update docs when runtime behavior, endpoints, config, or workflows change.
 
-During installs Warden captures container state, streams logs through the shared logger utility at `utilities/etc/logger.mjs`, and writes deployment metadata that surfaces via its API. Deployment manifests for shipping the full stack are centralized in `deployment/` and should be reviewed alongside Warden updates.
+## Repository Map
 
-## Navigating the Project
-1. Start at the repository root (`/workspace/Noona`).
-2. Use `ls` to explore major directories:
-   - `services/` – service-specific source code and related assets.
-   - `utilities/` – shared helpers, scripts, or tooling utilities.
-   - `deployment/` – infrastructure, CI/CD, and deployment descriptors.
-   - `docs/` – supplementary guides, architectural diagrams, and reference material.
-3. Within each directory, prefer `ls` for listing, and `rg <pattern>` for searching specific symbols or text.
-4. Always look for nested `AGENTS.md` files when entering a subdirectory; they may contain additional, more specific conventions.
+- [Root README](README.md)
+- [services/](services/)
+- [utilities/](utilities/)
+- [docs/](docs/)
+- [scripts/](scripts/)
 
-## Getting Started
-Use this checklist when standing up or iterating on the stack locally:
+## Service Guides (Open Before Editing)
 
-1. Read Warden's service documentation (`services/warden/AGENTS.md`) and operational guide (`services/warden/readme.md`).
-2. Launch **Warden first** so that dependent services can register with its API and inherit the correct environment configuration.
-3. Inspect deployment manifests in `deployment/` to understand cluster topology or compose overrides before scaling beyond local.
-4. Review shared utilities—especially `utilities/etc/logger.mjs`, which Warden and downstream services rely on for consistent logging hooks.
-5. Continue with service-specific checklists in each `services/<name>/AGENTS.md` as you modify or deploy individual components.
+| Service | Agent Guide                                            | README                                                 |
+|---------|--------------------------------------------------------|--------------------------------------------------------|
+| Warden  | [services/warden/AGENTS.md](services/warden/AGENTS.md) | [services/warden/readme.md](services/warden/readme.md) |
+| Moon    | [services/moon/AGENTS.md](services/moon/AGENTS.md)     | [services/moon/README.md](services/moon/README.md)     |
+| Portal  | [services/portal/AGENTS.md](services/portal/AGENTS.md) | [services/portal/README.md](services/portal/README.md) |
+| Sage    | [services/sage/AGENTS.md](services/sage/AGENTS.md)     | [services/sage/README.md](services/sage/README.md)     |
+| Raven   | [services/raven/AGENTS.md](services/raven/AGENTS.md)   | [services/raven/readme.md](services/raven/readme.md)   |
+| Vault   | [services/vault/AGENTS.md](services/vault/AGENTS.md)   | [services/vault/readme.md](services/vault/readme.md)   |
 
-## Service-Specific Guides
-Detailed workflow, testing, and style expectations for each service live (or will soon live) alongside the code for that service. Whenever you begin work in one of the following areas, open the corresponding guide located at `services/<service>/AGENTS.md` for authoritative instructions.
+## Documentation Rules
 
-| Service | Scope & Responsibilities | Guide Location (when available) |
-| --- | --- | --- |
-| Warden | Request authentication, access control, and session management. | `services/warden/AGENTS.md` |
-| Vault | Secrets storage, encryption flows, and credential lifecycle tooling. | `services/vault/AGENTS.md` |
-| Portal | Public-facing APIs, routing, and request/response orchestration. | `services/portal/AGENTS.md` |
-| Sage | Business rules, analytics pipelines, and decisioning logic. | `services/sage/AGENTS.md` |
-| Moon | Front-end client, UI composition, and user interaction flows. | `services/moon/AGENTS.md` |
-| Raven | Notifications, messaging adapters, and asynchronous job handling. | `services/raven/AGENTS.md` |
+- README update rule: if behavior changes, update the nearest README in the same change.
+- README navigation rule: include a short `## Quick Navigation` section with markdown links to related files/folders (
+  entrypoint, core modules, tests, and adjacent docs).
+- Cross-link rule: when adding or moving major docs, update [README.md](README.md) and this file so links stay accurate
+  on GitHub.
+- Use markdown links for paths in docs (`[label](relative/path)`), not plain text path dumps.
 
-Consult these service guides **before** modifying code inside their directories so you follow the correct patterns, tests, and deployment expectations. If a service-specific guide has not been authored yet, coordinate with maintainers to confirm interim conventions.
+## Recommended Workflow
 
-## Development Flow
-1. Identify scope and read any relevant documentation in `docs/`.
-2. Locate the target module inside `services/` or `utilities/`.
-3. Implement changes following the coding standards described in the closest `AGENTS.md`.
-4. Update or add unit tests that cover new or modified functionality.
-5. Run the applicable test suites locally before committing.
-6. Document changes succinctly in commits and PR descriptions.
+1. Read the closest service `AGENTS.md` and README.
+2. Implement the change in the correct service directory.
+3. Add or update tests for changed behavior.
+4. Update README links/notes for touched workflows.
+5. Run relevant tests before finalizing.
 
 ## Testing Expectations
-- Write unit tests alongside feature work or bug fixes to maintain coverage.
-- Use the project's preferred test runner (consult service-specific docs or package.json/cargo.toml/etc. as appropriate).
-- Ensure tests pass locally (`npm test`, `pytest`, `cargo test`, etc.) before submitting changes.
-- If adding new functionality, include tests that validate both nominal and edge cases.
 
-## General Tips
-- Keep commits focused and descriptive.
-- Follow existing patterns and respect linting or formatting rules enforced by the repository.
-- Seek additional guidance from maintainers if project-specific testing instructions exist within service directories.
+- Prefer service-local test commands from each service README.
+- Keep test coverage aligned with new route contracts, config parsing, and integration points.
+- If tests are skipped, document why.

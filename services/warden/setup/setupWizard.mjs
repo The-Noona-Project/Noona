@@ -2,7 +2,7 @@
  * Generates the HTML for the Noona Setup Wizard.
  * This is pushed into Redis and rendered by Moon.
  *
- * @param {string[]} slugs - List of service slugs (e.g. noona-moon)
+ * @param {string[]} slugs - List of service slugs (for example, noona-moon)
  * @returns {string} - Full HTML document as string
  */
 export function generateSetupWizardHTML(slugs = []) {
@@ -33,7 +33,7 @@ export function generateSetupWizardHTML(slugs = []) {
             <label class="field">
               <span class="field-label">Service</span>
               <select id="service-select" name="service" required>
-                <option value="" disabled selected>Select a service…</option>
+                <option value="" disabled selected>Select a service...</option>
 ${options}
               </select>
             </label>
@@ -46,7 +46,7 @@ ${options}
             </label>
             <button id="service-submit" type="submit" class="primary-button" disabled>Continue</button>
           </form>`
-        : '          <p><em>No services registered.</em></p>';
+        : '          <p><em>No services are registered.</em></p>';
 
     return /* html */`
     <!DOCTYPE html>
@@ -178,12 +178,12 @@ ${options}
       </head>
       <body>
         <main>
-          <h1>🧙 Noona Setup Wizard</h1>
+          <h1>Noona Setup Wizard</h1>
           <p>Select a service to configure:</p>
 ${serviceForm}
         </main>
         <footer>
-          Powered by Warden · ${new Date().toLocaleDateString()}
+          Powered by Warden - ${new Date().toLocaleDateString()}
         </footer>
         <script>
           document.addEventListener('DOMContentLoaded', () => {
@@ -202,7 +202,7 @@ ${serviceForm}
               const hasValue = Boolean(value);
 
               if (hasValue) {
-                form.setAttribute('action', `/dynamic/${encodeURIComponent(value)}`);
+                form.setAttribute('action', '/dynamic/' + encodeURIComponent(value));
               } else {
                 form.removeAttribute('action');
               }
@@ -234,3 +234,4 @@ ${serviceForm}
     </html>
   `;
 }
+

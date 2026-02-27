@@ -66,6 +66,9 @@ export function HomePage() {
                         <Button variant="primary" onClick={() => router.push("/libraries")}>
                             Open library
                         </Button>
+                        <Button variant="secondary" onClick={() => router.push("/downloads")}>
+                            Open downloads
+                        </Button>
                         <Button variant="secondary" onClick={() => void loadLibrary()}>
                             Refresh
                         </Button>

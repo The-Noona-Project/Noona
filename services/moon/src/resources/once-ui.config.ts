@@ -24,6 +24,7 @@ const routes: RoutesConfig = {
     "/signup": true,
     "/setupwizard": true,
     "/libraries": true,
+    "/downloads": true,
     "/settings": true,
     "/about": false,
     "/work": false,

@@ -1,133 +1,66 @@
-# 🛡️ Warden
+# Warden (Noona Stack 2.2)
 
-Warden is the **central orchestrator** for the Noona ecosystem. It manages containerized services using Docker, ensuring correct startup order, health checks, and network configuration.
+Warden is the orchestrator for the Noona stack. It manages container descriptors, install order, service health checks,
+log streaming, and lifecycle APIs.
 
----
+## Quick Navigation
 
-## 🚀 Features
+- [Service rules](AGENTS.md)
+- [Stack overview](../../README.md)
+- [Entrypoint](initWarden.mjs)
+- [Core descriptors](docker/noonaDockers.mjs)
+- [Addon descriptors](docker/addonDockers.mjs)
+- [Docker helpers](docker/dockerUtilties.mjs)
+- [Core orchestration logic](shared/wardenCore.mjs)
+- [HTTP API server](shared/wardenServer.mjs)
+- [Setup wizard helpers](setup/)
+- [Tests](tests/)
 
-- Spawns Noona services in **controlled boot order**.
-- Ensures required images are pulled before launch.
-- Attaches itself and managed containers to the shared `noona-network`.
-- Tracks and gracefully shuts down running containers on exit.
-- Supports **minimal mode** for rapid development and **super mode** for full stack deployment.
-- Provisions deterministic Vault API tokens and shares them with every service at boot.
-- Emits `host_service_url` logs once a service is healthy so you know where to reach it from the host.
-- Keeps container log streams muted by default for signal-rich startup output (enable with `DEBUG=true`).
+## Start Modes
 
----
+### Minimal mode
 
-## ⚙️ Usage
-
-### 1. **Minimal Mode**
-
-Launches essential services only:
-- `noona-redis`
-- `noona-sage`
-- `noona-moon`
-
+Starts the baseline dev set quickly.
 ```bash
+cd services/warden
 DEBUG=false node initWarden.mjs
-````
+```
 
-### 2. **Super Mode**
+### Super mode
 
-Launches **all services** in the correct dependency order:
-
-1. noona-sage
-2. noona-moon
-3. noona-redis
-4. noona-mongo
-5. noona-vault
-6. noona-raven
-
+Starts the full dependency chain.
 ```bash
+cd services/warden
 DEBUG=super node initWarden.mjs
 ```
 
-### 3. **Dockerized quick start**
+## Main API Endpoints
 
-When you only need the public API (port `4001`) and do not want to clone the repo on the target host, run the pre-built image:
+- `GET /health` - Warden process health.
+- `GET /api/services` - service catalog + status.
+- `POST /api/services/install` - install/start one or more services.
+- `GET /api/services/install/progress` - current installation timeline.
+- `GET /api/services/:name/logs` - buffered log output.
+- `POST /api/services/:name/test` - service-level diagnostics.
 
-```bash
-# macOS / Linux
-./scripts/run-warden.sh
+## Key Environment Variables
 
-# Windows (PowerShell)
-pwsh ./scripts/run-warden.ps1
-```
+| Variable           | Purpose                                        | Default                   |
+|--------------------|------------------------------------------------|---------------------------|
+| `DEBUG`            | Boot profile + log verbosity                   | `false`                   |
+| `WARDEN_API_PORT`  | Warden API listen port                         | `4001`                    |
+| `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links | `http://localhost`        |
+| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime          | `http://noona-vault:3005` |
+| `*_VAULT_TOKEN`    | Optional per-service token override            | generated in descriptors  |
 
-Both helpers:
+## Development Commands
 
-- Ensure the `noona-network` Docker network exists before starting the container.
-- Map your host Docker socket into the container. Override `DOCKER_SOCK_PATH` when Docker Desktop exposes a different pipe (for example `//./pipe/docker_engine`).
-- Respect `DEBUG`, `WARDEN_PORT` (default `4001`), and the other environment variables listed below, so you still control minimal vs. super boot order.
+- Start: `npm run start`
+- Dev watch mode: `npm run dev`
+- Tests: `npm test`
 
----
+## Notes
 
-## 📝 Environment Variables
-
-| Variable | Description | Default |
-| -------- | ----------- | ------- |
-| `DEBUG` | Controls launch mode and enables log streaming when set to `true` or `super`. | `false` |
-| `HOST_SERVICE_URL` | Base URL used when logging host-facing service endpoints (e.g. `http://localhost`). | `http://localhost` |
-| `RAVEN_VAULT_URL` | Overrides the default Vault endpoint provided to Raven containers. | `http://noona-vault:3005` |
-| `*_VAULT_TOKEN` | Optional per-service override (e.g. `NOONA_SAGE_VAULT_TOKEN`) for Vault API tokens. | Built-in dev token |
-
----
-
-### 🪟 Windows hosts
-
-Warden now normalizes Windows named-pipe sockets so that `npipe://` or `DOCKER_HOST` values are converted to the `//./pipe/...` format expected by Dockerode. When `process.platform === 'win32'`, Warden shells out to enumerate Docker pipes with:
-
-```powershell
-Get-ChildItem -Path '\\.\pipe\' -Filter '*docker*' | Select -ExpandProperty FullName
-```
-
-The Kavita data mount detector reuses the normalized pipe value when creating temporary Docker clients, avoiding Unix-only `fs.statSync` and `fs.existsSync` calls that previously failed on Windows.
-
----
-
-## 📦 Project Structure
-
-```
-warden/
-├── docker/
-│   ├── addonDockers.mjs        # Definitions for addon services (e.g. Redis, Mongo)
-│   ├── noonaDockers.mjs        # Definitions for core Noona services
-│   └── dockerUtilties.mjs      # Docker management utility functions
-├── initWarden.mjs              # Main entry point for Warden
-└── README.md                   # This file
-```
-
----
-
-## 🔄 Boot Order Logic
-
-In **super mode**, services are launched sequentially with health checks between each to ensure:
-
-✅ Dependencies are ready before dependents boot
-✅ Stability of the full stack during deployments or local development
-
----
-
-## 🛑 Shutdown
-
-Warden traps `SIGINT` and `SIGTERM` to gracefully stop and remove all tracked containers before exiting.
-
----
-
-## 💡 Future Enhancements
-
-* Container-level health check definitions in `noonaDockers.mjs` and `addonDockers.mjs`
-* Live log streaming aggregation to central monitoring
-* External addon management via dedicated `addonDockers` modules
-
----
-
-## 👨‍💻 Maintainers
-
-* **Owner:** CaptainPax
-
----
-
+- Warden tracks service histories and buffered logs for diagnostics.
+- Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
+- Update descriptor metadata and this README together when adding/removing core services.

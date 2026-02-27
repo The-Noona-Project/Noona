@@ -130,48 +130,46 @@ export const createWizardStateClient = ({
 
     const request = async (packet) => {
         const errors = []
-        const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), timeoutMs)
+        const candidates = preferredBaseUrl
+            ? [preferredBaseUrl, ...deduped.filter((url) => url !== preferredBaseUrl)]
+            : deduped
 
-        try {
-            const candidates = preferredBaseUrl
-                ? [preferredBaseUrl, ...deduped.filter((url) => url !== preferredBaseUrl)]
-                : deduped
+        for (const candidate of candidates) {
+            // Use a fresh timeout per endpoint so one stalled URL does not poison retries.
+            const controller = new AbortController()
+            const timer = setTimeout(() => controller.abort(), timeoutMs)
+            try {
+                const response = await fetchImpl(new URL('/v1/vault/handle', candidate).toString(), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Accept: 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify(packet),
+                    signal: controller.signal,
+                })
 
-            for (const candidate of candidates) {
-                try {
-                    const response = await fetchImpl(new URL('/v1/vault/handle', candidate).toString(), {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            Accept: 'application/json',
-                            Authorization: `Bearer ${token}`,
-                        },
-                        body: JSON.stringify(packet),
-                        signal: controller.signal,
-                    })
-
-                    const payload = await parseJson(response)
-                    if (!response.ok) {
-                        throw new Error(payload?.error || `Vault responded with status ${response.status}`)
-                    }
-
-                    if (payload?.error) {
-                        throw new Error(payload.error)
-                    }
-
-                    preferredBaseUrl = candidate
-                    return payload
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error)
-                    errors.push(`${candidate} (${message})`)
+                const payload = await parseJson(response)
+                if (!response.ok) {
+                    throw new Error(payload?.error || `Vault responded with status ${response.status}`)
                 }
-            }
 
-            throw new Error(`All Vault endpoints failed: ${errors.join(' | ')}`)
-        } finally {
-            clearTimeout(timer)
+                if (payload?.error) {
+                    throw new Error(payload.error)
+                }
+
+                preferredBaseUrl = candidate
+                return payload
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                errors.push(`${candidate} (${message})`)
+            } finally {
+                clearTimeout(timer)
+            }
         }
+
+        throw new Error(`All Vault endpoints failed: ${errors.join(' | ')}`)
     }
 
     const loadState = async ({ fallbackToDefault = true } = {}) => {

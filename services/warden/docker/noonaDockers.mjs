@@ -14,6 +14,9 @@ const DEFAULT_VAULT_MONGO_URI =
     `mongodb://${encodeURIComponent(DEFAULT_MONGO_ROOT_USERNAME)}:${encodeURIComponent(DEFAULT_MONGO_ROOT_PASSWORD)}@noona-mongo:27017/admin?authSource=admin`;
 const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
 const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
+const DEFAULT_VAULT_DATA_FOLDER = process.env.VAULT_DATA_FOLDER || 'vault';
+const DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH = process.env.VAULT_REDIS_HOST_MOUNT_PATH || '';
+const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH = process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
@@ -262,6 +265,9 @@ const serviceDefs = rawList.map(name => {
         env.push(
             `PORT=3005`,
             `VAULT_TOKEN_MAP=${tokenMapString}`,
+            `VAULT_DATA_FOLDER=${DEFAULT_VAULT_DATA_FOLDER}`,
+            `VAULT_REDIS_HOST_MOUNT_PATH=${DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH}`,
+            `VAULT_MONGO_HOST_MOUNT_PATH=${DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH}`,
             `MONGO_URI=${DEFAULT_VAULT_MONGO_URI}`,
             `REDIS_HOST=${DEFAULT_VAULT_REDIS_HOST}`,
             `REDIS_PORT=${DEFAULT_VAULT_REDIS_PORT}`,
@@ -275,6 +281,29 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Token Map',
                 readOnly: true,
                 description: 'Serialized lookup table allowing other services to authenticate with Vault.',
+            }),
+            createEnvField('VAULT_DATA_FOLDER', DEFAULT_VAULT_DATA_FOLDER, {
+                label: 'Vault Data Folder',
+                description:
+                    'Folder name created next to the Raven mount root and used for Redis/Mongo persistence.',
+                warning:
+                    'Changing this folder name requires restarting the ecosystem so Redis and Mongo remount to the new path.',
+            }),
+            createEnvField('VAULT_REDIS_HOST_MOUNT_PATH', DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH, {
+                label: 'Redis Host Mount Folder',
+                description:
+                    'Optional host folder mounted into Redis at /data. Leave empty to use the default folder under Vault Data Folder.',
+                warning:
+                    'Changing this path requires restarting Redis (or restarting the ecosystem) to remount storage.',
+                required: false,
+            }),
+            createEnvField('VAULT_MONGO_HOST_MOUNT_PATH', DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH, {
+                label: 'MongoDB Host Mount Folder',
+                description:
+                    'Optional host folder mounted into MongoDB at /data/db. Leave empty to use the default folder under Vault Data Folder.',
+                warning:
+                    'Changing this path requires restarting MongoDB (or restarting the ecosystem) to remount storage.',
+                required: false,
             }),
             createEnvField('MONGO_URI', DEFAULT_VAULT_MONGO_URI, {
                 label: 'MongoDB URI',

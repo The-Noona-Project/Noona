@@ -2403,6 +2403,62 @@ test('auth user management routes create, update, list, and delete users through
     assert.deepEqual(await deleteResponse.json(), {deleted: true})
 })
 
+test('auth user management keeps bootstrap protection on legacy setup user records', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const setupUserDoc = vault.userDocs.find((entry) => entry.usernameNormalized === 'captainpax')
+    assert.ok(setupUserDoc)
+    // Simulate legacy records created before bootstrap protection was persisted.
+    setupUserDoc.isBootstrapUser = false
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'ReaderAdmin',
+            password: 'Password123',
+            permissions: ['moon_login', 'admin'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+    const createPayload = await createResponse.json()
+    assert.equal(createPayload.user.username, 'ReaderAdmin')
+    assert.equal(createPayload.user.role, 'admin')
+    assert.equal(createPayload.user.isBootstrapUser, false)
+
+    const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json()
+    const setupUser = listPayload.users.find((entry) => entry.username === 'CaptainPax')
+    const readerAdmin = listPayload.users.find((entry) => entry.username === 'ReaderAdmin')
+    assert.ok(setupUser)
+    assert.ok(readerAdmin)
+    assert.equal(setupUser.isBootstrapUser, true)
+    assert.equal(readerAdmin.isBootstrapUser, false)
+})
+
 test('auth user management protects setup account and can reset non-protected user passwords', async (t) => {
     const vault = createVaultAuthStub()
 
@@ -2651,7 +2707,22 @@ test('settings factory reset route requires valid password and wipes storage bef
         setupClient: {
             async factoryResetEcosystem(options = {}) {
                 restartCalls.push(options)
-                return {ok: true}
+                return {
+                    ok: true,
+                    ravenDownloads: {
+                        requested: true,
+                        mountCount: 0,
+                        entries: [],
+                        deleted: true,
+                    },
+                    dockerCleanup: {
+                        requested: true,
+                        containersRemoved: ['c-sage'],
+                        imagesRemoved: ['img-sage'],
+                        containerErrors: [],
+                        imageErrors: [],
+                    },
+                }
             },
         },
         settings: {
@@ -2693,6 +2764,9 @@ test('settings factory reset route requires valid password and wipes storage bef
     assert.equal(okPayload.deleteRavenDownloads, true)
     assert.equal(okPayload.deleteDockers, true)
     assert.equal(okPayload.redirectTo, 'https://noona.local')
+    assert.equal(okPayload.result?.ok, true)
+    assert.equal(okPayload.result?.ravenDownloads?.deleted, true)
+    assert.equal(okPayload.result?.dockerCleanup?.requested, true)
 
     assert.deepEqual(wipeCalls, ['mongo', 'redis'])
     assert.deepEqual(restartCalls, [{
@@ -2701,6 +2775,66 @@ test('settings factory reset route requires valid password and wipes storage bef
         setupCompleted: false,
         forceFull: false,
     }])
+})
+
+test('settings factory reset route fails when selected cleanup targets are not fully deleted', async (t) => {
+    const vault = createVaultAuthStub()
+    vault.client.mongo.wipe = async () => ({status: 'ok'})
+    vault.client.redis.wipe = async () => ({status: 'ok'})
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async factoryResetEcosystem() {
+                return {
+                    ok: true,
+                    ravenDownloads: {
+                        requested: true,
+                        mountCount: 1,
+                        entries: [{
+                            target: '/srv/noona/raven',
+                            destination: '/kavita-data',
+                            type: 'bind',
+                            deleted: false,
+                            reason: 'permission denied',
+                        }],
+                        deleted: false,
+                    },
+                    dockerCleanup: {
+                        requested: true,
+                        containersRemoved: [],
+                        imagesRemoved: [],
+                        containerErrors: [],
+                        imageErrors: [],
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token, password} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const response = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            password,
+            deleteRavenDownloads: true,
+            deleteDockers: true,
+        }),
+    })
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.match(payload.error, /cleanup errors/i)
+    assert.match(payload.error, /permission denied/i)
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {

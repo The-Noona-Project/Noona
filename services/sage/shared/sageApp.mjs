@@ -957,6 +957,12 @@ export const createSageApp = ({
         const parsed = Date.parse(normalized)
         return Number.isFinite(parsed) ? parsed : 0
     }
+    const toSortableLegacyTimestamp = (value) => {
+        if (value > 0) {
+            return value
+        }
+        return Number.MAX_SAFE_INTEGER
+    }
     const listAuthUsers = async () => {
         if (vaultClient?.users?.list) {
             const users = await vaultClient.users.list()
@@ -1060,6 +1066,33 @@ export const createSageApp = ({
 
         return admins[0] ?? null
     }
+    const selectLegacyBootstrapCandidate = (users) => {
+        if (!Array.isArray(users)) {
+            return null
+        }
+
+        const admins = users
+            .filter((entry) => isAdminUser(entry))
+            .sort((left, right) => {
+                const leftCreated = toSortableLegacyTimestamp(parseUserTimestamp(left?.createdAt))
+                const rightCreated = toSortableLegacyTimestamp(parseUserTimestamp(right?.createdAt))
+                if (leftCreated !== rightCreated) {
+                    return leftCreated - rightCreated
+                }
+
+                const leftUpdated = toSortableLegacyTimestamp(parseUserTimestamp(left?.updatedAt))
+                const rightUpdated = toSortableLegacyTimestamp(parseUserTimestamp(right?.updatedAt))
+                if (leftUpdated !== rightUpdated) {
+                    return leftUpdated - rightUpdated
+                }
+
+                const leftKey = normalizeUserLookupKey(left)
+                const rightKey = normalizeUserLookupKey(right)
+                return leftKey.localeCompare(rightKey)
+            })
+
+        return admins[0] ?? null
+    }
 
     const isValidUsername = (username) => /^[A-Za-z0-9._-]{3,64}$/.test(username)
     const isValidPassword = (password) => typeof password === 'string' && password.length >= 8
@@ -1096,7 +1129,9 @@ export const createSageApp = ({
             return normalizeUserLookupKey(explicit)
         }
 
-        const fallback = selectPrimaryAdmin(users)
+        // Backward compatibility for legacy records that predate isBootstrapUser.
+        // Prefer the oldest admin so creating/updating other admins never steals protection.
+        const fallback = selectLegacyBootstrapCandidate(users)
         return normalizeUserLookupKey(fallback)
     }
     const applyProtectedBootstrapUserFlag = (user, protectedLookupKey) => {
@@ -1382,6 +1417,64 @@ export const createSageApp = ({
             logger.error(`[${serviceName}] Failed to restart ecosystem after vault wipe: ${message}`)
         })
         return true
+    }
+    const verifyFactoryResetSelections = ({result, deleteRavenDownloads, deleteDockers}) => {
+        const failures = []
+
+        if (deleteRavenDownloads) {
+            if (result?.ravenDownloads?.requested !== true) {
+                failures.push('Raven download cleanup was not requested by Warden.')
+            } else if (result?.ravenDownloads?.deleted !== true) {
+                const failedEntries = Array.isArray(result?.ravenDownloads?.entries)
+                    ? result.ravenDownloads.entries.filter((entry) => entry?.deleted !== true)
+                    : []
+                if (failedEntries.length > 0) {
+                    const details = failedEntries
+                        .map((entry) => {
+                            const target = normalizeString(entry?.target).trim() || 'unknown-target'
+                            const reason =
+                                normalizeString(entry?.error).trim()
+                                || normalizeString(entry?.reason).trim()
+                                || 'unknown error'
+                            return `${target}: ${reason}`
+                        })
+                        .join(' | ')
+                    failures.push(`Raven download cleanup failed for one or more mounts (${details}).`)
+                } else {
+                    failures.push('Raven download cleanup did not report success.')
+                }
+            }
+        }
+
+        if (deleteDockers) {
+            if (result?.dockerCleanup?.requested !== true) {
+                failures.push('Docker cleanup was not requested by Warden.')
+            } else {
+                const containerErrors = Array.isArray(result?.dockerCleanup?.containerErrors)
+                    ? result.dockerCleanup.containerErrors
+                    : []
+                const imageErrors = Array.isArray(result?.dockerCleanup?.imageErrors)
+                    ? result.dockerCleanup.imageErrors
+                    : []
+                if (containerErrors.length > 0 || imageErrors.length > 0) {
+                    const details = [
+                        ...containerErrors.map((entry) => {
+                            const id = normalizeString(entry?.id).trim() || 'unknown-container'
+                            const reason = normalizeString(entry?.error).trim() || 'unknown error'
+                            return `container ${id}: ${reason}`
+                        }),
+                        ...imageErrors.map((entry) => {
+                            const id = normalizeString(entry?.id).trim() || 'unknown-image'
+                            const reason = normalizeString(entry?.error).trim() || 'unknown error'
+                            return `image ${id}: ${reason}`
+                        }),
+                    ].join(' | ')
+                    failures.push(`Docker cleanup failed for one or more artifacts (${details}).`)
+                }
+            }
+        }
+
+        return failures
     }
     const verifySessionPassword = async ({session, password}) => {
         if (!vaultClient?.users?.authenticate) {
@@ -2463,22 +2556,28 @@ export const createSageApp = ({
             await vaultClient.mongo.wipe()
             await vaultClient.redis.wipe()
 
-            let factoryResetResult = null
-            if (typeof setupClient?.factoryResetEcosystem === 'function') {
-                factoryResetResult = await setupClient.factoryResetEcosystem({
-                    deleteRavenDownloads,
-                    deleteDockers,
-                    setupCompleted: false,
-                    forceFull: false,
-                })
-            } else if (typeof setupClient?.restartEcosystem === 'function') {
-                factoryResetResult = await setupClient.restartEcosystem({
-                    trackedOnly: false,
-                    setupCompleted: false,
-                    forceFull: false,
-                })
-            } else {
+            const runFactoryReset =
+                typeof setupClient?.factoryResetEcosystem === 'function'
+                    ? () => setupClient.factoryResetEcosystem({
+                        deleteRavenDownloads,
+                        deleteDockers,
+                        setupCompleted: false,
+                        forceFull: false,
+                    })
+                    : null
+
+            if (!runFactoryReset) {
                 throw new Error('Warden factory reset endpoint is unavailable.')
+            }
+
+            const resetResult = await runFactoryReset()
+            const verificationFailures = verifyFactoryResetSelections({
+                result: resetResult,
+                deleteRavenDownloads,
+                deleteDockers,
+            })
+            if (verificationFailures.length > 0) {
+                throw new Error(`Factory reset completed with cleanup errors: ${verificationFailures.join(' ')}`)
             }
 
             res.status(202).json({
@@ -2487,7 +2586,7 @@ export const createSageApp = ({
                 deleteRavenDownloads,
                 deleteDockers,
                 redirectTo: resolveBaseRedirectUrl(),
-                result: factoryResetResult ?? null,
+                result: resetResult ?? null,
             })
         } catch (error) {
             logger.error(`[${serviceName}] Failed to run factory reset: ${error.message}`)

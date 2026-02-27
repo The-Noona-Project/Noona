@@ -51,6 +51,16 @@ type InstallRequestEntry = {
     env?: Record<string, string>;
 };
 
+type InstallResultEntry = {
+    name: string;
+    status: string;
+    error?: string | null;
+};
+
+type InstallResponse = {
+    results?: InstallResultEntry[];
+};
+
 type WizardConfigPayloadV1 = {
     version: 1;
     selected: string[];
@@ -153,14 +163,18 @@ const BG_DANGER_ALPHA_WEAK = "danger-alpha-weak" as const;
 const BG_BRAND_ALPHA_WEAK = "brand-alpha-weak" as const;
 const BG_SUCCESS_ALPHA_WEAK = "success-alpha-weak" as const;
 const INSTALL_PROGRESS_START_TIMEOUT_MS = 60_000;
+const TERMINAL_INSTALL_STATUSES = new Set(["complete", "error"]);
 
 const clampPercent = (value: number) => {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(100, Math.round(value)));
 };
 
+const normalizeInstallStatus = (value: string | null | undefined): string =>
+    (typeof value === "string" ? value : "").trim().toLowerCase();
+
 const formatInstallStatusLabel = (value: string) => {
-    const normalized = value.trim().toLowerCase();
+    const normalized = normalizeInstallStatus(value);
 
     if (normalized === "idle") return "Idle";
     if (normalized === "complete" || normalized === "completed") return "Complete";
@@ -260,8 +274,8 @@ const buildInstallPayload = ({
         for (const field of envConfig) {
             if (!field?.key) continue;
             if (field.readOnly) continue;
-            const raw = current[field.key];
-            const trimmed = raw.trim();
+            // Uploaded JSON may omit keys; treat absent/non-string values as empty.
+            const trimmed = normalizeString(current[field.key]).trim();
             if (!trimmed) continue;
             env[field.key] = sanitizeEnvValue(trimmed);
         }
@@ -293,6 +307,7 @@ const validateSelection = ({
     servicesByName: Map<string, ServiceCatalogEntry>;
 }): { ok: true } | { ok: false; message: string; missing: MissingRequiredField[] } => {
     const missing: MissingRequiredField[] = [];
+    const unknownServices: string[] = [];
 
     if (selected.size === 0) {
         return {ok: false, message: "Select at least one service to install.", missing};
@@ -300,6 +315,11 @@ const validateSelection = ({
 
     for (const serviceName of selected) {
         const service = servicesByName.get(serviceName);
+        if (!service) {
+            unknownServices.push(serviceName);
+            continue;
+        }
+
         const envConfig = Array.isArray(service?.envConfig) ? service.envConfig : [];
         const current = values[serviceName] ?? {};
 
@@ -319,6 +339,15 @@ const validateSelection = ({
                 missing.push({service: serviceName, key: field.key});
             }
         }
+    }
+
+    if (unknownServices.length > 0) {
+        const labels = Array.from(new Set(unknownServices)).join(", ");
+        return {
+            ok: false,
+            message: `Selection contains unknown services (${labels}). Refresh the page and try again.`,
+            missing,
+        };
     }
 
     if (missing.length > 0) {
@@ -347,7 +376,7 @@ export function SetupWizard() {
     const [installing, setInstalling] = useState(false);
     const [installError, setInstallError] = useState<string | null>(null);
     const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
-    const [installResult, setInstallResult] = useState<unknown | null>(null);
+    const [installResult, setInstallResult] = useState<InstallResponse | null>(null);
     const [summaryOpen, setSummaryOpen] = useState(false);
 
     const [finishing, setFinishing] = useState(false);
@@ -368,6 +397,11 @@ export function SetupWizard() {
         const result = validateSelection({selected, values, servicesByName});
         return result.ok ? [] : result.missing;
     }, [selected, servicesByName, values]);
+
+    const installResultErrors = useMemo(() => {
+        if (!Array.isArray(installResult?.results)) return [];
+        return installResult.results.filter((entry) => normalizeInstallStatus(entry?.status) === "error");
+    }, [installResult]);
 
     const clearInstallProgressTimeout = useCallback(() => {
         if (installProgressTimeoutRef.current != null) {
@@ -405,31 +439,30 @@ export function SetupWizard() {
                 const sessionActive = activeTargets.size > 0;
                 const hasRelevantItems = payload.items.some((item) => activeTargets.has(item.name));
 
-                const normalizedStatus = payload.status?.trim().toLowerCase() ?? "";
-                const isFinished = normalizedStatus === "complete" || normalizedStatus === "error";
+                const normalizedStatus = normalizeInstallStatus(payload.status);
+                const isFinished = TERMINAL_INSTALL_STATUSES.has(normalizedStatus);
 
-                if (sessionActive && !hasRelevantItems && !installProgressStartedRef.current && !isFinished) {
-                    return;
-                }
+                if (sessionActive && !installProgressStartedRef.current) {
+                    // Ignore stale snapshots from prior runs until we see this request's
+                    // own non-terminal progress for one of the selected services.
+                    if (!hasRelevantItems || isFinished) {
+                        return;
+                    }
 
-                if (sessionActive && hasRelevantItems) {
                     installProgressStartedRef.current = true;
                     clearInstallProgressTimeout();
                 }
 
                 setInstallProgress(payload);
 
-                if (
-                    sessionActive &&
-                    (normalizedStatus === "complete" || normalizedStatus === "error")
-                ) {
+                if (sessionActive && installProgressStartedRef.current && isFinished) {
                     stopPolling();
                     resetInstallSession();
                     setInstalling(false);
 
                     if (normalizedStatus === "complete") {
                         setInstallError(null);
-                        setInstallResult((prev: unknown | null) => prev ?? {status: "complete", results: []});
+                        setInstallResult((prev) => prev ?? {results: []});
                         setSummaryOpen(true);
                     } else {
                         setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
@@ -530,13 +563,15 @@ export function SetupWizard() {
         const payload = buildInstallPayload({services: catalog, selected, values});
 
         if (payload.length === 0) {
-            setInstallResult({status: "complete", results: []});
+            setInstallResult({results: []});
             setSummaryOpen(true);
             setInstalling(false);
+            setInstallError(null);
             return;
         }
 
-        const targetNames = new Set(selected);
+        // Track only services that this request will actually install.
+        const targetNames = new Set(payload.map((entry) => entry.name));
 
         setInstalling(true);
         setInstallError(null);
@@ -578,7 +613,7 @@ export function SetupWizard() {
             });
 
             const response = await responsePromise;
-            const json = await response.json().catch(() => ({}));
+            const json = (await response.json().catch(() => ({}))) as InstallResponse & { error?: string };
 
             if (!response.ok) {
                 const errorMessage =
@@ -592,8 +627,21 @@ export function SetupWizard() {
                 return;
             }
 
-            setInstallResult(json);
-            setSummaryOpen(true);
+            const responseEntries = Array.isArray(json?.results) ? json.results : [];
+            const responseHasErrors =
+                response.status === 207 ||
+                responseEntries.some((entry) => normalizeInstallStatus(entry?.status) === "error");
+
+            // 207 Multi-Status means at least one install failed.
+            setInstallResult({
+                ...json,
+                results: responseEntries,
+            });
+            setSummaryOpen(!responseHasErrors);
+            if (responseHasErrors) {
+                setInstallError("Installation finished with errors. Check service statuses below.");
+            }
+
             stopPolling();
             resetInstallSession();
             setInstalling(false);
@@ -683,10 +731,17 @@ export function SetupWizard() {
             }
 
             const nextSelected = new Set<string>();
+            const knownServiceNames = new Set(catalog.map((service) => service.name));
+            const ignoredServices: string[] = [];
             if (Array.isArray(payload.selected)) {
                 for (const entry of payload.selected) {
-                    if (entry.trim()) {
-                        nextSelected.add(entry.trim());
+                    if (typeof entry !== "string") continue;
+                    const normalized = entry.trim();
+                    if (!normalized) continue;
+                    if (knownServiceNames.has(normalized)) {
+                        nextSelected.add(normalized);
+                    } else {
+                        ignoredServices.push(normalized);
                     }
                 }
             }
@@ -701,6 +756,7 @@ export function SetupWizard() {
             if (payload.values && typeof payload.values === "object") {
                 for (const [serviceName, env] of Object.entries(payload.values)) {
                     if (!serviceName) continue;
+                    if (!knownServiceNames.has(serviceName)) continue;
                     if (!env || typeof env !== "object") continue;
 
                     const envMap: Record<string, string> = {};
@@ -714,10 +770,28 @@ export function SetupWizard() {
             }
 
             setSelected(nextSelected);
-            setValues((prev) =>
-                applyDerivedEnvState(Object.keys(nextValues).length > 0 ? {...prev, ...nextValues} : prev),
+            setValues((prev) => {
+                if (Object.keys(nextValues).length === 0) {
+                    return prev;
+                }
+
+                // Preserve catalog defaults and only replace keys provided by the uploaded config.
+                const merged = {...prev};
+                for (const [serviceName, envMap] of Object.entries(nextValues)) {
+                    merged[serviceName] = {
+                        ...(prev[serviceName] ?? {}),
+                        ...envMap,
+                    };
+                }
+                return applyDerivedEnvState(merged);
+            });
+
+            const ignoredLabel = Array.from(new Set(ignoredServices)).join(", ");
+            setConfigMessage(
+                ignoredLabel
+                    ? `Loaded setup JSON from ${file.name}. Ignored unknown services: ${ignoredLabel}.`
+                    : `Loaded setup JSON from ${file.name}.`,
             );
-            setConfigMessage(`Loaded setup JSON from ${file.name}.`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             setConfigError(message);
@@ -935,7 +1009,7 @@ export function SetupWizard() {
                                     onClick={() => void install()}
                                 >
                                     {installing
-                                        ? installProgress?.items?.some((item) => item.status?.trim().toLowerCase() === "downloading")
+                                        ? installProgress?.items?.some((item) => normalizeInstallStatus(item.status) === "downloading")
                                             ? "Downloading..."
                                             : "Installing..."
                                         : "Install selected services"}
@@ -969,7 +1043,7 @@ export function SetupWizard() {
                                         <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
                                         <Column gap="8">
                                             {installProgress.items.map((item) => {
-                                                const normalized = item.status?.trim().toLowerCase() ?? "";
+                                                const normalized = normalizeInstallStatus(item.status);
                                                 const isInstalled = normalized === "installed";
                                                 const isError = normalized === "error";
                                                 const isPending = normalized === "pending";
@@ -1007,7 +1081,26 @@ export function SetupWizard() {
                                     </Column>
                                 )}
 
-                                {installResult !== null && (
+                                {installResultErrors.length > 0 && (
+                                    <Column gap="8">
+                                        <Text onBackground="danger-strong" variant="body-default-xs">
+                                            Some services failed to install:
+                                        </Text>
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {installResultErrors.map((entry) => (
+                                                <Badge
+                                                    key={`install-error:${entry.name}`}
+                                                    background={BG_DANGER_ALPHA_WEAK}
+                                                    onBackground="neutral-strong"
+                                                >
+                                                    {entry.name}
+                                                </Badge>
+                                            ))}
+                                        </Row>
+                                    </Column>
+                                )}
+
+                                {installResult !== null && installResultErrors.length === 0 && !installError && (
                                     <Column gap="12">
                                         <Text onBackground="neutral-weak" variant="body-default-xs">
                                             Install completed. Open setup summary to finalize setup and continue.
