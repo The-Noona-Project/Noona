@@ -1,12 +1,7 @@
-// services/sage/shared/discordClient.mjs
+// services/sage/clients/discordClient.mjs
 
-import {
-    Client,
-    Events,
-    GatewayIntentBits,
-    Partials,
-} from 'discord.js';
-import { errMSG, log } from '../../../utilities/etc/logger.mjs';
+import {Client, Events, GatewayIntentBits, Partials,} from 'discord.js';
+import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const DEFAULT_INTENTS = [
     GatewayIntentBits.Guilds,

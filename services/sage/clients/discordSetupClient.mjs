@@ -1,9 +1,9 @@
-// services/sage/shared/discordSetupClient.mjs
+// services/sage/clients/discordSetupClient.mjs
 
-import { ChannelType, GatewayIntentBits } from 'discord.js'
+import {ChannelType, GatewayIntentBits} from 'discord.js'
 
 import createDiscordClient from './discordClient.mjs'
-import { SetupValidationError } from './errors.mjs'
+import {SetupValidationError} from '../lib/errors.mjs'
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {

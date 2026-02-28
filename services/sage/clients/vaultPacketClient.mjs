@@ -1,6 +1,6 @@
-// services/sage/shared/vaultPacketClient.mjs
+// services/sage/clients/vaultPacketClient.mjs
 
-import {resolveDefaultVaultUrls} from './wizardStateClient.mjs'
+import {resolveDefaultVaultUrls} from '../wizard/wizardStateClient.mjs'
 
 const normalizeUrl = (candidate) => {
     if (!candidate || typeof candidate !== 'string') {

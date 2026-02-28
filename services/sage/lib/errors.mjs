@@ -1,4 +1,4 @@
-// services/sage/shared/errors.mjs
+// services/sage/lib/errors.mjs
 
 export class SetupValidationError extends Error {
     constructor(message) {

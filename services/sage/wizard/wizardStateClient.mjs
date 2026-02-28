@@ -1,4 +1,4 @@
-// services/sage/shared/wizardStateClient.mjs
+// services/sage/wizard/wizardStateClient.mjs
 
 import {
     appendWizardStepHistoryEntries,

@@ -1,0 +1,478 @@
+// services/sage/routes/registerSettingsRoutes.mjs
+
+import {SetupValidationError} from '../lib/errors.mjs'
+
+export function registerSettingsRoutes(context = {}) {
+    const {
+        app,
+        applyDebugSetting,
+        DEFAULT_NAMING_SETTINGS,
+        logger,
+        normalizeString,
+        parseBooleanInput,
+        queueEcosystemRestart,
+        readDebugSetting,
+        requireAdminSession,
+        requireAdminSessionIfSetupCompleted,
+        resolveBaseRedirectUrl,
+        serviceName,
+        settingsCollection,
+        setupClient,
+        vaultClient,
+        vaultErrorMessage,
+        vaultErrorStatus,
+        verifyFactoryResetSelections,
+        verifySessionPassword,
+    } = context
+
+    app.use('/api/settings', requireAdminSessionIfSetupCompleted)
+
+    app.get('/api/settings/debug', async (_req, res) => {
+        if (!vaultClient?.mongo?.findOne) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const setting = await readDebugSetting()
+            res.json(setting)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load debug setting: ${error.message}`)
+            res.status(502).json({error: 'Unable to load debug setting.'})
+        }
+    })
+
+    app.put('/api/settings/debug', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        const enabled = parseBooleanInput(req.body?.enabled)
+        if (enabled == null) {
+            res.status(400).json({error: 'enabled must be a boolean value.'})
+            return
+        }
+
+        try {
+            const setting = await applyDebugSetting(enabled)
+            res.json(setting)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to update debug setting: ${error.message}`)
+            const message = error instanceof Error ? error.message : 'Unable to update debug setting.'
+            res.status(502).json({error: message})
+        }
+    })
+
+    app.get('/api/settings/downloads/naming', async (_req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const doc = await vaultClient.mongo.findOne(settingsCollection, {
+                key: DEFAULT_NAMING_SETTINGS.key,
+            })
+
+            res.json({
+                key: DEFAULT_NAMING_SETTINGS.key,
+                titleTemplate:
+                    typeof doc?.titleTemplate === 'string' && doc.titleTemplate.trim()
+                        ? doc.titleTemplate.trim()
+                        : DEFAULT_NAMING_SETTINGS.titleTemplate,
+                chapterTemplate:
+                    typeof doc?.chapterTemplate === 'string' && doc.chapterTemplate.trim()
+                        ? doc.chapterTemplate.trim()
+                        : DEFAULT_NAMING_SETTINGS.chapterTemplate,
+                pageTemplate:
+                    typeof doc?.pageTemplate === 'string' && doc.pageTemplate.trim()
+                        ? doc.pageTemplate.trim()
+                        : DEFAULT_NAMING_SETTINGS.pageTemplate,
+                pagePad:
+                    Number.isFinite(Number(doc?.pagePad)) && Number(doc.pagePad) > 0
+                        ? Math.floor(Number(doc.pagePad))
+                        : DEFAULT_NAMING_SETTINGS.pagePad,
+                chapterPad:
+                    Number.isFinite(Number(doc?.chapterPad)) && Number(doc.chapterPad) > 0
+                        ? Math.floor(Number(doc.chapterPad))
+                        : DEFAULT_NAMING_SETTINGS.chapterPad,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load naming settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to load naming settings.'})
+        }
+    })
+
+    app.put('/api/settings/downloads/naming', async (req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const current = await vaultClient.mongo.findOne(settingsCollection, {
+                key: DEFAULT_NAMING_SETTINGS.key,
+            })
+
+            const next = {
+                key: DEFAULT_NAMING_SETTINGS.key,
+                titleTemplate:
+                    typeof req.body?.titleTemplate === 'string'
+                        ? req.body.titleTemplate.trim()
+                        : typeof current?.titleTemplate === 'string'
+                            ? current.titleTemplate.trim()
+                            : DEFAULT_NAMING_SETTINGS.titleTemplate,
+                chapterTemplate:
+                    typeof req.body?.chapterTemplate === 'string'
+                        ? req.body.chapterTemplate.trim()
+                        : typeof current?.chapterTemplate === 'string'
+                            ? current.chapterTemplate.trim()
+                            : DEFAULT_NAMING_SETTINGS.chapterTemplate,
+                pageTemplate:
+                    typeof req.body?.pageTemplate === 'string'
+                        ? req.body.pageTemplate.trim()
+                        : typeof current?.pageTemplate === 'string'
+                            ? current.pageTemplate.trim()
+                            : DEFAULT_NAMING_SETTINGS.pageTemplate,
+                pagePad: Number.isFinite(Number(req.body?.pagePad))
+                    ? Math.max(1, Math.min(12, Math.floor(Number(req.body.pagePad))))
+                    : Number.isFinite(Number(current?.pagePad))
+                        ? Math.max(1, Math.min(12, Math.floor(Number(current.pagePad))))
+                        : DEFAULT_NAMING_SETTINGS.pagePad,
+                chapterPad: Number.isFinite(Number(req.body?.chapterPad))
+                    ? Math.max(1, Math.min(12, Math.floor(Number(req.body.chapterPad))))
+                    : Number.isFinite(Number(current?.chapterPad))
+                        ? Math.max(1, Math.min(12, Math.floor(Number(current.chapterPad))))
+                        : DEFAULT_NAMING_SETTINGS.chapterPad,
+            }
+
+            if (!next.titleTemplate) {
+                res.status(400).json({error: 'titleTemplate must not be empty.'})
+                return
+            }
+            if (!next.chapterTemplate) {
+                res.status(400).json({error: 'chapterTemplate must not be empty.'})
+                return
+            }
+            if (!next.pageTemplate) {
+                res.status(400).json({error: 'pageTemplate must not be empty.'})
+                return
+            }
+
+            const now = new Date().toISOString()
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_NAMING_SETTINGS.key},
+                {$set: {...next, updatedAt: now}},
+                {upsert: true},
+            )
+
+            res.json(next)
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to update naming settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to update naming settings.'})
+        }
+    })
+
+    app.get('/api/settings/services', async (_req, res) => {
+        try {
+            const services = await setupClient.listServices({includeInstalled: true})
+            res.json({services: Array.isArray(services) ? services : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load service settings catalog: ${error.message}`)
+            res.status(502).json({error: 'Unable to load service settings.'})
+        }
+    })
+
+    app.get('/api/settings/services/updates', async (_req, res) => {
+        try {
+            const updates = await setupClient.listServiceUpdates()
+            res.json({updates: Array.isArray(updates) ? updates : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to list service updates: ${error.message}`)
+            res.status(502).json({error: 'Unable to load service updates.'})
+        }
+    })
+
+    app.post('/api/settings/services/updates/check', async (req, res) => {
+        const services = Array.isArray(req.body?.services) ? req.body.services : null
+
+        try {
+            const updates = await setupClient.checkServiceUpdates(services)
+            res.json({updates: Array.isArray(updates) ? updates : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to check service updates: ${error.message}`)
+            res.status(502).json({error: 'Unable to check service updates.'})
+        }
+    })
+
+    app.get('/api/settings/services/:name/config', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const config = await setupClient.getServiceConfig(name)
+            res.json(config ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to load service config.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to load service config for ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.put('/api/settings/services/:name/config', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const result = await setupClient.updateServiceConfig(name, req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to update service config.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to update service config for ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/services/:name/restart', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const result = await setupClient.restartService(name)
+            res.json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to restart service.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to restart service ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/services/:name/update-image', async (req, res) => {
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Service name is required.'})
+            return
+        }
+
+        try {
+            const result = await setupClient.updateServiceImage(name, req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            const message = error instanceof SetupValidationError ? error.message : 'Unable to update service image.'
+            const status = error instanceof SetupValidationError ? 400 : 502
+            logger.error(`[${serviceName}] ⚠️ Failed to update service image for ${name}: ${error.message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/ecosystem/start', async (req, res) => {
+        try {
+            const result = await setupClient.startEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to start ecosystem: ${error.message}`)
+            res.status(502).json({error: 'Unable to start ecosystem.'})
+        }
+    })
+
+    app.post('/api/settings/ecosystem/stop', async (req, res) => {
+        try {
+            const result = await setupClient.stopEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to stop ecosystem: ${error.message}`)
+            res.status(502).json({error: 'Unable to stop ecosystem.'})
+        }
+    })
+
+    app.post('/api/settings/ecosystem/restart', async (req, res) => {
+        try {
+            const result = await setupClient.restartEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to restart ecosystem: ${error.message}`)
+            res.status(502).json({error: 'Unable to restart ecosystem.'})
+        }
+    })
+
+    app.post('/api/settings/factory-reset', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        if (!vaultClient?.mongo?.wipe || !vaultClient?.redis?.wipe) {
+            res.status(503).json({error: 'Vault wipe operations are not configured.'})
+            return
+        }
+
+        const password = typeof req.body?.password === 'string' ? req.body.password : ''
+        if (!password) {
+            res.status(400).json({error: 'password is required.'})
+            return
+        }
+
+        const deleteRavenDownloads = parseBooleanInput(req.body?.deleteRavenDownloads) === true
+        const deleteDockers = parseBooleanInput(req.body?.deleteDockers) === true
+
+        try {
+            const passwordValid = await verifySessionPassword({session, password})
+            if (!passwordValid) {
+                res.status(401).json({error: 'Invalid password.'})
+                return
+            }
+
+            await vaultClient.mongo.wipe()
+            await vaultClient.redis.wipe()
+
+            const runFactoryReset =
+                typeof setupClient?.factoryResetEcosystem === 'function'
+                    ? () => setupClient.factoryResetEcosystem({
+                        deleteRavenDownloads,
+                        deleteDockers,
+                        setupCompleted: false,
+                        forceFull: false,
+                    })
+                    : null
+
+            if (!runFactoryReset) {
+                throw new Error('Warden factory reset endpoint is unavailable.')
+            }
+
+            const resetResult = await runFactoryReset()
+            const verificationFailures = verifyFactoryResetSelections({
+                result: resetResult,
+                deleteRavenDownloads,
+                deleteDockers,
+            })
+            if (verificationFailures.length > 0) {
+                throw new Error(`Factory reset completed with cleanup errors: ${verificationFailures.join(' ')}`)
+            }
+
+            res.status(202).json({
+                ok: true,
+                restartQueued: true,
+                deleteRavenDownloads,
+                deleteDockers,
+                redirectTo: resolveBaseRedirectUrl(),
+                result: resetResult ?? null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to run factory reset: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to run factory reset.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.get('/api/settings/vault/collections', async (_req, res) => {
+        if (!vaultClient?.mongo?.listCollections) {
+            res.status(503).json({error: 'Vault collection viewer is not configured.'})
+            return
+        }
+
+        try {
+            const collections = await vaultClient.mongo.listCollections()
+            res.json({collections: Array.isArray(collections) ? collections : []})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load Vault collections: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to load Vault collections.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.get('/api/settings/vault/collections/:name/documents', async (req, res) => {
+        if (!vaultClient?.mongo?.findMany) {
+            res.status(503).json({error: 'Vault collection viewer is not configured.'})
+            return
+        }
+
+        const name = typeof req.params?.name === 'string' ? req.params.name.trim() : ''
+        if (!name) {
+            res.status(400).json({error: 'Collection name is required.'})
+            return
+        }
+
+        const rawLimit = Number(req.query?.limit)
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 50
+
+        try {
+            const documents = await vaultClient.mongo.findMany(name, {})
+            const list = Array.isArray(documents) ? documents.slice(0, limit) : []
+            res.json({collection: name, limit, documents: list})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load Vault documents for ${name}: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to load Vault collection documents.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.post('/api/settings/vault/wipe', async (req, res) => {
+        const session = await requireAdminSession(req, res)
+        if (!session) return
+
+        if (!vaultClient?.mongo?.wipe || !vaultClient?.redis?.wipe) {
+            res.status(503).json({error: 'Vault wipe operations are not configured.'})
+            return
+        }
+
+        const target = normalizeString(req.body?.target).toLowerCase()
+        if (target !== 'mongo' && target !== 'redis') {
+            res.status(400).json({error: 'target must be either "mongo" or "redis".'})
+            return
+        }
+
+        const restartRaw = parseBooleanInput(req.body?.restart)
+        const shouldRestart = restartRaw == null ? true : restartRaw
+
+        const password = typeof req.body?.password === 'string' ? req.body.password : ''
+        if (!password) {
+            res.status(400).json({error: 'password is required.'})
+            return
+        }
+
+        try {
+            const passwordValid = await verifySessionPassword({session, password})
+            if (!passwordValid) {
+                res.status(401).json({error: 'Invalid password.'})
+                return
+            }
+
+            if (target === 'mongo') {
+                await vaultClient.mongo.wipe()
+            } else {
+                await vaultClient.redis.wipe()
+            }
+
+            if (shouldRestart) {
+                queueEcosystemRestart({trackedOnly: false, forceFull: true})
+            }
+
+            res.status(202).json({
+                ok: true,
+                target,
+                restartQueued: shouldRestart,
+                redirectTo: resolveBaseRedirectUrl(),
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to wipe ${target}: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, `Unable to wipe ${target}.`)
+            res.status(status).json({error: message})
+        }
+    })
+}
+
+export default registerSettingsRoutes

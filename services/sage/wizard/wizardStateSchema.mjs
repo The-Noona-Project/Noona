@@ -1,6 +1,6 @@
-// services/sage/shared/wizardStateSchema.mjs
+// services/sage/wizard/wizardStateSchema.mjs
 
-import { SetupValidationError } from './errors.mjs'
+import {SetupValidationError} from '../lib/errors.mjs'
 
 export const WIZARD_STATE_VERSION = 2
 export const WIZARD_STEP_KEYS = Object.freeze(['foundation', 'portal', 'raven', 'verification'])
