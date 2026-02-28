@@ -1602,6 +1602,59 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
 });
 
 
+test('Moon WEBGUI_PORT override updates service config and minimal boot health target', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-sage': {name: 'noona-sage', image: 'sage'},
+            },
+        },
+        env: {HOST_SERVICE_URL: 'http://localhost'},
+        hostDockerSockets: [],
+    });
+
+    await warden.updateServiceConfig('noona-moon', {
+        env: {WEBGUI_PORT: '3010'},
+    });
+
+    const moonConfig = warden.getServiceConfig('noona-moon');
+    assert.equal(moonConfig.port, 3010);
+    assert.equal(moonConfig.internalPort, 3010);
+    assert.equal(moonConfig.hostServiceUrl, 'http://localhost:3010');
+    assert.equal(moonConfig.health, 'http://noona-moon:3010/');
+    assert.equal(moonConfig.env.WEBGUI_PORT, '3010');
+    assert.deepEqual(moonConfig.runtimeConfig.env, {WEBGUI_PORT: '3010'});
+
+    const starts = [];
+    warden.startService = async (service, healthUrl) => {
+        starts.push({
+            name: service.name,
+            port: service.port ?? null,
+            internalPort: service.internalPort ?? null,
+            healthUrl,
+        });
+    };
+
+    await warden.bootMinimal();
+
+    assert.deepEqual(starts, [
+        {
+            name: 'noona-sage',
+            port: null,
+            internalPort: null,
+            healthUrl: 'http://noona-sage:3004/health',
+        },
+        {
+            name: 'noona-moon',
+            port: 3010,
+            internalPort: 3010,
+            healthUrl: 'http://noona-moon:3010/',
+        },
+    ]);
+});
+
 test('init performs an immediate service update refresh before scheduling interval checks', async () => {
     let scheduledCallback = null;
     let unrefCalled = false;

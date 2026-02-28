@@ -21,6 +21,15 @@ const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_DOWNLOAD_THREADS = process.env.RAVEN_DOWNLOAD_THREADS || '3';
+const DEFAULT_MOON_WEBGUI_PORT = (() => {
+    const candidate = Number.parseInt(process.env.WEBGUI_PORT || '3000', 10);
+    if (Number.isFinite(candidate) && candidate >= 1 && candidate <= 65535) {
+        return String(candidate);
+    }
+
+    return '3000';
+})();
+const DEFAULT_MOON_WEBGUI_PORT_NUMBER = Number.parseInt(DEFAULT_MOON_WEBGUI_PORT, 10);
 
 const rawList = [
     'noona-sage',
@@ -61,7 +70,7 @@ const createEnvField = (key, defaultValue, {
 const serviceDefs = rawList.map(name => {
     const portMap = {
         'noona-sage': 3004,
-        'noona-moon': 3000,
+        'noona-moon': DEFAULT_MOON_WEBGUI_PORT_NUMBER,
         'noona-oracle': 3001,
         'noona-raven': 3002,
         'noona-portal': 3003,
@@ -139,6 +148,18 @@ const serviceDefs = rawList.map(name => {
                 label: 'Raven Download Threads',
                 description: 'Maximum concurrent download jobs Raven should run.',
                 warning: 'Changing this value requires restarting noona-raven.',
+                required: false,
+            }),
+        );
+    }
+
+    if (name === 'noona-moon') {
+        env.push(`WEBGUI_PORT=${DEFAULT_MOON_WEBGUI_PORT}`);
+        envConfig.push(
+            createEnvField('WEBGUI_PORT', DEFAULT_MOON_WEBGUI_PORT, {
+                label: 'Moon Web GUI Port',
+                description: 'Port Moon listens on for the web interface and the port Warden publishes on the host.',
+                warning: 'Changing this port requires restarting noona-moon and updating any bookmarks or reverse proxies.',
                 required: false,
             }),
         );
@@ -342,6 +363,10 @@ const serviceDefs = rawList.map(name => {
 
         if (name === 'noona-portal') {
             return 'http://noona-portal:3003/health';
+        }
+
+        if (name === 'noona-moon') {
+            return `http://noona-moon:${internalPort}/`;
         }
 
         return `http://${name}:${portMap[name]}/`;

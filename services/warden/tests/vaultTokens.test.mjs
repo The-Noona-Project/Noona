@@ -186,6 +186,38 @@ test('noona-portal health check points to /health endpoint', async () => {
     );
 });
 
+test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health defaults', async () => {
+    const previousWebGuiPort = process.env.WEBGUI_PORT;
+    process.env.WEBGUI_PORT = '3010';
+
+    try {
+        const module = await import('../docker/noonaDockers.mjs?test=moon-webgui-port');
+        const {default: noonaDockers} = module;
+
+        const moon = noonaDockers['noona-moon'];
+        assert.ok(moon, 'Moon service descriptor should be defined.');
+        assert.equal(moon.port, 3010);
+        assert.equal(moon.internalPort, 3010);
+        assert.equal(moon.hostServiceUrl, 'http://localhost:3010');
+        assert.equal(moon.health, 'http://noona-moon:3010/');
+        assert.ok(
+            moon.env.includes('WEBGUI_PORT=3010'),
+            'Moon env array should include WEBGUI_PORT with the configured default.',
+        );
+
+        const field = moon.envConfig.find((entry) => entry.key === 'WEBGUI_PORT');
+        assert.ok(field, 'Moon envConfig should include WEBGUI_PORT.');
+        assert.equal(field.defaultValue, '3010');
+        assert.equal(field.required, false);
+    } finally {
+        if (previousWebGuiPort === undefined) {
+            delete process.env.WEBGUI_PORT;
+        } else {
+            process.env.WEBGUI_PORT = previousWebGuiPort;
+        }
+    }
+});
+
 test('noona-raven descriptor provides default Vault URL configuration', async () => {
     const module = await import('../docker/noonaDockers.mjs?test=raven-env');
     const { default: noonaDockers } = module;

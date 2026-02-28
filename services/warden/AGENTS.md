@@ -49,6 +49,8 @@
 - **Key environment variables:**
   - `DEBUG` – selects launch mode and enables log streaming (`true`/`super` streams container stdout via `utilities/etc/logger.mjs`).
   - `WARDEN_API_PORT` – HTTP port for `startWardenServer` (defaults to `4001`).
+  - `WEBGUI_PORT` - Moon web GUI port injected by the `noona-moon` descriptor; Warden also uses it for Moon host/health
+    defaults.
   - `HOST_SERVICE_URL`/`RAVEN_VAULT_URL`/`*_VAULT_TOKEN` – documented in [`readme.md`](./readme.md); ensure descriptors reference them in `envConfig` so setup wizards prompt appropriately.
 - **Debugging tips:**
   1. Hit `GET /health` and `GET /api/services` to confirm Warden is reachable and descriptors are loading.

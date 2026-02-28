@@ -1852,6 +1852,28 @@ export function createWarden(options = {}) {
         return snapshot;
     };
 
+    const applyMoonWebGuiPort = (descriptor) => {
+        if (!descriptor || descriptor.name !== 'noona-moon') {
+            return descriptor;
+        }
+
+        const envMap = parseEnvEntries(descriptor.env);
+        const webGuiPort = normalizeHostPort(envMap.WEBGUI_PORT);
+        if (webGuiPort == null) {
+            return descriptor;
+        }
+
+        return {
+            ...descriptor,
+            port: webGuiPort,
+            internalPort: webGuiPort,
+            hostServiceUrl: `${hostServiceBase}:${webGuiPort}`,
+            health: `http://noona-moon:${webGuiPort}/`,
+            exposed: {[`${webGuiPort}/tcp`]: {}},
+            ports: {[`${webGuiPort}/tcp`]: [{HostPort: String(webGuiPort)}]},
+        };
+    };
+
     const buildEffectiveServiceDescriptor = (name, {envOverrides = null} = {}) => {
         const entry = serviceCatalog.get(name);
         if (!entry) {
@@ -1866,6 +1888,7 @@ export function createWarden(options = {}) {
         };
 
         let descriptor = applyEnvOverrides(baseDescriptor, mergedOverrides);
+        descriptor = applyMoonWebGuiPort(descriptor);
         const internalPort = descriptor.internalPort || descriptor.port || null;
         const hostPort = normalizeHostPort(runtime.hostPort);
 
@@ -4009,9 +4032,18 @@ export function createWarden(options = {}) {
     api.bootMinimal = async function bootMinimal() {
         const moon = buildEffectiveServiceDescriptor('noona-moon').descriptor;
         const sage = buildEffectiveServiceDescriptor('noona-sage').descriptor;
+        const moonHealthUrl = moon.health || (() => {
+            const moonEnv = parseEnvEntries(moon.env);
+            const moonPort = normalizeHostPort(moon.internalPort || moon.port || moonEnv.WEBGUI_PORT || 3000);
+            if (moonPort == null) {
+                return null;
+            }
+
+            return `http://${moon.name}:${moonPort}/`;
+        })();
 
         await api.startService(sage, 'http://noona-sage:3004/health');
-        await api.startService(moon, 'http://noona-moon:3000/');
+        await api.startService(moon, moonHealthUrl);
     };
 
     api.bootFull = async function bootFull() {

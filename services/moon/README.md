@@ -8,6 +8,7 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Service rules](AGENTS.md)
 - [Stack overview](../../README.md)
 - [Main app router](src/app/)
+- [Runtime launcher](scripts/runNext.mjs)
 - [Home page](src/app/page.tsx)
 - [Libraries page route](src/app/libraries/page.tsx)
 - [Downloads page route](src/app/downloads/page.tsx)
@@ -16,6 +17,7 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
 - [Noona API routes](src/app/api/noona/)
+- [Web GUI helpers](src/utils/webGui.ts)
 - [Once UI configuration](src/resources/once-ui.config.ts)
 
 ## Primary UI Areas
@@ -34,6 +36,10 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - `src/app/api/noona/install/*` and `src/app/api/noona/setup/*` - install/setup state and completion APIs.
 - `src/app/api/noona/auth/*` - bootstrap, login/logout, and user APIs.
 
+## Key Environment Variables
+
+- `WEBGUI_PORT` - port Moon binds to for `npm run dev` and `npm run start` (defaults to `3000`).
+
 ## Local Commands
 
 ```bash
@@ -44,6 +50,8 @@ npm run lint
 npm run build
 npm run start
 ```
+
+Set `WEBGUI_PORT` before `npm run dev` or `npm run start` when Moon should bind to a non-default port.
 
 ## Documentation Rule
 

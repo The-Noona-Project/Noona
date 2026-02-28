@@ -50,6 +50,7 @@ DEBUG=super node initWarden.mjs
 | `DEBUG`            | Boot profile + log verbosity                   | `false`                   |
 | `WARDEN_API_PORT`  | Warden API listen port                         | `4001`                    |
 | `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links | `http://localhost`        |
+| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`   | `3000`                    |
 | `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime          | `http://noona-vault:3005` |
 | `*_VAULT_TOKEN`    | Optional per-service token override            | generated in descriptors  |
 
@@ -63,4 +64,6 @@ DEBUG=super node initWarden.mjs
 
 - Warden tracks service histories and buffered logs for diagnostics.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
+- `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
+  the same port.
 - Update descriptor metadata and this README together when adding/removing core services.

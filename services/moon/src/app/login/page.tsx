@@ -1,11 +1,12 @@
 import {Meta} from "@once-ui-system/core";
 import {LoginPage} from "@/components/noona/LoginPage";
+import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export async function generateMetadata() {
     return Meta.generate({
         title: "Noona Login",
         description: "Sign in to Noona.",
-        baseURL: "http://localhost:3000",
+        baseURL: resolveMoonBaseUrl(),
         path: "/login",
         image: "/favicon.ico",
     });
@@ -14,4 +15,3 @@ export async function generateMetadata() {
 export default function Login() {
     return <LoginPage/>;
 }
-
