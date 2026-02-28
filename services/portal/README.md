@@ -10,8 +10,13 @@ commands that provision users, store onboarding tokens, and assign default roles
 - [Entrypoint](initPortal.mjs)
 - [Runtime config loader](shared/config.mjs)
 - [HTTP app](shared/portalApp.mjs)
-- [Discord client](shared/discordClient.mjs)
-- [Slash commands](shared/discordCommands.mjs)
+- [Discord client compatibility export](shared/discordClient.mjs)
+- [Discord runtime modules](shared/discord/)
+- [Discord client implementation](shared/discord/client.mjs)
+- [Discord command inspector](shared/discord/commandInspector.mjs)
+- [Slash commands compatibility export](shared/discordCommands.mjs)
+- [Slash command modules](shared/commands/)
+- [Command listing script](scripts/listCommands.mjs)
 - [Onboarding token store](shared/onboardingStore.mjs)
 - [Kavita client](shared/kavitaClient.mjs)
 - [Vault client](shared/vaultClient.mjs)
@@ -36,6 +41,8 @@ commands that provision users, store onboarding tokens, and assign default roles
 - `/join` - onboarding flow with Kavita + token storage + optional Vault write.
 - `/scan` - list available Kavita libraries.
 - `/search` - lookup user details from Kavita and Vault.
+- Boot behavior: on Discord login, Portal clears current-app global commands, clears the guild command list, then
+  re-registers all current slash command definitions for the configured guild.
 
 ## Key Environment Variables
 
@@ -58,8 +65,12 @@ cd services/portal
 npm install
 npm run start
 npm run dev
+npm run commands:list
 npm test
 ```
+
+`npm run commands:list` inspects the current Portal Discord application and prints global commands, guild commands, and
+duplicate names across both scopes. Add `-- --json` to emit machine-readable output.
 
 ## Documentation Rule
 

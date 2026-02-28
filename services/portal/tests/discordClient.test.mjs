@@ -2,10 +2,10 @@
 
 import EventEmitter from 'node:events';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { Events } from 'discord.js';
+import {test} from 'node:test';
+import {Events} from 'discord.js';
 
-import { createDiscordClient } from '../shared/discordClient.mjs';
+import {createDiscordClient} from '../shared/discordClient.mjs';
 import createPortalSlashCommands from '../shared/discordCommands.mjs';
 
 class FakeClient extends EventEmitter {
@@ -61,7 +61,7 @@ const emitAndWait = (emitter, event, payload) => {
     return new Promise(resolve => setImmediate(resolve));
 };
 
-test('createDiscordClient registers slash commands during login', async () => {
+test('createDiscordClient clears global and guild commands before registering slash commands during login', async () => {
     const fakeClient = new FakeClient();
     fakeClient.user = { tag: 'TestBot#0001' };
 
@@ -82,10 +82,44 @@ test('createDiscordClient registers slash commands during login', async () => {
     await loginPromise;
 
     assert.equal(fakeClient.lastLoginToken, 'test-token');
-    assert.equal(fakeClient.application.commands.calls.length, 1);
-    const [{ definitions, guildId }] = fakeClient.application.commands.calls;
-    assert.equal(guildId, 'guild-123');
-    assert.deepEqual(definitions, [{ name: 'ding', description: 'Test ding' }]);
+    assert.equal(fakeClient.application.commands.calls.length, 3);
+
+    const [clearGlobalCall, clearGuildCall, registerCall] = fakeClient.application.commands.calls;
+    assert.equal(clearGlobalCall.guildId, undefined);
+    assert.deepEqual(clearGlobalCall.definitions, []);
+
+    assert.equal(clearGuildCall.guildId, 'guild-123');
+    assert.deepEqual(clearGuildCall.definitions, []);
+
+    assert.equal(registerCall.guildId, 'guild-123');
+    assert.deepEqual(registerCall.definitions, [{name: 'ding', description: 'Test ding'}]);
+});
+
+test('createDiscordClient clears global and guild commands on login when no handlers are defined', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    assert.equal(fakeClient.application.commands.calls.length, 2);
+    assert.deepEqual(fakeClient.application.commands.calls[0], {
+        definitions: [],
+        guildId: undefined,
+    });
+    assert.deepEqual(fakeClient.application.commands.calls[1], {
+        definitions: [],
+        guildId: 'guild-123',
+    });
 });
 
 test('interaction handler executes matching slash command', async () => {

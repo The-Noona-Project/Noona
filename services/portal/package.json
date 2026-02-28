@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node initPortal.mjs",
     "dev": "nodemon initPortal.mjs",
+    "commands:list": "node scripts/listCommands.mjs",
     "test": "node --test"
   },
   "dependencies": {
