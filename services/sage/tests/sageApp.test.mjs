@@ -7,14 +7,14 @@ import crypto from 'node:crypto'
 
 import {ChannelType, GatewayIntentBits} from 'discord.js'
 
-import {createSageApp, normalizeServiceInstallPayload, SetupValidationError, startSage,} from '../shared/sageApp.mjs'
+import {createSageApp, normalizeServiceInstallPayload, SetupValidationError, startSage,} from '../app/createSageApp.mjs'
 import {
     appendWizardStepHistoryEntries,
     applyWizardStateUpdates,
     createDefaultWizardState,
     DEFAULT_WIZARD_STEP_METADATA,
-} from '../shared/wizardStateSchema.mjs'
-import {createDiscordSetupClient} from '../shared/discordSetupClient.mjs'
+} from '../wizard/wizardStateSchema.mjs'
+import {createDiscordSetupClient} from '../clients/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {

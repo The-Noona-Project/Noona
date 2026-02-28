@@ -21,6 +21,7 @@ export function LoginPage() {
 
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
+    const [showPassword, setShowPassword] = useState(false);
     const [loggingIn, setLoggingIn] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -57,7 +58,13 @@ export function LoginPage() {
         };
     }, [router]);
 
+    const canSubmit = username.trim().length > 0 && password.length > 0;
+
     const login = async () => {
+        if (!canSubmit || loggingIn) {
+            return;
+        }
+
         setLoggingIn(true);
         setError(null);
 
@@ -85,6 +92,14 @@ export function LoginPage() {
         }
     };
 
+    const submitWithEnter = (key: string) => {
+        if (key !== "Enter") {
+            return;
+        }
+
+        void login();
+    };
+
     return (
         <Column maxWidth="s" horizontal="center" gap="16" paddingY="32">
             <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
@@ -95,11 +110,14 @@ export function LoginPage() {
                                 Noona
                             </Badge>
                             <Heading as="h1" variant="heading-strong-l">
-                                Login
+                                Sign in
                             </Heading>
                         </Row>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
-                            Sign in to manage libraries, downloads, and settings.
+                            Sign in with a Moon-enabled account to manage libraries, downloads, and settings.
+                        </Text>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Press Enter to submit. Moon login permission is required for the account you use here.
                         </Text>
                     </Column>
 
@@ -117,20 +135,38 @@ export function LoginPage() {
                                 label="Username"
                                 value={username}
                                 onChange={(e) => setUsername(e.target.value)}
+                                onKeyDown={(event) => submitWithEnter(event.key)}
                                 autoComplete="username"
+                                autoFocus
                             />
-                            <Input
-                                id="password"
-                                name="password"
-                                label="Password"
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                autoComplete="current-password"
-                            />
+                            <Column gap="8">
+                                <Input
+                                    id="password"
+                                    name="password"
+                                    label="Password"
+                                    type={showPassword ? "text" : "password"}
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    onKeyDown={(event) => submitWithEnter(event.key)}
+                                    autoComplete="current-password"
+                                />
+                                <Row fillWidth horizontal="between" vertical="center" gap="12"
+                                     style={{flexWrap: "wrap"}}>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Use the same credentials configured in Sage.
+                                    </Text>
+                                    <Button
+                                        variant="secondary"
+                                        size="s"
+                                        onClick={() => setShowPassword((current) => !current)}
+                                    >
+                                        {showPassword ? "Hide password" : "Show password"}
+                                    </Button>
+                                </Row>
+                            </Column>
 
                             {error && (
-                                <Text onBackground="danger-strong" variant="body-default-xs">
+                                <Text onBackground="danger-strong" variant="body-default-xs" aria-live="polite">
                                     {normalizeString(error)}
                                 </Text>
                             )}
@@ -138,7 +174,7 @@ export function LoginPage() {
                             <Row gap="12" style={{flexWrap: "wrap"}}>
                                 <Button
                                     variant="primary"
-                                    disabled={loggingIn || !username.trim() || !password}
+                                    disabled={checking || loggingIn || !canSubmit}
                                     onClick={() => void login()}
                                 >
                                     {loggingIn ? "Signing in..." : "Sign in"}

@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 
-import {createRequireAuth, createVaultApp, extractBearerToken, parseTokenMap,} from '../shared/vaultApp.mjs';
+import {createVaultApp} from '../app/createVaultApp.mjs';
+import {createRequireAuth, extractBearerToken, parseTokenMap,} from '../auth/tokenAuth.mjs';
 
 function createMockResponse() {
     return {

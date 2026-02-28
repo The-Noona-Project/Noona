@@ -3,8 +3,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import {createWizardStateClient, createWizardStatePublisher} from '../shared/wizardStateClient.mjs'
-import {createDefaultWizardState} from '../shared/wizardStateSchema.mjs'
+import {createWizardStateClient, createWizardStatePublisher} from '../wizard/wizardStateClient.mjs'
+import {createDefaultWizardState} from '../wizard/wizardStateSchema.mjs'
 
 test('trackServiceStatus prefers layer-aware messages for step detail', async () => {
     const updates = []

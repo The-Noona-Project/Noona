@@ -8,7 +8,10 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 - [Service rules](AGENTS.md)
 - [Stack overview](../../README.md)
 - [Entrypoint](initVault.mjs)
-- [Express app and routes](shared/vaultApp.mjs)
+- [App builder](app/createVaultApp.mjs)
+- [Auth helpers](auth/tokenAuth.mjs)
+- [Route modules](routes/)
+- [User helpers](users/)
 - [Packet dispatcher](../../utilities/database/packetParser.mjs)
 - [Mongo helpers](../../utilities/database/mongo/)
 - [Redis helpers](../../utilities/database/redis/)
@@ -29,7 +32,8 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 
 - Protected routes require `Authorization: Bearer <token>`.
 - Tokens are loaded from `VAULT_TOKEN_MAP` (`service:token,service:token` format).
-- `shared/vaultApp.mjs` builds service/token lookup maps and attaches `req.serviceName` for authorized callers.
+- `app/createVaultApp.mjs` wires the token registry, and `auth/tokenAuth.mjs` attaches `req.serviceName` for authorized
+  callers.
 
 ## Environment Variables
 

@@ -8,6 +8,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY utilities/ /workspace/utilities/
 COPY services/moon/package.json services/moon/package-lock.json ./
 RUN npm ci
+RUN npm install --no-save @next/swc-linux-x64-gnu@$(node -p "require('./package-lock.json').packages['node_modules/next'].version")
 
 COPY services/moon/ ./
 
@@ -23,6 +24,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY utilities/ /workspace/utilities/
 COPY services/moon/package.json services/moon/package-lock.json ./
 RUN npm ci --omit=dev
+RUN npm install --omit=dev --no-save @next/swc-linux-x64-gnu@$(node -p "require('./package-lock.json').packages['node_modules/next'].version")
 
 COPY --from=builder /workspace/services/moon/.next ./.next
 COPY --from=builder /workspace/services/moon/public ./public

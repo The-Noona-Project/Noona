@@ -29,8 +29,8 @@ import {
     normalizeDockerSocket as normalizeSocketPath,
     parseTcpDockerSocket,
 } from '../../../utilities/etc/dockerSockets.mjs';
-import {createVaultPacketClient} from '../../sage/shared/vaultPacketClient.mjs';
-import {createWizardStateClient, createWizardStatePublisher,} from '../../sage/shared/wizardStateClient.mjs';
+import {createVaultPacketClient} from '../../sage/clients/vaultPacketClient.mjs';
+import {createWizardStateClient, createWizardStatePublisher,} from '../../sage/wizard/wizardStateClient.mjs';
 import {registerBootApi} from './registerBootApi.mjs';
 import {registerDiagnosticsApi} from './registerDiagnosticsApi.mjs';
 import {registerServiceManagementApi} from './registerServiceManagementApi.mjs';

@@ -8,8 +8,11 @@ download/library routes for Moon and other clients.
 - [Service rules](AGENTS.md)
 - [Stack overview](../../README.md)
 - [Entrypoint](initSage.mjs)
-- [App builder](shared/sageApp.mjs)
+- [App builder](app/createSageApp.mjs)
+- [Setup client](app/createSetupClient.mjs)
 - [Route modules](routes/)
+- [Downstream clients](clients/)
+- [Wizard state](wizard/)
 - [Tests](tests/)
 - [Root docs](../../docs/)
 

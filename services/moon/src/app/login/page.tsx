@@ -4,8 +4,8 @@ import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export async function generateMetadata() {
     return Meta.generate({
-        title: "Noona Login",
-        description: "Sign in to Noona.",
+        title: "Noona Sign In",
+        description: "Sign in to Moon to manage libraries, downloads, and settings.",
         baseURL: resolveMoonBaseUrl(),
         path: "/login",
         image: "/favicon.ico",

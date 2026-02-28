@@ -5,7 +5,9 @@ FROM node:24-slim
 WORKDIR /app/Noona
 
 COPY services/warden ./services/warden
-COPY services/sage/shared ./services/sage/shared
+COPY services/sage/clients ./services/sage/clients
+COPY services/sage/lib ./services/sage/lib
+COPY services/sage/wizard ./services/sage/wizard
 COPY utilities ./utilities
 
 WORKDIR /app/Noona/utilities

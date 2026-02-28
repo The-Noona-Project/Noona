@@ -7,7 +7,7 @@
 
 import dotenv from 'dotenv';
 import {debugMSG, isDebugEnabled, log, setDebug, warn} from '../../utilities/etc/logger.mjs';
-import {createVaultApp} from './shared/vaultApp.mjs';
+import {createVaultApp} from './app/createVaultApp.mjs';
 
 dotenv.config();
 
