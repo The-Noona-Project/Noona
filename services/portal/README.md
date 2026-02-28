@@ -1,7 +1,8 @@
 # Portal (Noona Stack 2.2)
 
 Portal coordinates Discord onboarding with Kavita and Vault. It exposes HTTP onboarding routes and Discord slash
-commands that provision users, store onboarding tokens, and assign default roles.
+commands that provision Kavita users, surface Kavita library/title metadata, store onboarding tokens, and assign
+default Discord roles.
 
 ## Quick Navigation
 
@@ -25,22 +26,26 @@ commands that provision users, store onboarding tokens, and assign default roles
 ## Core Responsibilities
 
 - Validate runtime config for Discord, Kavita, Vault, and Redis-backed onboarding tokens.
-- Handle onboarding over HTTP (`/api/portal/*`).
-- Register and execute Discord slash commands for join/scan/search workflows.
+- Handle onboarding and Kavita option discovery over HTTP (`/api/portal/*`).
+- Register and execute Discord slash commands for Kavita account creation, library scans, and title search workflows.
 - Persist portal credentials in Vault and assign Discord roles when configured.
 
 ## HTTP Endpoints
 
 - `GET /health` - process health and guild metadata.
-- `POST /api/portal/onboard` - create/update user onboarding and issue one-time token.
+- `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
+  picker.
+- `POST /api/portal/onboard` - create a Kavita user, store an onboarding token, and optionally persist the credential.
 - `POST /api/portal/tokens/consume` - redeem an onboarding token.
 
 ## Slash Commands
 
 - `/ding` - health check response.
-- `/join` - onboarding flow with Kavita + token storage + optional Vault write.
-- `/scan` - list available Kavita libraries.
-- `/search` - lookup user details from Kavita and Vault.
+- `/join username:<name> password:<password> confirm_password:<password> email:<email>` - create a Kavita user with the
+  configured default roles/libraries, store the credential metadata, and assign the default Discord role when
+  configured.
+- `/scan` - autocomplete Kavita libraries in Discord and queue a scan for the selected library.
+- `/search` - search Kavita series titles by name and return matching series results.
 - Boot behavior: on Discord login, Portal clears current-app global commands, clears the guild command list, then
   re-registers all current slash command definitions for the configured guild.
 
@@ -54,6 +59,7 @@ commands that provision users, store onboarding tokens, and assign default roles
 | `DISCORD_GUILD_ID`                                                    | Guild scope for slash commands    |
 | `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target    |
 | `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection             |
+| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` |
 | `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection              |
 | `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL   |
 | `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms    |

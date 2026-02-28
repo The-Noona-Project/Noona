@@ -51,11 +51,29 @@ type ServiceConfig = {
     error?: string;
 };
 
+type PortalJoinLibraryOption = {
+    id?: number | null;
+    name?: string | null;
+};
+
+type PortalJoinRoleDetail = {
+    name?: string | null;
+    description?: string | null;
+};
+
+type PortalJoinOptionsResponse = {
+    roles?: string[] | null;
+    roleDetails?: PortalJoinRoleDetail[] | null;
+    libraries?: PortalJoinLibraryOption[] | null;
+    error?: string;
+};
+
 type ServiceUpdateSnapshot = {
     service?: string | null;
     image?: string | null;
     checkedAt?: string | null;
     updateAvailable?: boolean;
+    installed?: boolean;
     supported?: boolean;
     error?: string | null;
 };
@@ -147,7 +165,6 @@ const TAB_SERVICE: Partial<Record<TabId, string>> = {
     raven: "noona-raven",
     vault: "noona-vault",
     sage: "noona-sage",
-    warden: "noona-warden",
     portal: "noona-portal",
 };
 
@@ -193,9 +210,18 @@ const normalizePermissions = (value: unknown): MoonPermission[] => {
 const hasPermission = (permissions: MoonPermission[], permission: MoonPermission): boolean =>
     permissions.includes("admin") || permissions.includes(permission);
 
-const PORTAL_ROLE_KEYS = new Set([
+const PORTAL_JOIN_DEFAULT_KEYS = new Set([
+    "PORTAL_JOIN_DEFAULT_ROLES",
+    "PORTAL_JOIN_DEFAULT_LIBRARIES",
+]);
+const PORTAL_DISCORD_KEYS = new Set([
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_CLIENT_ID",
+    "DISCORD_GUILD_ID",
     "DISCORD_GUILD_ROLE_ID",
     "DISCORD_DEFAULT_ROLE_ID",
+]);
+const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_GUILD_ID",
     "REQUIRED_ROLE_DING",
     "REQUIRED_ROLE_JOIN",
@@ -219,6 +245,25 @@ const formatIso = (value: unknown): string => {
     const parsed = Date.parse(raw);
     return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : raw;
 };
+const parseCsvSelections = (value: unknown): string[] => {
+    const raw = normalizeString(value).trim();
+    if (!raw) return [];
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+
+    for (const entry of raw.split(",")) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(trimmed);
+    }
+
+    return out;
+};
+const serializeCsvSelections = (values: string[]): string => values.join(", ");
 const isSecretKey = (key: string) => /TOKEN|PASSWORD|API_KEY|SECRET/i.test(key);
 const defaultEditor = (): ServiceEditorState => ({
     loading: false,
@@ -278,6 +323,14 @@ export function SettingsPage() {
     const [catalogError, setCatalogError] = useState<string | null>(null);
     const [catalog, setCatalog] = useState<ServiceCatalogEntry[]>([]);
     const [editors, setEditors] = useState<Record<string, ServiceEditorState>>({});
+    const [portalJoinOptionsLoading, setPortalJoinOptionsLoading] = useState(false);
+    const [portalJoinOptionsError, setPortalJoinOptionsError] = useState<string | null>(null);
+    const [portalJoinRoles, setPortalJoinRoles] = useState<string[]>([]);
+    const [portalJoinRoleDetails, setPortalJoinRoleDetails] = useState<Array<{
+        name: string;
+        description: string
+    }>>([]);
+    const [portalJoinLibraries, setPortalJoinLibraries] = useState<Array<{ id: number; name: string }>>([]);
 
     const [globalMessage, setGlobalMessage] = useState<string | null>(null);
     const [globalError, setGlobalError] = useState<string | null>(null);
@@ -304,6 +357,7 @@ export function SettingsPage() {
     const [updatesMessage, setUpdatesMessage] = useState<string | null>(null);
     const [updates, setUpdates] = useState<ServiceUpdateSnapshot[]>([]);
     const [updating, setUpdating] = useState<Record<string, boolean>>({});
+    const [updatesApplyingAll, setUpdatesApplyingAll] = useState(false);
 
     const [namingLoading, setNamingLoading] = useState(false);
     const [namingSaving, setNamingSaving] = useState(false);
@@ -354,6 +408,35 @@ export function SettingsPage() {
         }
         return out;
     }, [catalog]);
+
+    const installedUpdateSnapshots = useMemo(() => {
+        const visible: ServiceUpdateSnapshot[] = [];
+        for (const entry of updates) {
+            const service = normalizeString(entry?.service).trim();
+            if (!service) continue;
+
+            const installed = entry?.installed === true || catalogByName.get(service)?.installed === true;
+            if (!installed) {
+                continue;
+            }
+
+            visible.push({
+                ...entry,
+                installed,
+            });
+        }
+
+        return visible;
+    }, [catalogByName, updates]);
+    const updatableInstalledSnapshots = useMemo(
+        () =>
+            installedUpdateSnapshots.filter((entry) => {
+                const service = normalizeString(entry?.service).trim();
+                return service.length > 0 && entry?.supported !== false && entry?.updateAvailable === true;
+            }),
+        [installedUpdateSnapshots],
+    );
+    const updatesBusy = updatesApplyingAll || Object.values(updating).some(Boolean);
 
     const currentService = TAB_SERVICE[activeTab] ?? null;
     const currentEditor = currentService ? (editors[currentService] ?? defaultEditor()) : defaultEditor();
@@ -426,6 +509,48 @@ export function SettingsPage() {
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             patchEditor(serviceName, {loading: false, error: msg});
+        }
+    };
+
+    const loadPortalJoinOptions = async () => {
+        setPortalJoinOptionsLoading(true);
+        setPortalJoinOptionsError(null);
+        try {
+            const res = await fetch("/api/noona/settings/portal/join-options", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as PortalJoinOptionsResponse | null;
+            if (!res.ok) {
+                setPortalJoinOptionsError(parseError(json, `Failed to load Portal join options (HTTP ${res.status}).`));
+                return;
+            }
+
+            const roles = Array.isArray(json?.roles)
+                ? json.roles.map((role) => normalizeString(role).trim()).filter(Boolean)
+                : [];
+            const roleDetails = Array.isArray(json?.roleDetails)
+                ? json.roleDetails
+                    .map((detail) => ({
+                        name: normalizeString(detail?.name).trim(),
+                        description: normalizeString(detail?.description).trim(),
+                    }))
+                    .filter((detail) => detail.name)
+                : roles.map((role) => ({name: role, description: ""}));
+            const libraries = Array.isArray(json?.libraries)
+                ? json.libraries
+                    .map((library) => ({
+                        id: typeof library?.id === "number" ? library.id : Number.NaN,
+                        name: normalizeString(library?.name).trim(),
+                    }))
+                    .filter((library) => Number.isFinite(library.id) && library.name)
+                : [];
+
+            setPortalJoinRoles(roles);
+            setPortalJoinRoleDetails(roleDetails);
+            setPortalJoinLibraries(libraries);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setPortalJoinOptionsError(msg);
+        } finally {
+            setPortalJoinOptionsLoading(false);
         }
     };
 
@@ -1087,7 +1212,14 @@ export function SettingsPage() {
         setUpdatesError(null);
         setUpdatesMessage(null);
         try {
-            const services = catalog.map((entry) => normalizeString(entry?.name).trim()).filter(Boolean);
+            const services = catalog
+                .filter((entry) => entry?.installed === true)
+                .map((entry) => normalizeString(entry?.name).trim())
+                .filter(Boolean);
+            if (services.length === 0) {
+                setUpdatesMessage("No installed services available for update checks.");
+                return;
+            }
             const res = await fetch("/api/noona/settings/services/updates", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -1138,10 +1270,32 @@ export function SettingsPage() {
         }
     };
 
-    const updateImage = async (serviceName: string) => {
+    const applyServiceUpdateSnapshot = (snapshot: ServiceUpdateSnapshot | null | undefined, fallbackServiceName: string) => {
+        const service = normalizeString(snapshot?.service ?? fallbackServiceName).trim();
+        if (!service) return;
+
+        setUpdates((prev) => {
+            const nextSnapshot: ServiceUpdateSnapshot = {
+                ...snapshot,
+                service,
+            };
+            const index = prev.findIndex((entry) => normalizeString(entry?.service).trim() === service);
+            if (index < 0) {
+                return [...prev, nextSnapshot];
+            }
+
+            const next = [...prev];
+            next[index] = {
+                ...next[index],
+                ...nextSnapshot,
+            };
+            return next;
+        });
+    };
+
+    const runServiceImageUpdate = async (serviceName: string, options: { refreshAfter?: boolean } = {}) => {
+        const refreshAfter = options.refreshAfter !== false;
         setUpdating((prev) => ({...prev, [serviceName]: true}));
-        setUpdatesError(null);
-        setUpdatesMessage(null);
         try {
             const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/update-image`, {
                 method: "POST",
@@ -1150,13 +1304,46 @@ export function SettingsPage() {
             });
             const json = await res.json().catch(() => null);
             if (!res.ok) {
-                setUpdatesError(parseError(json, `Failed to update ${serviceName} (HTTP ${res.status}).`));
-                return;
+                throw new Error(parseError(json, `Failed to update ${serviceName} (HTTP ${res.status}).`));
             }
-            setUpdatesMessage(`Updated ${serviceName}.`);
 
-            const didUpdate = (json as { updated?: boolean } | null)?.updated === true;
-            const restarted = (json as { restarted?: boolean } | null)?.restarted === true;
+            const payload = (json ?? {}) as {
+                updated?: boolean;
+                restarted?: boolean;
+                snapshot?: ServiceUpdateSnapshot | null;
+            };
+            const didUpdate = payload.updated === true;
+            const restarted = payload.restarted === true;
+            if (payload.snapshot && typeof payload.snapshot === "object") {
+                applyServiceUpdateSnapshot(payload.snapshot, serviceName);
+            } else {
+                applyServiceUpdateSnapshot({
+                    service: serviceName,
+                    checkedAt: new Date().toISOString(),
+                    updateAvailable: false,
+                    installed: catalogByName.get(serviceName)?.installed === true,
+                }, serviceName);
+            }
+
+            if (refreshAfter) {
+                await loadUpdates();
+            }
+
+            return {
+                didUpdate,
+                restarted,
+            };
+        } finally {
+            setUpdating((prev) => ({...prev, [serviceName]: false}));
+        }
+    };
+
+    const updateImage = async (serviceName: string) => {
+        setUpdatesError(null);
+        setUpdatesMessage(null);
+        try {
+            const {didUpdate, restarted} = await runServiceImageUpdate(serviceName);
+            setUpdatesMessage(didUpdate ? `Updated ${serviceName}.` : `${serviceName} is already on the latest image.`);
 
             emitNoonaSiteNotification({
                 variant: didUpdate ? "success" : "info",
@@ -1166,32 +1353,92 @@ export function SettingsPage() {
                     : `${serviceName} is already on the latest image.`,
                 dedupeKey: `update-download:${serviceName}:${didUpdate ? "updated" : "current"}:${restarted ? "restarted" : "not-restarted"}`,
             });
-
-            await loadUpdates();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setUpdatesError(msg);
-        } finally {
-            setUpdating((prev) => ({...prev, [serviceName]: false}));
         }
     };
 
-    const ecosystemAction = async (action: "start" | "stop") => {
+    const updateAllImages = async () => {
+        const services = updatableInstalledSnapshots
+            .map((entry) => normalizeString(entry?.service).trim())
+            .filter(Boolean);
+
+        if (services.length === 0) {
+            setUpdatesMessage("No installed services currently need image updates.");
+            return;
+        }
+
+        setUpdatesApplyingAll(true);
+        setUpdatesError(null);
+        setUpdatesMessage(null);
+
+        const failures: Array<{ service: string; message: string }> = [];
+        let updatedCount = 0;
+        let restartedCount = 0;
+
+        try {
+            for (const serviceName of services) {
+                try {
+                    const {didUpdate, restarted} = await runServiceImageUpdate(serviceName, {refreshAfter: false});
+                    if (didUpdate) updatedCount += 1;
+                    if (restarted) restartedCount += 1;
+                } catch (error_) {
+                    const msg = error_ instanceof Error ? error_.message : String(error_);
+                    failures.push({service: serviceName, message: msg});
+                }
+            }
+
+            await loadUpdates();
+
+            const processedCount = services.length - failures.length;
+            const summary = failures.length === 0
+                ? `Processed ${processedCount} service update${processedCount === 1 ? "" : "s"}.`
+                : `Processed ${processedCount} service update${processedCount === 1 ? "" : "s"} with ${failures.length} failure${failures.length === 1 ? "" : "s"}.`;
+            const detail = updatedCount > 0
+                ? ` Downloaded ${updatedCount} new image${updatedCount === 1 ? "" : "s"}${restartedCount > 0 ? ` and restarted ${restartedCount} service${restartedCount === 1 ? "" : "s"}` : ""}.`
+                : "";
+
+            setUpdatesMessage(`${summary}${detail}`);
+            if (failures.length > 0) {
+                setUpdatesError(
+                    failures
+                        .map((entry) => `${entry.service}: ${entry.message}`)
+                        .join(" | "),
+                );
+            }
+
+            emitNoonaSiteNotification({
+                variant: failures.length > 0 ? "warning" : updatedCount > 0 ? "success" : "info",
+                title: failures.length > 0 ? "Update all finished with issues" : "Update all complete",
+                message: failures.length > 0
+                    ? `${updatedCount} services updated, ${failures.length} failed.`
+                    : updatedCount > 0
+                        ? `${updatedCount} services updated successfully.`
+                        : "No new images were required.",
+                dedupeKey: `update-all:${services.join(",")}:${updatedCount}:${failures.length}`,
+            });
+        } finally {
+            setUpdatesApplyingAll(false);
+        }
+    };
+
+    const restartEcosystem = async () => {
         setEcosystemBusy(true);
         setGlobalError(null);
         setGlobalMessage(null);
         try {
-            const res = await fetch(`/api/noona/settings/ecosystem/${action}`, {
+            const res = await fetch("/api/noona/settings/ecosystem/restart", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({trackedOnly: false}),
             });
             const json = await res.json().catch(() => null);
             if (!res.ok) {
-                setGlobalError(parseError(json, `Failed to ${action} ecosystem (HTTP ${res.status}).`));
+                setGlobalError(parseError(json, `Failed to restart ecosystem (HTTP ${res.status}).`));
                 return;
             }
-            setGlobalMessage(action === "start" ? "Start request sent." : "Stop request sent.");
+            setGlobalMessage("Restart request sent.");
             await loadCatalog();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -1231,6 +1478,9 @@ export function SettingsPage() {
         }
         if (activeTab === "vault") {
             void loadCollections();
+        }
+        if (activeTab === "portal") {
+            void loadPortalJoinOptions();
         }
         if (activeTab === "warden") {
             void loadUpdates();
@@ -1394,105 +1644,326 @@ export function SettingsPage() {
     const renderServiceConfig = () => {
         if (!currentService) return null;
         const envConfig = Array.isArray(currentEditor.config?.envConfig) ? currentEditor.config?.envConfig : [];
-        const mainFields = envConfig.filter((entry) => {
-            if (!entry?.key) return false;
-            if (activeTab !== "portal") return true;
-            return !PORTAL_ROLE_KEYS.has(entry.key);
+        const isPortalTab = activeTab === "portal";
+        const genericFields = envConfig.filter((entry) => {
+            const key = normalizeString(entry?.key).trim();
+            if (!key) return false;
+            if (!isPortalTab) return true;
+            return !PORTAL_DISCORD_KEYS.has(key)
+                && !PORTAL_JOIN_DEFAULT_KEYS.has(key)
+                && !PORTAL_COMMAND_ACCESS_KEYS.has(key);
         });
-        const roleFields = envConfig.filter((entry) => entry?.key && PORTAL_ROLE_KEYS.has(entry.key));
+        const portalDiscordFields = envConfig.filter((entry) => PORTAL_DISCORD_KEYS.has(normalizeString(entry?.key).trim()));
+        const portalJoinFields = envConfig.filter((entry) => PORTAL_JOIN_DEFAULT_KEYS.has(normalizeString(entry?.key).trim()));
+        const portalAccessFields = envConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
 
-        return (
+        const getFieldValue = (field: EnvConfigField | undefined) => {
+            const key = normalizeString(field?.key).trim();
+            if (!key) return "";
+            return Object.prototype.hasOwnProperty.call(currentEditor.envDraft, key)
+                ? currentEditor.envDraft[key]
+                : normalizeString(field?.defaultValue);
+        };
+
+        const renderFieldNotes = (field: EnvConfigField) => (
+            <>
+                {normalizeString(field.description).trim() && (
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        {normalizeString(field.description).trim()}
+                    </Text>
+                )}
+                {normalizeString(field.warning).trim() && (
+                    <Text onBackground="warning-strong" variant="body-default-xs">
+                        {normalizeString(field.warning).trim()}
+                    </Text>
+                )}
+            </>
+        );
+
+        const renderEditableField = (field: EnvConfigField, keyPrefix = "field") => {
+            const key = normalizeString(field.key).trim();
+            if (!key) return null;
+            if (field.readOnly && !currentEditor.advanced) return null;
+
+            return (
+                <Column key={`${currentService}:${keyPrefix}:${key}`} gap="8">
+                    <Input
+                        id={`${currentService}:${keyPrefix}:${key}`}
+                        name={`${currentService}:${keyPrefix}:${key}`}
+                        label={normalizeString(field.label).trim() || key}
+                        type={isSecretKey(key) ? "password" : "text"}
+                        value={getFieldValue(field)}
+                        disabled={field.readOnly === true}
+                        onChange={(event) => updateEnvDraft(currentService, key, event.target.value)}
+                    />
+                    {renderFieldNotes(field)}
+                </Column>
+            );
+        };
+
+        const renderFieldBlock = (title: string, fields: EnvConfigField[], description?: string, keyPrefix?: string) => {
+            const renderedFields = fields
+                .map((field) => renderEditableField(field, keyPrefix ?? title.toLowerCase().replace(/\s+/g, "-")))
+                .filter(Boolean);
+            if (renderedFields.length === 0) return null;
+
+            return (
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="m" radius="l">
+                    <Column gap="8">
+                        <Heading as="h3" variant="heading-strong-m">{title}</Heading>
+                        {description && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">{description}</Text>
+                        )}
+                        {renderedFields}
+                    </Column>
+                </Card>
+            );
+        };
+
+        const renderServiceActions = () => (
             <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                 <Column gap="12">
-                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                        <Row gap="8" vertical="center">
-                            <Badge background={BG_NEUTRAL_ALPHA_WEAK}
-                                   onBackground="neutral-strong">{TAB_LABELS[activeTab]}</Badge>
-                            <Heading as="h2" variant="heading-strong-l">{currentService}</Heading>
-                        </Row>
-                        <Button variant="secondary"
-                                onClick={() => patchEditor(currentService, {advanced: !currentEditor.advanced})}>
-                            {currentEditor.advanced ? "Hide advanced options" : "Advanced options"}
-                        </Button>
-                    </Row>
+                    <Heading as="h3" variant="heading-strong-l">Save changes</Heading>
                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                        {normalizeString(currentServiceMeta?.description).trim() || "No description available."}
+                        Apply the changes from this settings tab to {currentService}. Saving restarts the service.
                     </Text>
-                    {currentEditor.error &&
-                        <Text onBackground="danger-strong" variant="body-default-xs">{currentEditor.error}</Text>}
-                    {currentEditor.message &&
-                        <Text onBackground="neutral-weak" variant="body-default-xs">{currentEditor.message}</Text>}
-                    {currentEditor.loading && <Row fillWidth horizontal="center" paddingY="24"><Spinner/></Row>}
-                    {!currentEditor.loading && mainFields.map((field) => {
-                        const key = normalizeString(field.key).trim();
-                        if (!key) return null;
-                        if (field.readOnly && !currentEditor.advanced) return null;
-                        const value = Object.prototype.hasOwnProperty.call(currentEditor.envDraft, key)
-                            ? currentEditor.envDraft[key]
-                            : normalizeString(field.defaultValue);
-                        return (
-                            <Column key={`${currentService}:${key}`} gap="8">
-                                <Input
-                                    id={`${currentService}:${key}`}
-                                    name={`${currentService}:${key}`}
-                                    label={normalizeString(field.label).trim() || key}
-                                    type={isSecretKey(key) ? "password" : "text"}
-                                    value={value}
-                                    disabled={field.readOnly === true}
-                                    onChange={(event) => updateEnvDraft(currentService, key, event.target.value)}
-                                />
-                                {normalizeString(field.description).trim() && (
-                                    <Text onBackground="neutral-weak"
-                                          variant="body-default-xs">{normalizeString(field.description).trim()}</Text>
-                                )}
-                            </Column>
-                        );
-                    })}
-                    {activeTab === "portal" && roleFields.length > 0 && (
-                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="m" radius="l">
-                            <Column gap="8">
-                                <Heading as="h3" variant="heading-strong-m">Command role IDs</Heading>
-                                {roleFields.map((field) => {
-                                    const key = normalizeString(field.key).trim();
-                                    const value = Object.prototype.hasOwnProperty.call(currentEditor.envDraft, key)
-                                        ? currentEditor.envDraft[key]
-                                        : normalizeString(field.defaultValue);
-                                    return (
-                                        <Input
-                                            key={`${currentService}:role:${key}`}
-                                            id={`${currentService}:role:${key}`}
-                                            name={`${currentService}:role:${key}`}
-                                            label={normalizeString(field.label).trim() || key}
-                                            value={value}
-                                            onChange={(event) => updateEnvDraft(currentService, key, event.target.value)}
-                                        />
-                                    );
-                                })}
-                            </Column>
-                        </Card>
-                    )}
-                    {currentEditor.advanced && (
-                        <Input
-                            id={`${currentService}:hostPort`}
-                            name={`${currentService}:hostPort`}
-                            type="number"
-                            label="Host port override"
-                            value={currentEditor.hostPortDraft}
-                            onChange={(event) => patchEditor(currentService, {hostPortDraft: event.target.value})}
-                        />
-                    )}
                     <Row gap="12" style={{flexWrap: "wrap"}}>
-                        <Button variant="primary" disabled={currentEditor.saving || currentEditor.restarting}
-                                onClick={() => void saveServiceConfig(currentService)}>
-                            {currentEditor.saving ? "Saving..." : "Save and restart service"}
+                        <Button
+                            variant="primary"
+                            disabled={currentEditor.loading || currentEditor.saving || currentEditor.restarting}
+                            onClick={() => void saveServiceConfig(currentService)}
+                        >
+                            {currentEditor.saving ? "Saving..." : "Save changes and restart"}
                         </Button>
-                        <Button variant="secondary" disabled={currentEditor.saving || currentEditor.restarting}
-                                onClick={() => void restartService(currentService)}>
-                            {currentEditor.restarting ? "Restarting..." : "Restart only"}
+                        <Button
+                            variant="secondary"
+                            disabled={currentEditor.loading || currentEditor.saving || currentEditor.restarting}
+                            onClick={() => void restartService(currentService)}
+                        >
+                            {currentEditor.restarting ? "Restarting..." : "Restart service only"}
                         </Button>
                     </Row>
                 </Column>
             </Card>
+        );
+
+        const portalJoinRoleField = portalJoinFields.find((field) => normalizeString(field.key).trim() === "PORTAL_JOIN_DEFAULT_ROLES");
+        const portalJoinLibraryField = portalJoinFields.find((field) => normalizeString(field.key).trim() === "PORTAL_JOIN_DEFAULT_LIBRARIES");
+        const selectedJoinRoles = parseCsvSelections(getFieldValue(portalJoinRoleField));
+        const selectedJoinLibraries = parseCsvSelections(getFieldValue(portalJoinLibraryField));
+
+        const togglePortalJoinSelection = (fieldKey: string, value: string) => {
+            const currentSelections = parseCsvSelections(currentEditor.envDraft[fieldKey]);
+            const nextSelections = currentSelections.some((entry) => entry.toLowerCase() === value.toLowerCase())
+                ? currentSelections.filter((entry) => entry.toLowerCase() !== value.toLowerCase())
+                : [...currentSelections, value];
+            updateEnvDraft(currentService, fieldKey, serializeCsvSelections(nextSelections));
+        };
+
+        return (
+            <Column fillWidth gap="16">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Row gap="8" vertical="center">
+                                <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                       onBackground="neutral-strong">{TAB_LABELS[activeTab]}</Badge>
+                                <Heading as="h2" variant="heading-strong-l">{currentService}</Heading>
+                            </Row>
+                            <Button variant="secondary"
+                                    onClick={() => patchEditor(currentService, {advanced: !currentEditor.advanced})}>
+                                {currentEditor.advanced ? "Hide advanced options" : "Advanced options"}
+                            </Button>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            {normalizeString(currentServiceMeta?.description).trim() || "No description available."}
+                        </Text>
+                        {currentEditor.error &&
+                            <Text onBackground="danger-strong" variant="body-default-xs">{currentEditor.error}</Text>}
+                        {currentEditor.message &&
+                            <Text onBackground="neutral-weak" variant="body-default-xs">{currentEditor.message}</Text>}
+                        {currentEditor.loading && <Row fillWidth horizontal="center" paddingY="24"><Spinner/></Row>}
+                        {!currentEditor.loading && !isPortalTab && genericFields.map((field) => renderEditableField(field))}
+                        {!currentEditor.loading && isPortalTab && (
+                            <Column gap="12">
+                                {renderFieldBlock(
+                                    "Discord bot",
+                                    portalDiscordFields,
+                                    "These values control which Discord application Portal logs into and which Discord role is assigned after /join.",
+                                    "discord",
+                                )}
+                                {renderFieldBlock(
+                                    "Service connections",
+                                    genericFields,
+                                    "Portal uses these upstream settings to talk to Kavita, Vault, and Redis-backed onboarding storage.",
+                                    "service",
+                                )}
+                            </Column>
+                        )}
+                        {currentEditor.advanced && (
+                            <Input
+                                id={`${currentService}:hostPort`}
+                                name={`${currentService}:hostPort`}
+                                type="number"
+                                label="Host port override"
+                                value={currentEditor.hostPortDraft}
+                                onChange={(event) => patchEditor(currentService, {hostPortDraft: event.target.value})}
+                            />
+                        )}
+                    </Column>
+                </Card>
+
+                {isPortalTab && !currentEditor.loading && (portalJoinRoleField || portalJoinLibraryField) && (
+                    <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                        <Column gap="12">
+                            <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                <Heading as="h3" variant="heading-strong-l">Join defaults</Heading>
+                                <Button variant="secondary" disabled={portalJoinOptionsLoading}
+                                        onClick={() => void loadPortalJoinOptions()}>
+                                    {portalJoinOptionsLoading ? "Loading..." : "Reload choices"}
+                                </Button>
+                            </Row>
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                These defaults are applied when `/join` creates a Kavita account from Discord.
+                            </Text>
+                            {portalJoinOptionsError && (
+                                <Text onBackground="danger-strong"
+                                      variant="body-default-xs">{portalJoinOptionsError}</Text>
+                            )}
+                            {portalJoinRoleDetails.length > 0 && (
+                                <Column gap="8">
+                                    <Text onBackground="neutral-weak" variant="label-default-s">Kavita role
+                                        reference</Text>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        These are the Kavita roles Portal can assign through `/join`, with a short
+                                        summary of what each one unlocks.
+                                    </Text>
+                                    <Column gap="8">
+                                        {portalJoinRoleDetails.map((detail) => (
+                                            <Card
+                                                key={`portal-join-role-detail-${detail.name}`}
+                                                fillWidth
+                                                background={BG_NEUTRAL_ALPHA_WEAK}
+                                                border="neutral-alpha-weak"
+                                                padding="m"
+                                                radius="l"
+                                            >
+                                                <Column gap="8">
+                                                    <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                                        <Badge
+                                                            background={BG_SURFACE}
+                                                            onBackground="neutral-strong"
+                                                        >
+                                                            {detail.name}
+                                                        </Badge>
+                                                    </Row>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        {detail.description || "No description is available for this Kavita role yet."}
+                                                    </Text>
+                                                </Column>
+                                            </Card>
+                                        ))}
+                                    </Column>
+                                </Column>
+                            )}
+                            {portalJoinRoleField && (
+                                <Column gap="8">
+                                    <Input
+                                        id={`${currentService}:join:${normalizeString(portalJoinRoleField.key).trim()}`}
+                                        name={`${currentService}:join:${normalizeString(portalJoinRoleField.key).trim()}`}
+                                        label={normalizeString(portalJoinRoleField.label).trim() || "Default /join Roles"}
+                                        value={getFieldValue(portalJoinRoleField)}
+                                        onChange={(event) =>
+                                            updateEnvDraft(
+                                                currentService,
+                                                normalizeString(portalJoinRoleField.key).trim(),
+                                                event.target.value,
+                                            )
+                                        }
+                                    />
+                                    {portalJoinRoles.length > 0 && (
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {portalJoinRoles.map((role) => {
+                                                const selected = selectedJoinRoles.some((entry) => entry.toLowerCase() === role.toLowerCase());
+                                                return (
+                                                    <Button
+                                                        key={`portal-join-role-${role}`}
+                                                        variant={selected ? "primary" : "secondary"}
+                                                        onClick={() =>
+                                                            togglePortalJoinSelection(
+                                                                normalizeString(portalJoinRoleField.key).trim(),
+                                                                role,
+                                                            )
+                                                        }
+                                                    >
+                                                        {role}
+                                                    </Button>
+                                                );
+                                            })}
+                                        </Row>
+                                    )}
+                                    {renderFieldNotes(portalJoinRoleField)}
+                                </Column>
+                            )}
+                            {portalJoinLibraryField && (
+                                <Column gap="8">
+                                    <Input
+                                        id={`${currentService}:join:${normalizeString(portalJoinLibraryField.key).trim()}`}
+                                        name={`${currentService}:join:${normalizeString(portalJoinLibraryField.key).trim()}`}
+                                        label={normalizeString(portalJoinLibraryField.label).trim() || "Default /join Libraries"}
+                                        value={getFieldValue(portalJoinLibraryField)}
+                                        onChange={(event) =>
+                                            updateEnvDraft(
+                                                currentService,
+                                                normalizeString(portalJoinLibraryField.key).trim(),
+                                                event.target.value,
+                                            )
+                                        }
+                                    />
+                                    {portalJoinLibraries.length > 0 && (
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {portalJoinLibraries.map((library) => {
+                                                const selected = selectedJoinLibraries.some((entry) =>
+                                                    entry.toLowerCase() === library.name.toLowerCase(),
+                                                );
+                                                return (
+                                                    <Button
+                                                        key={`portal-join-library-${library.id}`}
+                                                        variant={selected ? "primary" : "secondary"}
+                                                        onClick={() =>
+                                                            togglePortalJoinSelection(
+                                                                normalizeString(portalJoinLibraryField.key).trim(),
+                                                                library.name,
+                                                            )
+                                                        }
+                                                    >
+                                                        {library.name}
+                                                    </Button>
+                                                );
+                                            })}
+                                        </Row>
+                                    )}
+                                    {renderFieldNotes(portalJoinLibraryField)}
+                                </Column>
+                            )}
+                        </Column>
+                    </Card>
+                )}
+
+                {isPortalTab && !currentEditor.loading && portalAccessFields.length > 0 && (
+                    <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                        <Column gap="8">
+                            <Heading as="h3" variant="heading-strong-l">Command access</Heading>
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Restrict Portal slash commands to the configured Discord guild and role IDs.
+                            </Text>
+                            {portalAccessFields.map((field) => renderEditableField(field, "command-access"))}
+                        </Column>
+                    </Card>
+                )}
+
+                {!currentEditor.loading && renderServiceActions()}
+            </Column>
         );
     };
 
@@ -1821,16 +2292,12 @@ export function SettingsPage() {
                                                 <Column gap="12">
                                                     <Heading as="h2" variant="heading-strong-l">Ecosystem</Heading>
                                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        Start or stop the full ecosystem from Warden.
+                                                        Restart the full ecosystem from Warden.
                                                     </Text>
                                                     <Row gap="12" style={{flexWrap: "wrap"}}>
                                                         <Button variant="primary" disabled={ecosystemBusy}
-                                                                onClick={() => void ecosystemAction("start")}>
-                                                            {ecosystemBusy ? "Working..." : "Start ecosystem"}
-                                                        </Button>
-                                                        <Button variant="secondary" disabled={ecosystemBusy}
-                                                                onClick={() => void ecosystemAction("stop")}>
-                                                            {ecosystemBusy ? "Working..." : "Stop ecosystem"}
+                                                                onClick={() => void restartEcosystem()}>
+                                                            {ecosystemBusy ? "Working..." : "Restart ecosystem"}
                                                         </Button>
                                                     </Row>
                                                 </Column>
@@ -2128,86 +2595,125 @@ export function SettingsPage() {
                     )}
 
                     {activeTab === "warden" && (
-                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="12">
-                                <Row horizontal="between" vertical="center" gap="12">
-                                    <Heading as="h3" variant="heading-strong-l">Image updates</Heading>
-                                    <Row gap="8">
-                                        <Button variant="secondary" disabled={updatesLoading}
-                                                onClick={() => void loadUpdates()}>Reload</Button>
-                                        <Button variant="primary" disabled={updatesChecking}
-                                                onClick={() => void checkUpdates()}>
-                                            {updatesChecking ? "Checking..." : "Check now"}
-                                        </Button>
+                        <Column fillWidth gap="16">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="8">
+                                    <Heading as="h3" variant="heading-strong-l">Warden controls</Heading>
+                                    <Text onBackground="neutral-weak" variant="body-default-s">
+                                        Warden is the orchestrator for the stack and is not managed through Moon's
+                                        generic save/restart service editor.
+                                    </Text>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Use the General tab for ecosystem actions. If Warden itself needs a restart, do
+                                        that from your container host or deployment environment.
+                                    </Text>
+                                </Column>
+                            </Card>
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12">
+                                        <Heading as="h3" variant="heading-strong-l">Image updates</Heading>
+                                        <Row gap="8">
+                                            <Button variant="secondary" disabled={updatesLoading || updatesBusy}
+                                                    onClick={() => void loadUpdates()}>Reload</Button>
+                                            <Button variant="secondary"
+                                                    disabled={updatesLoading || updatesChecking || updatesBusy || updatableInstalledSnapshots.length === 0}
+                                                    onClick={() => void updateAllImages()}>
+                                                {updatesApplyingAll ? "Updating all..." : "Update all"}
+                                            </Button>
+                                            <Button variant="primary" disabled={updatesChecking || updatesBusy}
+                                                    onClick={() => void checkUpdates()}>
+                                                {updatesChecking ? "Checking..." : "Check now"}
+                                            </Button>
+                                        </Row>
                                     </Row>
-                                </Row>
-                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                    Warden also checks update digests automatically every hour.
-                                </Text>
-                                {updatesError &&
-                                    <Text onBackground="danger-strong" variant="body-default-xs">{updatesError}</Text>}
-                                {updatesMessage &&
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">{updatesMessage}</Text>}
-                                {updatesLoading && (
-                                    <Row fillWidth horizontal="center" paddingY="12">
-                                        <Spinner/>
-                                    </Row>
-                                )}
-                                {!updatesLoading && updates.length === 0 && (
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">No update snapshots
-                                        available.</Text>
-                                )}
-                                {!updatesLoading && updates.length > 0 && (
-                                    <Column gap="8">
-                                        {updates.map((entry, index) => {
-                                            const service = normalizeString(entry.service).trim();
-                                            const updateAvailable = entry.updateAvailable === true;
-                                            const unsupported = entry.supported === false;
-                                            return (
-                                                <Card key={`${service || "unknown"}-${index}`} fillWidth
-                                                      background={BG_SURFACE} border="neutral-alpha-weak" padding="m"
-                                                      radius="l">
-                                                    <Column gap="8">
-                                                        <Row horizontal="between" vertical="center" gap="12"
-                                                             style={{flexWrap: "wrap"}}>
-                                                            <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
-                                                                <Text
-                                                                    variant="heading-default-s">{service || "unknown"}</Text>
-                                                                <Badge
-                                                                    background={unsupported ? "danger-alpha-weak" : updateAvailable ? "warning-alpha-weak" : "success-alpha-weak"}
-                                                                    onBackground="neutral-strong"
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Warden also checks update digests automatically every hour.
+                                    </Text>
+                                    {updatesError &&
+                                        <Text onBackground="danger-strong"
+                                              variant="body-default-xs">{updatesError}</Text>}
+                                    {updatesMessage &&
+                                        <Text onBackground="neutral-weak"
+                                              variant="body-default-xs">{updatesMessage}</Text>}
+                                    {updatesLoading && (
+                                        <Row fillWidth horizontal="center" paddingY="12">
+                                            <Spinner/>
+                                        </Row>
+                                    )}
+                                    {!updatesLoading && installedUpdateSnapshots.length === 0 && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">No update snapshots
+                                            available for installed services.</Text>
+                                    )}
+                                    {!updatesLoading && installedUpdateSnapshots.length > 0 && (
+                                        <Column gap="8">
+                                            {installedUpdateSnapshots.map((entry, index) => {
+                                                const service = normalizeString(entry.service).trim();
+                                                const updateAvailable = entry.updateAvailable === true;
+                                                const unsupported = entry.supported === false;
+                                                const checkedAt = formatIso(entry.checkedAt);
+                                                const badgeBackground = unsupported
+                                                    ? "danger-alpha-weak"
+                                                    : updateAvailable
+                                                        ? "warning-alpha-weak"
+                                                        : checkedAt
+                                                            ? "success-alpha-weak"
+                                                            : "neutral-alpha-weak";
+                                                const badgeLabel = unsupported
+                                                    ? "unsupported"
+                                                    : updateAvailable
+                                                        ? "update available"
+                                                        : checkedAt
+                                                            ? "up to date"
+                                                            : "not checked";
+                                                return (
+                                                    <Card key={`${service || "unknown"}-${index}`} fillWidth
+                                                          background={BG_SURFACE} border="neutral-alpha-weak"
+                                                          padding="m"
+                                                          radius="l">
+                                                        <Column gap="8">
+                                                            <Row horizontal="between" vertical="center" gap="12"
+                                                                 style={{flexWrap: "wrap"}}>
+                                                                <Row gap="8" vertical="center"
+                                                                     style={{flexWrap: "wrap"}}>
+                                                                    <Text
+                                                                        variant="heading-default-s">{service || "unknown"}</Text>
+                                                                    <Badge
+                                                                        background={badgeBackground}
+                                                                        onBackground="neutral-strong"
+                                                                    >
+                                                                        {badgeLabel}
+                                                                    </Badge>
+                                                                </Row>
+                                                                <Button
+                                                                    variant="secondary"
+                                                                    disabled={!service || unsupported || !updateAvailable || updatesApplyingAll || updating[service]}
+                                                                    onClick={() => void updateImage(service)}
                                                                 >
-                                                                    {unsupported ? "unsupported" : updateAvailable ? "update available" : "up to date"}
-                                                                </Badge>
+                                                                    {updating[service] ? "Updating..." : "Update service"}
+                                                                </Button>
                                                             </Row>
-                                                            <Button
-                                                                variant="secondary"
-                                                                disabled={!service || unsupported || updating[service]}
-                                                                onClick={() => void updateImage(service)}
-                                                            >
-                                                                {updating[service] ? "Updating..." : "Update service"}
-                                                            </Button>
-                                                        </Row>
-                                                        {normalizeString(entry.image).trim() && (
-                                                            <Text onBackground="neutral-weak"
-                                                                  variant="body-default-xs">image: {normalizeString(entry.image).trim()}</Text>
-                                                        )}
-                                                        {formatIso(entry.checkedAt) && (
-                                                            <Text onBackground="neutral-weak"
-                                                                  variant="body-default-xs">checked: {formatIso(entry.checkedAt)}</Text>
-                                                        )}
-                                                        {normalizeString(entry.error).trim() && (
-                                                            <Text onBackground="danger-strong"
-                                                                  variant="body-default-xs">{normalizeString(entry.error).trim()}</Text>
-                                                        )}
-                                                    </Column>
-                                                </Card>
-                                            );
-                                        })}
-                                    </Column>
-                                )}
-                            </Column>
-                        </Card>
+                                                            {normalizeString(entry.image).trim() && (
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs">image: {normalizeString(entry.image).trim()}</Text>
+                                                            )}
+                                                            {checkedAt && (
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs">checked: {checkedAt}</Text>
+                                                            )}
+                                                            {normalizeString(entry.error).trim() && (
+                                                                <Text onBackground="danger-strong"
+                                                                      variant="body-default-xs">{normalizeString(entry.error).trim()}</Text>
+                                                            )}
+                                                        </Column>
+                                                    </Card>
+                                                );
+                                            })}
+                                        </Column>
+                                    )}
+                                </Column>
+                            </Card>
+                        </Column>
                     )}
                                 </>
                             )}

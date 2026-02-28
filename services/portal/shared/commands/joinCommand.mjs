@@ -1,54 +1,58 @@
 import {ApplicationCommandOptionType} from 'discord.js';
 import {errMSG} from '../../../../utilities/etc/logger.mjs';
-import {assignDefaultRole, ensureArray, resolveDiscordId, respondWithError} from './utils.mjs';
+import {assignDefaultRole, resolveDiscordId, respondWithError} from './utils.mjs';
+
+const normalizeValue = value => (typeof value === 'string' ? value.trim() : '');
+
+const formatList = values => {
+    if (!Array.isArray(values) || values.length === 0) {
+        return 'none';
+    }
+
+    return values.join(', ');
+};
 
 export const createJoinCommand = ({
                                       discord,
                                       getDiscord,
                                       kavita,
                                       vault,
-                                      onboardingStore,
+                                      joinDefaults,
                                   } = {}) => ({
     definition: {
         name: 'join',
-        description: 'Onboard a Discord member into the Noona library.',
+        description: 'Create a Kavita account with the configured default access.',
         options: [
             {
-                name: 'email',
-                description: 'Email address for the member.',
-                type: ApplicationCommandOptionType.String,
-                required: true,
-            },
-            {
                 name: 'username',
-                description: 'Desired Kavita username.',
+                description: 'Username to create in Kavita.',
                 type: ApplicationCommandOptionType.String,
                 required: true,
             },
             {
                 name: 'password',
-                description: 'Optional password for the Kavita account.',
+                description: 'Password for the new Kavita account.',
                 type: ApplicationCommandOptionType.String,
-                required: false,
+                required: true,
             },
             {
-                name: 'display_name',
-                description: 'Friendly display name for Kavita.',
+                name: 'confirm_password',
+                description: 'Repeat the password to confirm it.',
                 type: ApplicationCommandOptionType.String,
-                required: false,
+                required: true,
             },
             {
-                name: 'libraries',
-                description: 'Comma-separated list of library identifiers.',
+                name: 'email',
+                description: 'Email address for the Kavita account.',
                 type: ApplicationCommandOptionType.String,
-                required: false,
+                required: true,
             },
         ],
     },
     execute: async interaction => {
         await interaction.deferReply?.({ephemeral: true});
 
-        if (!kavita?.createOrUpdateUser || !onboardingStore?.setToken) {
+        if (!kavita?.createUser) {
             throw new Error('Onboarding dependencies are not configured.');
         }
 
@@ -58,26 +62,51 @@ export const createJoinCommand = ({
             return;
         }
 
-        const email = interaction.options?.getString('email', true);
-        const username = interaction.options?.getString('username', true);
-        const password = interaction.options?.getString('password') ?? undefined;
-        const displayName = interaction.options?.getString('display_name') ?? undefined;
-        const libraries = ensureArray(interaction.options?.getString('libraries'));
+        const username = normalizeValue(interaction.options?.getString('username', true));
+        const password = interaction.options?.getString('password', true) ?? '';
+        const confirmPassword = interaction.options?.getString('confirm_password', true) ?? '';
+        const email = normalizeValue(interaction.options?.getString('email', true));
 
-        await kavita.createOrUpdateUser({username, email, password, displayName, libraries});
+        if (!username || !email || !password || !confirmPassword) {
+            await respondWithError(interaction, 'Provide a username, password, confirm password, and email.');
+            return;
+        }
 
-        const onboardingRecord = await onboardingStore.setToken(discordId, {
-            email,
-            username,
-            libraries,
-        });
+        if (password !== confirmPassword) {
+            await respondWithError(interaction, 'Password and confirm password must match.');
+            return;
+        }
+
+        const roles = Array.isArray(joinDefaults?.defaultRoles) ? joinDefaults.defaultRoles : [];
+        const libraries = Array.isArray(joinDefaults?.defaultLibraries) ? joinDefaults.defaultLibraries : [];
+
+        let createdUser;
+        try {
+            createdUser = await kavita.createUser({
+                username,
+                email,
+                password,
+                roles,
+                libraries,
+            });
+        } catch (error) {
+            errMSG(`[Portal/Discord] Failed to create Kavita user via /join: ${error.message}`);
+
+            if ((error?.status ?? 500) < 500) {
+                await respondWithError(interaction, error.message);
+                return;
+            }
+
+            throw error;
+        }
 
         if (vault?.storePortalCredential) {
             try {
                 await vault.storePortalCredential(discordId, {
-                    username,
-                    email,
-                    libraries,
+                    username: createdUser.username,
+                    email: createdUser.email,
+                    roles: createdUser.roles,
+                    libraries: createdUser.libraries,
                     issuedAt: new Date().toISOString(),
                 });
             } catch (error) {
@@ -89,11 +118,16 @@ export const createJoinCommand = ({
             errMSG(`[Portal/Discord] Failed to assign default role via /join: ${error.message}`);
         });
 
+        const librarySummary = libraries.length > 0 ? libraries : createdUser.libraries;
         await interaction.editReply?.({
-            content: `Onboarding token for ${username}: \`${onboardingRecord?.token}\`.`,
+            content: [
+                `Created Kavita account **${createdUser.username}**.`,
+                `Roles: ${formatList(createdUser.roles)}.`,
+                `Libraries: ${formatList(librarySummary)}.`,
+            ].join(' '),
+            ephemeral: true,
         });
     },
 });
 
 export default createJoinCommand;
-

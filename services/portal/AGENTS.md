@@ -17,7 +17,8 @@
 - Required values: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`, `KAVITA_BASE_URL`, `KAVITA_API_KEY`,
   `VAULT_BASE_URL`, and either `VAULT_ACCESS_TOKEN` or `VAULT_API_TOKEN`.
 - Optional tunables: `SERVICE_NAME`, `PORTAL_PORT`/`API_PORT`, `DISCORD_GUILD_ROLE_ID` or `DISCORD_DEFAULT_ROLE_ID`,
-  `PORTAL_REDIS_NAMESPACE`, `PORTAL_TOKEN_TTL`, `PORTAL_HTTP_TIMEOUT`.
+  `PORTAL_JOIN_DEFAULT_ROLES`, `PORTAL_JOIN_DEFAULT_LIBRARIES`, `PORTAL_REDIS_NAMESPACE`, `PORTAL_TOKEN_TTL`,
+  `PORTAL_HTTP_TIMEOUT`.
 - URL fields are validated and the final config object is frozen.
 
 ## Discord structure
@@ -33,15 +34,17 @@
 - `shared/discordCommands.mjs` is a compatibility export for `shared/commands/index.mjs`.
 - `shared/commands/` holds one module per command (`ding`, `join`, `scan`, `search`) plus shared helpers in
   `shared/commands/utils.mjs`.
-- Command factories receive dependencies (`discord`, `getDiscord`, `kavita`, `vault`, `onboardingStore`) for
+- Command factories receive dependencies (`discord`, `getDiscord`, `kavita`, `vault`, `onboardingStore`,
+  `joinDefaults`) for
   testability.
 
 ## HTTP and persistence modules
 
-- `shared/portalApp.mjs` exposes `/health`, `/api/portal/onboard`, and `/api/portal/tokens/consume`.
+- `shared/portalApp.mjs` exposes `/health`, `/api/portal/join-options`, `/api/portal/onboard`, and
+  `/api/portal/tokens/consume`.
 - `shared/onboardingStore.mjs` manages token storage and redemption.
 - `shared/vaultClient.mjs` handles Vault secret read/write/delete and portal credential storage.
-- `shared/kavitaClient.mjs` handles Kavita user and library operations.
+- `shared/kavitaClient.mjs` handles Kavita invite/update/reset-password user flows plus library and title operations.
 
 ## npm scripts
 

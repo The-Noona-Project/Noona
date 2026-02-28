@@ -205,6 +205,20 @@ const serviceDefs = rawList.map(name => {
                 description: 'API key used by the portal when communicating with Kavita.',
             },
             {
+                key: 'PORTAL_JOIN_DEFAULT_ROLES',
+                label: 'Default /join Roles',
+                description: 'Comma-separated Kavita roles applied when the Discord /join command creates a user.',
+                defaultValue: 'Pleb',
+                required: false,
+            },
+            {
+                key: 'PORTAL_JOIN_DEFAULT_LIBRARIES',
+                label: 'Default /join Libraries',
+                description: 'Comma-separated Kavita library names or ids granted when the Discord /join command creates a user.',
+                defaultValue: '',
+                required: false,
+            },
+            {
                 key: 'VAULT_BASE_URL',
                 label: 'Vault Base URL',
                 description: 'URL where the Vault service is exposed for the portal.',

@@ -32,6 +32,7 @@ type ServiceUpdateSnapshot = {
     service?: string | null;
     checkedAt?: string | null;
     updateAvailable?: boolean;
+    installed?: boolean;
     supported?: boolean;
 };
 
@@ -236,7 +237,10 @@ export function NoonaSiteNotificationsProvider({children}: { children: React.Rea
                     if (!service) continue;
 
                     const checkedAt = normalizeString(snapshot.checkedAt).trim();
-                    const updateAvailable = snapshot.supported !== false && snapshot.updateAvailable === true;
+                    const updateAvailable =
+                        snapshot.installed === true &&
+                        snapshot.supported !== false &&
+                        snapshot.updateAvailable === true;
                     nextState.set(service, {updateAvailable, checkedAt});
 
                     if (!hasUpdateBaselineRef.current) {

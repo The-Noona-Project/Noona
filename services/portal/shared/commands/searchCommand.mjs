@@ -1,107 +1,117 @@
 import {ApplicationCommandOptionType} from 'discord.js';
 import {errMSG} from '../../../../utilities/etc/logger.mjs';
-import {normalizeDiscordIdCandidate, respondWithError} from './utils.mjs';
+import {respondWithError} from './utils.mjs';
+
+const MAX_VISIBLE_RESULTS = 8;
+const MAX_FIELD_LENGTH = 48;
+
+const normalizeSearchValue = value => (typeof value === 'string' ? value.trim() : '');
+
+const truncateValue = (value, maxLength = MAX_FIELD_LENGTH) => {
+    if (!value || value.length <= maxLength) {
+        return value;
+    }
+
+    return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+};
+
+const buildSeriesLabel = series => {
+    const primaryName = normalizeSearchValue(series?.name)
+        || normalizeSearchValue(series?.localizedName)
+        || normalizeSearchValue(series?.originalName)
+        || `Series ${series?.seriesId ?? 'unknown'}`;
+
+    const aliases = [];
+    const seenNames = new Set([primaryName.toLowerCase()]);
+
+    for (const candidate of [series?.localizedName, series?.originalName]) {
+        const normalized = normalizeSearchValue(candidate);
+        if (!normalized) {
+            continue;
+        }
+
+        const key = normalized.toLowerCase();
+        if (seenNames.has(key)) {
+            continue;
+        }
+
+        seenNames.add(key);
+        aliases.push(truncateValue(normalized));
+    }
+
+    const parts = [truncateValue(primaryName)];
+    const libraryName = normalizeSearchValue(series?.libraryName);
+    if (libraryName) {
+        parts.push(`library: ${truncateValue(libraryName)}`);
+    }
+
+    if (aliases.length) {
+        parts.push(`aka: ${aliases.slice(0, 2).join(' / ')}`);
+    }
+
+    return parts.join(' | ');
+};
 
 export const createSearchCommand = ({
                                         kavita,
-                                        vault,
                                     } = {}) => ({
     definition: {
         name: 'search',
-        description: 'Fetch details for a Kavita user or stored credential.',
+        description: 'Search Kavita for matching series titles.',
         options: [
             {
-                name: 'username',
-                description: 'Kavita username to look up.',
+                name: 'title',
+                description: 'Series title to search for in Kavita.',
                 type: ApplicationCommandOptionType.String,
-                required: false,
-            },
-            {
-                name: 'discord_id',
-                description: 'Discord identifier/mention to fetch stored credentials.',
-                type: ApplicationCommandOptionType.String,
-                required: false,
+                required: true,
             },
         ],
     },
     execute: async interaction => {
         await interaction.deferReply?.({ephemeral: true});
 
-        if (!kavita?.fetchUser) {
+        if (!kavita?.searchTitles) {
             throw new Error('Kavita client is not configured for search.');
         }
 
-        const usernameRaw = interaction.options?.getString('username') ?? null;
-        const username = typeof usernameRaw === 'string' ? usernameRaw.trim() : '';
-        const discordIdRaw = interaction.options?.getString('discord_id') ?? null;
-        const discordId = normalizeDiscordIdCandidate(discordIdRaw);
+        const title = normalizeSearchValue(interaction.options?.getString('title') ?? null);
 
-        if (!username && !discordId) {
-            await respondWithError(interaction, 'Provide a Kavita username or a Discord id to search.');
+        if (!title) {
+            await respondWithError(interaction, 'Provide a title to search.');
             return;
         }
 
-        let user = null;
-        if (username) {
-            try {
-                user = await kavita.fetchUser(username);
-            } catch (error) {
-                const status = error && typeof error === 'object' ? error.status : null;
-                if (status === 404) {
-                    user = null;
-                } else {
-                    errMSG(`[Portal/Discord] Kavita search failed: ${error.message}`);
-                    throw error;
-                }
-            }
+        let results;
+        try {
+            results = await kavita.searchTitles(title);
+        } catch (error) {
+            errMSG(`[Portal/Discord] Kavita title search failed: ${error.message}`);
+            throw error;
         }
 
-        let credential = null;
-        if (discordId && vault?.readSecret) {
-            try {
-                credential = await vault.readSecret(`portal/${discordId}`);
-            } catch (error) {
-                errMSG(`[Portal/Discord] Failed to read credential for ${discordId}: ${error.message}`);
-            }
+        const seriesMatches = Array.isArray(results?.series) ? results.series.filter(Boolean) : [];
+        if (!seriesMatches.length) {
+            await interaction.editReply?.({
+                content: `No Kavita titles found for "${title}".`,
+                ephemeral: true,
+            });
+            return;
         }
 
-        if (!user && credential && credential.username) {
-            try {
-                user = await kavita.fetchUser(String(credential.username));
-            } catch (error) {
-                const status = error && typeof error === 'object' ? error.status : null;
-                if (status !== 404) {
-                    errMSG(`[Portal/Discord] Kavita credential lookup failed: ${error.message}`);
-                }
-            }
-        }
+        const visibleMatches = seriesMatches
+            .slice(0, MAX_VISIBLE_RESULTS)
+            .map((series, index) => `${index + 1}. ${buildSeriesLabel(series)}`);
 
-        const details = [];
-        if (user) {
-            const resolvedName = user.username ?? (username || String(credential?.username ?? ''));
-            details.push(`Kavita user **${resolvedName}** found.`);
-            if (Array.isArray(user.libraries) && user.libraries.length) {
-                details.push(`Libraries: ${user.libraries.join(', ')}`);
-            }
-        } else if (username) {
-            details.push(`No Kavita user found for **${username}**.`);
-        } else {
-            details.push('No Kavita user record was found.');
-        }
+        const content = [
+            `Found ${seriesMatches.length} Kavita title ${seriesMatches.length === 1 ? 'match' : 'matches'} for "${title}":`,
+            ...visibleMatches,
+            seriesMatches.length > MAX_VISIBLE_RESULTS ? `Showing first ${MAX_VISIBLE_RESULTS} results.` : null,
+        ]
+            .filter(Boolean)
+            .join('\n');
 
-        if (credential) {
-            const libraries = Array.isArray(credential.libraries) ? credential.libraries.join(', ') : 'n/a';
-            details.push(`Stored credential email: ${credential.email ?? 'n/a'} (libraries: ${libraries}).`);
-        } else if (discordId && vault?.readSecret) {
-            details.push('No stored credential found.');
-        }
-
-        await interaction.editReply?.({
-            content: details.join('\n'),
-            ephemeral: true,
-        });
+        await interaction.editReply?.({content, ephemeral: true});
     },
 });
 
 export default createSearchCommand;
-

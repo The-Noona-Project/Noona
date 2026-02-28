@@ -45,6 +45,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 let preferredWardenBaseUrl: string | null = null;
 let preferredSageBaseUrl: string | null = null;
 let preferredRavenBaseUrl: string | null = null;
+let preferredPortalBaseUrl: string | null = null;
 
 const normalizeUrl = (candidate: unknown): string | null => {
     if (typeof candidate !== "string") return null;
@@ -99,6 +100,17 @@ const resolveRavenBaseUrls = (env: NodeJS.ProcessEnv = process.env): string[] =>
         "http://host.docker.internal:8080",
         "http://127.0.0.1:8080",
         "http://localhost:8080",
+    ]);
+
+const resolvePortalBaseUrls = (env: NodeJS.ProcessEnv = process.env): string[] =>
+    uniqueStrings([
+        normalizeUrl(env.PORTAL_BASE_URL),
+        normalizeUrl(env.PORTAL_INTERNAL_BASE_URL),
+        normalizeUrl(env.PORTAL_DOCKER_URL),
+        "http://noona-portal:3003",
+        "http://host.docker.internal:3003",
+        "http://127.0.0.1:3003",
+        "http://localhost:3003",
     ]);
 
 const fetchWithTimeout = async (
@@ -235,6 +247,28 @@ export const ravenJson = async (
             preferredBaseUrl: preferredRavenBaseUrl,
             onSuccess: (baseUrl) => {
                 preferredRavenBaseUrl = baseUrl;
+            },
+        },
+    );
+
+    const payload = await res.json().catch(() => ({}));
+    return {status: res.status, payload};
+};
+
+export const portalJson = async (
+    path: string,
+    init: RequestInit = {},
+    options: { timeoutMs?: number } = {},
+) => {
+    const res = await fetchFirstOk(
+        resolvePortalBaseUrls(),
+        path,
+        {...init, headers: {Accept: "application/json", ...(init.headers || {})}},
+        options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        {
+            preferredBaseUrl: preferredPortalBaseUrl,
+            onSuccess: (baseUrl) => {
+                preferredPortalBaseUrl = baseUrl;
             },
         },
     );

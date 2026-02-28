@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 
-import {startWardenServer} from '../shared/wardenServer.mjs';
+import {startWardenServer} from '../api/startWardenServer.mjs';
 
 const listen = async (options = {}) => {
     const { server } = startWardenServer({

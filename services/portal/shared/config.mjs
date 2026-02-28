@@ -1,7 +1,7 @@
 // services/portal/shared/config.mjs
 
 import dotenv from 'dotenv';
-import { errMSG, log } from '../../../utilities/etc/logger.mjs';
+import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const DEFAULT_ENV_PATH = process.env.PORTAL_ENV_FILE || process.env.ENV_FILE || undefined;
 let envLoaded = false;
@@ -32,6 +32,33 @@ const normalizeString = value => {
 
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+};
+
+const splitCsv = value => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return [];
+    }
+
+    const seen = new Set();
+    const values = [];
+
+    for (const entry of normalized.split(',')) {
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            continue;
+        }
+
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) {
+            continue;
+        }
+
+        seen.add(key);
+        values.push(trimmed);
+    }
+
+    return values;
 };
 
 const normalizeUrl = (value) => {
@@ -110,6 +137,10 @@ export const loadPortalConfig = (overrides = {}) => {
             token:
                 normalizeString(env.VAULT_API_TOKEN) ||
                 normalizeString(env.VAULT_ACCESS_TOKEN),
+        },
+        join: {
+            defaultRoles: splitCsv(env.PORTAL_JOIN_DEFAULT_ROLES ?? 'Pleb'),
+            defaultLibraries: splitCsv(env.PORTAL_JOIN_DEFAULT_LIBRARIES),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',

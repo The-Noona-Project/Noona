@@ -20,11 +20,36 @@ export const createInteractionHandler = ({
                                              commandMap,
                                              roleManager,
                                          } = {}) => async interaction => {
+    const commandName = interaction?.commandName;
+    const handler = commandMap?.get(commandName);
+
+    if (interaction?.isAutocomplete?.()) {
+        if (!handler?.autocomplete) {
+            return;
+        }
+
+        try {
+            const access = roleManager?.checkAccess?.(interaction, commandName) ?? {allowed: true};
+            if (!access.allowed) {
+                await interaction.respond?.([]);
+                return;
+            }
+
+            await handler.autocomplete(interaction);
+        } catch (error) {
+            errMSG(`[Portal/Discord] Autocomplete for /${commandName} failed: ${error.message}`);
+            await interaction.respond?.([]).catch(responseError => {
+                errMSG(`[Portal/Discord] Failed to send autocomplete fallback: ${responseError.message}`);
+            });
+        }
+
+        return;
+    }
+
     if (!interaction?.isChatInputCommand?.()) {
         return;
     }
 
-    const handler = commandMap?.get(interaction.commandName);
     if (!handler?.execute) {
         return;
     }
@@ -33,7 +58,7 @@ export const createInteractionHandler = ({
         const access = roleManager?.checkAccess?.(interaction, interaction.commandName) ?? {allowed: true};
         if (!access.allowed) {
             const actor = resolveActor(interaction);
-            log(`[Portal/Discord] Denied /${interaction.commandName} for ${actor} (${access.reason ?? 'unknown reason'}).`);
+            log(`[Portal/Discord] Denied /${commandName} for ${actor} (${access.reason ?? 'unknown reason'}).`);
 
             await sendInteractionReply(interaction, {
                 content: access.message ?? 'You do not have permission to use this command.',
@@ -47,7 +72,7 @@ export const createInteractionHandler = ({
 
         await handler.execute(interaction);
     } catch (error) {
-        errMSG(`[Portal/Discord] Handler for /${interaction.commandName} failed: ${error.message}`);
+        errMSG(`[Portal/Discord] Handler for /${commandName} failed: ${error.message}`);
 
         await sendInteractionReply(interaction, {
             content: 'Something went wrong while processing that command.',
@@ -57,4 +82,3 @@ export const createInteractionHandler = ({
         });
     }
 };
-

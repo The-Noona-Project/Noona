@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { safeLoadPortalConfig } from '../shared/config.mjs';
+import {safeLoadPortalConfig} from '../shared/config.mjs';
 
 const REQUIRED_ENV = {
     DISCORD_BOT_TOKEN: 'bot-token',
@@ -20,6 +20,18 @@ test('safeLoadPortalConfig uses VAULT_API_TOKEN when override is provided', () =
     });
 
     assert.equal(config.vault.token, 'api-token-override');
+});
+
+test('safeLoadPortalConfig parses join defaults from csv env values', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        PORTAL_JOIN_DEFAULT_ROLES: 'Pleb, Admin, pleb',
+        PORTAL_JOIN_DEFAULT_LIBRARIES: 'Manga, 12, manga',
+    });
+
+    assert.deepEqual(config.join.defaultRoles, ['Pleb', 'Admin']);
+    assert.deepEqual(config.join.defaultLibraries, ['Manga', '12']);
 });
 
 test('safeLoadPortalConfig throws when no vault tokens are provided', () => {

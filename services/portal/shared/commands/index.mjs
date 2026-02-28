@@ -10,6 +10,7 @@ export const createPortalSlashCommands = ({
                                               kavita,
                                               vault,
                                               onboardingStore,
+                                              joinDefaults,
                                           } = {}) => {
     const commands = new Map();
 
@@ -20,6 +21,7 @@ export const createPortalSlashCommands = ({
         kavita,
         vault,
         onboardingStore,
+        joinDefaults,
     }));
     commands.set('scan', createScanCommand({kavita}));
     commands.set('search', createSearchCommand({kavita, vault}));
@@ -30,4 +32,3 @@ export const createPortalSlashCommands = ({
 };
 
 export default createPortalSlashCommands;
-

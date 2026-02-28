@@ -1,6 +1,6 @@
 // services/warden/initWarden.mjs
-import {createWarden} from './shared/wardenCore.mjs';
-import {startWardenServer} from './shared/wardenServer.mjs';
+import {createWarden} from './core/createWarden.mjs';
+import {startWardenServer} from './api/startWardenServer.mjs';
 import {errMSG} from '../../utilities/etc/logger.mjs';
 
 export function bootstrapWarden({

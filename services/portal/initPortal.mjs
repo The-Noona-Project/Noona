@@ -1,11 +1,11 @@
 // services/portal/initPortal.mjs
 
-import { errMSG, log } from '../../utilities/etc/logger.mjs';
-import { safeLoadPortalConfig } from './shared/config.mjs';
+import {errMSG, log} from '../../utilities/etc/logger.mjs';
+import {safeLoadPortalConfig} from './shared/config.mjs';
 import createKavitaClient from './shared/kavitaClient.mjs';
 import createVaultClient from './shared/vaultClient.mjs';
 import createOnboardingStore from './shared/onboardingStore.mjs';
-import { startPortalServer } from './shared/portalApp.mjs';
+import {startPortalServer} from './shared/portalApp.mjs';
 import createDiscordClient from './shared/discordClient.mjs';
 import createPortalSlashCommands from './shared/discordCommands.mjs';
 
@@ -49,6 +49,7 @@ export const startPortal = async (overrides = {}) => {
         kavita,
         vault,
         onboardingStore,
+        joinDefaults: config.join,
     });
 
     discord = createDiscordClient({

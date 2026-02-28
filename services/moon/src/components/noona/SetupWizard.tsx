@@ -872,7 +872,12 @@ export function SetupWizard() {
         setFinishing(true);
 
         try {
-            const res = await fetch("/api/noona/setup/complete", {method: "POST"});
+            const selectedServices = Array.from(selected).sort((left, right) => left.localeCompare(right));
+            const res = await fetch("/api/noona/setup/complete", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({selectedServices}),
+            });
             const json = await res.json().catch(() => ({}));
 
             if (!res.ok) {

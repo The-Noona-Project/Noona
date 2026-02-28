@@ -156,6 +156,49 @@ test('interaction handler executes matching slash command', async () => {
     assert.match(replies[0].content, /Dong/i);
 });
 
+test('interaction handler executes matching autocomplete handler', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const responses = [];
+    const commands = new Map([
+        ['scan', {
+            definition: {name: 'scan', description: 'Scan library'},
+            autocomplete: async interaction => {
+                await interaction.respond([{name: 'Manga', value: '1'}]);
+            },
+        }],
+    ]);
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands,
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const interaction = {
+        isChatInputCommand: () => false,
+        isAutocomplete: () => true,
+        commandName: 'scan',
+        respond: async payload => {
+            responses.push(payload);
+        },
+        member: {roles: {cache: new Map()}},
+        guildId: 'guild-123',
+        user: {tag: 'Member#0001', id: 'member-001'},
+    };
+
+    await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+    assert.deepEqual(responses, [[{name: 'Manga', value: '1'}]]);
+});
+
 test('interaction handler blocks command execution when guild does not match REQUIRED_GUILD_ID', async () => {
     const previousGuild = process.env.REQUIRED_GUILD_ID;
     process.env.REQUIRED_GUILD_ID = 'expected-guild';

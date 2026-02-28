@@ -1,7 +1,7 @@
 // services/portal/shared/portalApp.mjs
 
 import express from 'express';
-import { errMSG, log } from '../../../utilities/etc/logger.mjs';
+import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const buildError = (status, message, details) => ({ status, message, details });
 
@@ -18,6 +18,23 @@ const normalizeError = (error, fallbackStatus = 500) => {
     const message = error.message || 'Unexpected error.';
 
     return buildError(status, message, error.body ?? error.details ?? null);
+};
+
+const KAVITA_ROLE_DESCRIPTIONS = new Map([
+    ['admin', 'Full administrative access to Kavita, including server and user management.'],
+    ['pleb', 'Baseline non-admin role. Pair this with other roles to grant day-to-day access.'],
+    ['download', 'Allows the user to download supported files from Kavita.'],
+    ['change password', 'Allows the user to change their own Kavita password.'],
+    ['bookmark', 'Allows the user to save personal bookmarks and related reader markers.'],
+    ['change restriction', 'Allows the user to adjust their own content restriction settings.'],
+    ['login', 'Allows the user to sign in to Kavita.'],
+    ['read only', 'Keeps the account in read-only mode inside Kavita.'],
+    ['promote', 'Allows the user to access Kavita promotion actions for supported entities.'],
+]);
+
+const describeKavitaRole = role => {
+    const normalizedRole = typeof role === 'string' ? role.trim().toLowerCase() : '';
+    return KAVITA_ROLE_DESCRIPTIONS.get(normalizedRole) || 'Role is available from Kavita, but Moon does not have a built-in description for it yet.';
 };
 
 export const createPortalApp = ({
@@ -44,11 +61,41 @@ export const createPortalApp = ({
         });
     });
 
+    app.get('/api/portal/join-options', async (_req, res) => {
+        try {
+            const [roles, libraries] = await Promise.all([
+                kavita?.fetchRoles?.() ?? [],
+                kavita?.fetchLibraries?.() ?? [],
+            ]);
+            const normalizedRoles = Array.isArray(roles) ? roles : [];
+
+            res.json({
+                roles: normalizedRoles,
+                roleDetails: normalizedRoles.map(role => ({
+                    name: role,
+                    description: describeKavitaRole(role),
+                })),
+                libraries: Array.isArray(libraries)
+                    ? libraries
+                        .filter(library => library?.id != null)
+                        .map(library => ({
+                            id: library.id,
+                            name: library.name ?? `Library ${library.id}`,
+                        }))
+                    : [],
+            });
+        } catch (error) {
+            const normalised = normalizeError(error);
+            errMSG(`[Portal] Failed to load join options: ${normalised.message}`);
+            res.status(normalised.status).json({error: normalised.message, details: normalised.details});
+        }
+    });
+
     app.post('/api/portal/onboard', async (req, res) => {
         const { discordId, email, username, password, displayName, libraries = [] } = req.body ?? {};
 
-        if (!discordId || !email || !username) {
-            res.status(400).json({ error: 'discordId, email and username are required.' });
+        if (!discordId || !email || !username || !password) {
+            res.status(400).json({error: 'discordId, email, username, and password are required.'});
             return;
         }
 
@@ -59,7 +106,16 @@ export const createPortalApp = ({
                 libraries,
             });
 
-            await kavita?.createOrUpdateUser({ username, email, password, displayName, libraries });
+            await kavita?.createUser?.({
+                username,
+                email,
+                password,
+                roles: config.join?.defaultRoles ?? [],
+                libraries: Array.isArray(libraries) && libraries.length > 0
+                    ? libraries
+                    : config.join?.defaultLibraries ?? [],
+                displayName,
+            });
 
             if (vault) {
                 await vault.storePortalCredential(discordId, {
