@@ -84,6 +84,9 @@ npm test
 `npm run commands:list` inspects the current Portal Discord application and prints global commands, guild commands, and
 duplicate names across both scopes. Add `-- --json` to emit machine-readable output.
 
+For Warden-managed installs that target `noona-kavita`, Warden now provisions the managed Kavita auth key before
+starting Portal and injects the resulting `KAVITA_API_KEY` automatically.
+
 ## Documentation Rule
 
 When command definitions, onboarding payloads, or endpoint contracts change, update this README and include markdown

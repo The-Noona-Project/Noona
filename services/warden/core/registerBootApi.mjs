@@ -64,8 +64,21 @@ export function registerBootApi(context = {}) {
     };
 
     const startServicesForBoot = async (names = []) => {
-        for (const name of names) {
+        for (let index = 0; index < names.length; index += 1) {
+            const name = names[index];
             await startServiceForBoot(name);
+
+            if (name === 'noona-kavita' && typeof api.ensureManagedKavitaAccess === 'function') {
+                const remainingTargets = names.slice(index + 1).filter((candidate) =>
+                    typeof api.needsManagedKavitaProvisioning === 'function'
+                        ? api.needsManagedKavitaProvisioning(candidate)
+                        : false,
+                );
+
+                if (remainingTargets.length > 0) {
+                    await api.ensureManagedKavitaAccess({targetServices: remainingTargets});
+                }
+            }
         }
     };
 

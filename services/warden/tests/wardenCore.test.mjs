@@ -979,6 +979,151 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
     assert.deepEqual(komfStart.restartPolicy, {Name: 'unless-stopped'});
 });
 
+test('installServices provisions managed Kavita API keys before starting portal and noona-komf', async () => {
+    const started = [];
+    const fetchCalls = [];
+    let loginAttempts = 0;
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                env: [...(service.env || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const services = {
+        addon: {
+            'noona-mongo': {name: 'noona-mongo', image: 'mongo', port: 27017},
+            'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
+            'noona-kavita': {
+                name: 'noona-kavita',
+                image: 'captainpax/noona-kavita:latest',
+                port: 5000,
+                internalPort: 5000,
+                health: 'http://noona-kavita:5000/api/Health',
+                env: [
+                    'KAVITA_ADMIN_USERNAME=reader-admin',
+                    'KAVITA_ADMIN_EMAIL=reader-admin@example.com',
+                    'KAVITA_ADMIN_PASSWORD=Password123!',
+                ],
+            },
+            'noona-komf': {
+                name: 'noona-komf',
+                image: 'sndxr/komf:latest',
+                port: 8085,
+                env: [
+                    'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+                    'KOMF_KAVITA_API_KEY=',
+                ],
+            },
+        },
+        core: {
+            'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            'noona-raven': {name: 'noona-raven', image: 'raven'},
+            'noona-portal': {
+                name: 'noona-portal',
+                image: 'portal',
+                port: 3003,
+                env: [
+                    'KAVITA_BASE_URL=http://noona-kavita:5000',
+                    'KAVITA_API_KEY=',
+                    'VAULT_BASE_URL=http://noona-vault:3005',
+                    'VAULT_API_TOKEN=vault-token',
+                    'DISCORD_BOT_TOKEN=discord-token',
+                    'DISCORD_CLIENT_ID=discord-client',
+                    'DISCORD_GUILD_ID=discord-guild',
+                ],
+            },
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services,
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        fetchImpl: async (url, options = {}) => {
+            const requestUrl = new URL(url);
+            fetchCalls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                body: options.body ? JSON.parse(options.body) : null,
+            });
+
+            if (requestUrl.pathname === '/api/Account/login') {
+                loginAttempts += 1;
+                if (loginAttempts === 1) {
+                    return {
+                        ok: false,
+                        status: 401,
+                        text: async () => JSON.stringify({error: 'Unauthorized'}),
+                    };
+                }
+
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({token: 'managed-jwt-token'}),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/register') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 7, username: 'reader-admin'}),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/create-auth-key') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 9, key: 'managed-api-key'}),
+                };
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`);
+        },
+        hostDockerSockets: [],
+    });
+
+    await warden.installServices([
+        {name: 'noona-portal'},
+        {name: 'noona-kavita'},
+        {name: 'noona-komf'},
+    ]);
+
+    assert.deepEqual(
+        started.map((entry) => entry.name),
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-raven', 'noona-kavita', 'noona-portal', 'noona-komf'],
+    );
+
+    const portalStart = started.find((entry) => entry.name === 'noona-portal');
+    const komfStart = started.find((entry) => entry.name === 'noona-komf');
+
+    assert.ok(portalStart.env.includes('KAVITA_BASE_URL=http://noona-kavita:5000'));
+    assert.ok(portalStart.env.includes('KAVITA_API_KEY=managed-api-key'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_BASE_URI=http://noona-kavita:5000'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
+    assert.deepEqual(
+        fetchCalls.map((entry) => entry.pathname),
+        ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/create-auth-key'],
+    );
+});
+
 test('startService bootstraps the shared Noona storage tree before launching services', async () => {
     const mkdirCalls = [];
     const warden = buildWarden({
@@ -1945,6 +2090,121 @@ test('bootFull launches services in super boot order with correct health URLs', 
         ['noona-komf', null],
     ]);
     assert.equal(warnings.length, 0);
+});
+
+test('bootFull provisions managed Kavita API keys before starting dependent services', async () => {
+    const fetchCalls = [];
+    let loginAttempts = 0;
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-kavita': {
+                    name: 'noona-kavita',
+                    port: 5000,
+                    internalPort: 5000,
+                    env: [
+                        'KAVITA_ADMIN_USERNAME=reader-admin',
+                        'KAVITA_ADMIN_EMAIL=reader-admin@example.com',
+                        'KAVITA_ADMIN_PASSWORD=Password123!',
+                    ],
+                    health: 'http://kavita/health',
+                },
+                'noona-komf': {
+                    name: 'noona-komf',
+                    env: [
+                        'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+                        'KOMF_KAVITA_API_KEY=',
+                    ],
+                },
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', health: 'http://moon/health'},
+                'noona-raven': {name: 'noona-raven'},
+                'noona-portal': {
+                    name: 'noona-portal',
+                    health: 'http://portal/health',
+                    env: [
+                        'KAVITA_BASE_URL=http://noona-kavita:5000',
+                        'KAVITA_API_KEY=',
+                    ],
+                },
+            },
+        },
+        fetchImpl: async (url) => {
+            const requestUrl = new URL(url);
+            fetchCalls.push(requestUrl.pathname);
+
+            if (requestUrl.pathname === '/api/Account/login') {
+                loginAttempts += 1;
+                if (loginAttempts === 1) {
+                    return {
+                        ok: false,
+                        status: 401,
+                        text: async () => JSON.stringify({error: 'Unauthorized'}),
+                    };
+                }
+
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({token: 'managed-jwt-token'}),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/register') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 1, username: 'reader-admin'}),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/create-auth-key') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 2, key: 'managed-api-key'}),
+                };
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`);
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service, healthUrl) => {
+        started.push({
+            name: service.name,
+            healthUrl,
+            env: [...(service.env || [])],
+        });
+    };
+
+    await warden.bootFull({
+        services: [
+            'noona-redis',
+            'noona-mongo',
+            'noona-vault',
+            'noona-sage',
+            'noona-moon',
+            'noona-raven',
+            'noona-kavita',
+            'noona-portal',
+            'noona-komf',
+        ],
+    });
+
+    const portalStart = started.find((entry) => entry.name === 'noona-portal');
+    const komfStart = started.find((entry) => entry.name === 'noona-komf');
+
+    assert.ok(portalStart.env.includes('KAVITA_API_KEY=managed-api-key'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
+    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/create-auth-key']);
 });
 
 test('bootFull reloads persisted service configs from noona_settings before starting managed services', async () => {

@@ -1,5 +1,69 @@
 // services/warden/core/registerServiceManagementApi.mjs
 
+import {createManagedKavitaSetupClient} from '../../sage/clients/managedKavitaSetupClient.mjs';
+
+const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
+const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
+const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
+
+const normalizeString = (value) => {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    return value.trim();
+};
+
+const normalizeManagedKavitaAccount = (envMap = {}) => {
+    const username = normalizeString(envMap.KAVITA_ADMIN_USERNAME);
+    const email = normalizeString(envMap.KAVITA_ADMIN_EMAIL);
+    const password = normalizeString(envMap.KAVITA_ADMIN_PASSWORD);
+    const providedCount = [username, email, password].filter(Boolean).length;
+
+    if (providedCount === 0) {
+        return null;
+    }
+
+    if (!username || !email || !password) {
+        throw new Error(
+            'Managed Kavita admin provisioning requires KAVITA_ADMIN_USERNAME, KAVITA_ADMIN_EMAIL, and KAVITA_ADMIN_PASSWORD together.',
+        );
+    }
+
+    return {username, email, password};
+};
+
+const isManagedKavitaBaseUrl = (value) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return false;
+    }
+
+    try {
+        return new URL(normalized).hostname === MANAGED_KAVITA_SERVICE_NAME;
+    } catch {
+        return normalized.includes(`${MANAGED_KAVITA_SERVICE_NAME}:`);
+    }
+};
+
+const buildManagedKavitaServiceEnv = (name, {baseUrl, apiKey}) => {
+    if (name === MANAGED_KAVITA_PORTAL_SERVICE_NAME) {
+        return {
+            KAVITA_BASE_URL: baseUrl,
+            KAVITA_API_KEY: apiKey,
+        };
+    }
+
+    if (name === MANAGED_KAVITA_KOMF_SERVICE_NAME) {
+        return {
+            KOMF_KAVITA_BASE_URI: baseUrl,
+            KOMF_KAVITA_API_KEY: apiKey,
+        };
+    }
+
+    return null;
+};
+
 export function registerServiceManagementApi(context = {}) {
     const {
         api,
@@ -18,6 +82,7 @@ export function registerServiceManagementApi(context = {}) {
         ensureDockerConnection,
         ensureHistory,
         findMatchingContainersByName,
+        fetchImpl,
         formatDockerProgressMessage,
         getContainerPresence,
         getInstallationProgressSnapshot,
@@ -108,6 +173,197 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         return null;
+    };
+
+    const mergeManagedServiceRuntimeEnv = async (name, envUpdates = {}, {installOverridesByName = null} = {}) => {
+        if (!serviceCatalog.has(name)) {
+            return null;
+        }
+
+        const filteredUpdates = Object.fromEntries(
+            Object.entries(envUpdates).filter(([key]) => normalizeString(key)),
+        );
+
+        if (Object.keys(filteredUpdates).length === 0) {
+            return resolveRuntimeConfig(name);
+        }
+
+        const runtime = resolveRuntimeConfig(name);
+        const nextRuntime = writeRuntimeConfig(name, {
+            env: {
+                ...runtime.env,
+                ...filteredUpdates,
+            },
+            hostPort: runtime.hostPort,
+        });
+
+        await persistServiceRuntimeConfig(name, nextRuntime);
+
+        if (installOverridesByName instanceof Map) {
+            const existing = installOverridesByName.get(name) || {};
+            installOverridesByName.set(name, {
+                ...existing,
+                ...filteredUpdates,
+            });
+        }
+
+        return nextRuntime;
+    };
+
+    const serviceNeedsManagedKavitaProvisioning = (name, options = {}) => {
+        if (name !== MANAGED_KAVITA_PORTAL_SERVICE_NAME && name !== MANAGED_KAVITA_KOMF_SERVICE_NAME) {
+            return false;
+        }
+
+        if (!serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
+            return false;
+        }
+
+        const envOverrides =
+            options?.envOverrides && typeof options.envOverrides === 'object'
+                ? options.envOverrides
+                : null;
+        const {descriptor} = buildEffectiveServiceDescriptor(name, {envOverrides});
+        const envMap = parseEnvEntries(descriptor.env);
+
+        if (name === MANAGED_KAVITA_KOMF_SERVICE_NAME) {
+            return (
+                isManagedKavitaBaseUrl(envMap.KOMF_KAVITA_BASE_URI) &&
+                !normalizeString(envMap.KOMF_KAVITA_API_KEY)
+            );
+        }
+
+        return (
+            isManagedKavitaBaseUrl(envMap.KAVITA_BASE_URL) &&
+            !normalizeString(envMap.KAVITA_API_KEY)
+        );
+    };
+
+    api.needsManagedKavitaProvisioning = function needsManagedKavitaProvisioning(name, options = {}) {
+        return serviceNeedsManagedKavitaProvisioning(name, options);
+    };
+
+    api.ensureManagedKavitaAccess = async function ensureManagedKavitaAccess(options = {}) {
+        if (!serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
+            return {
+                configuredServices: [],
+                skipped: true,
+                reason: 'no-managed-kavita-service',
+            };
+        }
+
+        const installOverridesByName =
+            options?.installOverridesByName instanceof Map ? options.installOverridesByName : null;
+        const targetServices = Array.isArray(options?.targetServices) ? options.targetServices : [];
+        const configuredServices = Array.from(
+            new Set(
+                targetServices.filter((candidate) =>
+                    serviceNeedsManagedKavitaProvisioning(candidate, {
+                        envOverrides: installOverridesByName?.get(candidate) || null,
+                    }),
+                ),
+            ),
+        );
+
+        if (configuredServices.length === 0) {
+            return {
+                configuredServices: [],
+                skipped: true,
+                reason: 'no-managed-kavita-targets',
+            };
+        }
+
+        const {descriptor} = buildEffectiveServiceDescriptor(MANAGED_KAVITA_SERVICE_NAME, {
+            envOverrides: installOverridesByName?.get(MANAGED_KAVITA_SERVICE_NAME) || null,
+        });
+        const kavitaPort = normalizeHostPort(descriptor.internalPort || descriptor.port) || 5000;
+        const baseUrl = `http://${descriptor.name}:${kavitaPort}`;
+        const envMap = parseEnvEntries(descriptor.env);
+        const account = normalizeManagedKavitaAccount(envMap);
+
+        appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
+            type: 'status',
+            status: 'configuring',
+            message: 'Provisioning managed Kavita API key for dependent services',
+            detail: configuredServices.join(', '),
+        });
+
+        try {
+            const client = createManagedKavitaSetupClient({
+                baseUrl,
+                fetchImpl,
+                logger,
+                serviceName,
+            });
+            const provisioning = await client.ensureServiceApiKey({
+                account,
+                allowRegister: true,
+            });
+            const normalizedBaseUrl = client.getBaseUrl().replace(/\/$/, '');
+            const managedApiKey = normalizeString(provisioning?.apiKey);
+
+            if (!managedApiKey) {
+                throw new Error('Managed Kavita provisioning completed without returning an API key.');
+            }
+
+            if (provisioning?.account) {
+                await mergeManagedServiceRuntimeEnv(
+                    MANAGED_KAVITA_SERVICE_NAME,
+                    {
+                        KAVITA_ADMIN_USERNAME: provisioning.account.username,
+                        KAVITA_ADMIN_EMAIL: provisioning.account.email ?? '',
+                        KAVITA_ADMIN_PASSWORD: provisioning.account.password,
+                    },
+                    {installOverridesByName},
+                );
+            }
+
+            for (const targetName of configuredServices) {
+                const envUpdates = buildManagedKavitaServiceEnv(targetName, {
+                    baseUrl: normalizedBaseUrl,
+                    apiKey: managedApiKey,
+                });
+
+                if (!envUpdates) {
+                    continue;
+                }
+
+                await mergeManagedServiceRuntimeEnv(targetName, envUpdates, {installOverridesByName});
+                appendHistoryEntry(targetName, {
+                    type: 'status',
+                    status: 'configured',
+                    message: 'Managed Kavita API key prepared for startup',
+                    detail: normalizedBaseUrl,
+                    clearError: true,
+                });
+            }
+
+            appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
+                type: 'status',
+                status: 'configured',
+                message: 'Managed Kavita API key ready for dependent services',
+                detail: normalizedBaseUrl,
+                clearError: true,
+            });
+
+            return {
+                apiKey: managedApiKey,
+                baseUrl: normalizedBaseUrl,
+                account: provisioning.account ?? null,
+                configuredServices,
+                skipped: false,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
+                type: 'error',
+                status: 'error',
+                message: 'Managed Kavita API key provisioning failed',
+                detail: message,
+                error: message,
+            });
+            throw error;
+        }
     };
 
     api.startService = async function startService(service, healthUrl = null, options = {}) {
@@ -512,6 +768,7 @@ export function registerServiceManagementApi(context = {}) {
         const order = [];
         const visited = new Set();
         const visiting = new Set();
+        const requestedNames = new Set(names);
 
         const visit = (name) => {
             if (visited.has(name)) {
@@ -525,7 +782,15 @@ export function registerServiceManagementApi(context = {}) {
 
             visiting.add(name);
 
-            const dependencies = dependencyGraph.get(name) || [];
+            const dependencies = [...(dependencyGraph.get(name) || [])];
+            if (
+                name === MANAGED_KAVITA_PORTAL_SERVICE_NAME &&
+                requestedNames.has(MANAGED_KAVITA_SERVICE_NAME) &&
+                !dependencies.includes(MANAGED_KAVITA_SERVICE_NAME)
+            ) {
+                dependencies.push(MANAGED_KAVITA_SERVICE_NAME);
+            }
+
             for (const dependency of dependencies) {
                 visit(dependency);
             }
@@ -835,16 +1100,41 @@ export function registerServiceManagementApi(context = {}) {
         const attempted = new Set();
         let targetResult = null;
 
-        for (const serviceName of order) {
+        for (let index = 0; index < order.length; index += 1) {
+            const serviceName = order[index];
             if (attempted.has(serviceName)) {
                 continue;
             }
 
             attempted.add(serviceName);
-            const overrides = overridesByName.get(serviceName) || null;
+            let overrides = overridesByName.get(serviceName) || null;
+
+            if (serviceNeedsManagedKavitaProvisioning(serviceName, {envOverrides: overrides})) {
+                await api.ensureManagedKavitaAccess({
+                    targetServices: [serviceName],
+                    installOverridesByName: overridesByName,
+                });
+                overrides = overridesByName.get(serviceName) || null;
+            }
+
             const result = await installSingleServiceByName(serviceName, overrides, {
                 installOverridesByName: overridesByName,
             });
+
+            if (serviceName === MANAGED_KAVITA_SERVICE_NAME) {
+                const remainingTargets = order.slice(index + 1).filter((candidate) =>
+                    serviceNeedsManagedKavitaProvisioning(candidate, {
+                        envOverrides: overridesByName.get(candidate) || null,
+                    }),
+                );
+
+                if (remainingTargets.length > 0) {
+                    await api.ensureManagedKavitaAccess({
+                        targetServices: remainingTargets,
+                        installOverridesByName: overridesByName,
+                    });
+                }
+            }
 
             if (serviceName === trimmedName) {
                 targetResult = result;
@@ -923,7 +1213,8 @@ export function registerServiceManagementApi(context = {}) {
 
         const attempted = new Set();
 
-        for (const serviceName of order) {
+        for (let index = 0; index < order.length; index += 1) {
+            const serviceName = order[index];
             if (attempted.has(serviceName)) {
                 continue;
             }
@@ -931,10 +1222,35 @@ export function registerServiceManagementApi(context = {}) {
             attempted.add(serviceName);
 
             try {
-                const overrides = overridesByName.get(serviceName) || null;
+                let overrides = overridesByName.get(serviceName) || null;
+
+                if (serviceNeedsManagedKavitaProvisioning(serviceName, {envOverrides: overrides})) {
+                    await api.ensureManagedKavitaAccess({
+                        targetServices: [serviceName],
+                        installOverridesByName: overridesByName,
+                    });
+                    overrides = overridesByName.get(serviceName) || null;
+                }
+
                 const result = await installSingleServiceByName(serviceName, overrides, {
                     installOverridesByName: overridesByName,
                 });
+
+                if (serviceName === MANAGED_KAVITA_SERVICE_NAME) {
+                    const remainingTargets = order.slice(index + 1).filter((candidate) =>
+                        serviceNeedsManagedKavitaProvisioning(candidate, {
+                            envOverrides: overridesByName.get(candidate) || null,
+                        }),
+                    );
+
+                    if (remainingTargets.length > 0) {
+                        await api.ensureManagedKavitaAccess({
+                            targetServices: remainingTargets,
+                            installOverridesByName: overridesByName,
+                        });
+                    }
+                }
+
                 results.push(result);
             } catch (error) {
                 results.push({

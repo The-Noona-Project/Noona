@@ -89,7 +89,7 @@ instead of blindly starting every registered service.
   stack comes up in dependency order.
 - Managed Kavita now uses `captainpax/noona-kavita:latest`, and Warden can inject `KAVITA_ADMIN_USERNAME`,
   `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` so the container can bootstrap the first admin account on its own
-  before Sage provisions the reusable API key.
+  before Warden provisions and persists the reusable managed API key into Portal and Komf startup env.
 - Managed Kavita now probes Kavita's API health endpoint (`/api/Health`) and uses a longer first-boot wait window so
   setup can reach the initial admin/API-key provisioning flow without requiring a manual UI visit mid-install.
 - Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create

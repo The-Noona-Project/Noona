@@ -2684,6 +2684,7 @@ export function createWarden(options = {}) {
         ensureDockerConnection,
         ensureHistory,
         findMatchingContainersByName,
+        fetchImpl,
         formatDockerProgressMessage,
         getContainerPresence,
         getInstallationProgressSnapshot,
