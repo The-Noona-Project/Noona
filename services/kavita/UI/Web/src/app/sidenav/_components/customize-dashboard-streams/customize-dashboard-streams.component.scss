@@ -1,0 +1,31 @@
+::ng-deep .drag-handle {
+  margin-top: 70% !important;
+}
+
+app-dashboard-stream-list-item {
+  flex-grow: 1;
+}
+
+.filter-list {
+  margin: 0;
+  padding: 0;
+
+  .filter {
+    padding: 0.5rem 1rem;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 0.3125rem;
+    margin: 0.3125rem 0;
+    color: var(--list-group-hover-text-color);
+    background-color: var(--list-group-hover-bg-color);
+  }
+}
+
+.virtual-scroller, virtual-scroller {
+  width: 100%;
+  height: calc(100vh - 5.3125rem);
+  max-height: calc(var(--vh) * 100 - 10.625rem);
+}
+

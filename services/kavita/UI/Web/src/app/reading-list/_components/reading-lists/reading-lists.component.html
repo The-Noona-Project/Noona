@@ -1,0 +1,47 @@
+<div class="main-container container-fluid">
+  <ng-container *transloco="let t; prefix: 'reading-lists'">
+    <app-side-nav-companion-bar>
+      <h4 title>
+        <span>{{ t('title') }}</span>
+        <app-card-actionables [actions]="globalActions" (actionHandler)="performGlobalAction($event)"/>
+      </h4>
+      @if (pagination) {
+        <h5 subtitle class="subtitle-with-actionables">{{ t('item-count', {num: pagination.totalItems | number}) }}</h5>
+      }
+
+    </app-side-nav-companion-bar>
+
+    <app-card-detail-layout
+      [isLoading]="isLoadingLists()"
+      [items]="listEntities()"
+      [pagination]="pagination"
+      [jumpBarKeys]="jumpbarKeys()"
+      [filteringDisabled]="true"
+      [trackByIdentity]="trackByIdentity"
+    >
+
+      <ng-template #topBar>
+        <app-bulk-operations/>
+      </ng-template>
+
+      <ng-template #cardItem let-item let-position="idx">
+        <app-entity-card [entity]="item" [index]="position" [maxIndex]="listEntities().length"
+                         [config]="readingListConfig()"
+                         (reload)="loadPage()" (dataChanged)="updateReadingList($event)">
+          <ng-template #title let-entity>
+            <app-promoted-icon [promoted]="entity.data.promoted"/>
+            {{ entity.data.title }}
+          </ng-template>
+        </app-entity-card>
+
+      </ng-template>
+
+      <ng-template #noData>
+        {{ t('no-data') }} {{ t('create-one-part-1') }} <a [href]="WikiLink.ReadingLists" rel="noopener noreferrer"
+                                                           target="_blank">{{ t('create-one-part-2') }}<i
+        class="fa fa-external-link-alt ms-1" aria-hidden="true"></i></a>.
+      </ng-template>
+    </app-card-detail-layout>
+
+  </ng-container>
+</div>

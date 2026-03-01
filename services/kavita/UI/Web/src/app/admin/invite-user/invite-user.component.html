@@ -1,0 +1,92 @@
+<ng-container *transloco="let t; prefix: 'invite-user'">
+  <div class="modal-container">
+    <div class="modal-header">
+      <h4 class="modal-title" id="modal-basic-title">{{ t('title') }}</h4>
+      <button type="button" class="btn-close" [attr.aria-label]="t('close')" (click)="close()"></button>
+    </div>
+    <div class="modal-body scrollable-modal">
+      @if (!invited) {
+        <p [innerHTML]="t('description') | safeHtml"></p>
+      }
+
+      @if (emailLink === '') {
+        <form [formGroup]="inviteForm">
+          <div class="row g-0">
+            <div class="mb-3" style="width:100%">
+              <label for="email" class="form-label">{{ t('email') }}</label>
+              <input class="form-control" type="email" inputmode="email" id="email" formControlName="email" required
+                     [class.is-invalid]="inviteForm.get('email')?.invalid && inviteForm.get('email')?.touched">
+              @if (inviteForm.dirty || !inviteForm.untouched) {
+                <div id="inviteForm-validations" class="invalid-feedback">
+                  @if (email?.errors?.required) {
+                    <div>
+                      {{ t('required-field') }}
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+
+          <div class="row g-0">
+            <div class="col-md-6 pe-4">
+              <app-setting-multi-check-box
+                id="libraries"
+                [title]="t('libraries-label')"
+                [options]="libraryOptions()"
+                formControlName="libraries"
+              />
+            </div>
+
+            <div class="col-md-6">
+              <app-setting-multi-check-box
+                id="roles"
+                [title]="t('roles-label')"
+                [options]="roleOptions"
+                formControlName="roles"
+              />
+            </div>
+          </div>
+
+          <div class="row g-0">
+            <div class="col-md-12">
+              <app-restriction-selector (selected)="updateRestrictionSelection($event)"
+                                        [isAdmin]="hasAdminRoleSelected"/>
+            </div>
+          </div>
+        </form>
+      }
+
+      @if (emailLink !== '') {
+        <h4>{{ t('setup-user-title') }}</h4>
+        <p>{{ t('setup-user-description') }}</p>
+        @if (inviteError) {
+          <div class="alert alert-warning" role="alert">
+            <strong>{{ t('notice') }}</strong> {{ t('email-not-sent') }}
+          </div>
+        }
+        <a class="email-link" href="{{emailLink}}" target="_blank"
+           rel="noopener noreferrer">{{ t('setup-user-account') }}</a>
+        <app-api-key [title]="t('invite-url-label')" [tooltipText]="t('setup-user-account-tooltip')" [hideData]="false"
+                     [key]="emailLink"/>
+      }
+
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-{{invited ? 'primary' : 'secondary'}}" (click)="close()">
+        {{ invited ? t('cancel') : t('close') }}
+      </button>
+
+      @if (!invited) {
+        <button type="button" class="btn btn-primary" (click)="invite()"
+                [disabled]="isSending || !inviteForm.valid  || emailLink !== ''">
+          @if (isSending) {
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+          }
+          <span>{{ isSending ? t('inviting') : t('invite') }}</span>
+        </button>
+      }
+
+    </div>
+  </div>
+</ng-container>

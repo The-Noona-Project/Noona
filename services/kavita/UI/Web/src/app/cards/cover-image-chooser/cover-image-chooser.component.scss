@@ -1,0 +1,38 @@
+$image-height: 14.5569rem;
+$image-width: 10rem;
+
+.card-img-top {
+  width: $image-width;
+  height: $image-height;
+  max-height: $image-height;
+}
+
+
+.selected {
+  outline: 0.3125rem solid var(--primary-color);
+  outline-width: medium;
+  outline-offset: -0.0625rem;
+}
+
+.chooser {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 10rem);
+  grid-gap: 0.5rem;
+  justify-content: space-around;
+}
+
+ngx-file-drop ::ng-deep > div {
+  // styling for the outer drop box
+  width: 100%;
+  border: 0.125rem solid var(--primary-color);
+  border-radius: 0.3125rem;
+  height: 6.25rem;
+  margin: auto;
+
+  > div {
+    // styling for the inner box (template)
+    width: 100%;
+    display: inline-block;
+
+  }
+}

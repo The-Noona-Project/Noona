@@ -1,0 +1,15 @@
+.content {
+  width: 100%;
+}
+
+.collapsed {
+  height: 2.1875rem;
+  overflow: hidden;
+}
+
+::ng-deep .badge-expander .content {
+  a,
+  span {
+    font-size: 0.8rem;
+  }
+}

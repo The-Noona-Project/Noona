@@ -1,0 +1,453 @@
+<ng-container *transloco="let t; prefix: 'series-detail'">
+  <app-bulk-operations [marginLeft]="12" [marginRight]="0"/>
+
+  @let hasReadingProgressValue = hasReadingProgress();
+  @let readingProgressStatusValue = readingProgressStatus();
+  @let totalSizeValue = totalSize();
+  @let useBookLogicValue = useBookLogic();
+  @let libraryTypeValue = libraryType();
+  @let shouldShowVolumeTabValue = shouldShowVolumeTab();
+  @let shouldShowStorylineTabValue = shouldShowStorylineTab();
+  @let showDetailsTabValue = showDetailsTab();
+  @let seriesMetadataValue = seriesMetadata();
+  @let weblinksValue = weblinks();
+  @let seriesValue = series();
+  @let nextExpectedChapterValue = nextExpectedChapter();
+  @let seriesCoverImageValue = seriesCoverImage();
+
+  @if (seriesMetadataValue) {
+    <div [ngStyle]="{'height': ScrollingBlockHeight}" class="main-container container-fluid" #scrollingBlock>
+      <div class="row mb-0 mb-xl-3 info-container">
+        <div [ngClass]="mobileSeriesImgBackground === 'true' ? 'mobile-bg' : ''"
+             class="image-container series col-5 col-sm-6 col-md-5 col-lg-5 col-xl-2 col-xxl-2 col-xxxl-2 d-none d-sm-block mb-3 position-relative">
+          <app-cover-image [entity]="seriesValue" [coverImage]="seriesCoverImageValue"
+                           [continueTitle]="continueReadingTitle()" (read)="read()"/>
+        </div>
+
+        <div class="col-xl-10 col-lg-7 col-md-12 col-sm-12 col-xs-12">
+          <h4 class="title mb-2">
+            <span>{{ seriesValue.name }}
+
+              @if (showLoader()) {
+                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                  <span class="visually-hidden">{{ t('loading') }}</span>
+                </div>
+              }
+              </span>
+
+          </h4>
+          <div class="subtitle mt-2 mb-2">
+            @if (seriesValue.localizedName !== seriesValue.name && seriesValue.localizedName) {
+              <span>{{ seriesValue.localizedName | defaultValue }}</span>
+            }
+          </div>
+
+          <app-metadata-detail-row [entity]="seriesMetadataValue"
+                                   [readingTimeLeft]="readingTimeLeft()"
+                                   [ageRating]="seriesMetadataValue.ageRating"
+                                   [hasReadingProgress]="hasReadingProgressValue"
+                                   [readingTimeEntity]="seriesValue"
+                                   [libraryType]="libraryTypeValue"
+                                   [mangaFormat]="seriesValue.format"
+                                   [releaseYear]="seriesMetadataValue.releaseYear"
+                                   [totalBytes]="totalSizeValue"
+                                   [totalReads]="seriesValue.totalReads"
+          />
+
+          <div class="mt-2 mb-2">
+            <app-external-rating [seriesId]="seriesValue.id"
+                                 [ratings]="ratings()"
+                                 [userRating]="seriesValue.userRating"
+                                 [hasUserRated]="seriesValue.hasUserRated"
+                                 [libraryType]="libraryTypeValue"
+                                 [webLinks]="weblinksValue"/>
+          </div>
+
+          <div class="mt-3 mb-3">
+            <div class="row g-0" style="align-items: center;">
+              <div class="col-auto">
+                <div class="btn-group">
+                  <button type="button" class="btn btn-outline-primary" (click)="read()">
+                    <span>
+                      <i class="{{readingProgressStatusValue | readingProgressIconPipe}}" aria-hidden="true"></i>
+                      <span
+                        class="read-btn--text ms-1">{{ readingProgressStatusValue | readingProgressStatusPipe }}</span>
+                    </span>
+                  </button>
+                  <div class="btn-group" ngbDropdown role="group" display="dynamic"
+                       [attr.aria-label]="t('read-options-alt')">
+                    <button type="button" class="btn btn-outline-primary dropdown-toggle-split"
+                            ngbDropdownToggle></button>
+                    <div class="dropdown-menu" ngbDropdownMenu>
+                      <button ngbDropdownItem (click)="read(true)">
+                        <span>
+                          <i class="fa fa-glasses" aria-hidden="true"></i>
+                          <span
+                            class="read-btn--text ms-1">{{ readingProgressStatusValue | readingProgressStatusPipe:true }}</span>
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="col-auto ms-2">
+                <button class="btn btn-actions" (click)="toggleWantToRead()"
+                        ngbTooltip="{{isWantToRead() ? t('remove-from-want-to-read') : t('add-to-want-to-read')}}">
+                  <span>
+                      <i class="{{isWantToRead() ? 'fa-solid' : 'fa-regular'}} fa-star" aria-hidden="true"></i>
+                  </span>
+                </button>
+              </div>
+
+              @if (isAdmin()) {
+                <div class="col-auto ms-2">
+                  <button class="btn btn-actions" id="edit-btn--komf" (click)="openEditSeriesModal()"
+                          [ngbTooltip]="t('edit-series-alt')">
+                    <span><i class="fa fa-pen" aria-hidden="true"></i></span>
+                  </button>
+                </div>
+              }
+
+              @if (showScrobbleControls()) {
+                <div class="col-auto ms-2">
+                  <button class="btn btn-actions" (click)="toggleScrobbling($event)"
+                          [ngbTooltip]="t('scrobbling-tooltip', {value: isScrobbling() ? t('on') : t('off')})">
+                    <i class="fa-solid fa-tower-{{isScrobbling() ? 'broadcast' : 'observation'}}"
+                       aria-hidden="true"></i>
+                  </button>
+                </div>
+              }
+
+              <div class="col-auto ms-2">
+                <div class="card-actions btn-actions" [ngbTooltip]="t('more-alt')">
+                  <app-card-actionables [entity]="seriesValue" [actions]="seriesActions()" [labelBy]="seriesValue.name"
+                                        iconClass="fa-ellipsis-h" btnClass="btn"
+                                        (actionHandler)="onSeriesActionResult($event)"/>
+                </div>
+              </div>
+
+              <div class="col-auto ms-2 d-none d-md-block btn-actions">
+                <app-download-button [download$]="download$" [entity]="seriesValue" entityType="series"/>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="mt-2 mb-3">
+            <app-read-more [text]="seriesMetadataValue.summary || ''" [useResponsiveLength]="true"/>
+          </div>
+
+          <div class="mt-2 upper-details">
+            <div class="row g-0">
+              <div class="col-6 pe-5">
+                <span class="fw-bold">{{ t('writers-title') }}</span>
+                <div>
+                  <app-badge-expander [items]="seriesMetadataValue.writers"
+                                      [itemsTillExpander]="3"
+                                      [allowToggle]="false"
+                                      (toggled)="switchTabsToDetail()">
+                    <ng-template #badgeExpanderItem let-item let-position="idx" let-last="last">
+                      <a routerLink="/person/{{encodeURIComponent(item.name)}}/"
+                         class="dark-exempt btn-icon">{{ item.name }}</a>
+                    </ng-template>
+                  </app-badge-expander>
+                </div>
+              </div>
+              <div class="col-6">
+                <span class="fw-bold">{{ t('publication-status-title') }}</span>
+                <div>
+                  @if (seriesMetadataValue.publicationStatus | publicationStatus; as pubStatus) {
+                    <a class="dark-exempt btn-icon font-size"
+                       (click)="openFilter(FilterField.PublicationStatus, seriesMetadataValue!.publicationStatus)"
+                       href="javascript:void(0);"
+                       [ngbTooltip]="t('publication-status-tooltip') +
+                       ((seriesMetadataValue.totalCount === 0 || seriesMetadataValue.maxCount === LooseLeafOrSpecialNumber)
+                       ? '' : ' (' + seriesMetadataValue?.maxCount + ' / ' + seriesMetadataValue?.totalCount + ')')"
+                    >
+                      {{ pubStatus }}
+                    </a>
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-3 mb-2 upper-details">
+            <div class="row g-0">
+              <div class="col-6 pe-5">
+                <span class="fw-bold">{{ t('genres-title') }}</span>
+                <div>
+                  <app-badge-expander [items]="seriesMetadataValue.genres"
+                                      [itemsTillExpander]="3"
+                                      [allowToggle]="false"
+                                      (toggled)="switchTabsToDetail()">
+                    <ng-template #badgeExpanderItem let-item let-position="idx" let-last="last">
+                      <a href="javascript:void(0)" class="dark-exempt btn-icon"
+                         (click)="openFilter(FilterField.Genres, item.id)">{{ item.title }}</a>
+                    </ng-template>
+                  </app-badge-expander>
+                </div>
+              </div>
+
+              <div class="col-6">
+                <span class="fw-bold">{{ t('tags-title') }}</span>
+                <div>
+                  <app-badge-expander [items]="seriesMetadataValue.tags"
+                                      [itemsTillExpander]="3"
+                                      [allowToggle]="false"
+                                      (toggled)="switchTabsToDetail()">
+                    <ng-template #badgeExpanderItem let-item let-position="idx" let-last="last">
+                      <a href="javascript:void(0)" class="dark-exempt btn-icon"
+                         (click)="openFilter(FilterField.Tags, item.id)">{{ item.title }}</a>
+                    </ng-template>
+                  </app-badge-expander>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="carousel-tabs-container mb-2">
+        <ul ngbNav #nav="ngbNav" [(activeId)]="activeTabId" class="nav nav-tabs" [destroyOnHide]="false"
+            (navChange)="onNavChange($event)">
+
+          @if (shouldShowStorylineTabValue) {
+            <li [ngbNavItem]="TabID.Storyline">
+              <a ngbNavLink>{{ t(TabID.Storyline) }}</a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Storyline; prefetch on idle) {
+                  <virtual-scroller #scroll [items]="storylineItems()" [bufferAmount]="1"
+                                    [parentScroll]="scrollingBlock" [childHeight]="1">
+
+                    <div class="card-container row g-0" #container>
+                      @for (item of scroll.viewPortItems; let idx = $index; track item) {
+                        @if (item.isChapter) {
+                          <ng-container [ngTemplateOutlet]="nonSpecialChapterCard"
+                                        [ngTemplateOutletContext]="{$implicit: item.chapter, scroll: scroll, idx: idx, totalLength: storylineChapters().length}"/>
+                        } @else {
+                          <ng-container [ngTemplateOutlet]="nonChapterVolumeCard"
+                                        [ngTemplateOutletContext]="{$implicit: item.volume, scroll: scroll, idx: idx, totalLength: volumes().length}"/>
+                        }
+                      }
+
+                      <ng-container [ngTemplateOutlet]="estimatedNextCard"
+                                    [ngTemplateOutletContext]="{tabId: TabID.Storyline}"/>
+                    </div>
+                  </virtual-scroller>
+                }
+              </ng-template>
+            </li>
+          }
+
+
+          @if (shouldShowVolumeTabValue) {
+            <li [ngbNavItem]="TabID.Volumes">
+              <a ngbNavLink>
+                {{ useBookLogicValue ? t('books-tab') : t('volumes-tab') }}
+                <span class="badge rounded-pill text-bg-secondary">{{ volumes().length }}</span>
+              </a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Volumes; prefetch on idle) {
+                  <virtual-scroller #scroll [items]="volumeEntities()" [parentScroll]="scrollingBlock"
+                                    [childHeight]="1">
+                    <div class="card-container row g-0" #container>
+                      @for (item of scroll.viewPortItems; let idx = $index; track item.data.id + '_' + item.data.pagesRead + +'_volumes') {
+                        <ng-container [ngTemplateOutlet]="nonChapterVolumeCard"
+                                      [ngTemplateOutletContext]="{$implicit: item, scroll: scroll, idx: idx, totalLength: volumeEntities().length}"/>
+                      }
+                      <ng-container [ngTemplateOutlet]="estimatedNextCard"
+                                    [ngTemplateOutletContext]="{tabId: TabID.Volumes}"/>
+                    </div>
+                  </virtual-scroller>
+                }
+              </ng-template>
+            </li>
+          }
+
+          @if (showChapterTab()) {
+            <li [ngbNavItem]="TabID.Chapters">
+              <a ngbNavLink>
+                {{ chapterTabName() }}
+                <span class="badge rounded-pill text-bg-secondary">{{ chapterEntities().length }}</span>
+              </a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Chapters; prefetch on idle) {
+                  <virtual-scroller #scroll [items]="chapterEntities()" [parentScroll]="scrollingBlock"
+                                    [childHeight]="1">
+                    <div class="card-container row g-0" #container>
+                      @for (item of scroll.viewPortItems; let idx = $index; track item.data.id + '_' + item.data.pagesRead + '_chapters') {
+                        <ng-container [ngTemplateOutlet]="nonSpecialChapterCard"
+                                      [ngTemplateOutletContext]="{$implicit: item, scroll: scroll, idx: idx, totalLength: chapterEntities().length}"/>
+                      }
+                      <ng-container [ngTemplateOutlet]="estimatedNextCard"
+                                    [ngTemplateOutletContext]="{tabId: TabID.Chapters}"/>
+                    </div>
+                  </virtual-scroller>
+                }
+              </ng-template>
+            </li>
+          }
+
+          @if (hasSpecials()) {
+            <li [ngbNavItem]="TabID.Specials">
+              <a ngbNavLink>
+                {{ t(TabID.Specials) }}
+                <span class="badge rounded-pill text-bg-secondary">{{ specialEntities().length }}</span>
+              </a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Specials; prefetch on idle) {
+                  <virtual-scroller #scroll [items]="specialEntities()" [parentScroll]="scrollingBlock"
+                                    [childHeight]="1">
+                    <div class="card-container row g-0" #container>
+                      @for (item of scroll.viewPortItems; let idx = $index; track item.data.id + '_' + item.data.pagesRead + '_specials') {
+                        <ng-container [ngTemplateOutlet]="specialChapterCard"
+                                      [ngTemplateOutletContext]="{$implicit: item, scroll: scroll, idx: idx, totalLength: specialEntities().length}"/>
+                      }
+                    </div>
+                  </virtual-scroller>
+                }
+              </ng-template>
+            </li>
+          }
+
+          @if (annotations().length > 0) {
+            <li [ngbNavItem]="TabID.Annotations">
+              <a ngbNavLink>
+                {{ t(TabID.Annotations) }}
+                <span class="badge rounded-pill text-bg-secondary">{{ annotations().length }}</span>
+              </a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Annotations; prefetch on idle) {
+                  <app-annotations-tab [annotations]="annotations()" [displaySeries]="true"
+                                       [scrollingBlock]="scrollingBlock"/>
+                }
+              </ng-template>
+            </li>
+          }
+
+          @if (totalRelatedCount() > 0) {
+            <li [ngbNavItem]="TabID.Related">
+              <a ngbNavLink>
+                {{ t(TabID.Related) }}
+                <span class="badge rounded-pill text-bg-secondary">{{ totalRelatedCount() }}</span>
+              </a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Related; prefetch on idle) {
+                  <app-related-tab [readingLists]="readingLists()"
+                                   [collections]="collections()"
+                                   [relations]="relations()"
+                                   [bookmarks]="bookmarks()"
+                                   (reload)="handleRelatedReload($event)"
+                                   (dataChanged)="handleRelatedReload($event)"/>
+                }
+              </ng-template>
+            </li>
+          }
+
+          @if (hasRecommendations()) {
+            <li [ngbNavItem]="TabID.Recommendations">
+              <a ngbNavLink>
+                {{ t(TabID.Recommendations) }}
+                <span class="badge rounded-pill text-bg-secondary">{{ combinedRecs().length }}</span>
+              </a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Recommendations; prefetch on idle) {
+                  <virtual-scroller #scroll [items]="combinedRecs()" [parentScroll]="scrollingBlock" [childHeight]="1">
+                    <div class="card-container row g-0" #container>
+                      @for (item of scroll.viewPortItems; let idx = $index; track idx) {
+                        @if (!item.hasOwnProperty('coverUrl')) {
+                          <app-series-card class="col-auto mt-2 mb-2" [series]="item" [previewOnClick]="true"/>
+                        } @else {
+                          <app-external-series-card class="col-auto mt-2 mb-2" [previewOnClick]="true" [data]="item"/>
+                        }
+                      }
+                    </div>
+                  </virtual-scroller>
+                }
+              </ng-template>
+            </li>
+          }
+
+          <li [ngbNavItem]="TabID.Reviews">
+            <a ngbNavLink>
+              {{ t(TabID.Reviews) }}
+              <span class="badge rounded-pill text-bg-secondary">{{ reviewCount() }}</span>
+            </a>
+            <ng-template ngbNavContent>
+              @defer (when activeTabId === TabID.Reviews; prefetch on idle) {
+                <app-reviews [userReviews]="reviews()" [plusReviews]="plusReviews()" [series]="seriesValue"/>
+              }
+            </ng-template>
+          </li>
+
+          @if (seriesMetadataValue && showDetailsTabValue) {
+            <li [ngbNavItem]="TabID.Details" id="details-tab">
+              <a ngbNavLink>{{ t(TabID.Details) }}</a>
+              <ng-template ngbNavContent>
+                @defer (when activeTabId === TabID.Details; prefetch on idle) {
+                  <app-details-tab [metadata]="seriesMetadataValue"
+                                   [genres]="seriesMetadataValue.genres"
+                                   [tags]="seriesMetadataValue.tags"
+                                   [webLinks]="weblinksValue"
+                                   [filePaths]="[seriesValue.folderPath]"
+                  />
+                }
+              </ng-template>
+            </li>
+          }
+
+        </ul>
+      </div>
+      <div [ngbNavOutlet]="nav" style="min-height: 18.75rem"></div>
+    </div>
+
+
+    <ng-template #estimatedNextCard let-tabId="tabId">
+      @if (nextExpectedChapterValue) {
+        @switch (tabId) {
+          @case (TabID.Volumes) {
+            @if (nextExpectedChapterValue.volumeNumber !== SpecialVolumeNumber && nextExpectedChapterValue.chapterNumber === LooseLeafOrSpecialNumber) {
+              <app-next-expected-card class="col-auto mt-2 mb-2" [entity]="nextExpectedChapterValue"
+                                      [imageUrl]="seriesCoverImageValue"/>
+            }
+          }
+          @case (TabID.Chapters) {
+            <app-next-expected-card class="col-auto mt-2 mb-2" [entity]="nextExpectedChapterValue"
+                                    [imageUrl]="seriesCoverImageValue"/>
+          }
+          @case (TabID.Storyline) {
+            <app-next-expected-card class="col-auto mt-2 mb-2" [entity]="nextExpectedChapterValue"
+                                    [imageUrl]="seriesCoverImageValue"/>
+          }
+        }
+      }
+    </ng-template>
+  }
+
+  <ng-template #nonSpecialChapterCard let-item let-scroll="scroll" let-idx="idx" let-totalLength="totalLength">
+    <app-entity-card class="col-auto mt-2 mb-2" [entity]="item" [config]="chapterConfig()"
+                     [index]="scroll.viewPortInfo.startIndexWithBuffer + idx"
+                     [maxIndex]="totalLength" (dataChanged)="updateChapter($event)"
+                     (progressUpdated)="updateChapter($event.entity!)"/>
+  </ng-template>
+
+  <ng-template #nonChapterVolumeCard let-item let-scroll="scroll" let-idx="idx" let-totalLength="totalLength">
+    <app-entity-card class="col-auto mt-2 mb-2" [entity]="item" [config]="volumeConfig()"
+                     [index]="scroll.viewPortInfo.startIndexWithBuffer + idx"
+                     [maxIndex]="totalLength" (dataChanged)="updateVolume($event)"
+                     (progressUpdated)="updateVolume($event.entity!)"/>
+  </ng-template>
+
+  <ng-template #specialChapterCard let-item let-scroll="scroll" let-idx="idx" let-totalLength="totalLength">
+    <app-entity-card class="col-auto mt-2 mb-2" [entity]="item" [config]="specialConfig()"
+                     [index]="scroll.viewPortInfo.startIndexWithBuffer + idx"
+                     [maxIndex]="totalLength" (dataChanged)="updateChapter($event)"
+                     (progressUpdated)="updateChapter($event.entity!)"/>
+  </ng-template>
+
+
+</ng-container>
+
+

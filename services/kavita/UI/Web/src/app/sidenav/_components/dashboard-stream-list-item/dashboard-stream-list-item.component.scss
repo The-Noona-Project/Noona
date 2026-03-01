@@ -1,0 +1,16 @@
+@use "../../../../theme/variables" as theme;
+
+.list-item {
+  height: 3.75rem;
+  max-height: 3.75rem;
+}
+
+.meta {
+  display: flex;
+}
+
+@media (max-width: theme.$grid-breakpoints-sm) {
+  .list-item div h5 span:first-of-type {
+    font-size: 1rem !important;
+  }
+}

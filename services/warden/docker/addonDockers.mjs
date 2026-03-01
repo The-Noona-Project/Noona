@@ -2,6 +2,9 @@
 
 const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
 const DEFAULT_TIMEZONE = process.env.TZ || 'UTC';
+const DEFAULT_KAVITA_ADMIN_USERNAME = process.env.KAVITA_ADMIN_USERNAME || '';
+const DEFAULT_KAVITA_ADMIN_EMAIL = process.env.KAVITA_ADMIN_EMAIL || '';
+const DEFAULT_KAVITA_ADMIN_PASSWORD = process.env.KAVITA_ADMIN_PASSWORD || '';
 
 const createEnvField = (key, defaultValue, {
     label = key,
@@ -85,7 +88,7 @@ const rawList = [
     {
         name: 'noona-kavita',
         description: 'Managed Kavita library server wired to the Noona downloads folder.',
-        image: 'jvmilazz0/kavita:latest',
+        image: 'captainpax/noona-kavita:latest',
         port: 5000,
         internalPort: 5000,
         env: [
@@ -93,6 +96,9 @@ const rawList = [
             `TZ=${DEFAULT_TIMEZONE}`,
             'KAVITA_CONFIG_HOST_MOUNT_PATH=',
             'KAVITA_LIBRARY_HOST_MOUNT_PATH=',
+            `KAVITA_ADMIN_USERNAME=${DEFAULT_KAVITA_ADMIN_USERNAME}`,
+            `KAVITA_ADMIN_EMAIL=${DEFAULT_KAVITA_ADMIN_EMAIL}`,
+            `KAVITA_ADMIN_PASSWORD=${DEFAULT_KAVITA_ADMIN_PASSWORD}`,
         ],
         envConfig: [
             createEnvField('SERVICE_NAME', 'noona-kavita', {
@@ -117,10 +123,30 @@ const rawList = [
                 warning: 'Leave empty to share the default Noona Raven downloads folder.',
                 required: false,
             }),
+            createEnvField('KAVITA_ADMIN_USERNAME', DEFAULT_KAVITA_ADMIN_USERNAME, {
+                label: 'Initial Kavita Admin Username',
+                description: 'Optional username the managed noona-kavita image should use when bootstrapping the first admin account.',
+                warning: 'Provide this with the matching email and password if you want Noona to create the first Kavita admin automatically.',
+                required: false,
+            }),
+            createEnvField('KAVITA_ADMIN_EMAIL', DEFAULT_KAVITA_ADMIN_EMAIL, {
+                label: 'Initial Kavita Admin Email',
+                description: 'Optional email address used when the managed noona-kavita image registers the first admin account.',
+                warning: 'Provide this with the matching username and password if you want Noona to create the first Kavita admin automatically.',
+                required: false,
+            }),
+            createEnvField('KAVITA_ADMIN_PASSWORD', DEFAULT_KAVITA_ADMIN_PASSWORD, {
+                label: 'Initial Kavita Admin Password',
+                description: 'Optional password used when the managed noona-kavita image registers the first admin account.',
+                warning: 'Store and rotate this carefully if you keep it in managed service settings.',
+                required: false,
+            }),
         ],
         volumes: [],
         hostServiceUrl: `${HOST_SERVICE_URL}:5000`,
-        health: 'http://noona-kavita:5000/',
+        health: 'http://noona-kavita:5000/api/Health',
+        healthTries: 60,
+        healthDelayMs: 1000,
         restartPolicy: {Name: 'unless-stopped'},
     },
     {

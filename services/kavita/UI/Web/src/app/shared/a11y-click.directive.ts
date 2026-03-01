@@ -1,0 +1,44 @@
+import {Directive, Input, HostListener, OnInit, ElementRef, inject} from '@angular/core';
+
+@Directive({
+  // eslint-disable-next-line @angular-eslint/directive-selector
+  selector: '[a11y-click]',
+  standalone: true
+})
+export class A11yClickDirective implements OnInit {
+  private element = inject<ElementRef>(ElementRef);
+
+  @Input('a11y-click') keyCodes!: string;
+  keyCodeArray!: string[];
+
+  ngOnInit() {
+    if (this.keyCodes) {
+      this.keyCodeArray = this.keyCodes.split(',');
+    }
+  }
+
+  @HostListener('keydown', ['$event'])
+  onEvent(event: any) {
+    var keyCodeCondition = function (that: any) {
+      var flag = false;
+      if (!(event.keyCode)) {
+        if (event.which) {
+          event.keyCode = event.which;
+        } else if (event.charCode) {
+          event.keyCode = event.charCode;
+        }
+      }
+      if ((event.keyCode && that.keyCodeArray.indexOf(event.keyCode.toString()) > -1)) {
+        flag = true;
+      }
+      return flag;
+    };
+    const that = this;
+    if (this.keyCodeArray.length > 0 && keyCodeCondition(that)) {
+      this.element.nativeElement.click();
+      event.preventDefault();
+    }
+
+  }
+
+}

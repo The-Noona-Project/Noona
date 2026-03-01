@@ -1,0 +1,28 @@
+// You must add this on a component based drawer
+:host {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+::ng-deep .person-img {
+  margin-top: 1.5rem;
+  margin-left: 1.5rem;
+}
+
+.muted {
+  font-size: 0.875rem;
+}
+
+a.read-more-link {
+  white-space: nowrap;
+}
+
+.not-clickable {
+  cursor: text;
+}
+
+.offcanvas-body {
+  mask-image: linear-gradient(to bottom, transparent, black 0%, black 97%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 0%, black 97%, transparent 100%);
+}

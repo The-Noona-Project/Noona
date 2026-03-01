@@ -1,0 +1,50 @@
+.custom-col {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.badge {
+  color: var(--badge-text-color);
+}
+
+.sm-popover {
+  width: 9.375rem;
+
+  > .popover-body {
+    padding-top: 0.625rem;
+  }
+}
+
+.md-popover {
+  width: 13.375rem;
+
+  > .popover-body {
+    padding-top: 0.625rem;
+  }
+}
+
+.lg-popover {
+  width: 20rem;
+
+  > .popover-body {
+    padding-top: 0.625rem;
+  }
+}
+
+.rating-star {
+  i {
+    position: relative;
+    display: inline-block;
+    padding-right: 0.1rem;
+    color: #d3d3d3;
+  }
+
+  .filled {
+    color: var(--primary-color);
+
+  }
+}
+
+::ng-deep .star {
+  background-color: var(--primary-color);
+}

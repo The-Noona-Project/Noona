@@ -1,0 +1,84 @@
+.example-list {
+  width: 100%;
+  max-width: 100%;
+  min-height: 3.75rem;
+  display: block;
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+
+.example-box {
+  margin: 0.3125rem 0;
+  display: flex;
+  flex-direction: row;
+  box-sizing: border-box;
+  font-size: 0.875rem;
+
+  .drag-handle {
+    cursor: move;
+    font-size: 1.5rem;
+    // TODO: This needs to be calculation based
+    margin-top: 215%;
+  }
+}
+
+.cdk-drag-preview {
+  box-sizing: border-box;
+  border-radius: 0.25rem;
+  box-shadow: 0 0.3125rem 0.3125rem -0.1875rem rgba(0, 0, 0, 0.2),
+  0 0.5rem 0.625rem 0.0625rem rgba(0, 0, 0, 0.14),
+  0 0.1875rem 0.875rem 0.125rem rgba(0, 0, 0, 0.12);
+}
+
+.cdk-drag-placeholder {
+  opacity: 0;
+}
+
+.cdk-drag-animating {
+  transition: transform 250ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.example-box:last-child {
+  border: none;
+  margin-bottom: 1.25rem;
+}
+
+.example-list.cdk-drop-list-dragging .example-box:not(.cdk-drag-placeholder) {
+  transition: transform 250ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.example-custom-placeholder {
+  background: #ccc;
+  border: dotted 0.1875rem #999;
+  min-height: 3.75rem;
+  transition: transform 250ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.list-container {
+  background: var(--card-bg-color);
+  padding: 0.625rem;
+  border-radius: 0.3125rem;
+  width: 100%;
+}
+
+.accessibility-padding {
+  padding-top: 0.75rem;
+}
+
+.bulk-padding {
+  padding-top: 1.25rem;
+}
+
+
+.virtual-scroller, virtual-scroller {
+  width: 100%;
+  height: calc(var(--vh) * 100 - 10.8125rem);
+}
+
+virtual-scroller.empty {
+  display: none;
+}
+
+.manual-input {
+  width: 5.1875rem;
+}

@@ -81,8 +81,8 @@ test('startService pulls, runs, waits, and captures history when container is ab
             });
             options?.onLog?.('line one\nline two', { level: 'info' });
         },
-        waitForHealthyStatus: async (name, url) => {
-            waitCalls.push({ name, url });
+        waitForHealthyStatus: async (name, url, tries, delay) => {
+            waitCalls.push({name, url, tries, delay});
         },
     };
     const logs = [];
@@ -95,7 +95,13 @@ test('startService pulls, runs, waits, and captures history when container is ab
         hostDockerSockets: [],
     });
 
-    const service = { name: 'noona-test', image: 'noona/test:latest', port: 1234 };
+    const service = {
+        name: 'noona-test',
+        image: 'noona/test:latest',
+        port: 1234,
+        healthTries: 45,
+        healthDelayMs: 1500,
+    };
     await warden.startService(service, 'http://health.local');
 
     assert.deepEqual(containerExistsOptions, [dockerInstance]);
@@ -104,7 +110,7 @@ test('startService pulls, runs, waits, and captures history when container is ab
         runCalls,
         [{ service: 'noona-test', networkName: 'noona-network', debug: 'true', hasLog: true, dockerInstance }],
     );
-    assert.deepEqual(waitCalls, [{ name: 'noona-test', url: 'http://health.local' }]);
+    assert.deepEqual(waitCalls, [{name: 'noona-test', url: 'http://health.local', tries: 45, delay: 1500}]);
     assert.ok(warden.trackedContainers.has('noona-test'));
     assert.ok(logs.some(line => line.includes('host_service_url: http://host:1234')));
 
@@ -905,7 +911,12 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
     };
     const services = {
         addon: {
-            'noona-kavita': {name: 'noona-kavita', image: 'jvmilazz0/kavita:latest', port: 5000, env: ['TZ=UTC']},
+            'noona-kavita': {
+                name: 'noona-kavita',
+                image: 'captainpax/noona-kavita:latest',
+                port: 5000,
+                env: ['TZ=UTC']
+            },
             'noona-komf': {
                 name: 'noona-komf',
                 image: 'sndxr/komf:latest',
@@ -934,7 +945,14 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
     });
 
     await warden.installServices([
-        {name: 'noona-kavita'},
+        {
+            name: 'noona-kavita',
+            env: {
+                KAVITA_ADMIN_USERNAME: 'reader-admin',
+                KAVITA_ADMIN_EMAIL: 'reader-admin@example.com',
+                KAVITA_ADMIN_PASSWORD: 'Password123!',
+            },
+        },
         {name: 'noona-komf', env: {KOMF_KAVITA_API_KEY: 'api-key'}},
     ]);
 
@@ -948,6 +966,9 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
 
     assert.ok(kavitaStart.volumes.includes(`${path.join('/srv/noona', 'kavita', 'config')}:/kavita/config`));
     assert.ok(kavitaStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/manga`));
+    assert.ok(kavitaStart.env.includes('KAVITA_ADMIN_USERNAME=reader-admin'));
+    assert.ok(kavitaStart.env.includes('KAVITA_ADMIN_EMAIL=reader-admin@example.com'));
+    assert.ok(kavitaStart.env.includes('KAVITA_ADMIN_PASSWORD=Password123!'));
     assert.ok(komfStart.volumes.includes(`${path.join('/srv/noona', 'komf', 'config')}:/config`));
     assert.ok(ravenStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/downloads`));
     assert.ok(ravenStart.env.includes('APPDATA=/downloads'));
@@ -1897,6 +1918,9 @@ test('bootFull launches services in super boot order with correct health URLs', 
                 'noona-moon': { name: 'noona-moon', health: 'http://moon/health' },
                 'noona-vault': { name: 'noona-vault', health: 'http://vault/health' },
                 'noona-raven': { name: 'noona-raven' },
+                'noona-kavita': {name: 'noona-kavita', health: 'http://kavita/health'},
+                'noona-portal': {name: 'noona-portal', health: 'http://portal/health'},
+                'noona-komf': {name: 'noona-komf'},
             },
         },
         logger: { log: () => {}, warn: (message) => warnings.push(message) },
@@ -1916,6 +1940,9 @@ test('bootFull launches services in super boot order with correct health URLs', 
         ['noona-sage', 'http://noona-sage:3004/health'],
         ['noona-moon', 'http://moon/health'],
         ['noona-raven', null],
+        ['noona-kavita', 'http://kavita/health'],
+        ['noona-portal', 'http://portal/health'],
+        ['noona-komf', null],
     ]);
     assert.equal(warnings.length, 0);
 });
@@ -2290,8 +2317,8 @@ test('init boots only the persisted setup selection in lifecycle order', async (
         'noona-vault',
         'noona-sage',
         'noona-moon',
-        'noona-portal',
         'noona-raven',
+        'noona-portal',
     ]);
 });
 
@@ -2346,8 +2373,8 @@ test('stopEcosystem uses the persisted setup selection in reverse lifecycle orde
     await warden.stopEcosystem({trackedOnly: false});
 
     assert.deepEqual(stopped, [
-        {name: 'noona-raven', options: {remove: false}},
         {name: 'noona-portal', options: {remove: false}},
+        {name: 'noona-raven', options: {remove: false}},
         {name: 'noona-moon', options: {remove: false}},
         {name: 'noona-sage', options: {remove: false}},
         {name: 'noona-vault', options: {remove: false}},

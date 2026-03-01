@@ -20,16 +20,16 @@ export async function POST(request: NextRequest) {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({services}),
     } as const;
-    const timeout = {timeoutMs: 1000 * 60 * 30} as const;
+    const timeout = {timeoutMs: 15_000} as const;
 
     try {
-        const {status, payload} = await wardenJson("/api/services/install", {
+        const {status, payload} = await wardenJson("/api/services/install?async=true", {
             ...requestInit,
         }, timeout);
         return NextResponse.json(payload, {status});
     } catch (wardenError) {
         try {
-            const {status, payload} = await sageJson("/api/setup/install", {
+            const {status, payload} = await sageJson("/api/setup/install?async=true", {
                 ...requestInit,
             }, timeout);
             return NextResponse.json(payload, {status});

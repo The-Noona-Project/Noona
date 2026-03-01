@@ -114,3 +114,72 @@ test('ensureServiceApiKey reuses a stored account and returned apiKey without ro
     assert.equal(result.apiKey, 'existing-api-key')
     assert.deepEqual(calls.map((entry) => entry.pathname), ['/api/Account/login'])
 })
+
+test('ensureServiceApiKey registers a provided first-admin account when login fails before setup', async () => {
+    const calls = []
+    const client = createManagedKavitaSetupClient({
+        baseUrl: 'https://kavita.example',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url)
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                body: options.body ? JSON.parse(options.body) : null,
+                authorization: options.headers?.Authorization ?? null,
+            })
+
+            if (requestUrl.pathname === '/api/Account/login' && calls.filter((entry) => entry.pathname === '/api/Account/login').length === 1) {
+                return {
+                    ok: false,
+                    status: 401,
+                    text: async () => JSON.stringify({error: 'Invalid credentials'}),
+                }
+            }
+
+            if (requestUrl.pathname === '/api/Account/register') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 15, username: 'reader-admin'}),
+                }
+            }
+
+            if (requestUrl.pathname === '/api/Account/login') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 15, username: 'reader-admin', token: 'jwt-token'}),
+                }
+            }
+
+            if (requestUrl.pathname === '/api/Account/create-auth-key') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 7, key: 'managed-api-key', name: 'Noona Managed Services'}),
+                }
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`)
+        },
+    })
+
+    const result = await client.ensureServiceApiKey({
+        account: {
+            username: 'reader-admin',
+            email: 'reader-admin@example.com',
+            password: 'Password123!',
+        },
+        allowRegister: true,
+    })
+
+    assert.equal(result.apiKey, 'managed-api-key')
+    assert.equal(result.mode, 'login')
+    assert.deepEqual(calls.map((entry) => entry.pathname), [
+        '/api/Account/login',
+        '/api/Account/register',
+        '/api/Account/login',
+        '/api/Account/create-auth-key',
+    ])
+    assert.equal(calls[3].authorization, 'Bearer jwt-token')
+})

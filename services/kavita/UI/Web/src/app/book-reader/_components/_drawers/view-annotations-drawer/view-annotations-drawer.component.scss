@@ -1,0 +1,16 @@
+// You must add this on a component based drawer
+:host {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-text i {
+  color: var(--drawer-text-color);
+  font-size: 1rem;
+}
+
+.drawer-text:hover i {
+  color: var(--drawer-text-color)
+}
+

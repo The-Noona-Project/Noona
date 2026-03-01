@@ -170,6 +170,63 @@ test('POST /api/services/install returns results and status code for errors', as
     ]]);
 });
 
+test('POST /api/services/install accepts async installs and reports an active session', async (t) => {
+    const installCalls = [];
+    let resolveInstall;
+    const progress = {
+        status: 'installing',
+        percent: 0,
+        items: [{name: 'noona-kavita', status: 'pending'}],
+    };
+    const warden = {
+        listServices: async () => [],
+        getInstallationProgress: async () => progress,
+        installServices: async (services) => {
+            installCalls.push(services);
+            await new Promise((resolve) => {
+                resolveInstall = resolve;
+            });
+            return [{name: 'noona-kavita', status: 'installed'}];
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(async () => {
+        resolveInstall?.();
+        await closeServer(server);
+    });
+
+    const body = JSON.stringify({services: [{name: 'noona-kavita'}]});
+    const firstResponse = await fetch(`${baseUrl}/api/services/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body,
+    });
+
+    assert.equal(firstResponse.status, 202);
+    assert.deepEqual(await firstResponse.json(), {
+        accepted: true,
+        started: true,
+        alreadyRunning: false,
+        progress,
+    });
+
+    const secondResponse = await fetch(`${baseUrl}/api/services/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body,
+    });
+
+    assert.equal(secondResponse.status, 202);
+    assert.deepEqual(await secondResponse.json(), {
+        accepted: true,
+        started: false,
+        alreadyRunning: true,
+        progress,
+    });
+    assert.deepEqual(installCalls, [[{name: 'noona-kavita'}]]);
+});
+
 test('POST /api/services/install validates payload', async (t) => {
     const warden = {
         listServices: async () => [],
@@ -210,6 +267,33 @@ test('GET /api/services/install/progress forwards to warden summary', async (t) 
         status: 'installing',
         percent: 50,
         items: [{ name: 'noona-sage', status: 'installing' }],
+    });
+});
+
+test('GET /api/services/installation/logs returns installation history from warden', async (t) => {
+    const warden = {
+        async getServiceHistory(name, options) {
+            return {
+                service: name,
+                entries: [{type: 'status', status: 'installing', message: 'Installing noona-kavita'}],
+                summary: {status: 'installing', percent: 25, detail: null, updatedAt: 'now'},
+                limit: options?.limit ?? null,
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/installation/logs?limit=5`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'installation',
+        entries: [{type: 'status', status: 'installing', message: 'Installing noona-kavita'}],
+        summary: {status: 'installing', percent: 25, detail: null, updatedAt: 'now'},
+        limit: '5',
     });
 });
 

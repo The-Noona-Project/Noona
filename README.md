@@ -5,12 +5,14 @@ Noona is a multi-service platform for orchestration, onboarding, library automat
 ## Quick Navigation
 
 - [Repository rules](AGENTS.md)
+- [Dockerfiles](dockerfiles/)
 - [Warden orchestrator](services/warden/readme.md)
 - [Moon web UI](services/moon/README.md)
 - [Portal API gateway](services/portal/README.md)
 - [Sage setup/proxy service](services/sage/README.md)
 - [Raven downloader](services/raven/readme.md)
 - [Vault data and auth broker](services/vault/readme.md)
+- [Kavita integration](services/kavita/README.md)
 - [Project docs](docs/)
 
 ## Services
@@ -23,13 +25,16 @@ Noona is a multi-service platform for orchestration, onboarding, library automat
 | Sage    | Node.js + Express    | [services/sage/README.md](services/sage/README.md)     | Warden and Raven proxy APIs for setup and downloads          |
 | Raven   | Spring Boot (Java)   | [services/raven/readme.md](services/raven/readme.md)   | Search, scrape, download, library metadata updates           |
 | Vault   | Node.js + Express    | [services/vault/readme.md](services/vault/readme.md)   | Token-authenticated packet handling, users, secrets          |
+| Kavita  | .NET 10 + Angular    | [services/kavita/README.md](services/kavita/README.md) | Managed reading server image and first-admin bootstrap flow  |
 
 ## Stack 2.2 Baseline
 
 - Core services: Warden, Moon, Portal, Sage, Raven, Vault.
 - Shared modules live in [utilities/](utilities/).
 - Stack-level docs live in [docs/](docs/).
-- Service Dockerfiles are at repo root (`warden.Dockerfile`, `moon.Dockerfile`, etc.).
+- Service Dockerfiles live in [dockerfiles/](dockerfiles/).
+- Managed Kavita is built as `captainpax/noona-kavita`
+  from [dockerfiles/kavita.Dockerfile](dockerfiles/kavita.Dockerfile).
 
 ## Local Workflow
 
@@ -56,9 +61,11 @@ DEBUG=super node initWarden.mjs
 - Build docker images: `npm run docker:build`
 - Push docker images: `npm run docker:push`
 - Build + push helper: `npm run docker:publish`
+- Pass docker helper flags after `--`, for example `npm run docker:publish -- --no-cache`
 
 ## Repo Map
 
+- [dockerfiles/](dockerfiles/) - Container build definitions for core services and managed Kavita
 - [services/](services/) - Service source, tests, and service-level docs
 - [utilities/](utilities/) - Shared helpers and modules
 - [docs/](docs/) - Deployment and operations documentation

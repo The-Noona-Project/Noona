@@ -1,0 +1,50 @@
+import {ChangeDetectionStrategy, Component, inject, Input, output} from '@angular/core';
+import {LibraryType} from 'src/app/_models/library/library';
+import {MangaFormat} from 'src/app/_models/manga-format';
+import {ReadingListItem} from 'src/app/_models/reading-list';
+import {ImageService} from 'src/app/_services/image.service';
+import {NgbProgressbar} from '@ng-bootstrap/ng-bootstrap';
+import {APP_BASE_HREF, DatePipe} from '@angular/common';
+import {ImageComponent} from '../../../shared/image/image.component';
+import {TranslocoDirective} from "@jsverse/transloco";
+import {SeriesFormatComponent} from "../../../shared/series-format/series-format.component";
+import {ReadMoreComponent} from "../../../shared/read-more/read-more.component";
+import {ItemRemoveEvent} from "../draggable-ordered-list/draggable-ordered-list.component";
+
+@Component({
+  selector: 'app-reading-list-item',
+  templateUrl: './reading-list-item.component.html',
+  styleUrls: ['./reading-list-item.component.scss'],
+  imports: [ImageComponent, NgbProgressbar, DatePipe, TranslocoDirective, SeriesFormatComponent, ReadMoreComponent],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class ReadingListItemComponent {
+
+  protected readonly imageService = inject(ImageService);
+  protected readonly MangaFormat = MangaFormat;
+  protected readonly baseUrl = inject(APP_BASE_HREF);
+
+  @Input({required: true}) item!: ReadingListItem;
+  @Input() position: number = 0;
+  @Input() showRemove: boolean = false;
+  @Input() showRead: boolean = true;
+  @Input() libraryTypes: { [key: number]: LibraryType } = {};
+  /**
+   * If the Reading List is promoted or not
+   */
+  @Input() promoted: boolean = false;
+
+  read = output<ReadingListItem>();
+  remove = output<ItemRemoveEvent>();
+
+  readChapter(item: ReadingListItem) {
+    this.read.emit(item);
+  }
+
+  removeItem(item: ReadingListItem) {
+    this.remove.emit({
+      item: item,
+      position: item.order
+    });
+  }
+}

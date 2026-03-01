@@ -1,0 +1,283 @@
+$center-width: 50%;
+$side-width: 25%;
+
+$dash-width: 0.1875rem;
+$pointer-offset: 0.3125rem;
+
+@use '../../.././../manga-reader-common';
+
+.current {
+  background-color: var(--primary-color);
+}
+
+.loaded {
+  font-weight: bold;
+}
+
+
+.reading-area {
+  overflow: auto;
+  text-align: center;
+  //height: calc(var(--vh)*100); // this needs to be applied on the DOM because it breaks infinite scroller
+
+  &::-webkit-scrollbar {
+    background-color: transparent; /*make scrollbar space invisible */
+    width: inherit;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--default-state-scrollbar); /*makes it invisible when not hovering*/
+  }
+
+  &:hover {
+    &::-webkit-scrollbar-thumb {
+      background-color: var(--primary-color-scrollbar); /*On hover, it will turn grey*/
+    }
+  }
+
+}
+
+
+.reader {
+  background-color: var(--manga-reader-bg-color);
+  overflow: auto;
+
+  img {
+    align-items: center;
+  }
+}
+
+.title, .subtitle {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.bottom-menu {
+  padding: 1.25rem 1.25rem;
+}
+
+
+.overlay {
+  background-color: var(--manga-reader-overlay-bg-color);
+  backdrop-filter: var(--manga-reader-overlay-filter); // BUG: This doesn't work on Firefox
+  color: var(--manga-reader-overlay-text-color);
+}
+
+/* Enter/leave classes applied by Angular automatically */
+.slide-in-top {
+  animation: enter-from-top 200ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.slide-out-top {
+  animation: leave-to-top 200ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.slide-in-bottom {
+  animation: enter-from-bottom 200ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.slide-out-bottom {
+  animation: leave-to-bottom 200ms cubic-bezier(.4, 0, .2, 1);
+}
+
+@keyframes enter-from-top {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes leave-to-top {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-100%);
+  }
+}
+
+@keyframes enter-from-bottom {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes leave-to-bottom {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@media(min-width: 600px) {
+  .overlay .left .i {
+    left: 1.25rem;
+  }
+  .overlay .right .i {
+    right: 1.25rem;
+  }
+}
+
+// Splitting Icon
+.split {
+  height: 1.25rem;
+  width: 2.5rem;
+  z-index: 1;
+  top: 0;
+  overflow: hidden;
+  border: 0.125rem solid #ccc;
+  vertical-align: sub;
+  display: inline-block;
+
+  &::before {
+    margin-left: 30%;
+  }
+
+  /* Control the left side */
+  .left-side {
+    height: 1.25rem;
+    width: 1.25rem;
+    background-color: rgba(255, 255, 255, 0.6);
+    margin-top: -1rem;
+  }
+
+  /* Control the right side */
+  .right-side {
+    height: 1.25rem;
+    margin-left: 1.25rem;
+    width: 1.25rem;
+    background-color: rgba(255, 255, 255, 0.6);
+    margin-top: -1rem;
+  }
+
+  .none {
+    background-color: rgba(255, 255, 255, 0.5);
+  }
+
+  // For layout only
+
+}
+
+.split-double {
+  height: 1.25rem;
+  display: inline-block;
+  font-size: .7em;
+
+  .right {
+    left: -0.4375rem;
+  }
+}
+
+::ng-deep {
+  .custom-slider .ngx-slider .ngx-slider-bar {
+    background: #e9ffe2;
+    height: 0.125rem;
+  }
+
+  .custom-slider .ngx-slider .ngx-slider-selection {
+    background: var(--primary-color);
+  }
+
+  .custom-slider .ngx-slider .ngx-slider-pointer {
+    width: 0.5rem;
+    height: 1rem;
+    top: auto; /* to remove the default positioning */
+    bottom: 0;
+    background-color: var(--primary-color); // #333;
+    border-top-left-radius: 0.1875rem;
+    border-top-right-radius: 0.1875rem;
+  }
+
+  .custom-slider .ngx-slider .ngx-slider-pointer:after {
+    display: none;
+  }
+
+  .custom-slider .ngx-slider .ngx-slider-bubble {
+    bottom: 0.875rem;
+    font-weight: bold;
+  }
+
+  .custom-slider .ngx-slider .ngx-slider-limit {
+    font-weight: bold;
+    color: white !important;
+
+  }
+
+
+  .custom-slider .ngx-slider .ngx-slider-tick {
+    width: 0.0625rem;
+    height: 0.625rem;
+    margin-left: 0.25rem;
+    border-radius: 0;
+    background: #ffe4d1;
+    top: -0.0625rem;
+  }
+
+  .custom-slider .ngx-slider .ngx-slider-tick.ngx-slider-selected {
+    background: var(--primary-color);
+  }
+}
+
+.webtoon-images {
+  text-align: center;
+  width: 100%;
+}
+
+
+.pagination-area {
+  $pagination-bg: rgba(0, 0, 0, 0);
+  //$pagination-bg: rgba(0, 0, 255, 0.4); // DEBUG CODE
+  cursor: pointer;
+  z-index: 100;
+
+  i {
+    color: white;
+    font-size: 2.625rem;
+  }
+
+  .right {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: $side-width;
+    background: $pagination-bg;
+    max-height: calc(var(--vh) * 100);
+    z-index: 100;
+  }
+
+  .top {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 100%;
+    background: $pagination-bg;
+    z-index: 100;
+  }
+
+  .left {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: $side-width;
+    background: $pagination-bg;
+    max-height: calc(var(--vh) * 100);
+    z-index: 100;
+  }
+
+  .bottom {
+    position: fixed; // I couldn't figure out how to do this with abs, so only the bottom bar will not be scrollable
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    background: $pagination-bg;
+    z-index: 100;
+  }
+}

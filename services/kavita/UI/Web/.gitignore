@@ -1,0 +1,6 @@
+node_modules/
+test-results/
+playwright-report/
+i18n-cache-busting.json
+e2e-tests/environments/environment.local.ts
+dead-i18n-keys.json

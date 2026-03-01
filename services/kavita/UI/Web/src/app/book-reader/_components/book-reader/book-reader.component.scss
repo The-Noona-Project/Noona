@@ -1,0 +1,448 @@
+:root {
+  --br-actionbar-button-text-color: #6c757d;
+  --accordion-body-bg-color: black;
+  --accordion-header-bg-color: grey;
+  --br-actionbar-button-hover-border-color: #6c757d;
+  --br-actionbar-bg-color: white;
+  --default-state-scrollbar: var(--primary-color-scrollbar);
+}
+
+
+$dark-form-background-no-opacity: rgb(1, 4, 9);
+$primary-color: #0062cc;
+$action-bar-height: 2.375rem;
+
+.reader-container {
+  &::-webkit-scrollbar {
+    background-color: transparent; /*make scrollbar space invisible */
+    width: inherit;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--default-state-scrollbar); /*makes it invisible when not hovering*/
+  }
+
+  &:hover {
+    &::-webkit-scrollbar-thumb {
+      background-color: var(--primary-color-scrollbar); /*On hover, it will turn grey*/
+    }
+  }
+}
+
+.fixed-top {
+  z-index: 1022;
+  direction: ltr;
+}
+
+.dark-mode .overlay {
+  opacity: 0;
+}
+
+
+.action-bar {
+  background-color: var(--br-actionbar-bg-color);
+  overflow: hidden;
+  box-shadow: 0 0 0.375rem 0 rgb(0 0 0 / 70%);
+  max-height: $action-bar-height;
+  height: $action-bar-height;
+
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 0 0.5rem;
+
+  .book-title-text {
+    text-align: center;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  @media(max-width: 875px) {
+    .book-title {
+      display: none;
+    }
+  }
+
+  .book-title {
+    margin-top: 0.625rem;
+    text-align: center;
+    text-transform: capitalize;
+    max-height: inherit;
+  }
+
+  .next-page-highlight {
+    color: var(--primary-color);
+  }
+}
+
+@media (min-width: 876px) {
+  .top-action-bar {
+    grid-template-columns: 1fr auto 1fr;
+  }
+
+  .center-group {
+    display: block;
+    justify-self: center;
+  }
+
+  .right-group {
+    justify-self: end;
+  }
+}
+
+/* Mobile - 2 columns */
+@media (max-width: 875px) {
+  .top-action-bar {
+    grid-template-columns: auto 1fr;
+  }
+
+  .center-group {
+    display: none;
+  }
+
+  .right-group {
+    justify-self: end;
+  }
+}
+
+.reader-container {
+  outline: none; // Only the reading section itself shouldn't receive any outline. We use it to shift focus in fullscreen mode
+  overflow: auto;
+  height: calc(var(--vh, 1vh) * 100);
+  position: relative;
+  // This is completely invisible, everything else renders over it
+
+  &.column-layout-1 {
+    height: calc(var(--vh) * 100);
+  }
+
+  &.column-layout-2 {
+    height: calc(var(--vh) * 100);
+  }
+
+  &.writing-style-vertical {
+    direction: rtl;
+  }
+}
+
+.reading-section {
+  width: 100%;
+  //overflow: auto;  // This will break progress reporting
+  height: 100vh;
+  padding-top: $action-bar-height;
+  padding-bottom: $action-bar-height;
+  position: relative;
+  direction: ltr;
+
+  opacity: 1;
+  transition: opacity 200ms ease;
+
+  &.is-loading {
+    opacity: 0;
+  }
+
+  &.column-layout-1 {
+    height: calc((var(--vh, 1vh) * 100) - $action-bar-height);
+  }
+
+  &.column-layout-2 {
+    height: calc((var(--vh, 1vh) * 100) - $action-bar-height);
+  }
+
+  &.immersive {
+    height: calc((var(--vh, 1vh) * 100));
+  }
+
+  &.writing-style-vertical {
+    writing-mode: vertical-rl;
+    height: 100%;
+  }
+}
+
+.book-container {
+  position: relative;
+  height: 100%;
+
+  &.column-layout-1 {
+    height: calc((var(--vh, 1vh) * 100) - $action-bar-height);
+  }
+
+  &.column-layout-2 {
+    height: calc((var(--vh, 1vh) * 100) - $action-bar-height);
+  }
+
+  &.writing-style-vertical {
+    // Fixes an issue where chrome will cut of margins, doesn't seem to affect other browsers
+    overflow: auto;
+  }
+}
+
+.book-content {
+  position: relative;
+  margin: 0 0;
+  padding: 1.25rem 0;
+
+  &.column-layout-1 {
+    height: calc((var(--vh) * 100) - calc($action-bar-height)); //  * 2
+
+    &.writing-style-vertical {
+      padding: 0 0.625rem 0 0;
+      margin: 1.25rem 0;
+    }
+  }
+
+  &.column-layout-2 {
+    height: calc((var(--vh) * 100) - calc($action-bar-height)); //  * 2
+    column-fill: balance;
+
+    &.debug {
+      column-rule: 0.125rem dashed #666666;
+    }
+
+    &.writing-style-vertical {
+      padding: 0 0.625rem 0 0;
+      margin: 1.25rem 0;
+    }
+  }
+
+  &.writing-style-vertical {
+    height: auto;
+  }
+
+  // &.immersive {
+  //     // Note: I removed this for bug: https://github.com/Kareadita/Kavita/issues/1726
+  //     //height: calc((var(--vh, 1vh) * 100) - $action-bar-height);
+  // }
+
+  a, :link {
+    color: var(--brtheme-link-text-color);
+  }
+
+  background-color: var(--brtheme-bg-color);
+}
+
+.pagination-cont {
+  background: var(--br-actionbar-bg-color);
+  border-radius: 0.3125rem;
+  padding: 0.3125rem 0.9375rem;
+  margin: 0 0 0.3125rem;
+  border: var(--drawer-pagination-border);
+}
+
+.virt-pagination-cont {
+  padding-bottom: 0.3125rem;
+  margin-bottom: 0.3125rem;
+  box-shadow: var(--drawer-pagination-horizontal-rule);
+}
+
+.bottom-bar {
+  position: fixed;
+  width: 100%;
+  bottom: 0;
+  left: 0;
+  writing-mode: horizontal-tb;
+  z-index: 4;
+}
+
+
+// This is essentially fitting the text to height and when you press next you are scrolling over by page width
+.column-layout-1 {
+  .book-content {
+    column-count: 1;
+    column-gap: 1.25rem;
+    overflow: hidden;
+    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+}
+
+.column-layout-2 {
+  .book-content {
+    column-count: 2;
+    column-gap: 1.25rem;
+    overflow: hidden;
+    word-break: break-word;
+    overflow-wrap: break-word;
+
+    &.debug {
+      overflow: scroll;
+      overflow-y: hidden;
+    }
+  }
+}
+
+// A bunch of resets so books render correctly
+::ng-deep .book-content {
+  & a, & :link {
+    color: #8db2e5;
+  }
+}
+
+// This is applied to images in the backend
+::ng-deep .kavita-scale-width-container {
+  width: auto;
+  max-height: calc(var(--book-reader-content-max-height) - ($action-bar-height)) !important;
+  max-width: calc(var(--book-reader-content-max-width)) !important;
+  position: var(--book-reader-content-position) !important;
+  top: var(--book-reader-content-top) !important;
+  left: var(--book-reader-content-left) !important;
+  transform: var(--book-reader-content-transform) !important;
+}
+
+// This is applied to images in the backend
+::ng-deep .kavita-scale-width {
+  max-height: calc(var(--book-reader-content-max-height) - ($action-bar-height)) !important;
+  max-width: calc(var(--book-reader-content-max-width)) !important;
+  object-fit: contain;
+  object-position: top center;
+  break-inside: avoid;
+  break-before: column;
+  max-height: 100vh;
+}
+
+
+// Click to Paginate styles
+.icon-primary-color {
+  color: $primary-color;
+}
+
+$pagination-color: transparent;
+$pagination-opacity: 0;
+
+//$pagination-color: red;
+//$pagination-opacity: 0.7;
+
+
+.tap-to-paginate {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 0;
+  z-index: 3;
+}
+
+.right {
+  position: absolute;
+  right: 0;
+  top: $action-bar-height;
+  width: 20vw;
+  height: calc(100vh - $action-bar-height * 2);
+  background: $pagination-color;
+  border-color: transparent;
+  border: none !important;
+  opacity: 0;
+  outline: none;
+  cursor: pointer;
+
+  &.immersive {
+    top: 0;
+    height: 100vh;
+  }
+
+  &.no-pointer-events {
+    pointer-events: none;
+  }
+}
+
+// This class pushes the click area to the left a bit to let users click the scrollbar
+.right-with-scrollbar {
+  position: absolute;
+  right: 1.0625rem;
+  top: $action-bar-height;
+  width: 18vw;
+  height: calc(100vh - $action-bar-height * 2);
+  background: $pagination-color;
+  opacity: $pagination-opacity;
+  border-color: transparent;
+  border: none !important;
+  outline: none;
+  cursor: pointer;
+
+  &.immersive {
+    top: 0;
+    height: 100vh;
+  }
+}
+
+.left {
+  position: absolute;
+  left: 0;
+  top: $action-bar-height;
+  width: 20vw;
+  height: calc(100vh - $action-bar-height * 2);
+  background: $pagination-color;
+  opacity: $pagination-opacity;
+  border-color: transparent;
+  border: none !important;
+  outline: none;
+  cursor: pointer;
+
+  &.immersive {
+    top: 0;
+    height: 100vh;
+  }
+}
+
+
+.highlight {
+  background-color: rgba(65, 225, 100, 0.5) !important;
+  animation: fadein .5s both;
+}
+
+.highlight-2 {
+  background-color: rgba(65, 105, 225, 0.5) !important;
+  animation: fadein .5s both;
+}
+
+
+// TODO: Figure out why book-reader has it's own button overrides
+.btn {
+  &.btn-secondary {
+    color: var(--br-actionbar-button-text-color);
+    border-color: transparent;
+    background-color: unset;
+
+    &:hover, &:focus {
+      border-color: var(--br-actionbar-button-hover-border-color);
+    }
+  }
+
+  &.btn-outline-secondary {
+    border-color: transparent;
+    background-color: unset;
+
+    &:hover, &:focus {
+      border-color: var(--br-actionbar-button-hover-border-color);
+    }
+  }
+
+  span {
+    background-color: unset;
+    color: var(--br-actionbar-button-text-color);
+  }
+
+  i {
+    background-color: unset;
+    color: var(--br-actionbar-button-text-color) !important;
+  }
+
+  &:active {
+    * {
+      color: white;
+    }
+  }
+}
+
+
+.reader-header {
+  border-bottom: 1px solid var(--bs-border-color);
+  background-color: var(--bs-body-bg);
+}
+
+.page-progress-slider {
+  margin: 0;
+}

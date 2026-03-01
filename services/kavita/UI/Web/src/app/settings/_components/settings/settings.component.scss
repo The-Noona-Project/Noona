@@ -1,0 +1,30 @@
+@use '../../../../theme/variables' as theme;
+
+h2 {
+  color: var(--side-nav-header-text-color);
+  font-weight: bold;
+}
+
+.main-container {
+  margin-top: 0.625rem;
+  max-width: 120rem;
+  padding: 0 1.25rem;
+}
+
+::ng-deep .content-wrapper:not(.closed) {
+  .scale {
+    width: calc(100dvw - 12.5rem) !important;
+
+
+  }
+}
+
+
+@media (max-width: theme.$grid-breakpoints-lg) {
+  ::ng-deep .content-wrapper:not(.closed) {
+    .scale {
+      width: 100% !important;
+      overflow-x: auto;
+    }
+  }
+}

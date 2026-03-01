@@ -1,0 +1,12 @@
+.tooltip {
+  --bs-tooltip-opacity: 1;
+}
+
+.tooltip-arrow {
+  --bs-tooltip-bg: var(--tooltip-caret-color);
+}
+
+.tooltip-inner {
+  background-color: var(--tooltip-bg-color);
+  border: 0.125rem solid var(--tooltip-outline-color);
+}

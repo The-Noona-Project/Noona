@@ -1,0 +1,26 @@
+<ng-container *transloco="let t; prefix:'most-active-users'">
+  <div class="card stats-card p-4">
+    <h3 class="stats-title">{{ t('title') }}</h3>
+
+    <div class="row g-2">
+      @if (usersResource.isLoading()) {
+        <app-loading></app-loading>
+      } @else {
+        @let users = usersResource.value() || [];
+
+        @for (user of users; track user.userId) {
+          <div class="user-cards col-md-6 col-sm-12">
+            <app-active-user-card
+              [user]="user"
+              [filter]="statsFilter()"
+              [timeFrameLabel]="timeFrameLabel()"/>
+          </div>
+        } @empty {
+          <app-stats-no-data [message]="t('no-data')"/>
+        }
+      }
+    </div>
+
+  </div>
+
+</ng-container>

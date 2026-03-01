@@ -1,0 +1,14 @@
+<ng-container *transloco="let t; prefix: 'collection-owner'">
+  @if (accountService.currentUser()) {
+    <div class="fw-light text-accent">
+      {{ t('collection-created-label', {owner: collection.owner}) }}
+      @if (collection.source !== ScrobbleProvider.Kavita) {
+        {{ t('collection-via-label') }}
+        <app-image [imageUrl]="collection.source | providerImage"
+                   width="16px" height="16px"
+                   [ngbTooltip]="collection.source | scrobbleProviderName"
+                   [attr.aria-label]="collection.source | scrobbleProviderName"/>
+      }
+    </div>
+  }
+</ng-container>

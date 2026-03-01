@@ -1,0 +1,101 @@
+$scrollbarHeight: 2.1875rem;
+
+img {
+  user-select: none;
+}
+
+.image-container {
+  text-align: center;
+  align-items: center;
+
+  &.full-width {
+    height: 100dvh;
+    display: grid;
+  }
+
+  &.full-height {
+    height: calc(100dvh); // We need to  - $scrollbarHeight when there is a horizontal scroll on macos
+    display: flex;
+    align-content: center;
+    overflow-y: hidden;
+  }
+
+  &.original {
+    height: calc(100dvh);
+    display: grid;
+  }
+
+  .full-height {
+    width: auto;
+    margin: auto;
+    max-height: calc(100dvh);
+    height: calc(100dvh);
+    vertical-align: top;
+    object-fit: cover;
+
+    &.wide {
+      height: calc(100dvh);
+    }
+  }
+
+  .original {
+    align-self: center;
+    width: auto;
+    margin: 0 auto;
+    vertical-align: top;
+  }
+
+  .full-width {
+    width: 100%;
+    margin: 0 auto;
+    vertical-align: top;
+    object-fit: contain;
+    width: 100%;
+  }
+
+  .fit-to-screen.full-width {
+    width: 100%;
+    max-height: calc(100dvh);
+  }
+}
+
+
+.bookmark-effect {
+  animation: bookmark 0.7s cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+
+
+.highlight {
+  background-color: var(--manga-reader-next-highlight-bg-color) !important;
+  animation: fadein .5s both;
+  backdrop-filter: blur(0.625rem);
+}
+
+.highlight-2 {
+  background-color: var(--manga-reader-prev-highlight-bg-color) !important;
+  animation: fadein .5s both;
+  backdrop-filter: blur(0.625rem);
+}
+
+
+::ng-deep .image-container.book-shadow[class*="double-offset"]:before, ::ng-deep .image-container.book-shadow.wide:before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 100%;
+  box-shadow: 0 0 calc(1.0625rem * 3.14) 1.5625rem rgb(0 0 0 / 43%),
+  0 0 calc(0.125rem * 3.14) 0.125rem rgb(0 0 0 / 43%),
+  0 0 calc(0.3125rem * 3.14) 0.25rem rgb(0 0 0 / 43%),
+  0 0 calc(0.0312rem * 3.14) 0.0187rem rgb(0 0 0 / 43%);
+}
+
+@supports (-moz-appearance:none) {
+  ::ng-deep .image-container.book-shadow[class*="double-offset"]:before, ::ng-deep .image-container.book-shadow.wide:before {
+    box-shadow: 0 0 calc(1.0625rem * 3.14) 1.5625rem rgb(0 0 0 / 43%),
+    0 0 calc(0.125rem * 3.14) 0.125rem rgb(0 0 0 / 43%),
+    0 0 calc(0.3125rem * 3.14) 0.25rem rgb(0 0 0 / 43%),
+    0 0 calc(0.0312rem * 3.14) 0.0187rem rgb(0 0 0 / 43%),
+    0 0 0.0625rem 0.0312rem rgb(0 0 0 / 43%);
+  }
+}

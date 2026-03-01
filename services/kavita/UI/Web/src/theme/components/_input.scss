@@ -1,0 +1,41 @@
+input:not([type="range"]), .form-control {
+  background-color: var(--input-bg-color);
+  color: var(--input-text-color);
+  border-color: var(--input-border-color);
+
+  &:focus:not(:checked) {
+    border-color: var(--input-focused-border-color);
+    background-color: var(--input-bg-color);
+    color: var(--input-text-color);
+    box-shadow: 0 0 0 .25rem var(--input-focus-boxshadow-color);
+  }
+
+  // Checkboxes are selected by the :read-only pseudo-class, even when they're editable
+  // See https://developer.mozilla.org/en-US/docs/Web/CSS/:read-only
+  &:read-only:not([type="checkbox"]) {
+    background-color: var(--input-bg-readonly-color);
+    cursor: initial;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  &::placeholder {
+    color: var(--input-placeholder-color);
+  }
+}
+
+.form-range::-webkit-slider-thumb:active, .form-range::-moz-range-thumb:active {
+  background-color: var(--input-range-active-color);
+}
+
+.form-range::-webkit-slider-thumb, .form-range::-moz-range-thumb {
+  background-color: var(--input-range-color);
+}
+
+.form-check-input[type=checkbox]:indeterminate {
+  background-color: var(--input-bg-color);
+  border-color: var(--input-border-color);
+}

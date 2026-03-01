@@ -1,0 +1,16 @@
+::ng-deep .advanced-pie-legend {
+  top: unset !important;
+  transform: unset !important;
+}
+
+.dashboard-card-content {
+  width: 100%;
+  height: 15.125rem;
+  display: flex;
+  flex-flow: column;
+  box-sizing: border-box;
+}
+
+tfoot {
+  color: var(--bs-body);
+}

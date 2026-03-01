@@ -1,0 +1,12 @@
+.table-of-contents li {
+  cursor: pointer;
+
+  &.active {
+    font-weight: bold;
+    color: var(--primary-color);
+  }
+}
+
+.chapter-title {
+  padding-inline-start: 1rem;
+}

@@ -9,13 +9,14 @@ const DEFAULT_TAG = process.env.NOONA_DOCKER_TAG || 'latest';
 const ROOT = resolve('.');
 
 const SERVICES = [
-    {name: 'noona-warden', dockerfile: 'warden.Dockerfile'},
-    {name: 'noona-moon', dockerfile: 'moon.Dockerfile'},
-    {name: 'noona-sage', dockerfile: 'sage.Dockerfile'},
-    {name: 'noona-vault', dockerfile: 'vault.Dockerfile'},
-    {name: 'noona-raven', dockerfile: 'raven.Dockerfile'},
-    {name: 'noona-portal', dockerfile: 'portal.Dockerfile'},
-    {name: 'noona-oracle', dockerfile: 'oracle.Dockerfile', optional: true},
+    {name: 'noona-warden', dockerfile: 'dockerfiles/warden.Dockerfile'},
+    {name: 'noona-moon', dockerfile: 'dockerfiles/moon.Dockerfile'},
+    {name: 'noona-sage', dockerfile: 'dockerfiles/sage.Dockerfile'},
+    {name: 'noona-vault', dockerfile: 'dockerfiles/vault.Dockerfile'},
+    {name: 'noona-raven', dockerfile: 'dockerfiles/raven.Dockerfile'},
+    {name: 'noona-kavita', dockerfile: 'dockerfiles/kavita.Dockerfile'},
+    {name: 'noona-portal', dockerfile: 'dockerfiles/portal.Dockerfile'},
+    {name: 'noona-oracle', dockerfile: 'dockerfiles/oracle.Dockerfile', optional: true},
 ];
 
 const ALIASES = Object.freeze({
@@ -24,6 +25,7 @@ const ALIASES = Object.freeze({
     sage: 'noona-sage',
     vault: 'noona-vault',
     raven: 'noona-raven',
+    kavita: 'noona-kavita',
     portal: 'noona-portal',
     oracle: 'noona-oracle',
 });
@@ -35,9 +37,9 @@ const usage = () => {
             '',
             'Usage:',
             '  node docker-images.mjs list',
-            '  node docker-images.mjs build [--services moon,sage] [--tag latest] [--namespace captainpax] [--no-cache]',
-            '  node docker-images.mjs push  [--services moon,sage] [--tag latest] [--namespace captainpax]',
-            '  node docker-images.mjs publish [--services moon,sage] [--tag latest] [--namespace captainpax] [--no-cache]',
+            '  node docker-images.mjs build [--services moon,sage,kavita] [--tag latest] [--namespace captainpax] [--no-cache]',
+            '  node docker-images.mjs push  [--services moon,sage,kavita] [--tag latest] [--namespace captainpax]',
+            '  node docker-images.mjs publish [--services moon,sage,kavita] [--tag latest] [--namespace captainpax] [--no-cache]',
             '',
             'Env:',
             '  NOONA_DOCKER_NAMESPACE   Default namespace (default: captainpax)',
@@ -126,6 +128,10 @@ const canBuildService = (service) => {
         return {ok: false, reason: `Missing Dockerfile: ${service.dockerfile}`};
     }
 
+    if (service.name === 'noona-kavita' && !existsSync(resolve(ROOT, 'services/kavita'))) {
+        return {ok: false, reason: 'Missing services/kavita; skipping noona-kavita.'};
+    }
+
     // Oracle is currently optional in this checkout (services/oracle may not exist).
     if (service.name === 'noona-oracle' && !existsSync(resolve(ROOT, 'services/oracle'))) {
         return {ok: false, reason: 'Missing services/oracle; skipping noona-oracle.'};
@@ -134,7 +140,7 @@ const canBuildService = (service) => {
     return {ok: true};
 };
 
-const buildService = async (service, {namespace, tag, noCache}) => {
+const buildService = async (service, {namespace, tag, noCache, push = false}) => {
     const preflight = canBuildService(service);
     if (!preflight.ok) {
         console.warn(`[skip] ${service.name}: ${preflight.reason}`);
@@ -142,11 +148,12 @@ const buildService = async (service, {namespace, tag, noCache}) => {
     }
 
     const image = resolveImageTag(service.name, {namespace, tag});
-    const dockerArgs = ['build', '-f', service.dockerfile, '-t', image];
+    const dockerArgs = ['buildx', 'build', '-f', service.dockerfile, '-t', image];
     if (noCache) dockerArgs.push('--no-cache');
+    dockerArgs.push(push ? '--push' : '--load');
     dockerArgs.push('.');
 
-    console.log(`[build] ${service.name} -> ${image}`);
+    console.log(`[${push ? 'publish' : 'build'}] ${service.name} -> ${image}`);
     await runDocker(dockerArgs);
     return {ok: true, image};
 };
@@ -196,11 +203,11 @@ const main = async () => {
 
     if (command === 'build' || command === 'publish') {
         for (const svc of selected) {
-            await buildService(svc, {namespace, tag, noCache});
+            await buildService(svc, {namespace, tag, noCache, push: command === 'publish'});
         }
     }
 
-    if (command === 'push' || command === 'publish') {
+    if (command === 'push') {
         for (const svc of selected) {
             await pushService(svc, {namespace, tag});
         }

@@ -195,9 +195,10 @@ const createSetupClient = ({
             return services
         },
 
-        async installServices(services) {
+        async installServices(services, options = {}) {
             const normalized = normalizeServiceInstallPayload(services)
-            const response = await fetchFromWarden('/api/services/install', {
+            const suffix = options?.async === true ? '?async=true' : ''
+            const response = await fetchFromWarden(`/api/services/install${suffix}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({services: normalized}),
@@ -210,7 +211,14 @@ const createSetupClient = ({
             logger.info?.(
                 `[${serviceName}] 🚀 Installation request forwarded for ${normalized.length} services (status: ${status}) via ${preferredBaseUrl}`,
             )
-            return {status, results}
+            return {
+                status,
+                results,
+                accepted: payload?.accepted === true,
+                started: payload?.started === true,
+                alreadyRunning: payload?.alreadyRunning === true,
+                progress: payload?.progress ?? null,
+            }
         },
         async getInstallProgress() {
             const response = await fetchFromWarden('/api/services/install/progress')

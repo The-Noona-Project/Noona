@@ -12,6 +12,7 @@ This repository contains Noona Stack 2.2. Follow these rules when editing.
 ## Repository Map
 
 - [Root README](README.md)
+- [dockerfiles/](dockerfiles/)
 - [services/](services/)
 - [utilities/](utilities/)
 - [docs/](docs/)

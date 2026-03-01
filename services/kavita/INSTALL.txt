@@ -1,0 +1,8 @@
+﻿How to Install
+1. Unzip the archive to a directory that is writable. If on windows, do not place in Program Files.
+2. (Linux only) Chmod and Chown so Kavita can write to the directory you placed in.
+3. Run Kavita executable.
+4. Open localhost:5000 and setup your account and libraries in the UI.
+
+How to Update
+1. Copy everything but the config/ directory over. Restart Kavita.

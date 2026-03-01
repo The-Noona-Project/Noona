@@ -1,0 +1,20 @@
+$breadcrumb-divider: quote(">");
+
+.breadcrumb-item + .breadcrumb-item::before {
+  content: $breadcrumb-divider;
+}
+
+.scrollable {
+  overflow-y: auto;
+  max-height: 25rem;
+}
+
+.btn-outline-secondary {
+  border: 1px solid #ced4da;
+}
+
+.disabled {
+  color: lightgrey !important;
+  cursor: not-allowed !important;
+  background-color: var(--error-color);
+}

@@ -1,0 +1,44 @@
+@use '../../../../theme/variables' as theme;
+
+::ng-deep .side-nav app-side-nav-item:first-child {
+  .active-highlight {
+    border-top-left-radius: 0.1875rem;
+  }
+}
+
+::ng-deep .side-nav app-side-nav-item:first-child {
+  .side-nav-item {
+    border-top-left-radius: 0.1875rem;
+  }
+}
+
+@media (max-width: theme.$grid-breakpoints-lg) {
+  ::ng-deep .side-nav app-side-nav-item:first-child {
+    .side-nav-item {
+      border-top-left-radius: 0;
+    }
+  }
+
+  ::ng-deep .side-nav app-side-nav-item:last-child {
+    .side-nav-item {
+      border-bottom-left-radius: 0;
+    }
+  }
+}
+
+@media (max-width: theme.$grid-breakpoints-lg) {
+  .side-nav-item {
+
+    .side-nav-text {
+      width: 100%;
+    }
+
+    span:last-child {
+      flex-grow: 0;
+    }
+  }
+}
+
+.drag-handle {
+  cursor: grab;
+}

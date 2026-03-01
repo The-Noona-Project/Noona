@@ -124,6 +124,36 @@ const readManagedKavitaSettings = (doc) => {
     }
 }
 
+const normalizeManagedKavitaAccount = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null
+    }
+
+    const username = normalizeString(value.username)
+    const email = normalizeString(value.email)
+    const password = normalizeString(value.password)
+    const hasAnyValue = Boolean(username || email || password)
+
+    if (!hasAnyValue) {
+        return null
+    }
+
+    if (!username || !email || !password) {
+        throw new SetupValidationError('Managed Kavita account requires a username, email, and password.')
+    }
+
+    return {username, email, password}
+}
+
+const readManagedKavitaConfiguredAccount = (config) => {
+    const env = normalizeEnvMap(config?.env)
+    return normalizeManagedKavitaAccount({
+        username: env.KAVITA_ADMIN_USERNAME,
+        email: env.KAVITA_ADMIN_EMAIL,
+        password: env.KAVITA_ADMIN_PASSWORD,
+    })
+}
+
 export function registerSetupRoutes(context = {}) {
     const {
         app,
@@ -167,8 +197,15 @@ export function registerSetupRoutes(context = {}) {
 
     app.post('/api/setup/install', async (req, res) => {
         try {
-            const {status, results} = await setupClient.installServices(req.body?.services)
-            res.status(status ?? 200).json({results})
+            const asyncRequested = ['1', 'true', 'yes', 'on'].includes(String(req.query?.async ?? '').trim().toLowerCase())
+            const result = await setupClient.installServices(req.body?.services, {async: asyncRequested})
+            res.status(result?.status ?? 200).json({
+                results: result?.results ?? [],
+                accepted: result?.accepted === true,
+                started: result?.started === true,
+                alreadyRunning: result?.alreadyRunning === true,
+                progress: result?.progress ?? null,
+            })
         } catch (error) {
             if (error instanceof SetupValidationError) {
                 res.status(400).json({error: error.message})
@@ -782,11 +819,15 @@ export function registerSetupRoutes(context = {}) {
         }
 
         try {
-            const configs = new Map(
-                await Promise.all(
+            const requestedAccount = normalizeManagedKavitaAccount(req.body?.account)
+            const [managedKavitaConfig, targetConfigs] = await Promise.all([
+                setupClient.getServiceConfig('noona-kavita'),
+                Promise.all(
                     targetServices.map(async (name) => [name, await setupClient.getServiceConfig(name)]),
                 ),
-            )
+            ])
+            const configuredAccount = readManagedKavitaConfiguredAccount(managedKavitaConfig)
+            const configs = new Map(targetConfigs)
 
             const existingKeys = new Set()
             for (const targetServiceName of targetServices) {
@@ -807,8 +848,17 @@ export function registerSetupRoutes(context = {}) {
 
             const {apiKey: storedApiKey, account: storedAccount} = readManagedKavitaSettings(storedSettings)
 
+            const effectiveAccount = requestedAccount || configuredAccount || null
+
             let apiKey = ''
-            let account = storedAccount
+            let account =
+                storedAccount ||
+                (effectiveAccount
+                    ? {
+                        username: normalizeString(effectiveAccount.username),
+                        email: normalizeString(effectiveAccount.email),
+                    }
+                    : null)
             let mode = 'reused'
 
             if (storedApiKey) {
@@ -827,8 +877,8 @@ export function registerSetupRoutes(context = {}) {
                 for (let attempt = 1; attempt <= MANAGED_KAVITA_READY_RETRIES; attempt += 1) {
                     try {
                         provisioning = await managedKavitaSetupClient.ensureServiceApiKey({
-                            account,
-                            allowRegister: !account,
+                            account: effectiveAccount,
+                            allowRegister: true,
                         })
                         break
                     } catch (error) {
@@ -853,6 +903,11 @@ export function registerSetupRoutes(context = {}) {
 
                 apiKey = normalizeString(provisioning.apiKey)
                 account = provisioning.account
+                    ? {
+                        username: normalizeString(provisioning.account.username),
+                        email: normalizeString(provisioning.account.email),
+                    }
+                    : null
                 mode = provisioning.mode
             }
 

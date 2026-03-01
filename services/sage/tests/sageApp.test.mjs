@@ -1324,8 +1324,59 @@ test('POST /api/setup/install forwards request to setup client', async (t) => {
     })
 
     assert.equal(response.status, 207)
-    assert.deepEqual(await response.json(), { results: [{ name: 'noona-sage', status: 'installed' }] })
+    assert.deepEqual(await response.json(), {
+        results: [{name: 'noona-sage', status: 'installed'}],
+        accepted: false,
+        started: false,
+        alreadyRunning: false,
+        progress: null,
+    })
     assert.deepEqual(calls, [[{ name: 'noona-sage', env: { DEBUG: 'true' } }]])
+})
+
+test('POST /api/setup/install forwards async install mode to setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices(services, options) {
+                calls.push({services, options})
+                return {
+                    status: 202,
+                    results: [],
+                    accepted: true,
+                    started: true,
+                    alreadyRunning: false,
+                    progress: {status: 'installing', percent: 0, items: [{name: 'noona-kavita', status: 'pending'}]},
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: [{name: 'noona-kavita'}]}),
+    })
+
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {
+        results: [],
+        accepted: true,
+        started: true,
+        alreadyRunning: false,
+        progress: {status: 'installing', percent: 0, items: [{name: 'noona-kavita', status: 'pending'}]},
+    })
+    assert.deepEqual(calls, [{
+        services: [{name: 'noona-kavita'}],
+        options: {async: true},
+    }])
 })
 
 test('POST /api/setup/install validates payload', async (t) => {
@@ -1394,6 +1445,43 @@ test('setupClient.installServices normalizes payload before forwarding to Warden
         { name: 'noona-sage' },
         { name: 'noona-moon', env: { DEBUG: 'false' } },
     ])
+})
+
+test('setupClient.installServices can request async forwarding to Warden', async (t) => {
+    const bodies = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            fetchImpl: async (url, options = {}) => {
+                bodies.push({url, body: options.body})
+                return {
+                    ok: true,
+                    status: 202,
+                    async json() {
+                        return {accepted: true, started: true, alreadyRunning: false}
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-sage']}),
+    })
+
+    assert.equal(response.status, 202)
+    await response.json()
+
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].url, 'http://warden.local/api/services/install?async=true')
+    const parsedBody = JSON.parse(bodies[0].body)
+    assert.deepEqual(parsedBody.services, [{name: 'noona-sage'}])
 })
 
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
@@ -2173,7 +2261,14 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
     const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({services: ['noona-portal', 'noona-raven', 'noona-komf']}),
+        body: JSON.stringify({
+            services: ['noona-portal', 'noona-raven', 'noona-komf'],
+            account: {
+                username: 'reader-admin',
+                email: 'reader-admin@example.com',
+                password: 'Password123!',
+            },
+        }),
     })
 
     assert.equal(response.status, 200)
@@ -2183,6 +2278,14 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
     assert.equal(payload.mode, 'register')
     assert.deepEqual(payload.services, ['noona-portal', 'noona-raven', 'noona-komf'])
     assert.equal(managedCalls.length, 1)
+    assert.deepEqual(managedCalls[0], {
+        account: {
+            username: 'reader-admin',
+            email: 'reader-admin@example.com',
+            password: 'Password123!',
+        },
+        allowRegister: true,
+    })
 
     assert.equal(updateCalls.length, 3)
     assert.deepEqual(updateCalls[0], [
@@ -2225,6 +2328,55 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
     assert.deepEqual(stored.value?.account, {
         username: 'noona-system',
         email: 'noona-system@noona.local',
+    })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key validates partial managed account payloads', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig() {
+                return {env: {}}
+            },
+            async updateServiceConfig() {
+                throw new Error('updateServiceConfig should not be called')
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                throw new Error('ensureServiceApiKey should not be called')
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            services: ['noona-portal'],
+            account: {
+                username: 'reader-admin',
+                email: '',
+                password: 'Password123!',
+            },
+        }),
+    })
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {
+        error: 'Managed Kavita account requires a username, email, and password.',
     })
 })
 
@@ -2324,6 +2476,81 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
             },
         ],
     ])
+})
+
+test('POST /api/setup/services/noona-kavita/service-key falls back to managed noona-kavita env credentials', async (t) => {
+    const managedCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {
+                        env: {
+                            KAVITA_ADMIN_USERNAME: 'reader-admin',
+                            KAVITA_ADMIN_EMAIL: 'reader-admin@example.com',
+                            KAVITA_ADMIN_PASSWORD: 'Password123!',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: {
+                        username: 'reader-admin',
+                        email: 'reader-admin@example.com',
+                        password: 'Password123!',
+                    },
+                    mode: 'login',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal']}),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal(managedCalls.length, 1)
+    assert.deepEqual(managedCalls[0], {
+        account: {
+            username: 'reader-admin',
+            email: 'reader-admin@example.com',
+            password: 'Password123!',
+        },
+        allowRegister: true,
+    })
 })
 
 test('GET /api/setup/services/:name/health proxies health payloads', async (t) => {

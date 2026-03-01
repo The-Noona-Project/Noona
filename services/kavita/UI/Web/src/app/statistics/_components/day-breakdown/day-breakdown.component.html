@@ -1,0 +1,19 @@
+<ng-container *transloco="let t; prefix: 'day-breakdown'">
+  <div class="card stats-card p-4">
+    <h3 class="stats-title">{{ t('title') }}</h3>
+
+    @if (hasData()) {
+      <app-bar-chart
+        [data]="data()"
+        [axisLabels]="axisLabels()"
+        [horizontal]="false"
+        [showLabels]="true"
+        [labelPosition]="'top'"
+        [multiColor]="true"
+        height="250px"
+      />
+    } @else {
+      <app-stats-no-data [message]="t('no-data')"/>
+    }
+  </div>
+</ng-container>

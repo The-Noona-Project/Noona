@@ -1,0 +1,49 @@
+<ng-container *transloco="let t; prefix: 'login'">
+  <app-splash-container>
+    <ng-container title><h2>{{ t('title') }}</h2></ng-container>
+    <ng-container body>
+
+      @if (isLoaded()) {
+        @if (showPasswordLogin()) {
+          <form [formGroup]="loginForm" (ngSubmit)="login()" novalidate class="needs-validation">
+            <div class="card-text">
+              <div class="mb-3">
+                <label for="username" class="form-label visually-hidden">{{ t('username') }}</label>
+                <input class="form-control custom-input" formControlName="username" id="username"
+                       autocomplete="username"
+                       type="text" autofocus [placeholder]="t('username')">
+              </div>
+
+              <div class="mb-2">
+                <label for="password" class="form-label visually-hidden">{{ t('password') }}</label>
+                <input class="form-control custom-input" formControlName="password" name="password"
+                       autocomplete="current-password"
+                       id="password" type="password" [placeholder]="t('password')">
+              </div>
+
+              <div class="mb-3 forgot-password">
+                <a routerLink="/registration/reset-password">{{ t('forgot-password') }}</a>
+              </div>
+
+              <div class="sign-in">
+                <button class="btn btn-outline-primary" type="submit" [disabled]="isSubmitting()">{{ t('submit') }}
+                </button>
+              </div>
+            </div>
+          </form>
+        }
+
+        @if (showOidcButton()) {
+          <a
+            class="btn btn-outline-primary mt-2 d-flex justify-content-center align-items-center gap-2"
+            [href]="baseUrl + 'oidc/login'"
+          >
+            <app-image height="36px" width="36px" [imageUrl]="'assets/icons/open-id-connect-logo.svg'"
+                       [styles]="{'object-fit': 'contains'}"/>
+            {{ oidcConfig()?.providerName || t('oidc') }}
+          </a>
+        }
+      }
+    </ng-container>
+  </app-splash-container>
+</ng-container>

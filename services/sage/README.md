@@ -30,10 +30,14 @@ download/library routes for Moon and other clients.
 ## Common Endpoint Groups
 
 - Setup: `/api/setup/*`
+    - `POST /api/setup/install?async=true` now proxies Warden's accepted/background install mode and returns the
+      current install-progress snapshot immediately so Moon can keep polling instead of waiting on a long request.
 - Managed Kavita setup: `/api/setup/services/noona-kavita/service-key`
-    - waits for managed `noona-kavita`, creates or reuses a Kavita auth key through Kavita's own API, stores the
-      reusable key metadata in `noona_settings`, and patches selected managed services (`noona-portal`,
-      `noona-raven`, `noona-komf`) with the generated key plus the managed `http://noona-kavita:5000` base URL.
+    - waits for managed `noona-kavita`, accepts optional first-admin credentials from Moon or falls back to managed
+      `noona-kavita` `KAVITA_ADMIN_*` env overrides from Warden, creates or reuses a Kavita auth key through Kavita's
+      own API, stores the reusable key metadata in `noona_settings`, and patches selected managed services
+      (`noona-portal`, `noona-raven`, `noona-komf`) with the generated key plus the managed `http://noona-kavita:5000`
+      base URL.
 - Discord setup helpers: `/api/setup/services/noona-portal/discord/*`
     - validation now performs a real bot login, returns the detected application/client id, lists accessible guilds, and
       loads roles/channels when a guild is selected, falling back to Discord's REST guild resources when the gateway

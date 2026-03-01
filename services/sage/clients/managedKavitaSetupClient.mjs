@@ -170,8 +170,10 @@ export const createManagedKavitaSetupClient = ({
                                            keyLength = 32,
                                        } = {}) => {
         let normalizedAccount = normalizeManagedAccount(account)
+        let generatedAccount = false
         if (!normalizedAccount && allowRegister) {
             normalizedAccount = createManagedKavitaServiceAccount({randomBytes})
+            generatedAccount = true
         }
 
         if (!normalizedAccount) {
@@ -181,9 +183,16 @@ export const createManagedKavitaSetupClient = ({
         let user = null
         let mode = 'login'
 
-        if (allowRegister && !account) {
+        if (allowRegister && generatedAccount) {
             mode = 'register'
             user = await registerFirstAdmin(normalizedAccount)
+        } else if (allowRegister) {
+            try {
+                user = await login(normalizedAccount)
+            } catch (error) {
+                mode = 'register'
+                user = await registerFirstAdmin(normalizedAccount)
+            }
         } else {
             user = await login(normalizedAccount)
         }

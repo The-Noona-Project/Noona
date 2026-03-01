@@ -312,7 +312,12 @@ export function registerServiceManagementApi(context = {}) {
             });
 
             try {
-                await dockerUtils.waitForHealthyStatus(serviceName, healthUrl);
+                await dockerUtils.waitForHealthyStatus(
+                    serviceName,
+                    healthUrl,
+                    effectiveService.healthTries,
+                    effectiveService.healthDelayMs,
+                );
                 appendHistoryEntry(serviceName, {
                     type: 'status',
                     status: 'healthy',

@@ -60,6 +60,11 @@ type InstallResultEntry = {
 
 type InstallResponse = {
     results?: InstallResultEntry[];
+    accepted?: boolean;
+    started?: boolean;
+    alreadyRunning?: boolean;
+    progress?: InstallProgress | null;
+    error?: string;
 };
 
 type ServiceLogEntry = {
@@ -134,10 +139,17 @@ type DiscordSetupResponse = {
     error?: string;
 };
 
+type ManagedKavitaAccount = {
+    username?: string | null;
+    email?: string | null;
+    password?: string | null;
+};
+
 type ManagedKavitaServiceKeyResponse = {
     apiKey?: string | null;
     baseUrl?: string | null;
     mode?: string | null;
+    account?: ManagedKavitaAccount | null;
     services?: string[] | null;
     updatedServices?: Array<{
         name?: string | null;
@@ -169,6 +181,11 @@ type WizardConfigPayloadV2 = {
             apiKey: string;
             sharedLibraryPath: string;
             containerName: string;
+            account: {
+                username: string;
+                email: string;
+                password: string;
+            };
         };
         komf: {
             mode: IntegrationMode;
@@ -191,6 +208,7 @@ const ALWAYS_RUNNING = new Set(["noona-moon", "noona-sage"]);
 const MANAGED_INTEGRATIONS = new Set(["noona-kavita", "noona-komf"]);
 const DEFAULT_SELECTED = new Set(["noona-portal", "noona-raven"]);
 const ADVANCED_KEYS = new Set(["DEBUG", "SERVICE_NAME", "VAULT_API_TOKEN", "VAULT_TOKEN_MAP"]);
+const COMING_SOON_SERVICES = new Set(["noona-oracle"]);
 const DERIVED_KEYS = new Set([
     "NOONA_DATA_ROOT",
     "KAVITA_BASE_URL",
@@ -199,6 +217,9 @@ const DERIVED_KEYS = new Set([
     "KAVITA_LIBRARY_ROOT",
     "KAVITA_CONFIG_HOST_MOUNT_PATH",
     "KAVITA_LIBRARY_HOST_MOUNT_PATH",
+    "KAVITA_ADMIN_USERNAME",
+    "KAVITA_ADMIN_EMAIL",
+    "KAVITA_ADMIN_PASSWORD",
     "KOMF_KAVITA_BASE_URI",
     "KOMF_KAVITA_API_KEY",
     "KOMF_CONFIG_HOST_MOUNT_PATH",
@@ -206,7 +227,6 @@ const DERIVED_KEYS = new Set([
 
 const LOG_POLL_INTERVAL_MS = 1200;
 const LOG_LIMIT = 140;
-const WARDEN_LOG_SERVICE = "noona-warden";
 const PORTAL_REQUIRED_KEYS = Object.freeze([
     "DISCORD_BOT_TOKEN",
     "DISCORD_CLIENT_ID",
@@ -244,6 +264,7 @@ const SETUP_TABS: Array<{ id: SetupTabId; label: string; description: string }> 
 
 const SERVICE_LABELS: Record<string, string> = {
     "noona-moon": "Moon",
+    "noona-oracle": "Oracle",
     "noona-portal": "Portal",
     "noona-raven": "Raven",
     "noona-sage": "Sage",
@@ -620,6 +641,9 @@ const buildDerivedValues = ({
                                 kavitaMode,
                                 kavitaBaseUrl,
                                 kavitaApiKey,
+                                kavitaAdminUsername,
+                                kavitaAdminEmail,
+                                kavitaAdminPassword,
                                 kavitaSharedLibraryPath,
                                 komfMode,
                             }: {
@@ -629,6 +653,9 @@ const buildDerivedValues = ({
     kavitaMode: IntegrationMode;
     kavitaBaseUrl: string;
     kavitaApiKey: string;
+    kavitaAdminUsername: string;
+    kavitaAdminEmail: string;
+    kavitaAdminPassword: string;
     kavitaSharedLibraryPath: string;
     komfMode: IntegrationMode;
 }) => {
@@ -657,6 +684,11 @@ const buildDerivedValues = ({
         KAVITA_API_KEY: kavitaApiKey.trim(),
         KAVITA_LIBRARY_ROOT: kavitaMode === "managed" ? "/manga" : normalizeString(next["noona-raven"]?.KAVITA_LIBRARY_ROOT),
     });
+    mergeEnv("noona-kavita", {
+        KAVITA_ADMIN_USERNAME: kavitaMode === "managed" ? kavitaAdminUsername.trim() : "",
+        KAVITA_ADMIN_EMAIL: kavitaMode === "managed" ? kavitaAdminEmail.trim() : "",
+        KAVITA_ADMIN_PASSWORD: kavitaMode === "managed" ? kavitaAdminPassword.trim() : "",
+    });
     mergeEnv("noona-komf", {
         KOMF_KAVITA_BASE_URI: resolvedKavitaBaseUrl,
         KOMF_KAVITA_API_KEY: komfMode === "managed" ? kavitaApiKey.trim() : normalizeString(next["noona-komf"]?.KOMF_KAVITA_API_KEY),
@@ -672,6 +704,9 @@ const validateSelection = ({
                                storageRoot,
                                kavitaMode,
                                komfMode,
+                               kavitaApiKey,
+                               kavitaAccount,
+                               managedKavitaTargets,
                            }: {
     selected: Set<string>;
     values: Record<string, Record<string, string>>;
@@ -679,6 +714,9 @@ const validateSelection = ({
     storageRoot: string;
     kavitaMode: IntegrationMode;
     komfMode: IntegrationMode;
+    kavitaApiKey: string;
+    kavitaAccount: ManagedKavitaAccount;
+    managedKavitaTargets: string[];
 }): { ok: true } | { ok: false; message: string; missing: MissingRequiredField[] } => {
     const missing: MissingRequiredField[] = [];
     const unknownServices: string[] = [];
@@ -711,6 +749,26 @@ const validateSelection = ({
             if (!normalizeString(current[field.key]).trim()) {
                 missing.push({service: serviceName, key: field.key});
             }
+        }
+    }
+
+    if (
+        kavitaMode === "managed"
+        && managedKavitaTargets.length > 0
+        && !normalizeString(kavitaApiKey).trim()
+    ) {
+        const username = normalizeString(kavitaAccount.username).trim();
+        const email = normalizeString(kavitaAccount.email).trim();
+        const password = normalizeString(kavitaAccount.password).trim();
+
+        if (!username) {
+            missing.push({service: "noona-kavita", key: "KAVITA_ADMIN_USERNAME"});
+        }
+        if (!email) {
+            missing.push({service: "noona-kavita", key: "KAVITA_ADMIN_EMAIL"});
+        }
+        if (!password) {
+            missing.push({service: "noona-kavita", key: "KAVITA_ADMIN_PASSWORD"});
         }
     }
 
@@ -777,6 +835,9 @@ export function SetupWizard() {
     const [kavitaMode, setKavitaMode] = useState<IntegrationMode>("managed");
     const [kavitaBaseUrl, setKavitaBaseUrl] = useState("http://noona-kavita:5000");
     const [kavitaApiKey, setKavitaApiKey] = useState("");
+    const [kavitaAdminUsername, setKavitaAdminUsername] = useState("");
+    const [kavitaAdminEmail, setKavitaAdminEmail] = useState("");
+    const [kavitaAdminPassword, setKavitaAdminPassword] = useState("");
     const [kavitaSharedLibraryPath, setKavitaSharedLibraryPath] = useState("");
     const [kavitaContainerName, setKavitaContainerName] = useState("");
 
@@ -852,10 +913,25 @@ export function SetupWizard() {
             kavitaMode,
             kavitaBaseUrl,
             kavitaApiKey,
+            kavitaAdminUsername,
+            kavitaAdminEmail,
+            kavitaAdminPassword,
             kavitaSharedLibraryPath,
             komfMode,
         }),
-        [values, storageRoot, servicesByName, kavitaMode, kavitaBaseUrl, kavitaApiKey, kavitaSharedLibraryPath, komfMode],
+        [
+            values,
+            storageRoot,
+            servicesByName,
+            kavitaMode,
+            kavitaBaseUrl,
+            kavitaApiKey,
+            kavitaAdminUsername,
+            kavitaAdminEmail,
+            kavitaAdminPassword,
+            kavitaSharedLibraryPath,
+            komfMode,
+        ],
     );
 
     const installResultErrors = useMemo(() => {
@@ -871,9 +947,28 @@ export function SetupWizard() {
             storageRoot,
             kavitaMode,
             komfMode,
+            kavitaApiKey,
+            kavitaAccount: {
+                username: kavitaAdminUsername,
+                email: kavitaAdminEmail,
+                password: kavitaAdminPassword,
+            },
+            managedKavitaTargets: managedKavitaServiceTargets,
         });
         return result.ok ? [] : result.missing;
-    }, [effectiveSelected, effectiveValues, servicesByName, storageRoot, kavitaMode, komfMode]);
+    }, [
+        effectiveSelected,
+        effectiveValues,
+        servicesByName,
+        storageRoot,
+        kavitaMode,
+        komfMode,
+        kavitaApiKey,
+        kavitaAdminUsername,
+        kavitaAdminEmail,
+        kavitaAdminPassword,
+        managedKavitaServiceTargets,
+    ]);
 
     const vaultFolderName = useMemo(
         () => normalizeVaultFolderName(normalizeString(effectiveValues["noona-vault"]?.VAULT_DATA_FOLDER)),
@@ -932,10 +1027,7 @@ export function SetupWizard() {
 
     const pollLogs = async () => {
         try {
-            const res = await fetch(
-                `/api/noona/services/${encodeURIComponent(WARDEN_LOG_SERVICE)}/logs?limit=${LOG_LIMIT}`,
-                {cache: "no-store"},
-            );
+            const res = await fetch(`/api/noona/install/history?limit=${LOG_LIMIT}`, {cache: "no-store"});
             const payload = (await res.json().catch(() => ({}))) as ServiceLogHistory;
 
             if (!res.ok) {
@@ -1204,6 +1296,11 @@ export function SetupWizard() {
                         apiKey: kavitaApiKey,
                         sharedLibraryPath: kavitaSharedLibraryPath,
                         containerName: kavitaContainerName,
+                        account: {
+                            username: kavitaAdminUsername,
+                            email: kavitaAdminEmail,
+                            password: kavitaAdminPassword,
+                        },
                     },
                     komf: {
                         mode: komfMode,
@@ -1295,6 +1392,9 @@ export function SetupWizard() {
                     setKavitaMode(kavita.mode === "external" ? "external" : "managed");
                     setKavitaBaseUrl(normalizeString(kavita.baseUrl) || "http://noona-kavita:5000");
                     setKavitaApiKey(normalizeString(kavita.apiKey));
+                    setKavitaAdminUsername(normalizeString(kavita.account?.username));
+                    setKavitaAdminEmail(normalizeString(kavita.account?.email));
+                    setKavitaAdminPassword(normalizeString(kavita.account?.password));
                     setKavitaSharedLibraryPath(normalizeString(kavita.sharedLibraryPath));
                     setKavitaContainerName(normalizeString(kavita.containerName));
                 }
@@ -1311,6 +1411,9 @@ export function SetupWizard() {
                 setKavitaMode(nextSelected.has("noona-kavita") ? "managed" : "external");
                 setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://noona-kavita:5000");
                 setKavitaApiKey(normalizeString(importedPortal.KAVITA_API_KEY));
+                setKavitaAdminUsername("");
+                setKavitaAdminEmail("");
+                setKavitaAdminPassword("");
                 setKavitaSharedLibraryPath(normalizeString(importedRaven.KAVITA_DATA_MOUNT));
                 setKomfMode(nextSelected.has("noona-komf") ? "managed" : "external");
             }
@@ -1363,10 +1466,19 @@ export function SetupWizard() {
             return;
         }
 
+        const account = {
+            username: normalizeString(kavitaAdminUsername).trim(),
+            email: normalizeString(kavitaAdminEmail).trim(),
+            password: normalizeString(kavitaAdminPassword).trim(),
+        };
+        const hasAccount = Boolean(account.username || account.email || account.password);
         const response = await fetch("/api/noona/setup/kavita/service-key", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({services: managedKavitaServiceTargets}),
+            body: JSON.stringify({
+                services: managedKavitaServiceTargets,
+                ...(hasAccount ? {account} : {}),
+            }),
         });
         const payload = (await response.json().catch(() => null)) as ManagedKavitaServiceKeyResponse | null;
         if (!response.ok) {
@@ -1384,6 +1496,18 @@ export function SetupWizard() {
         }
         if (nextApiKey) {
             setKavitaApiKey(nextApiKey);
+        }
+
+        const nextAccount = payload?.account;
+        if (nextAccount) {
+            const username = normalizeString(nextAccount.username).trim();
+            const email = normalizeString(nextAccount.email).trim();
+            if (username) {
+                setKavitaAdminUsername(username);
+            }
+            if (email) {
+                setKavitaAdminEmail(email);
+            }
         }
     };
 
@@ -1414,6 +1538,13 @@ export function SetupWizard() {
             storageRoot,
             kavitaMode,
             komfMode,
+            kavitaApiKey,
+            kavitaAccount: {
+                username: kavitaAdminUsername,
+                email: kavitaAdminEmail,
+                password: kavitaAdminPassword,
+            },
+            managedKavitaTargets: managedKavitaServiceTargets,
         });
         if (!validation.ok) {
             setInstallError(validation.message);
@@ -1454,12 +1585,16 @@ export function SetupWizard() {
                 signal: controller.signal,
             });
 
-            const json = (await response.json().catch(() => ({}))) as InstallResponse & { error?: string };
+            const json = (await response.json().catch(() => ({}))) as InstallResponse;
             if (!response.ok) {
                 const errorMessage =
                     typeof json?.error === "string" && json.error.trim()
                         ? json.error.trim()
                         : `Install failed (HTTP ${response.status}).`;
+                if (installProgressStartedRef.current) {
+                    setInstallError(`${errorMessage} Progress is already running; continuing to monitor install status.`);
+                    return;
+                }
                 stopPolling();
                 resetInstallSession();
                 setInstalling(false);
@@ -1468,23 +1603,28 @@ export function SetupWizard() {
             }
 
             const responseEntries = Array.isArray(json?.results) ? json.results : [];
-            const responseHasErrors =
-                response.status === 207 ||
-                responseEntries.some((entry) => normalizeInstallStatus(entry?.status) === "error");
-
             setInstallResult({...json, results: responseEntries});
-            if (responseHasErrors) {
-                setInstallError("Installation finished with errors. Check service statuses below.");
-            } else {
-                void openSetupSummary();
+
+            const responseProgress = json?.progress;
+            if (responseProgress && Array.isArray(responseProgress.items)) {
+                const hasRelevantItems = responseProgress.items.some((item) => targetNames.has(item.name));
+                const normalizedStatus = normalizeInstallStatus(responseProgress.status);
+                const isFinished = TERMINAL_INSTALL_STATUSES.has(normalizedStatus);
+                if (hasRelevantItems && !isFinished) {
+                    installProgressStartedRef.current = true;
+                    clearInstallProgressTimeout();
+                }
+                setInstallProgress(responseProgress);
             }
 
-            stopPolling();
-            resetInstallSession();
-            setInstalling(false);
             void pollProgress();
         } catch (error) {
             if (!controller.signal.aborted) {
+                if (installProgressStartedRef.current) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    setInstallError(`${message} Progress is already running; continuing to monitor install status.`);
+                    return;
+                }
                 stopPolling();
                 resetInstallSession();
                 setInstalling(false);
@@ -1527,9 +1667,16 @@ export function SetupWizard() {
                 <Column gap="16">
                     <Row horizontal="between" vertical="center" gap="12">
                         <Column gap="4" style={{minWidth: 0}}>
-                            <Heading as="h3" variant="heading-strong-l">
-                                {SERVICE_LABELS[serviceName] || serviceName}
-                            </Heading>
+                            <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                <Heading as="h3" variant="heading-strong-l">
+                                    {SERVICE_LABELS[serviceName] || serviceName}
+                                </Heading>
+                                {COMING_SOON_SERVICES.has(serviceName) && (
+                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
+                                        coming soon
+                                    </Badge>
+                                )}
+                            </Row>
                             {service.description && (
                                 <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
                                     {service.description}
@@ -1876,12 +2023,48 @@ export function SetupWizard() {
                                     {kavitaMode === "managed" ? (
                                         <Column gap="12">
                                             <Text onBackground="neutral-weak" variant="body-default-xs">Warden will
-                                                install `jvmilazz0/kavita:latest`, mount a config folder under the Noona
-                                                root, and share Raven downloads into `/manga`.</Text>
+                                                install `captainpax/noona-kavita:latest`, mount a config folder under
+                                                the Noona root, share Raven downloads into `/manga`, and pass the
+                                                initial admin credentials into the managed container on first
+                                                boot.</Text>
                                             <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                Noona will create a managed Kavita auth key after install and wire it
-                                                into Portal, Raven, and Komf automatically.
+                                                Noona will then create or reuse a managed Kavita auth key after install
+                                                and wire it into Portal, Raven, and Komf automatically.
                                             </Text>
+                                            <Column gap="8">
+                                                <Text onBackground="neutral-strong" variant="label-default-s">
+                                                    First admin account
+                                                </Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    These credentials are passed to the managed `noona-kavita`
+                                                    container so it can create the first Kavita admin account, and Noona
+                                                    also reuses them to provision the managed API key.
+                                                </Text>
+                                                <Input
+                                                    id="managed-kavita-admin-username"
+                                                    name="managed-kavita-admin-username"
+                                                    type="text"
+                                                    value={kavitaAdminUsername}
+                                                    placeholder="Kavita admin username"
+                                                    onChange={(event) => setKavitaAdminUsername(event.target.value)}
+                                                />
+                                                <Input
+                                                    id="managed-kavita-admin-email"
+                                                    name="managed-kavita-admin-email"
+                                                    type="email"
+                                                    value={kavitaAdminEmail}
+                                                    placeholder="admin@example.com"
+                                                    onChange={(event) => setKavitaAdminEmail(event.target.value)}
+                                                />
+                                                <Input
+                                                    id="managed-kavita-admin-password"
+                                                    name="managed-kavita-admin-password"
+                                                    type="password"
+                                                    value={kavitaAdminPassword}
+                                                    placeholder="Kavita admin password"
+                                                    onChange={(event) => setKavitaAdminPassword(event.target.value)}
+                                                />
+                                            </Column>
                                             {normalizeString(kavitaApiKey).trim() && (
                                                 <Badge background={BG_SUCCESS_ALPHA_WEAK} onBackground="neutral-strong">
                                                     Managed Kavita API key ready
@@ -1972,6 +2155,10 @@ export function SetupWizard() {
                                                                 {service.installed &&
                                                                     <Badge background={BG_SUCCESS_ALPHA_WEAK}
                                                                            onBackground="neutral-strong">installed</Badge>}
+                                                                {COMING_SOON_SERVICES.has(name) &&
+                                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                                                           onBackground="neutral-strong">coming
+                                                                        soon</Badge>}
                                                                 {MANAGED_INTEGRATIONS.has(name) &&
                                                                     <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                                                            onBackground="neutral-strong">{name === "noona-kavita" ? kavitaMode : komfMode}</Badge>}
@@ -2080,18 +2267,22 @@ export function SetupWizard() {
                                 <Column gap="12" fillWidth>
                                     <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                                         <Column gap="4">
-                                            <Heading as="h2" variant="heading-strong-m">Live logs</Heading>
+                                            <Heading as="h2" variant="heading-strong-m">Install logs</Heading>
                                             <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                Live Warden output for the current install session.
+                                                Live installation history for the current Warden session.
                                             </Text>
                                         </Column>
                                         <Badge background={BG_BRAND_ALPHA_WEAK} onBackground="neutral-strong">
-                                            Warden only
+                                            Install session
                                         </Badge>
                                     </Row>
                                     <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                                         <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            {logHistory?.summary?.status ? `Status: ${logHistory.summary.status}` : "Status: idle"}
+                                            {normalizeString(logHistory?.summary?.status).trim()
+                                                ? `Status: ${formatInstallStatusLabel(normalizeString(logHistory?.summary?.status).trim())}`
+                                                : installProgress?.status
+                                                    ? `Status: ${formatInstallStatusLabel(installProgress.status)}`
+                                                    : "Status: idle"}
                                         </Text>
                                         <Button
                                             size="s"

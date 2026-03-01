@@ -1,0 +1,16 @@
+<div class="d-flex justify-content-center align-self-center align-items-center icon-and-title"
+     [ngClass]="{'clickable': clickable()}" [attr.role]="clickable() ? 'button' : ''"
+     (click)="handleClick($event)">
+
+  @if (label()) {
+    <div class="label">
+      {{ label() }}
+    </div>
+  }
+
+  <i class="{{fontClasses()}} mx-auto icon" aria-hidden="true" [title]="title()"></i>
+
+  <div class="text">
+    <ng-content/>
+  </div>
+</div>

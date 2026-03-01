@@ -46,8 +46,10 @@ instead of blindly starting every registered service.
 - `GET /health` - Warden process health.
 - `GET /api/services` - service catalog + status.
 - `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
-- `POST /api/services/install` - install/start one or more services.
+- `POST /api/services/install` - install/start one or more services. Add `?async=true` to accept the install in the
+  background and return `202` with the current progress snapshot instead of holding the request open.
 - `GET /api/services/install/progress` - current installation timeline.
+- `GET /api/services/installation/logs` - buffered installation-session history with summary status/progress.
 - `GET /api/services/:name/logs` - buffered log output.
 - `POST /api/services/:name/test` - service-level diagnostics.
 
@@ -61,6 +63,7 @@ instead of blindly starting every registered service.
 | `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
 | `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                          | `3000`                                                    |
 | `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                                 | `http://noona-vault:3005`                                 |
+| `KAVITA_ADMIN_*`   | Optional managed `noona-kavita` first-admin defaults passed through on install/start  | unset                                                     |
 | `*_VAULT_TOKEN`    | Optional per-service token override                                                   | generated in descriptors                                  |
 
 ## Development Commands
@@ -82,6 +85,13 @@ instead of blindly starting every registered service.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
 - Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.
+- Full-stack lifecycle order now starts Raven before managed Kavita, then Portal, then Komf so the managed content
+  stack comes up in dependency order.
+- Managed Kavita now uses `captainpax/noona-kavita:latest`, and Warden can inject `KAVITA_ADMIN_USERNAME`,
+  `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` so the container can bootstrap the first admin account on its own
+  before Sage provisions the reusable API key.
+- Managed Kavita now probes Kavita's API health endpoint (`/api/Health`) and uses a longer first-boot wait window so
+  setup can reach the initial admin/API-key provisioning flow without requiring a manual UI visit mid-install.
 - Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create
   matching Kavita libraries for new Raven media-type folders when Kavita sync is configured.
 - The managed Komf descriptor is now Kavita-only in setup flows. Warden no longer publishes optional Komga credentials

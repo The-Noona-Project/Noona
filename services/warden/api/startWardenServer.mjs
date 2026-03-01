@@ -54,6 +54,15 @@ const parseDebugValue = (value) => {
     return null;
 };
 
+const parseTruthyQueryValue = (value) => {
+    if (typeof value !== 'string') {
+        return false;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(normalized);
+};
+
 const readDebugState = (warden) => {
     if (typeof warden?.getDebug === 'function') {
         const payload = warden.getDebug();
@@ -108,6 +117,7 @@ export const startWardenServer = ({
     }
 
     const logger = resolveLogger(loggerOverrides);
+    let activeInstallPromise = null;
 
     const server = http.createServer(async (req, res) => {
         if (!req.url) {
@@ -184,6 +194,35 @@ export const startWardenServer = ({
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to fetch install progress: ${error.message}`);
                 sendJson(res, 500, {error: 'Unable to retrieve installation progress.'});
+            }
+            return;
+        }
+
+        if (
+            req.method === 'GET' &&
+            segments.length === 4 &&
+            segments[0] === 'api' &&
+            segments[1] === 'services' &&
+            segments[2] === 'installation' &&
+            segments[3] === 'logs'
+        ) {
+            const limitParam = url.searchParams.get('limit');
+
+            try {
+                const history = await warden.getServiceHistory?.('installation', {limit: limitParam});
+                if (!history) {
+                    sendJson(res, 200, {
+                        service: 'installation',
+                        entries: [],
+                        summary: {status: 'idle', percent: null, detail: null, updatedAt: null},
+                    });
+                    return;
+                }
+
+                sendJson(res, 200, history);
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to fetch installation logs: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to retrieve installation logs.'});
             }
             return;
         }
@@ -331,9 +370,44 @@ export const startWardenServer = ({
             }
 
             const services = body?.services;
+            const asyncRequested =
+                parseTruthyQueryValue(url.searchParams.get('async'))
+                || parseTruthyQueryValue(url.searchParams.get('background'))
+                || body?.async === true;
 
             if (!Array.isArray(services) || services.length === 0) {
                 sendJson(res, 400, {error: 'Body must include a non-empty "services" array.'});
+                return;
+            }
+
+            if (asyncRequested) {
+                if (activeInstallPromise) {
+                    const progress = await warden.getInstallationProgress?.();
+                    sendJson(res, 202, {
+                        accepted: true,
+                        started: false,
+                        alreadyRunning: true,
+                        progress: progress ?? {items: [], status: 'idle', percent: null},
+                    });
+                    return;
+                }
+
+                const installPromise = Promise.resolve(warden.installServices(services));
+                activeInstallPromise = installPromise
+                    .catch((error) => {
+                        logger.error?.(`[Warden API] Background install failed: ${error.message}`);
+                    })
+                    .finally(() => {
+                        activeInstallPromise = null;
+                    });
+                const progress = await warden.getInstallationProgress?.();
+
+                sendJson(res, 202, {
+                    accepted: true,
+                    started: true,
+                    alreadyRunning: false,
+                    progress: progress ?? {items: [], status: 'idle', percent: null},
+                });
                 return;
             }
 

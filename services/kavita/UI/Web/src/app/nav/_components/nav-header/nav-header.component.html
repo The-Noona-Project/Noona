@@ -1,0 +1,254 @@
+<ng-container *transloco="let t; prefix: 'nav-header'">
+  @if (navService.navbarVisibleSignal()) {
+    @let user = currentUser();
+
+    <nav class="navbar navbar-expand-md navbar-dark fixed-top">
+      <div class="container-fluid">
+        <a class="visually-hidden-focusable focus-visible" href="javascript:void(0);"
+           (click)="moveFocus()">{{ t('skip-alt') }}</a>
+
+        @if (navService.sideNavVisibilitySignal()) {
+          <a class="side-nav-toggle" (click)="toggleSideNav($event)"><i class="fas fa-bars" aria-hidden="true"></i></a>
+        }
+
+        <a class="navbar-brand dark-exempt" routerLink="/home" routerLinkActive="active">
+          <app-image width="24px" height="24px" imageUrl="assets/images/logo-32.png" classes="logo-icon"/>
+          <div class="d-none d-md-inline logo">
+            <span>Kavita</span>
+          </div>
+        </a>
+        <ul class="navbar-nav col me-auto">
+          @if (user) {
+            <div class="nav-item search">
+              <label for="nav-search" class="form-label visually-hidden">{{ t('search-series-alt') }}</label>
+              <div class="ng-autocomplete">
+                <app-grouped-typeahead
+                  #search
+                  id="nav-search"
+                  [minQueryLength]="2"
+                  [isLoading]="isLoading()"
+                  initialValue=""
+                  [placeholder]="t('search-alt')"
+                  [groupedData]="searchResults"
+                  (inputChanged)="onChangeSearch($event)"
+                  (clearField)="clearSearch()"
+                >
+
+                  <ng-template #libraryTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;" (click)="clickLibraryResult(item)">
+                      <div class="ms-1">
+                        <span>{{ item.name }}</span>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #seriesTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="clickSeriesSearchResult(item)">
+                      <div style="width: 1.5rem" class="me-1">
+                        <app-image class="me-3 search-result" width="24px"
+                                   [imageUrl]="imageService.getSeriesCoverImage(item.seriesId)"/>
+                      </div>
+                      <div class="ms-1">
+                        <app-series-format [format]="item.format"/>
+                        @let normalizedSearchTerm = searchTerm.toLowerCase().trim();
+
+                        <span class="ms-1">
+                        @if (item.name.toLowerCase().trim().indexOf(normalizedSearchTerm) >= 0) {
+                          {{ item.name }}
+                        } @else {
+                          <span [innerHTML]="item.localizedName"></span>
+                        }
+                        </span>
+                        <div class="text-light fst-italic" style="font-size: 0.8rem;">in {{ item.libraryName }}</div>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #annotationTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="clickAnnotationSearchResult(item)">
+                      <div class="ms-1">
+                        @let normalizedSearchTerm = searchTerm.toLowerCase().trim();
+
+                        @if (item.comment.toLowerCase().trim().indexOf(normalizedSearchTerm) >= 0) {
+                          <!--We can't render the comment as it's json -->
+                          <quill-view [content]="item.context"/>
+                        } @else {
+                          <span>{{ item.chapterTitle }}</span>
+                        }
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #bookmarkTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="clickBookmarkSearchResult(item)">
+                      <div style="width: 1.5rem" class="me-1">
+                        <app-image class="me-3 search-result" width="24px"
+                                   [imageUrl]="imageService.getSeriesCoverImage(item.seriesId)"/>
+                      </div>
+                      <div class="ms-1">
+                        <app-series-format [format]="item.format"/>
+
+                        @if (searchTerm.toLowerCase().trim(); as st) {
+                          @if (item.seriesName.toLowerCase().trim().indexOf(st) >= 0) {
+                            <span>{{ item.seriesName }}</span>
+                          } @else {
+                            <span [innerHTML]="item.localizedSeriesName"></span>
+                          }
+                        }
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #collectionTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="clickCollectionSearchResult(item)">
+                      <div style="width: 1.5rem" class="me-1">
+                        <app-image class="me-3 search-result" width="24px"
+                                   [imageUrl]="imageService.getCollectionCoverImage(item.id)"/>
+                      </div>
+                      <div class="ms-1">
+                        <div>
+                          <span>{{ item.title }}</span>
+                          <app-promoted-icon [promoted]="item.promoted"/>
+                        </div>
+                        <app-collection-owner [collection]="item"/>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #readingListTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="clickReadingListSearchResult(item)">
+                      <div class="ms-1">
+                        <span>{{ item.title }}</span>
+                        <app-promoted-icon [promoted]="item.promoted"/>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #tagTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="goToOther(FilterField.Tags, item.id)">
+                      <div class="ms-1">
+                        <span>{{ item.title }}</span>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #personTemplate let-item>
+                    <div style="display: flex;padding: 0.3125rem;" class="clickable" (click)="goToPerson(item)">
+                      <div style="width: 1.5rem" class="me-1">
+                        <app-image class="me-3 search-result"
+                                   [styles]="{'background': 'none', 'max-height': '24px', 'height': '24px', 'width': '24px', 'border-radius': '50%'}"
+                                   width="24px" [imageUrl]="imageService.getPersonImage(item.id)"
+                                   [errorImage]="imageService.noPersonImage"/>
+                      </div>
+                      <div class="ms-1">
+                        <div>
+                          {{ item.name }}
+                        </div>
+                        @if (item.aliases.length > 0) {
+                          <span class="small-text">
+                        {{ t('person-aka-status') }}
+                      </span>
+                        }
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #genreTemplate let-item>
+                    <div style="display: flex;padding: 0.3125rem;" class="clickable"
+                         (click)="goToOther(FilterField.Genres, item.id)">
+                      <div class="ms-1">
+                        <div [innerHTML]="item.title"></div>
+                      </div>
+                    </div>
+                  </ng-template>
+
+
+                  <ng-template #chapterTemplate let-item>
+                    <div style="display: flex;padding: 0.3125rem;" class="clickable"
+                         (click)="clickChapterSearchResult(item)">
+                      <div class="ms-1">
+                        @if (item.files.length > 0) {
+                          <app-series-format [format]="item.files?.[0].format"/>
+                        }
+                        <!-- TODO: this needs the series name before the chapter issue -->
+                        <span>{{ item.titleName || item.range }}</span>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #fileTemplate let-item>
+                    <div class="clickable" style="display: flex;padding: 0.3125rem;"
+                         (click)="clickFileSearchResult(item)">
+                      <div class="ms-1">
+                        <app-series-format [format]="item.format"/>
+                        <span>{{ item.filePath }}</span>
+                      </div>
+                    </div>
+                  </ng-template>
+
+                  <ng-template #noResultsTemplate let-notFound>
+                    {{ t('no-data') }}
+                  </ng-template>
+                </app-grouped-typeahead>
+              </div>
+            </div>
+          }
+        </ul>
+
+        @if (user) {
+          @if (accountService.hasAdminRole()) {
+            <div class="nav-item me-2">
+              <app-nav-events-toggle [user]="user"/>
+            </div>
+          }
+
+          @if (breakpointService.isMobileOrBelow()) {
+            <button class="btn btn-outline-secondary primary-text" (click)="openLinkSelectionMenu()">
+              <app-profile-icon [userId]="user.id" [size]="20"/>
+            </button>
+          } @else {
+            <div class="nav-item not-xs-only">
+              <a routerLink="/settings" [fragment]="SettingsTabId.Preferences" class="dark-exempt btn btn-icon"
+                 [title]="t('settings')">
+                <i class="fa fa-cogs nav" aria-hidden="true"></i>
+                <span class="visually-hidden">{{ t('settings') }}</span>
+              </a>
+            </div>
+
+            <div ngbDropdown class="nav-item dropdown d-sm-none d-md-block" display="dynamic" placement="bottom-right">
+              <button class="btn btn-outline-secondary primary-text" ngbDropdownToggle>
+                <span class="phone-hidden d-xs-inline-block d-sm-inline-block me-2">
+                  <app-profile-icon [userId]="user.id" [size]="20"/>
+                </span>
+                <span
+                  class="d-none d-xs-none d-sm-none d-md-inline-block fw-bold">{{ user.username | sentenceCase }}</span>
+              </button>
+              <div ngbDropdownMenu>
+                <a ngbDropdownItem [routerLink]="profileLink()" [fragment]="'stats-tab'">{{ t('my-profile') }}</a>
+                @for (navItem of navService.navItems; track $index) {
+                  @if (navItem.routerLink) {
+                    <a ngbDropdownItem [routerLink]="navItem.routerLink"
+                       [fragment]="navItem.fragment">{{ t(navItem.transLocoKey) }}</a>
+                  } @else if (navItem.href) {
+                    <a ngbDropdownItem [href]="navItem.href" rel="noopener noreferrer"
+                       target="_blank">{{ t(navItem.transLocoKey) }}</a>
+                  } @else if (navItem.click) {
+                    <a ngbDropdownItem (click)="navItem.click()">{{ t(navItem.transLocoKey) }}</a>
+                  }
+                }
+              </div>
+            </div>
+          }
+        }
+      </div>
+    </nav>
+  }
+
+
+</ng-container>

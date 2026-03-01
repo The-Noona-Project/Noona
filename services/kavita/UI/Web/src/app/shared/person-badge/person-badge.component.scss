@@ -1,0 +1,29 @@
+.tagbadge {
+  background-color: var(--tagbadge-bg-color);
+  transition: all .3s ease-out;
+  margin: 0.1875rem 0.625rem 0.1875rem 0;
+  border-radius: 0.375rem;
+  font-size: .8rem;
+  display: inline-block;
+  cursor: pointer;
+  width: 6rem;
+  word-break: break-word;
+
+  i {
+    max-height: 3rem;
+    height: 3rem;
+    width: 3rem;
+    font-size: 2.96rem;
+    font-weight: bold;
+    cursor: pointer;
+  }
+
+  .image-container {
+    background: var(--card-bg-color);
+    max-height: 6rem;
+    height: 6rem;
+    width: 6rem;
+    border-radius: 50%;
+    overflow: hidden;
+  }
+}

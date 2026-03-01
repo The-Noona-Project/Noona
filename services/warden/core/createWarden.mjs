@@ -449,9 +449,9 @@ export function createWarden(options = {}) {
         'noona-vault',
         'noona-sage',
         'noona-moon',
-        'noona-portal',
         'noona-raven',
         'noona-kavita',
+        'noona-portal',
         'noona-komf',
         'noona-oracle',
     ];

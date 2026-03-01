@@ -1,0 +1,35 @@
+<div class="main-container container-fluid">
+  <ng-container *transloco="let t; prefix: 'all-series'">
+    <app-side-nav-companion-bar [hasFilter]="true" (filterOpen)="filterOpen.emit($event)" [filterActive]="filterActive">
+      <h4 title>
+        {{ title }}
+      </h4>
+      @if (pagination) {
+        <h5 subtitle>{{ t('series-count', {num: pagination.totalItems | number}) }}</h5>
+      }
+    </app-side-nav-companion-bar>
+    @if (filter) {
+      <app-card-detail-layout
+        [isLoading]="loadingSeries"
+        [items]="series"
+        [filterOpen]="filterOpen"
+        [jumpBarKeys]="jumpbarKeys"
+        [trackByIdentity]="trackByIdentity"
+        [filterSettings]="filterSettings"
+        (applyFilter)="updateFilter($event)"
+      >
+
+        <ng-template #topBar>
+          <app-bulk-operations/>
+        </ng-template>
+
+        <ng-template #cardItem let-item let-position="idx">
+          <app-series-card [series]="item" (reload)="loadPage()" (dataChanged)="updateSeries($event)"
+                           [index]="position" [maxIndex]="series.length" [allowSelection]="true"/>
+        </ng-template>
+      </app-card-detail-layout>
+    }
+
+
+  </ng-container>
+</div>

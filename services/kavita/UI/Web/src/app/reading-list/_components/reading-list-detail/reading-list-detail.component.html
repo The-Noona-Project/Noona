@@ -1,0 +1,251 @@
+<div class="main-container container-fluid">
+  <ng-container *transloco="let t; prefix: 'reading-list-detail'">
+    <form [formGroup]="formGroup">
+      @let rl = readingList();
+      @if (rl) {
+        <div [ngStyle]="{'height': ScrollingBlockHeight}" class="main-container container-fluid" #scrollingBlock>
+          <div class="row mb-0 mb-xl-3 info-container">
+            <div
+              class="image-container series col-5 col-sm-6 col-md-5 col-lg-5 col-xl-2 col-xxl-2 col-xxxl-2 d-none d-sm-block mb-3 position-relative">
+              <app-image [styles]="{'max-height': '400px', 'max-width': '300px'}" [imageUrl]="imageUrl()"
+                         (click)="read()"/>
+            </div>
+
+            <div class="col-xl-10 col-lg-7 col-md-12 col-sm-12 col-xs-12">
+              <h4 class="title mb-2">
+            <span>
+              <app-promoted-icon [promoted]="rl.promoted"/>
+              <span class="ms-2">{{ rl.title }}</span>
+              @if (isLoading()) {
+                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                  <span class="visually-hidden">{{ t('loading-alt') }}</span>
+                </div>
+              }
+              </span>
+              </h4>
+
+              <div class="mt-3 mb-3">
+                <div class="row g-0" style="align-items: center;">
+                  <div class="col-auto me-2">
+                    <!-- Action row-->
+                    <div class="btn-group me-3">
+                      <button type="button" class="btn btn-outline-primary" (click)="continue()">
+                      <span>
+                        <i class="fa fa-book-open me-1" aria-hidden="true"></i>
+                        <span class="read-btn--text">{{ t('continue') }}</span>
+                      </span>
+                      </button>
+                      <div class="btn-group" ngbDropdown role="group" [attr.aria-label]="t('read-options-alt')">
+                        <button type="button" class="btn btn-outline-primary dropdown-toggle-split"
+                                ngbDropdownToggle></button>
+                        <div class="dropdown-menu" ngbDropdownMenu>
+                          <button ngbDropdownItem (click)="read()">
+                          <span>
+                            <i class="fa fa-book" aria-hidden="true"></i>
+                            <span class="read-btn--text">&nbsp;{{ t('read') }}</span>
+                          </span>
+                          </button>
+                          <button ngbDropdownItem (click)="continue(true)">
+                          <span>
+                            <i class="fa fa-book-open me-1" aria-hidden="true"></i>
+                            <span class="read-btn--text">{{ t('continue') }}</span>
+                            (<i class="fa fa-glasses ms-1" aria-hidden="true"></i>)
+                            <span class="visually-hidden">{{ t('incognito-alt') }}</span>
+                          </span>
+                          </button>
+                          <button ngbDropdownItem (click)="read(true)">
+                          <span>
+                            <i class="fa fa-book me-1" aria-hidden="true"></i>
+                            <span class="read-btn--text">&nbsp;{{ t('read') }}</span>
+                            (<i class="fa fa-glasses ms-1" aria-hidden="true"></i>)
+                            <span class="visually-hidden">{{ t('incognito-alt') }}</span>
+                          </span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+
+                  @if (isOwnedReadingList()) {
+                    <div class="col-auto ms-2">
+                      <button class="btn btn-actions" (click)="editReadingList(rl)" [ngbTooltip]="t('edit-alt')">
+                        <span><i class="fa fa-pen" aria-hidden="true"></i></span>
+                      </button>
+                    </div>
+                  }
+
+
+                  <div class="col-auto ms-2">
+                    <div class="card-actions btn-actions" [ngbTooltip]="t('more-alt')">
+                      <app-card-actionables [entity]="rl" [actions]="actions()" [labelBy]="rl.title"
+                                            iconClass="fa-ellipsis-h" btnClass="btn"
+                                            (actionHandler)="handleReadingListActionCallback($event)"/>
+                    </div>
+                  </div>
+
+                  @if (isOwnedReadingList()) {
+                    <div class="col-auto ms-2 d-none d-md-block btn-actions">
+                      <button [class]="formGroup.get('edit')?.value ? 'btn btn-primary' : 'btn btn-icon'"
+                              (click)="toggleReorder()" [ngbTooltip]="t('reorder-alt')">
+                        <i class="fa-solid fa-list-ol" aria-hidden="true"></i>
+                      </button>
+                    </div>
+                  }
+                </div>
+              </div>
+
+              <div class="mt-2 mb-3">
+                <app-read-more [text]="readingListSummary()" [useResponsiveLength]="true"/>
+              </div>
+
+              <div class="mt-2 upper-details">
+                <div class="row g-0">
+                  <div class="col-6 pe-5">
+                    <span class="fw-bold">{{ t('date-range-title') }}</span>
+                    <div>
+                      {{ dateRangeLabel() ?? (null | defaultValue) }}
+                    </div>
+                  </div>
+                  <div class="col-6">
+                    <span class="fw-bold">{{ t('items-title') }}</span>
+                    <div>
+                      {{ t('item-count', {num: items().length | number}) }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-3 mb-2 upper-details">
+                <div class="row g-0">
+                  <div class="col-6 pe-5">
+                    <span class="fw-bold">{{ t('writers-title') }}</span>
+                    <div class="row mb-2">
+                      <div class="row">
+                        <app-badge-expander [items]="castInfo().writers"
+                                            [itemsTillExpander]="3"
+                                            [allowToggle]="false"
+                                            (toggled)="switchTabsToDetail()">
+                          <ng-template #badgeExpanderItem let-item let-position="idx" let-last="last">
+                            <a routerLink="/person/{{encodeURIComponent(item.name)}}/"
+                               class="dark-exempt btn-icon">{{ item.name }}</a>
+                          </ng-template>
+                        </app-badge-expander>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="col-6">
+                    <span class="fw-bold">{{ t('cover-artists-title') }}</span>
+                    <div class="row mb-2">
+                      <div class="row">
+                        <app-badge-expander [items]="castInfo().coverArtists"
+                                            [itemsTillExpander]="3"
+                                            [allowToggle]="false"
+                                            (toggled)="switchTabsToDetail()">
+                          <ng-template #badgeExpanderItem let-item let-position="idx" let-last="last">
+                            <a routerLink="/person/{{encodeURIComponent(item.name)}}/"
+                               class="dark-exempt btn-icon">{{ item.name }}</a>
+                          </ng-template>
+                        </app-badge-expander>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-3 mb-2 upper-details">
+                <!-- Edit Row -->
+                <div class="row g-0">
+
+                  @if (formGroup.get('edit')?.value) {
+                    @if (!rl.promoted && this.isOwnedReadingList()) {
+                      <div class="col-auto">
+                        <button class="btn btn-sm btn-danger" (click)="removeRead()">
+                          <i class="fa fa-check me-1" aria-hidden="true"></i>
+                          {{ t('remove-read') }}
+                        </button>
+                      </div>
+                    }
+
+                    <div class="col-auto ms-2">
+                      <div class="form-check form-switch form-check-inline mt-1">
+                        <input class="form-check-input" type="checkbox" id="accessibility-mode"
+                               formControlName="accessibilityMode">
+                        <label class="form-check-label" for="accessibility-mode">{{ t('order-numbers-label') }}</label>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="carousel-tabs-container mb-2">
+            <ul ngbNav #nav="ngbNav" [(activeId)]="activeTabId" class="nav nav-tabs" [destroyOnHide]="false"
+                (navChange)="onNavChange($event)">
+
+              <li [ngbNavItem]="TabID.Storyline">
+                <a ngbNavLink>{{ t(TabID.Storyline) }}</a>
+                <ng-template ngbNavContent>
+                  @defer (when activeTabId === TabID.Storyline; prefetch on idle) {
+                    <div class="row mb-1 scroll-container" #scrollingBlock>
+                      @if (items().length === 0 && !isLoading()) {
+                        <div class="mx-auto" style="width: 12.5rem;">
+                          {{ t('no-data') }}
+                        </div>
+                      } @else if (isLoading()) {
+                        <app-loading [loading]="isLoading()"/>
+                      }
+
+                      @if (formGroup.get('edit')?.value && (items().length > 100 || breakpointService.isMobile())) {
+                        <div class="alert alert-secondary mt-2" role="alert">
+                          {{ t('dnd-warning') }}
+                        </div>
+                      }
+
+                      <app-draggable-ordered-list [items]="items()" [accessibilityMode]="accessibilityMode()"
+                                                  [disabled]="!(formGroup.get('edit')?.value || false)"
+                                                  (orderUpdated)="orderUpdated($event)"
+                                                  (itemRemove)="removeItem($event)"
+                                                  [showRemoveButton]="formGroup.get('edit')?.value || false"
+                                                  [trackByIdentity]="trackByIdentity">
+
+                        <ng-template #draggableItem let-item let-position="idx">
+                          <app-reading-list-item
+                            [ngClass]="{'content-container': items().length < 100, 'non-virtualized-container': items().length >= 100}"
+                            [item]="item"
+                            [position]="position" [libraryTypes]="libraryTypes()"
+                            [promoted]="item.promoted" (read)="readChapter($event)"
+                            (remove)="removeItem($event)"
+                            [showRemove]="false"/>
+                        </ng-template>
+                      </app-draggable-ordered-list>
+                    </div>
+                  }
+                </ng-template>
+              </li>
+
+
+              @if (rlInfo() && castInfo()) {
+                <li [ngbNavItem]="TabID.Details" id="details-tab">
+                  <a ngbNavLink>{{ t(TabID.Details) }}</a>
+                  <ng-template ngbNavContent>
+                    @defer (when activeTabId === TabID.Details; prefetch on idle) {
+                      <app-details-tab [metadata]="castInfo()"
+                                       [suppressEmptyGenres]="true"
+                                       [suppressEmptyTags]="true"
+                      />
+                    }
+                  </ng-template>
+                </li>
+              }
+
+            </ul>
+          </div>
+          <div [ngbNavOutlet]="nav" style="min-height: 18.75rem"></div>
+        </div>
+      }
+    </form>
+  </ng-container>
+</div>
