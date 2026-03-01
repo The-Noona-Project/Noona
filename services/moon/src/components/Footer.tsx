@@ -1,5 +1,6 @@
 import {IconButton, Row, SmartLink, Text} from "@once-ui-system/core";
 import {moonSite} from "@/resources";
+import {FooterKavitaButton} from "./FooterKavitaButton";
 import styles from "./Footer.module.scss";
 
 export const Footer = () => {
@@ -51,6 +52,7 @@ export const Footer = () => {
                             variant="ghost"
                         />
                     ))}
+                    <FooterKavitaButton/>
                 </Row>
             </Row>
             <Row height="80" hide s={{hide: false}}/>

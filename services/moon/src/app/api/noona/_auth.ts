@@ -13,3 +13,18 @@ export const withNoonaAuthHeaders = async (headers: Record<string, string> = {})
     if (!token) return headers;
     return {...headers, Authorization: `Bearer ${token}`};
 };
+
+export const buildNoonaSessionCookieOptions = (request: Request) => {
+    const forwardedProto = request.headers.get("x-forwarded-proto");
+    const requestProto = new URL(request.url).protocol.replace(":", "");
+    const effectiveProto = (forwardedProto ?? requestProto ?? "http").trim().toLowerCase();
+    const secureCookie = process.env.NODE_ENV === "production" && effectiveProto === "https";
+
+    return {
+        httpOnly: true,
+        sameSite: "lax" as const,
+        secure: secureCookie,
+        path: "/",
+        maxAge: 60 * 60 * 24,
+    };
+};

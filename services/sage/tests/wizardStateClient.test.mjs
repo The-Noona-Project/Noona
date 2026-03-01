@@ -60,7 +60,7 @@ test('reset activates the library-services step for managed Kavita and Komf sele
     }
 
     const publisher = createWizardStatePublisher({client})
-    await publisher.reset(['kavita', 'komf'])
+    await publisher.reset(['noona-kavita', 'komf'])
 
     assert.ok(writes.length > 0, 'Expected the reset to persist wizard state')
     const latest = writes[writes.length - 1]

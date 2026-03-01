@@ -223,3 +223,53 @@ test('scanLibrary rejects invalid library ids', async () => {
 
     await assert.rejects(() => kavita.scanLibrary('abc'), /valid Kavita library id/i);
 });
+
+test('fetchSeriesMetadataMatches calls Kavita series match endpoint', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify([{provider: 'AniList', aniListId: 123}]),
+            };
+        },
+    });
+
+    const matches = await kavita.fetchSeriesMetadataMatches(42);
+
+    assert.equal(matches.length, 1);
+    const requestUrl = new URL(calls[0].url);
+    assert.equal(requestUrl.pathname, '/api/Series/match');
+    assert.equal(calls[0].options.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {seriesId: 42});
+});
+
+test('applySeriesMetadataMatch sends provider ids to Kavita update-match endpoint', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => '',
+            };
+        },
+    });
+
+    await kavita.applySeriesMetadataMatch({seriesId: 42, aniListId: 151807});
+
+    const requestUrl = new URL(calls[0].url);
+    assert.equal(requestUrl.pathname, '/api/Series/update-match');
+    assert.equal(requestUrl.searchParams.get('seriesId'), '42');
+    assert.equal(requestUrl.searchParams.get('aniListId'), '151807');
+    assert.equal(calls[0].options.method, 'POST');
+});

@@ -400,7 +400,25 @@ export const createSageApp = ({
 
         return 86400
     })()
+    const oauthStatePrefix =
+        typeof authOptions.oauthStatePrefix === 'string' && authOptions.oauthStatePrefix.trim()
+            ? authOptions.oauthStatePrefix.trim()
+            : 'noona:discord:oauth:'
+    const oauthStateTtlSeconds = (() => {
+        const fromOptions = Number(authOptions.oauthStateTtlSeconds)
+        if (Number.isFinite(fromOptions) && fromOptions > 0) {
+            return Math.floor(fromOptions)
+        }
+
+        return 600
+    })()
+    const discordOauthFetch = authOptions.fetchImpl ?? authOptions.fetch ?? fetch
+    const discordOauthBaseUrl =
+        typeof authOptions.discordOauthBaseUrl === 'string' && authOptions.discordOauthBaseUrl.trim()
+            ? authOptions.discordOauthBaseUrl.trim().replace(/\/+$/, '')
+            : 'https://discord.com/api'
     const inMemorySessionStore = new Map()
+    const inMemoryOauthStateStore = new Map()
     let pendingAdmin = null
 
     const DEFAULT_NAMING_SETTINGS = Object.freeze({
@@ -416,6 +434,11 @@ export const createSageApp = ({
         key: 'noona.debug',
         enabled: isDebugEnabled(),
     })
+    const DISCORD_AUTH_SETTINGS_KEY = 'auth.discord'
+    const DISCORD_CALLBACK_PATH = '/discord/callback/'
+    const LOCAL_AUTH_PROVIDER = 'local'
+    const DISCORD_AUTH_PROVIDER = 'discord'
+    const USER_DISPLAY_NAME_MAX_LENGTH = 80
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
     const normalizeUsername = (value) => normalizeString(value)
@@ -426,6 +449,99 @@ export const createSageApp = ({
             return normalized
         }
         return fallback
+    }
+    const normalizeDiscordUserId = (value) => {
+        const normalized = normalizeString(value)
+        return /^\d{5,32}$/.test(normalized) ? normalized : ''
+    }
+    const normalizeAuthProvider = (value, fallback = LOCAL_AUTH_PROVIDER) => {
+        const normalized = normalizeString(value).toLowerCase()
+        if (normalized === DISCORD_AUTH_PROVIDER) {
+            return DISCORD_AUTH_PROVIDER
+        }
+        if (normalized === LOCAL_AUTH_PROVIDER) {
+            return LOCAL_AUTH_PROVIDER
+        }
+        return fallback
+    }
+    const normalizeDisplayName = (value, fallback = '') => {
+        const normalized = normalizeString(value)
+        if (normalized) {
+            return normalized.slice(0, USER_DISPLAY_NAME_MAX_LENGTH)
+        }
+        return normalizeString(fallback).slice(0, USER_DISPLAY_NAME_MAX_LENGTH)
+    }
+    const buildDiscordLookupKey = (discordUserId) => {
+        const normalized = normalizeDiscordUserId(discordUserId)
+        return normalized ? `discord.${normalized}` : ''
+    }
+    const resolveDiscordDisplayName = (user, fallback = '') =>
+        normalizeDisplayName(
+            user?.username
+            || user?.discordGlobalName
+            || user?.globalName
+            || user?.discordUsername
+            || user?.usernameTag
+            || fallback,
+            fallback,
+        )
+    const buildDiscordAvatarUrl = ({id, avatar}) => {
+        const userId = normalizeDiscordUserId(id)
+        const avatarHash = normalizeString(avatar)
+        if (!userId || !avatarHash) {
+            return null
+        }
+
+        const extension = avatarHash.startsWith('a_') ? 'gif' : 'png'
+        return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=256`
+    }
+    const hashPassword = (password) => {
+        const salt = crypto.randomBytes(16)
+        const derived = crypto.scryptSync(password, salt, 64, {
+            N: 16384,
+            r: 8,
+            p: 1,
+        })
+        return `scrypt$16384$8$1$${salt.toString('base64')}$${derived.toString('base64')}`
+    }
+    const verifyPassword = (password, stored) => {
+        if (typeof password !== 'string' || !password || typeof stored !== 'string' || !stored) {
+            return false
+        }
+
+        const parts = stored.split('$')
+        if (parts.length !== 6 || parts[0] !== 'scrypt') {
+            return false
+        }
+
+        const N = Number(parts[1])
+        const r = Number(parts[2])
+        const p = Number(parts[3])
+        if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p)) {
+            return false
+        }
+
+        let salt
+        let expected
+        try {
+            salt = Buffer.from(parts[4], 'base64')
+            expected = Buffer.from(parts[5], 'base64')
+        } catch {
+            return false
+        }
+
+        let derived
+        try {
+            derived = crypto.scryptSync(password, salt, expected.length, {N, r, p})
+        } catch {
+            return false
+        }
+
+        if (derived.length !== expected.length) {
+            return false
+        }
+
+        return crypto.timingSafeEqual(derived, expected)
     }
     const parseBooleanInput = (value) => {
         if (typeof value === 'boolean') {
@@ -552,11 +668,373 @@ export const createSageApp = ({
     }
     const isAdminUser = (user) => hasMoonPermission(user, 'admin')
     const normalizeUserLookupKey = (user) => {
+        const authProvider = normalizeAuthProvider(user?.authProvider, '')
+        if (authProvider === DISCORD_AUTH_PROVIDER) {
+            const discordLookup = buildDiscordLookupKey(user?.discordUserId || user?.authProviderId)
+            if (discordLookup) {
+                return discordLookup
+            }
+        }
         const normalized = normalizeUsernameKey(user?.usernameNormalized)
         if (normalized) {
             return normalized
         }
         return normalizeUsernameKey(user?.username)
+    }
+    const buildAuthUserLookupQuery = (user, fallbackLookupKey = '') => {
+        if (user && Object.prototype.hasOwnProperty.call(user, '_id')) {
+            return {_id: user._id}
+        }
+
+        const storedLookupKey = normalizeUsernameKey(user?.usernameNormalized)
+        if (storedLookupKey) {
+            return {usernameNormalized: storedLookupKey}
+        }
+
+        const username = normalizeUsername(user?.username)
+        if (username) {
+            return {username}
+        }
+
+        const fallbackLookup = normalizeUsernameKey(fallbackLookupKey)
+        if (fallbackLookup) {
+            return {usernameNormalized: fallbackLookup}
+        }
+
+        return null
+    }
+    const buildAuthUserDoc = ({
+                                  existingUser = null,
+                                  username = '',
+                                  password = '',
+                                  role = 'member',
+                                  permissions = undefined,
+                                  isBootstrapUser = false,
+                                  authProvider = LOCAL_AUTH_PROVIDER,
+                                  discordUserId = '',
+                                  discordUsername = '',
+                                  discordGlobalName = '',
+                                  avatarUrl = '',
+                                  email = '',
+                              } = {}) => {
+        const provider = normalizeAuthProvider(authProvider, LOCAL_AUTH_PROVIDER)
+        const now = new Date().toISOString()
+        const currentRole = normalizeRole(existingUser?.role, 'member')
+        const nextRole = normalizeRole(role, currentRole)
+        const hasPermissionsInput = Array.isArray(permissions)
+        let nextPermissions = hasPermissionsInput
+            ? normalizePermissionList(permissions)
+            : resolveUserPermissions(existingUser, nextRole)
+
+        if (!hasPermissionsInput && (!Array.isArray(existingUser?.permissions) || nextPermissions.length === 0)) {
+            nextPermissions = defaultPermissionsForRole(nextRole)
+        }
+
+        if (nextRole === 'admin' && !nextPermissions.includes('admin')) {
+            nextPermissions = sortMoonPermissions([...nextPermissions, 'admin'])
+        }
+        if (nextRole !== 'admin') {
+            nextPermissions = sortMoonPermissions(nextPermissions.filter((entry) => entry !== 'admin'))
+        }
+
+        if (provider === DISCORD_AUTH_PROVIDER) {
+            const normalizedDiscordId = normalizeDiscordUserId(discordUserId || existingUser?.discordUserId || existingUser?.authProviderId)
+            if (!normalizedDiscordId) {
+                throw new Error('discordUserId is required for Discord-auth users.')
+            }
+
+            return {
+                username:
+                    resolveDiscordDisplayName(
+                        {
+                            username,
+                            discordGlobalName,
+                            discordUsername,
+                        },
+                        existingUser?.username || `Discord ${normalizedDiscordId}`,
+                    ) || `Discord ${normalizedDiscordId}`,
+                usernameNormalized: buildDiscordLookupKey(normalizedDiscordId),
+                passwordHash: null,
+                authProvider: DISCORD_AUTH_PROVIDER,
+                authProviderId: normalizedDiscordId,
+                discordUserId: normalizedDiscordId,
+                discordUsername: normalizeString(discordUsername) || normalizeString(existingUser?.discordUsername) || null,
+                discordGlobalName:
+                    normalizeString(discordGlobalName) || normalizeString(existingUser?.discordGlobalName) || null,
+                avatarUrl:
+                    normalizeString(avatarUrl)
+                    || normalizeString(existingUser?.avatarUrl)
+                    || buildDiscordAvatarUrl({
+                        id: normalizedDiscordId,
+                        avatar: existingUser?.discordAvatar,
+                    })
+                    || null,
+                email: normalizeString(email) || normalizeString(existingUser?.email) || null,
+                role: nextPermissions.includes('admin') ? 'admin' : 'member',
+                permissions: nextPermissions,
+                isBootstrapUser: parseBooleanInput(isBootstrapUser ?? existingUser?.isBootstrapUser) === true,
+                createdAt:
+                    normalizeString(existingUser?.createdAt)
+                    || now,
+                updatedAt: now,
+                createdBy: normalizeString(existingUser?.createdBy) || serviceName,
+                updatedBy: serviceName,
+            }
+        }
+
+        const normalizedUsername = normalizeUsername(username || existingUser?.username)
+        if (!normalizedUsername || !isValidUsername(normalizedUsername)) {
+            throw new Error('username must be 3-64 characters (letters, numbers, ., _, -).')
+        }
+
+        const nextDoc = {
+            username: normalizedUsername,
+            usernameNormalized: normalizeUsernameKey(normalizedUsername),
+            passwordHash:
+                typeof password === 'string' && password
+                    ? hashPassword(password)
+                    : normalizeString(existingUser?.passwordHash) || null,
+            authProvider: LOCAL_AUTH_PROVIDER,
+            authProviderId: null,
+            discordUserId: null,
+            discordUsername: null,
+            discordGlobalName: null,
+            avatarUrl: null,
+            email: null,
+            role: nextPermissions.includes('admin') ? 'admin' : 'member',
+            permissions: nextPermissions,
+            isBootstrapUser: parseBooleanInput(isBootstrapUser ?? existingUser?.isBootstrapUser) === true,
+            createdAt:
+                normalizeString(existingUser?.createdAt)
+                || now,
+            updatedAt: now,
+            createdBy: normalizeString(existingUser?.createdBy) || serviceName,
+            updatedBy: serviceName,
+        }
+
+        if (!nextDoc.passwordHash) {
+            throw new Error('password must be provided for local-auth users.')
+        }
+
+        return nextDoc
+    }
+    const listAuthUsers = async () => {
+        if (vaultClient?.mongo?.findMany) {
+            const users = await vaultClient.mongo.findMany('noona_users', {})
+            if (!Array.isArray(users)) {
+                return []
+            }
+            return users.filter((entry) => entry && typeof entry === 'object')
+        }
+
+        if (vaultClient?.users?.list) {
+            const users = await vaultClient.users.list()
+            if (!Array.isArray(users)) {
+                return []
+            }
+            return users.filter((entry) => entry && typeof entry === 'object')
+        }
+
+        return []
+    }
+    const createAuthUser = async (payload = {}) => {
+        if (vaultClient?.mongo?.insert) {
+            const users = await listAuthUsers()
+            const nextDoc = buildAuthUserDoc(payload)
+            const lookupKey = normalizeUserLookupKey(nextDoc)
+            if (lookupKey && findUserByLookupKey(users, lookupKey)) {
+                const error = new Error('User already exists.')
+                error.status = 409
+                throw error
+            }
+
+            await vaultClient.mongo.insert('noona_users', nextDoc)
+            return {ok: true, user: nextDoc}
+        }
+
+        if (!vaultClient?.users?.create) {
+            throw new Error('Vault user management is not configured.')
+        }
+
+        return vaultClient.users.create(payload)
+    }
+
+    const updateAuthUser = async (lookupUsername, updates = {}) => {
+        const lookupKey = normalizeUsernameKey(lookupUsername)
+        if (vaultClient?.mongo?.update) {
+            const users = await listAuthUsers()
+            const existing = findUserByLookupKey(users, lookupKey)
+            if (!existing) {
+                const error = new Error('User not found.')
+                error.status = 404
+                throw error
+            }
+
+            const nextDoc = buildAuthUserDoc({
+                existingUser: existing,
+                username:
+                    Object.prototype.hasOwnProperty.call(updates, 'username')
+                        ? updates.username
+                        : existing.username,
+                password:
+                    Object.prototype.hasOwnProperty.call(updates, 'password')
+                        ? updates.password
+                        : '',
+                role:
+                    Object.prototype.hasOwnProperty.call(updates, 'role')
+                        ? updates.role
+                        : existing.role,
+                permissions:
+                    Object.prototype.hasOwnProperty.call(updates, 'permissions')
+                        ? updates.permissions
+                        : existing.permissions,
+                isBootstrapUser:
+                    Object.prototype.hasOwnProperty.call(updates, 'isBootstrapUser')
+                        ? updates.isBootstrapUser
+                        : existing.isBootstrapUser,
+                authProvider:
+                    Object.prototype.hasOwnProperty.call(updates, 'authProvider')
+                        ? updates.authProvider
+                        : existing.authProvider,
+                discordUserId:
+                    Object.prototype.hasOwnProperty.call(updates, 'discordUserId')
+                        ? updates.discordUserId
+                        : existing.discordUserId,
+                discordUsername:
+                    Object.prototype.hasOwnProperty.call(updates, 'discordUsername')
+                        ? updates.discordUsername
+                        : existing.discordUsername,
+                discordGlobalName:
+                    Object.prototype.hasOwnProperty.call(updates, 'discordGlobalName')
+                        ? updates.discordGlobalName
+                        : existing.discordGlobalName,
+                avatarUrl:
+                    Object.prototype.hasOwnProperty.call(updates, 'avatarUrl')
+                        ? updates.avatarUrl
+                        : existing.avatarUrl,
+                email:
+                    Object.prototype.hasOwnProperty.call(updates, 'email')
+                        ? updates.email
+                        : existing.email,
+            })
+
+            const nextLookupKey = normalizeUserLookupKey(nextDoc)
+            const conflict = users.find((entry) => {
+                const entryLookup = normalizeUserLookupKey(entry)
+                return entryLookup && entryLookup === nextLookupKey && entryLookup !== lookupKey
+            })
+            if (conflict) {
+                const error = new Error('Username is already in use.')
+                error.status = 409
+                throw error
+            }
+
+            const query = buildAuthUserLookupQuery(existing, lookupKey)
+            if (!query) {
+                throw new Error('Unable to resolve existing auth user.')
+            }
+
+            await vaultClient.mongo.update('noona_users', query, {$set: nextDoc})
+            return {ok: true, user: nextDoc}
+        }
+
+        if (!vaultClient?.users?.update) {
+            throw new Error('Vault user management is not configured.')
+        }
+
+        return vaultClient.users.update(lookupUsername, updates)
+    }
+
+    const deleteAuthUser = async (lookupUsername) => {
+        const lookupKey = normalizeUsernameKey(lookupUsername)
+        if (vaultClient?.mongo?.delete) {
+            const users = await listAuthUsers()
+            const existing = findUserByLookupKey(users, lookupKey)
+            if (!existing) {
+                return {deleted: false}
+            }
+
+            const query = buildAuthUserLookupQuery(existing, lookupKey)
+            if (!query) {
+                return {deleted: false}
+            }
+
+            const result = await vaultClient.mongo.delete('noona_users', query)
+            return {deleted: result?.deletedCount !== 0}
+        }
+
+        if (!vaultClient?.users?.delete) {
+            throw new Error('Vault user management is not configured.')
+        }
+
+        return vaultClient.users.delete(lookupUsername)
+    }
+
+    const authenticateAuthUser = async ({username, password}) => {
+        if (vaultClient?.mongo?.findMany) {
+            const lookup = normalizeUsernameKey(username)
+            const users = await listAuthUsers()
+            let existing = users.find((entry) =>
+                normalizeUserLookupKey(entry) === lookup
+                || normalizeUsernameKey(entry?.username) === lookup,
+            )
+            if (!existing) {
+                return {authenticated: false, user: null}
+            }
+
+            if (!normalizeString(existing?.usernameNormalized) && lookup && vaultClient?.mongo?.update) {
+                const query = buildAuthUserLookupQuery(existing, lookup)
+                if (query) {
+                    const updatedAt = new Date().toISOString()
+                    await vaultClient.mongo.update('noona_users', query, {
+                        $set: {
+                            usernameNormalized: lookup,
+                            updatedAt,
+                            updatedBy: serviceName,
+                        },
+                    })
+                    existing = {
+                        ...existing,
+                        usernameNormalized: lookup,
+                        updatedAt,
+                        updatedBy: serviceName,
+                    }
+                }
+            }
+
+            if (normalizeAuthProvider(existing?.authProvider, LOCAL_AUTH_PROVIDER) === DISCORD_AUTH_PROVIDER) {
+                return {
+                    authenticated: false,
+                    user: publicUser(existing, existing?.username || username),
+                    error: 'This account uses Discord login.',
+                    provider: DISCORD_AUTH_PROVIDER,
+                }
+            }
+
+            if (!verifyPassword(password, existing?.passwordHash)) {
+                return {authenticated: false, user: null}
+            }
+
+            return {
+                authenticated: true,
+                user: publicUser(existing, existing?.username || username),
+            }
+        }
+
+        if (!vaultClient?.users?.authenticate) {
+            throw new Error('Vault user authentication is not configured.')
+        }
+
+        return vaultClient.users.authenticate({username, password})
+    }
+
+    const findUserByDiscordId = (users, discordUserId) => {
+        const lookup = normalizeDiscordUserId(discordUserId)
+        if (!lookup || !Array.isArray(users)) {
+            return null
+        }
+
+        return users.find((entry) => normalizeDiscordUserId(entry?.discordUserId || entry?.authProviderId) === lookup) ?? null
     }
     const parseUserTimestamp = (value) => {
         const normalized = normalizeString(value)
@@ -571,57 +1049,6 @@ export const createSageApp = ({
             return value
         }
         return Number.MAX_SAFE_INTEGER
-    }
-    const listAuthUsers = async () => {
-        if (vaultClient?.users?.list) {
-            const users = await vaultClient.users.list()
-            if (!Array.isArray(users)) {
-                return []
-            }
-            return users.filter((entry) => entry && typeof entry === 'object')
-        }
-
-        if (!vaultClient?.mongo?.findMany) {
-            return []
-        }
-
-        const users = await vaultClient.mongo.findMany('noona_users', {})
-        if (!Array.isArray(users)) {
-            return []
-        }
-
-        return users.filter((entry) => entry && typeof entry === 'object')
-    }
-    const createAuthUser = async ({username, password, role, permissions, isBootstrapUser}) => {
-        if (!vaultClient?.users?.create) {
-            throw new Error('Vault user management is not configured.')
-        }
-
-        return vaultClient.users.create({username, password, role, permissions, isBootstrapUser})
-    }
-
-    const updateAuthUser = async (lookupUsername, updates = {}) => {
-        if (!vaultClient?.users?.update) {
-            throw new Error('Vault user management is not configured.')
-        }
-
-        return vaultClient.users.update(lookupUsername, updates)
-    }
-
-    const deleteAuthUser = async (lookupUsername) => {
-        if (!vaultClient?.users?.delete) {
-            throw new Error('Vault user management is not configured.')
-        }
-
-        return vaultClient.users.delete(lookupUsername)
-    }
-
-    const authenticateAuthUser = async ({username, password}) => {
-        if (!vaultClient?.users?.authenticate) {
-            throw new Error('Vault user authentication is not configured.')
-        }
-
-        return vaultClient.users.authenticate({username, password})
     }
 
     const vaultErrorStatus = (error, fallback = 502) => {
@@ -706,17 +1133,36 @@ export const createSageApp = ({
     const isValidUsername = (username) => /^[A-Za-z0-9._-]{3,64}$/.test(username)
     const isValidPassword = (password) => typeof password === 'string' && password.length >= 8
     const publicUser = (user, fallbackUsername = '') => {
-        const username = normalizeUsername(user?.username) || fallbackUsername
-        const usernameNormalized = normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername)
+        const authProvider = normalizeAuthProvider(user?.authProvider, LOCAL_AUTH_PROVIDER)
+        const discordUserId = normalizeDiscordUserId(user?.discordUserId || user?.authProviderId)
+        const username =
+            authProvider === DISCORD_AUTH_PROVIDER
+                ? resolveDiscordDisplayName(user, fallbackUsername || `Discord ${discordUserId}`)
+                : normalizeUsername(user?.username) || fallbackUsername
+        const usernameNormalized =
+            normalizeUserLookupKey({
+                ...user,
+                authProvider,
+                discordUserId,
+            })
+            || normalizeUsernameKey(user?.usernameNormalized || user?.username || fallbackUsername)
         const permissions = resolveUserPermissions(user, normalizeRole(user?.role, 'member'))
         const role = inferRoleFromPermissions(permissions, normalizeRole(user?.role, 'member'))
 
         return {
             username,
             usernameNormalized,
+            lookupKey: usernameNormalized,
             role,
             permissions,
             isBootstrapUser: isBootstrapUserDoc(user),
+            authProvider,
+            authProviderId: authProvider === DISCORD_AUTH_PROVIDER ? discordUserId || null : null,
+            discordUserId: discordUserId || null,
+            discordUsername: normalizeString(user?.discordUsername) || null,
+            discordGlobalName: normalizeString(user?.discordGlobalName) || null,
+            avatarUrl: normalizeString(user?.avatarUrl) || null,
+            email: normalizeString(user?.email) || null,
             createdAt: normalizeString(user?.createdAt) || null,
             updatedAt: normalizeString(user?.updatedAt) || null,
         }
@@ -752,7 +1198,7 @@ export const createSageApp = ({
             return user
         }
 
-        if (normalizeUsernameKey(user?.usernameNormalized || user?.username) !== protectedLookupKey) {
+        if (normalizeUserLookupKey(user) !== protectedLookupKey) {
             return user
         }
 
@@ -769,9 +1215,17 @@ export const createSageApp = ({
         return {
             username: pendingAdmin.username,
             usernameNormalized: pendingAdmin.usernameNormalized,
+            lookupKey: pendingAdmin.usernameNormalized,
             role: 'admin',
             permissions: [...MOON_OP_PERMISSION_KEYS],
             isBootstrapUser: true,
+            authProvider: LOCAL_AUTH_PROVIDER,
+            authProviderId: null,
+            discordUserId: null,
+            discordUsername: null,
+            discordGlobalName: null,
+            avatarUrl: null,
+            email: null,
             createdAt: pendingAdmin.createdAt,
             updatedAt: pendingAdmin.updatedAt,
         }
@@ -812,7 +1266,10 @@ export const createSageApp = ({
         }
     }
     const hasVaultUserApi = () =>
-        Boolean(vaultClient?.users?.list && vaultClient?.users?.create && vaultClient?.users?.update && vaultClient?.users?.authenticate)
+        Boolean(
+            (vaultClient?.mongo?.findMany && vaultClient?.mongo?.insert && vaultClient?.mongo?.update)
+            || (vaultClient?.users?.list && vaultClient?.users?.create && vaultClient?.users?.update && vaultClient?.users?.authenticate),
+        )
 
     const createSessionToken = () => crypto.randomBytes(32).toString('base64url')
 
@@ -884,6 +1341,268 @@ export const createSageApp = ({
         }
     }
 
+    const oauthStateKeyForToken = (token) => `${oauthStatePrefix}${token}`
+    const getStoredOauthState = (token) => {
+        const entry = inMemoryOauthStateStore.get(token)
+        if (!entry || typeof entry !== 'object') {
+            return null
+        }
+
+        const expiresAt = Number(entry.expiresAt)
+        if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) {
+            inMemoryOauthStateStore.delete(token)
+            return null
+        }
+
+        return entry.payload && typeof entry.payload === 'object' ? entry.payload : null
+    }
+    const setStoredOauthState = (token, payload, ttlSeconds = oauthStateTtlSeconds) => {
+        const ttl = Number(ttlSeconds)
+        const expiresAt = Number.isFinite(ttl) && ttl > 0 ? Date.now() + Math.floor(ttl * 1000) : null
+        inMemoryOauthStateStore.set(token, {payload, expiresAt})
+    }
+    const deleteStoredOauthState = (token) => {
+        inMemoryOauthStateStore.delete(token)
+    }
+    const writeOauthState = async (token, payload, ttlSeconds = oauthStateTtlSeconds) => {
+        setStoredOauthState(token, payload, ttlSeconds)
+
+        if (!vaultClient?.redis?.set) {
+            return
+        }
+
+        try {
+            await vaultClient.redis.set(oauthStateKeyForToken(token), payload, {ttl: ttlSeconds})
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn?.(`[${serviceName}] Discord OAuth state persistence failed: ${message}`)
+        }
+    }
+    const readOauthState = async (token) => {
+        if (vaultClient?.redis?.get) {
+            try {
+                const fromRedis = await vaultClient.redis.get(oauthStateKeyForToken(token))
+                if (fromRedis && typeof fromRedis === 'object') {
+                    setStoredOauthState(token, fromRedis, oauthStateTtlSeconds)
+                    return fromRedis
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.warn?.(`[${serviceName}] Discord OAuth state lookup failed: ${message}`)
+            }
+        }
+
+        return getStoredOauthState(token)
+    }
+    const consumeOauthState = async (token) => {
+        const stored = await readOauthState(token)
+        deleteStoredOauthState(token)
+
+        if (vaultClient?.redis?.del) {
+            try {
+                await vaultClient.redis.del(oauthStateKeyForToken(token))
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.warn?.(`[${serviceName}] Discord OAuth state delete failed: ${message}`)
+            }
+        }
+
+        return stored
+    }
+    const readDiscordAuthConfig = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                key: DISCORD_AUTH_SETTINGS_KEY,
+                configured: false,
+                clientId: null,
+                clientSecret: null,
+                callbackPath: DISCORD_CALLBACK_PATH,
+                updatedAt: null,
+                lastTestedAt: null,
+                lastTestedUser: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {key: DISCORD_AUTH_SETTINGS_KEY})
+        const clientId = normalizeString(doc?.clientId) || null
+        const clientSecret = normalizeString(doc?.clientSecret) || null
+        const lastTestedUser =
+            doc?.lastTestedUser && typeof doc.lastTestedUser === 'object'
+                ? {
+                    id: normalizeDiscordUserId(doc.lastTestedUser.id) || null,
+                    username: normalizeString(doc.lastTestedUser.username) || null,
+                    globalName: normalizeString(doc.lastTestedUser.globalName) || null,
+                    avatarUrl: normalizeString(doc.lastTestedUser.avatarUrl) || null,
+                    email: normalizeString(doc.lastTestedUser.email) || null,
+                }
+                : null
+
+        return {
+            key: DISCORD_AUTH_SETTINGS_KEY,
+            configured: Boolean(clientId && clientSecret),
+            clientId,
+            clientSecret,
+            callbackPath: DISCORD_CALLBACK_PATH,
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+            lastTestedAt: normalizeString(doc?.lastTestedAt) || null,
+            lastTestedUser,
+        }
+    }
+    const saveDiscordAuthConfig = async ({clientId, clientSecret}) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        const nextClientId = normalizeString(clientId)
+        const nextClientSecret = normalizeString(clientSecret)
+        if (!nextClientId || !nextClientSecret) {
+            throw new Error('Discord client ID and client secret are required.')
+        }
+
+        const updatedAt = new Date().toISOString()
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DISCORD_AUTH_SETTINGS_KEY},
+            {
+                $set: {
+                    key: DISCORD_AUTH_SETTINGS_KEY,
+                    clientId: nextClientId,
+                    clientSecret: nextClientSecret,
+                    callbackPath: DISCORD_CALLBACK_PATH,
+                    updatedAt,
+                    updatedBy: serviceName,
+                    lastTestedAt: null,
+                    lastTestedUser: null,
+                },
+            },
+            {upsert: true},
+        )
+
+        return {
+            key: DISCORD_AUTH_SETTINGS_KEY,
+            configured: true,
+            clientId: nextClientId,
+            clientSecret: nextClientSecret,
+            callbackPath: DISCORD_CALLBACK_PATH,
+            updatedAt,
+            lastTestedAt: null,
+            lastTestedUser: null,
+        }
+    }
+    const markDiscordAuthConfigTested = async (identity) => {
+        if (!vaultClient?.mongo?.update) {
+            return null
+        }
+
+        const testedAt = new Date().toISOString()
+        const snapshot = {
+            id: normalizeDiscordUserId(identity?.id) || null,
+            username: normalizeString(identity?.username) || null,
+            globalName: normalizeString(identity?.globalName) || null,
+            avatarUrl: normalizeString(identity?.avatarUrl) || null,
+            email: normalizeString(identity?.email) || null,
+        }
+
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DISCORD_AUTH_SETTINGS_KEY},
+            {
+                $set: {
+                    key: DISCORD_AUTH_SETTINGS_KEY,
+                    callbackPath: DISCORD_CALLBACK_PATH,
+                    lastTestedAt: testedAt,
+                    lastTestedUser: snapshot,
+                    updatedAt: testedAt,
+                    updatedBy: serviceName,
+                },
+            },
+            {upsert: true},
+        )
+
+        return {
+            lastTestedAt: testedAt,
+            lastTestedUser: snapshot,
+        }
+    }
+    const buildOauthRedirectTarget = (value, fallback = '/') => {
+        const normalized = normalizeString(value)
+        if (!normalized.startsWith('/')) {
+            return fallback
+        }
+        return normalized
+    }
+    const fetchDiscordJson = async (url, init = {}, {expectFormError = false} = {}) => {
+        const response = await discordOauthFetch(url, init)
+        const text = await response.text().catch(() => '')
+        let payload = {}
+        if (text) {
+            try {
+                payload = JSON.parse(text)
+            } catch {
+                payload = {error: text}
+            }
+        }
+
+        if (!response.ok) {
+            const message =
+                normalizeString(payload?.error_description)
+                || normalizeString(payload?.error)
+                || `Discord responded with HTTP ${response.status}.`
+            const error = new Error(message)
+            error.status = response.status
+            error.payload = payload
+            if (!expectFormError || response.status < 400 || response.status >= 500) {
+                logger.warn?.(`[${serviceName}] Discord OAuth request failed (${response.status}): ${message}`)
+            }
+            throw error
+        }
+
+        return payload
+    }
+    const exchangeDiscordAuthorizationCode = async ({code, redirectUri}) => {
+        const config = await readDiscordAuthConfig()
+        if (!config.configured || !config.clientId || !config.clientSecret) {
+            throw new Error('Discord OAuth is not configured.')
+        }
+
+        const body = new URLSearchParams({
+            client_id: config.clientId,
+            client_secret: config.clientSecret,
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+        })
+
+        return fetchDiscordJson(`${discordOauthBaseUrl}/oauth2/token`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Accept: 'application/json',
+            },
+            body: body.toString(),
+        }, {expectFormError: true})
+    }
+    const fetchDiscordIdentity = async (accessToken) => {
+        const payload = await fetchDiscordJson(`${discordOauthBaseUrl}/users/@me`, {
+            headers: {
+                Accept: 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+            },
+        })
+
+        const id = normalizeDiscordUserId(payload?.id)
+        if (!id) {
+            throw new Error('Discord did not return a valid user ID.')
+        }
+
+        return {
+            id,
+            username: normalizeString(payload?.username) || null,
+            globalName: normalizeString(payload?.global_name) || null,
+            avatarUrl: normalizeString(buildDiscordAvatarUrl({id, avatar: payload?.avatar})) || null,
+            email: normalizeString(payload?.email) || null,
+        }
+    }
     const ensureDefaultSettings = async (timestamp) => {
         if (!vaultClient?.mongo?.findOne || !vaultClient?.mongo?.update) {
             return
@@ -1112,7 +1831,7 @@ export const createSageApp = ({
         let created = false
 
         if (targetUser) {
-            const targetLookup = normalizeUsername(targetUser.username) || normalizeUserLookupKey(targetUser)
+            const targetLookup = normalizeUserLookupKey(targetUser) || normalizeUsername(targetUser.username)
             if (!targetLookup) {
                 throw new Error('Unable to resolve existing admin account.')
             }
@@ -1146,7 +1865,7 @@ export const createSageApp = ({
                 continue
             }
 
-            const demotionLookup = normalizeUsername(user?.username) || lookupKey
+            const demotionLookup = lookupKey || normalizeUsername(user?.username)
             if (!demotionLookup) {
                 continue
             }
@@ -1168,6 +1887,94 @@ export const createSageApp = ({
         return {
             created,
             user: toSessionUser(verified.user, username),
+        }
+    }
+    const writeDiscordAdminToVault = async (identity) => {
+        if (!hasVaultUserApi()) {
+            throw new Error('Vault user storage is not configured.')
+        }
+
+        const discordUserId = normalizeDiscordUserId(identity?.id)
+        if (!discordUserId) {
+            throw new Error('Discord user ID is required.')
+        }
+
+        const lookupKey = buildDiscordLookupKey(discordUserId)
+        const username = resolveDiscordDisplayName(identity, `Discord ${discordUserId}`)
+        const now = new Date().toISOString()
+        const users = await listAuthUsers()
+        const existingUserByDiscord = findUserByDiscordId(users, discordUserId)
+        const existingAdmin = selectPrimaryAdmin(users)
+        const targetUser = existingUserByDiscord || existingAdmin || null
+        let created = false
+
+        if (targetUser) {
+            const targetLookup = normalizeUserLookupKey(targetUser)
+            if (!targetLookup) {
+                throw new Error('Unable to resolve existing admin account.')
+            }
+
+            await updateAuthUser(targetLookup, {
+                username,
+                role: 'admin',
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+                isBootstrapUser: true,
+                authProvider: DISCORD_AUTH_PROVIDER,
+                discordUserId,
+                discordUsername: identity?.username || null,
+                discordGlobalName: identity?.globalName || null,
+                avatarUrl: identity?.avatarUrl || null,
+                email: identity?.email || null,
+            })
+        } else {
+            await createAuthUser({
+                username,
+                role: 'admin',
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+                isBootstrapUser: true,
+                authProvider: DISCORD_AUTH_PROVIDER,
+                discordUserId,
+                discordUsername: identity?.username || null,
+                discordGlobalName: identity?.globalName || null,
+                avatarUrl: identity?.avatarUrl || null,
+                email: identity?.email || null,
+            })
+            created = true
+        }
+
+        const allUsersAfterWrite = await listAuthUsers()
+        for (const user of allUsersAfterWrite) {
+            if (!isAdminUser(user)) {
+                continue
+            }
+
+            const currentLookup = normalizeUserLookupKey(user)
+            if (currentLookup === lookupKey) {
+                continue
+            }
+
+            if (!currentLookup) {
+                continue
+            }
+
+            await updateAuthUser(currentLookup, {
+                role: 'member',
+                permissions: [...DEFAULT_MEMBER_PERMISSION_KEYS],
+                isBootstrapUser: false,
+            })
+        }
+
+        const refreshedUsers = await listAuthUsers()
+        const verifiedUser = findUserByDiscordId(refreshedUsers, discordUserId)
+        if (!verifiedUser || !isAdminUser(verifiedUser)) {
+            throw new Error('Bootstrap verification failed after Discord account write.')
+        }
+
+        await ensureDefaultSettings(now)
+
+        return {
+            created,
+            user: toSessionUser(verifiedUser, username),
         }
     }
     const finalizePendingAdminToVault = async () => {
@@ -1383,7 +2190,10 @@ export const createSageApp = ({
         applyProtectedBootstrapUserFlag,
         authenticateAuthUser,
         authenticatePendingAdmin,
+        buildDiscordLookupKey,
+        buildOauthRedirectTarget,
         buildVerificationCheckResult,
+        consumeOauthState,
         collectVerificationHealth,
         createAuthUser,
         createEmptyVerificationSummary,
@@ -1391,10 +2201,15 @@ export const createSageApp = ({
         defaultPermissionsForRole,
         DEFAULT_NAMING_SETTINGS,
         deleteAuthUser,
+        DISCORD_AUTH_PROVIDER,
+        DISCORD_CALLBACK_PATH,
         discordSetupClient,
         dropSession,
         ensureMoonPermission,
+        exchangeDiscordAuthorizationCode,
+        fetchDiscordIdentity,
         finalizePendingAdminToVault,
+        findUserByDiscordId,
         findUserByLookupKey,
         generateTemporaryPassword,
         hasMoonPermission,
@@ -1402,8 +2217,10 @@ export const createSageApp = ({
         inferRoleFromPermissions,
         isValidPassword,
         isValidUsername,
+        LOCAL_AUTH_PROVIDER,
         listAuthUsers,
         logger,
+        markDiscordAuthConfigTested,
         MOON_OP_PERMISSION_KEYS,
         normalizeHistoryLimit,
         normalizeRole,
@@ -1419,6 +2236,7 @@ export const createSageApp = ({
         queueEcosystemRestart,
         ravenClient,
         readDebugSetting,
+        readDiscordAuthConfig,
         readVerificationSummary,
         requireAdminSession,
         requireAdminSessionIfSetupCompleted,
@@ -1429,6 +2247,7 @@ export const createSageApp = ({
         resolveProtectedBootstrapLookupKey,
         resolveSetupCompleted,
         resolveWizardStepKey,
+        saveDiscordAuthConfig,
         selectPrimaryAdmin,
         serviceName,
         sessionTtlSeconds,
@@ -1447,6 +2266,8 @@ export const createSageApp = ({
         verifySessionPassword,
         wizardMetadata,
         wizardStateClient,
+        writeDiscordAdminToVault,
+        writeOauthState,
         writeSession,
     }
 

@@ -48,10 +48,6 @@ export const createDiscordClient = ({
         throw new Error('Discord token is required to initialise the Sage Discord client.');
     }
 
-    if (!guildId) {
-        throw new Error('Discord guild id is required to initialise the Sage Discord client.');
-    }
-
     const commandMap = normaliseCommandMap(commands);
 
     const client = typeof clientFactory === 'function'
@@ -84,7 +80,7 @@ export const createDiscordClient = ({
             return;
         }
 
-        if (!clientId) {
+        if (!clientId || !guildId) {
             errMSG('[Sage/Discord] Client id missing, skipping slash command registration.');
             return;
         }
@@ -114,7 +110,34 @@ export const createDiscordClient = ({
 
     const fetchGuild = async () => {
         await ready;
+        if (!guildId) {
+            return null;
+        }
         return client.guilds.fetch(guildId);
+    };
+
+    const fetchGuildById = async (targetGuildId) => {
+        await ready;
+        if (!targetGuildId) {
+            return null;
+        }
+        return client.guilds.fetch(targetGuildId);
+    };
+
+    const fetchGuilds = async () => {
+        await ready;
+        if (typeof client.guilds?.fetch === 'function') {
+            return client.guilds.fetch();
+        }
+        return client.guilds?.cache ?? [];
+    };
+
+    const fetchApplication = async () => {
+        await ready;
+        if (typeof client.application?.fetch === 'function') {
+            return client.application.fetch();
+        }
+        return client.application ?? null;
     };
 
     const fetchMember = async (memberId) => {
@@ -150,7 +173,10 @@ export const createDiscordClient = ({
         client,
         login,
         destroy,
+        fetchApplication,
         fetchGuild,
+        fetchGuildById,
+        fetchGuilds,
         fetchMember,
         assignDefaultRole,
         waitUntilReady: () => ready,

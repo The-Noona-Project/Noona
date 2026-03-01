@@ -10,8 +10,7 @@ const normalizeString = (value) => {
         return ''
     }
 
-    const trimmed = value.trim()
-    return trimmed
+    return value.trim()
 }
 
 const resolveChannelType = (value) => {
@@ -96,6 +95,13 @@ const mapRole = (role) => ({
     managed: Boolean(role?.managed),
 })
 
+const mapGuild = (guild) => ({
+    id: guild?.id ?? null,
+    name: guild?.name ?? null,
+    description: guild?.description ?? null,
+    icon: guild?.icon ?? null,
+})
+
 const sortRoles = (a, b) => {
     const posA = typeof a.position === 'number' ? a.position : 0
     const posB = typeof b.position === 'number' ? b.position : 0
@@ -137,7 +143,7 @@ const normaliseDiscordLoginError = (error) => {
 }
 
 const withDiscordClient = async (
-    { token, guildId, logger, serviceName, createClient = createDiscordClient },
+    {token, guildId, logger, serviceName, createClient = createDiscordClient},
     handler,
 ) => {
     const discordClient = createClient({
@@ -166,7 +172,7 @@ const withDiscordClient = async (
             discordClient.destroy?.()
         } catch (error) {
             logger?.error?.(
-                `[${serviceName}] ⚠️ Failed to clean up Discord client: ${error instanceof Error ? error.message : error}`,
+                `[${serviceName}] Failed to clean up Discord client: ${error instanceof Error ? error.message : error}`,
             )
         }
     }
@@ -179,61 +185,100 @@ export const createDiscordSetupClient = ({
 } = {}) => {
     const resolveCredentials = (credentials = {}) => ({
         token: ensureNonEmpty(credentials.token, 'Discord bot token'),
-        guildId: ensureNonEmpty(credentials.guildId, 'Discord guild id'),
+        clientId: normalizeString(credentials.clientId),
+        guildId: normalizeString(credentials.guildId),
     })
 
     return {
         async fetchResources(credentials = {}) {
-            const { token, guildId } = resolveCredentials(credentials)
+            const {token, clientId, guildId} = resolveCredentials(credentials)
 
-            return await withDiscordClient({ token, guildId, logger, serviceName, createClient }, async (client) => {
-                const guild = await client.fetchGuild()
-                if (!guild) {
-                    throw new Error('Discord guild could not be retrieved.')
-                }
+            return await withDiscordClient({token, guildId, logger, serviceName, createClient}, async (client) => {
+                const [application, guildCollection] = await Promise.all([
+                    client.fetchApplication?.().catch(() => null) ?? Promise.resolve(null),
+                    client.fetchGuilds?.().catch(() => []) ?? Promise.resolve([]),
+                ])
+
+                const detectedClientId = normalizeString(application?.id ?? client?.client?.user?.id)
+                const guilds = toArray(guildCollection)
+                    .map(mapGuild)
+                    .filter((entry) => Boolean(entry?.id))
+                    .sort((left, right) => (left.name ?? '').localeCompare(right.name ?? ''))
+
+                const resolvedGuildId = guildId || (guilds.length === 1 ? guilds[0].id ?? '' : '')
+                const guild = resolvedGuildId
+                    ? await client.fetchGuildById?.(resolvedGuildId)
+                    : null
 
                 let roles = []
-                try {
-                    const fetchedRoles = guild.roles?.fetch ? await guild.roles.fetch() : guild.roles
-                    roles = toArray(fetchedRoles).map(mapRole).filter(isUsableRole).sort(sortRoles)
-                } catch (error) {
-                    logger?.error?.(
-                        `[${serviceName}] ⚠️ Failed to load Discord roles: ${error instanceof Error ? error.message : error}`,
-                    )
-                    roles = []
+                if (guild) {
+                    try {
+                        const fetchedRoles = guild.roles?.fetch ? await guild.roles.fetch() : guild.roles
+                        roles = toArray(fetchedRoles).map(mapRole).filter(isUsableRole).sort(sortRoles)
+                    } catch (error) {
+                        logger?.error?.(
+                            `[${serviceName}] Failed to load Discord roles: ${error instanceof Error ? error.message : error}`,
+                        )
+                        roles = []
+                    }
                 }
 
                 let channels = []
-                try {
-                    const fetchedChannels = guild.channels?.fetch ? await guild.channels.fetch() : guild.channels
-                    channels = toArray(fetchedChannels).map(mapChannel).filter(isUsableChannel)
-                } catch (error) {
-                    logger?.error?.(
-                        `[${serviceName}] ⚠️ Failed to load Discord channels: ${error instanceof Error ? error.message : error}`,
-                    )
-                    channels = []
+                if (guild) {
+                    try {
+                        const fetchedChannels = guild.channels?.fetch ? await guild.channels.fetch() : guild.channels
+                        channels = toArray(fetchedChannels).map(mapChannel).filter(isUsableChannel)
+                    } catch (error) {
+                        logger?.error?.(
+                            `[${serviceName}] Failed to load Discord channels: ${error instanceof Error ? error.message : error}`,
+                        )
+                        channels = []
+                    }
                 }
 
-                const summary = {
-                    id: guild.id ?? guildId,
-                    name: guild.name ?? null,
-                    description: guild.description ?? null,
-                    icon: guild.icon ?? null,
-                }
-
-                const resourceSummary =
-                    `[${serviceName}] 🤖 Verified Discord guild ${summary.name || summary.id} with ${roles.length} roles and ${channels.length} channels`
+                const summary = guild ? mapGuild(guild) : null
+                const resourceSummary = summary
+                    ? `[${serviceName}] Verified Discord guild ${summary.name || summary.id} with ${roles.length} roles and ${channels.length} channels`
+                    : `[${serviceName}] Verified Discord bot login with ${guilds.length} accessible guild(s)`
                 logger?.info?.(resourceSummary)
 
-                return { guild: summary, roles, channels }
+                return {
+                    application: {
+                        id: detectedClientId || null,
+                        name: application?.name ?? null,
+                        verified: Boolean(application),
+                        providedClientId: clientId || null,
+                        clientIdMatches: !clientId || clientId === detectedClientId,
+                    },
+                    botUser: {
+                        id: client?.client?.user?.id ?? null,
+                        username: client?.client?.user?.username ?? null,
+                        tag: client?.client?.user?.tag ?? null,
+                    },
+                    guilds,
+                    guild: summary,
+                    roles,
+                    channels,
+                    suggested: {
+                        clientId: detectedClientId || null,
+                        guildId: resolvedGuildId || null,
+                    },
+                }
             })
         },
 
         async createRole(credentials = {}) {
-            const { token, guildId } = resolveCredentials(credentials)
+            const {token, guildId} = resolveCredentials(credentials)
+            const resolvedGuildId = ensureNonEmpty(guildId, 'Discord guild id')
             const name = ensureNonEmpty(credentials.name, 'Role name')
 
-            return await withDiscordClient({ token, guildId, logger, serviceName, createClient }, async (client) => {
+            return await withDiscordClient({
+                token,
+                guildId: resolvedGuildId,
+                logger,
+                serviceName,
+                createClient
+            }, async (client) => {
                 const guild = await client.fetchGuild()
                 if (!guild) {
                     throw new Error('Discord guild could not be retrieved.')
@@ -250,24 +295,31 @@ export const createDiscordSetupClient = ({
 
                 const mapped = mapRole(role)
                 logger?.info?.(
-                    `[${serviceName}] 🎨 Created Discord role ${mapped.name || mapped.id} for guild ${guildId}`,
+                    `[${serviceName}] Created Discord role ${mapped.name || mapped.id} for guild ${resolvedGuildId}`,
                 )
                 return mapped
             })
         },
 
         async createChannel(credentials = {}) {
-            const { token, guildId } = resolveCredentials(credentials)
+            const {token, guildId} = resolveCredentials(credentials)
+            const resolvedGuildId = ensureNonEmpty(guildId, 'Discord guild id')
             const name = ensureNonEmpty(credentials.name, 'Channel name')
             const type = resolveChannelType(credentials.type)
 
-            return await withDiscordClient({ token, guildId, logger, serviceName, createClient }, async (client) => {
+            return await withDiscordClient({
+                token,
+                guildId: resolvedGuildId,
+                logger,
+                serviceName,
+                createClient
+            }, async (client) => {
                 const guild = await client.fetchGuild()
                 if (!guild) {
                     throw new Error('Discord guild could not be retrieved.')
                 }
 
-                const createOptions = { name, reason: 'Requested during Noona setup' }
+                const createOptions = {name, reason: 'Requested during Noona setup'}
                 if (typeof type === 'number') {
                     createOptions.type = type
                 }
@@ -280,7 +332,7 @@ export const createDiscordSetupClient = ({
 
                 const mapped = mapChannel(channel)
                 logger?.info?.(
-                    `[${serviceName}] 📢 Created Discord channel ${mapped.name || mapped.id} for guild ${guildId}`,
+                    `[${serviceName}] Created Discord channel ${mapped.name || mapped.id} for guild ${resolvedGuildId}`,
                 )
                 return mapped
             })

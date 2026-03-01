@@ -111,8 +111,10 @@ export const createKavitaClient = ({
         throw new Error('Kavita API key is required.');
     }
 
+    const normalizedBaseUrl = new URL(baseUrl).toString();
+
     const request = async (path, {method = 'GET', body, headers = {}, query} = {}) => {
-        const url = new URL(path, baseUrl);
+        const url = new URL(path, normalizedBaseUrl);
         if (query && typeof query === 'object') {
             for (const [key, value] of Object.entries(query)) {
                 if (value == null) {
@@ -200,6 +202,52 @@ export const createKavitaClient = ({
                 queryString: normalizedQuery,
                 includeChapterAndFiles: String(Boolean(includeChapterAndFiles)),
             },
+        });
+    };
+
+    const fetchSeriesMetadataMatches = async (seriesId) => {
+        const parsedSeriesId = Number.parseInt(String(seriesId), 10);
+        if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
+            throw new Error('A valid Kavita series id is required to search metadata matches.');
+        }
+
+        const matches = await request('/api/Series/match', {
+            method: 'POST',
+            body: {
+                seriesId: parsedSeriesId,
+            },
+        });
+
+        return Array.isArray(matches) ? matches : [];
+    };
+
+    const applySeriesMetadataMatch = async ({seriesId, aniListId, malId, cbrId} = {}) => {
+        const parsedSeriesId = Number.parseInt(String(seriesId), 10);
+        if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
+            throw new Error('A valid Kavita series id is required to apply a metadata match.');
+        }
+
+        const query = {
+            seriesId: String(parsedSeriesId),
+        };
+
+        if (aniListId != null && aniListId !== '') {
+            query.aniListId = String(aniListId);
+        }
+        if (malId != null && malId !== '') {
+            query.malId = String(malId);
+        }
+        if (cbrId != null && cbrId !== '') {
+            query.cbrId = String(cbrId);
+        }
+
+        if (!query.aniListId && !query.malId && !query.cbrId) {
+            throw new Error('At least one metadata provider id is required to apply a Kavita metadata match.');
+        }
+
+        return request('/api/Series/update-match', {
+            method: 'POST',
+            query,
         });
     };
 
@@ -439,6 +487,7 @@ export const createKavitaClient = ({
     };
 
     return {
+        getBaseUrl: () => normalizedBaseUrl,
         request,
         createUser,
         createOrUpdateUser: createUser,
@@ -447,6 +496,8 @@ export const createKavitaClient = ({
         fetchLibraries,
         fetchUser,
         searchTitles,
+        fetchSeriesMetadataMatches,
+        applySeriesMetadataMatch,
         scanLibrary,
         inviteUser,
         updateUser,

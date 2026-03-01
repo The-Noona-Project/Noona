@@ -1,6 +1,7 @@
 "use client";
 
 import {type ChangeEvent, useEffect, useMemo, useRef, useState} from "react";
+import {useRouter} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
 import styles from "./SetupWizard.module.scss";
 
@@ -78,6 +79,41 @@ type StorageLayoutResponse = {
     error?: string;
 };
 
+type DiscordSetupGuild = {
+    id?: string | null;
+    name?: string | null;
+    description?: string | null;
+    icon?: string | null;
+};
+
+type DiscordSetupApplication = {
+    id?: string | null;
+    name?: string | null;
+    verified?: boolean;
+    providedClientId?: string | null;
+    clientIdMatches?: boolean;
+};
+
+type DiscordSetupBotUser = {
+    id?: string | null;
+    username?: string | null;
+    tag?: string | null;
+};
+
+type DiscordSetupResponse = {
+    application?: DiscordSetupApplication | null;
+    botUser?: DiscordSetupBotUser | null;
+    guilds?: DiscordSetupGuild[] | null;
+    guild?: DiscordSetupGuild | null;
+    suggested?: {
+        clientId?: string | null;
+        guildId?: string | null;
+    } | null;
+    roles?: Array<{ id?: string | null; name?: string | null }> | null;
+    channels?: Array<{ id?: string | null; name?: string | null }> | null;
+    error?: string;
+};
+
 type IntegrationMode = "managed" | "external";
 type SetupTabId = "storage" | "integrations" | "services" | "install";
 
@@ -118,7 +154,7 @@ type MissingRequiredField = {
 type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
 
 const ALWAYS_RUNNING = new Set(["noona-moon", "noona-sage"]);
-const MANAGED_INTEGRATIONS = new Set(["kavita", "komf"]);
+const MANAGED_INTEGRATIONS = new Set(["noona-kavita", "komf"]);
 const DEFAULT_SELECTED = new Set(["noona-portal", "noona-raven"]);
 const ADVANCED_KEYS = new Set(["DEBUG", "SERVICE_NAME", "VAULT_API_TOKEN", "VAULT_TOKEN_MAP"]);
 const DERIVED_KEYS = new Set([
@@ -126,6 +162,7 @@ const DERIVED_KEYS = new Set([
     "KAVITA_BASE_URL",
     "KAVITA_API_KEY",
     "KAVITA_DATA_MOUNT",
+    "KAVITA_LIBRARY_ROOT",
     "KAVITA_CONFIG_HOST_MOUNT_PATH",
     "KAVITA_LIBRARY_HOST_MOUNT_PATH",
     "KOMF_KAVITA_BASE_URI",
@@ -135,6 +172,7 @@ const DERIVED_KEYS = new Set([
 const PORTAL_REQUIRED_KEYS = Object.freeze([
     "DISCORD_BOT_TOKEN",
     "DISCORD_CLIENT_ID",
+    "DISCORD_CLIENT_SECRET",
     "DISCORD_GUILD_ID",
     "KAVITA_BASE_URL",
     "KAVITA_API_KEY",
@@ -151,7 +189,11 @@ const SETUP_TABS: Array<{ id: SetupTabId; label: string; description: string }> 
     {id: "storage", label: "Storage", description: "Pick the Noona root folder and review shared mounts."},
     {id: "integrations", label: "Integrations", description: "Choose managed or external Kavita and Komf."},
     {id: "services", label: "Services", description: "Review install targets and edit service-specific settings."},
-    {id: "install", label: "Install", description: "Import/export config, run the install, and finalize setup."},
+    {
+        id: "install",
+        label: "Install",
+        description: "Import/export config, run the install, and continue to the setup summary."
+    },
 ];
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -162,11 +204,20 @@ const SERVICE_LABELS: Record<string, string> = {
     "noona-vault": "Vault",
     "noona-redis": "Redis",
     "noona-mongo": "Mongo",
-    kavita: "Kavita",
+    "noona-kavita": "Kavita",
     komf: "Komf",
 };
 
+const SERVICE_NAME_ALIASES: Record<string, string> = {
+    kavita: "noona-kavita",
+};
+
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+const normalizeServiceName = (value: unknown): string => {
+    const normalized = normalizeString(value).trim();
+    return SERVICE_NAME_ALIASES[normalized] || normalized;
+};
 
 const sanitizeEnvValue = (value: string): string =>
     value.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
@@ -407,7 +458,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
             ],
         },
         {
-            service: "kavita",
+            service: "noona-kavita",
             label: "Kavita",
             folders: [
                 {
@@ -438,7 +489,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
 };
 
 const sortServices = (left: ServiceCatalogEntry, right: ServiceCatalogEntry) => {
-    const order = ["noona-moon", "noona-sage", "noona-vault", "noona-redis", "noona-mongo", "noona-portal", "noona-raven", "kavita", "komf", "noona-oracle"];
+    const order = ["noona-moon", "noona-sage", "noona-vault", "noona-redis", "noona-mongo", "noona-portal", "noona-raven", "noona-kavita", "komf", "noona-oracle"];
     const leftIndex = order.indexOf(left.name);
     const rightIndex = order.indexOf(right.name);
     if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
@@ -468,7 +519,7 @@ const buildDerivedValues = ({
 }) => {
     const next = cloneEnvState(values);
     const rootValue = storageRoot.trim();
-    const resolvedKavitaBaseUrl = kavitaMode === "managed" ? "http://kavita:5000" : kavitaBaseUrl.trim();
+    const resolvedKavitaBaseUrl = kavitaMode === "managed" ? "http://noona-kavita:5000" : kavitaBaseUrl.trim();
 
     const mergeEnv = (serviceName: string, patch: Record<string, string>) => {
         if (!servicesByName.has(serviceName)) return;
@@ -476,7 +527,7 @@ const buildDerivedValues = ({
     };
 
     if (rootValue) {
-        for (const serviceName of ["noona-vault", "noona-raven", "kavita", "komf"]) {
+        for (const serviceName of ["noona-vault", "noona-raven", "noona-kavita", "komf"]) {
             mergeEnv(serviceName, {NOONA_DATA_ROOT: rootValue});
         }
     }
@@ -487,6 +538,9 @@ const buildDerivedValues = ({
     });
     mergeEnv("noona-raven", {
         KAVITA_DATA_MOUNT: kavitaMode === "external" ? kavitaSharedLibraryPath.trim() : "",
+        KAVITA_BASE_URL: resolvedKavitaBaseUrl,
+        KAVITA_API_KEY: kavitaApiKey.trim(),
+        KAVITA_LIBRARY_ROOT: kavitaMode === "managed" ? "/manga" : normalizeString(next["noona-raven"]?.KAVITA_LIBRARY_ROOT),
     });
     mergeEnv("komf", {
         KOMF_KAVITA_BASE_URI: resolvedKavitaBaseUrl,
@@ -581,6 +635,7 @@ const buildInstallPayload = ({
         });
 
 export function SetupWizard() {
+    const router = useRouter();
     const [catalog, setCatalog] = useState<ServiceCatalogEntry[] | null>(null);
     const [catalogError, setCatalogError] = useState<string | null>(null);
     const [selected, setSelected] = useState<Set<string>>(() => new Set(DEFAULT_SELECTED));
@@ -592,12 +647,12 @@ export function SetupWizard() {
     const [expandedServices, setExpandedServices] = useState<Record<string, boolean>>({
         "noona-portal": true,
         "noona-raven": true,
-        kavita: true,
+        "noona-kavita": true,
         komf: true
     });
 
     const [kavitaMode, setKavitaMode] = useState<IntegrationMode>("managed");
-    const [kavitaBaseUrl, setKavitaBaseUrl] = useState("http://kavita:5000");
+    const [kavitaBaseUrl, setKavitaBaseUrl] = useState("http://noona-kavita:5000");
     const [kavitaApiKey, setKavitaApiKey] = useState("");
     const [kavitaSharedLibraryPath, setKavitaSharedLibraryPath] = useState("");
     const [kavitaContainerName, setKavitaContainerName] = useState("");
@@ -606,22 +661,23 @@ export function SetupWizard() {
     const [komfBaseUrl, setKomfBaseUrl] = useState("");
     const [komfContainerName, setKomfContainerName] = useState("");
 
+    const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
+    const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
+    const [discordValidating, setDiscordValidating] = useState(false);
+
     const [configMessage, setConfigMessage] = useState<string | null>(null);
     const [configError, setConfigError] = useState<string | null>(null);
     const [installing, setInstalling] = useState(false);
     const [installError, setInstallError] = useState<string | null>(null);
     const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
     const [installResult, setInstallResult] = useState<InstallResponse | null>(null);
-    const [summaryOpen, setSummaryOpen] = useState(false);
-    const [finishing, setFinishing] = useState(false);
-    const [finishError, setFinishError] = useState<string | null>(null);
 
     const pollRef = useRef<number | null>(null);
     const installRequestRef = useRef<AbortController | null>(null);
     const installProgressTimeoutRef = useRef<number | null>(null);
     const installTargetsRef = useRef<Set<string>>(new Set());
     const installProgressStartedRef = useRef(false);
-    const finishInFlightRef = useRef(false);
+    const summaryNavigationRef = useRef(false);
     const configInputRef = useRef<HTMLInputElement | null>(null);
 
     const services = catalog ?? [];
@@ -634,9 +690,9 @@ export function SetupWizard() {
             if (service.required) next.add(service.name);
         }
         if (kavitaMode === "managed") {
-            next.add("kavita");
+            next.add("noona-kavita");
             next.add("noona-raven");
-        } else next.delete("kavita");
+        } else next.delete("noona-kavita");
         if (komfMode === "managed") next.add("komf");
         else next.delete("komf");
         return next;
@@ -680,7 +736,7 @@ export function SetupWizard() {
         const root = storageRoot.trim() || defaultStorageRoot.trim();
         if (!root) return [];
         return getStoragePreview(root, vaultFolderName).filter((entry) => {
-            if (entry.service === "kavita") return kavitaMode === "managed";
+            if (entry.service === "noona-kavita") return kavitaMode === "managed";
             if (entry.service === "komf") return komfMode === "managed";
             return true;
         });
@@ -747,7 +803,7 @@ export function SetupWizard() {
                 if (normalizedStatus === "complete") {
                     setInstallError(null);
                     setInstallResult((prev) => prev ?? {results: []});
-                    setSummaryOpen(true);
+                    void openSetupSummary();
                 } else {
                     setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
                 }
@@ -831,6 +887,10 @@ export function SetupWizard() {
     };
 
     const updateEnv = (serviceName: string, key: string, nextValue: string) => {
+        if (serviceName === "noona-portal" && ["DISCORD_BOT_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_GUILD_ID"].includes(key)) {
+            setDiscordValidation(null);
+            setDiscordValidationError(null);
+        }
         setValues((prev) =>
             applyDerivedEnvState({
                 ...prev,
@@ -840,6 +900,82 @@ export function SetupWizard() {
                 },
             }),
         );
+    };
+
+    const applyDiscordSuggestedValues = (payload: DiscordSetupResponse | null, {overwrite = false} = {}) => {
+        const suggestedClientId = normalizeString(payload?.suggested?.clientId).trim();
+        const suggestedGuildId = normalizeString(payload?.suggested?.guildId).trim();
+        const currentPortal = effectiveValues["noona-portal"] ?? {};
+
+        if (!overwrite && (!suggestedClientId || normalizeString(currentPortal.DISCORD_CLIENT_ID).trim()) && (!suggestedGuildId || normalizeString(currentPortal.DISCORD_GUILD_ID).trim())) {
+            return;
+        }
+
+        setValues((prev) => {
+            const current = prev["noona-portal"] ?? {};
+            const nextPortal = {...current};
+
+            if (suggestedClientId && (overwrite || !normalizeString(current.DISCORD_CLIENT_ID).trim())) {
+                nextPortal.DISCORD_CLIENT_ID = suggestedClientId;
+            }
+
+            if (suggestedGuildId && (overwrite || !normalizeString(current.DISCORD_GUILD_ID).trim())) {
+                nextPortal.DISCORD_GUILD_ID = suggestedGuildId;
+            }
+
+            return applyDerivedEnvState({
+                ...prev,
+                "noona-portal": nextPortal,
+            });
+        });
+    };
+
+    const useDiscordGuild = (guildId: string) => {
+        updateEnv("noona-portal", "DISCORD_GUILD_ID", guildId);
+        setDiscordValidation((prev) => prev ? ({
+            ...prev,
+            suggested: {
+                ...(prev.suggested ?? {}),
+                guildId,
+            },
+            guild: (Array.isArray(prev.guilds) ? prev.guilds.find((entry) => normalizeString(entry?.id).trim() === guildId) : null) ?? prev.guild ?? null,
+        }) : prev);
+    };
+
+    const testDiscordConnection = async () => {
+        const portalValues = effectiveValues["noona-portal"] ?? {};
+        const token = normalizeString(portalValues.DISCORD_BOT_TOKEN).trim();
+        const clientId = normalizeString(portalValues.DISCORD_CLIENT_ID).trim();
+        const guildId = normalizeString(portalValues.DISCORD_GUILD_ID).trim();
+
+        if (!token) {
+            setDiscordValidation(null);
+            setDiscordValidationError("Discord bot token is required before testing the bot login.");
+            return;
+        }
+
+        setDiscordValidating(true);
+        setDiscordValidationError(null);
+
+        try {
+            const response = await fetch("/api/noona/setup/discord/validate", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({token, clientId, guildId}),
+            });
+            const payload = (await response.json().catch(() => null)) as DiscordSetupResponse | null;
+            if (!response.ok) {
+                throw new Error(normalizeString(payload?.error).trim() || `Discord validation failed (HTTP ${response.status}).`);
+            }
+
+            setDiscordValidation(payload);
+            applyDiscordSuggestedValues(payload, {overwrite: false});
+        } catch (error) {
+            setDiscordValidation(null);
+            setDiscordValidationError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setDiscordValidating(false);
+        }
     };
 
     const toggleServiceExpansion = (name: string) => {
@@ -927,7 +1063,7 @@ export function SetupWizard() {
             const nextSelected = new Set<string>();
             if (Array.isArray(parsed.selected)) {
                 for (const entry of parsed.selected) {
-                    const normalized = normalizeString(entry).trim();
+                    const normalized = normalizeServiceName(entry);
                     if (normalized && knownServiceNames.has(normalized)) {
                         nextSelected.add(normalized);
                     }
@@ -936,7 +1072,8 @@ export function SetupWizard() {
 
             const nextValues = cloneEnvState(buildInitialEnvState(catalog));
             if (parsed.values && typeof parsed.values === "object") {
-                for (const [serviceName, envMap] of Object.entries(parsed.values)) {
+                for (const [rawServiceName, envMap] of Object.entries(parsed.values)) {
+                    const serviceName = normalizeServiceName(rawServiceName);
                     if (!knownServiceNames.has(serviceName) || !envMap || typeof envMap !== "object") continue;
                     nextValues[serviceName] = {
                         ...(nextValues[serviceName] ?? {}),
@@ -959,7 +1096,7 @@ export function SetupWizard() {
                 const kavita = parsedV2?.integrations?.kavita;
                 if (kavita) {
                     setKavitaMode(kavita.mode === "external" ? "external" : "managed");
-                    setKavitaBaseUrl(normalizeString(kavita.baseUrl) || "http://kavita:5000");
+                    setKavitaBaseUrl(normalizeString(kavita.baseUrl) || "http://noona-kavita:5000");
                     setKavitaApiKey(normalizeString(kavita.apiKey));
                     setKavitaSharedLibraryPath(normalizeString(kavita.sharedLibraryPath));
                     setKavitaContainerName(normalizeString(kavita.containerName));
@@ -974,8 +1111,8 @@ export function SetupWizard() {
             } else {
                 const importedPortal = nextValues["noona-portal"] ?? {};
                 const importedRaven = nextValues["noona-raven"] ?? {};
-                setKavitaMode(nextSelected.has("kavita") ? "managed" : "external");
-                setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://kavita:5000");
+                setKavitaMode(nextSelected.has("noona-kavita") ? "managed" : "external");
+                setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://noona-kavita:5000");
                 setKavitaApiKey(normalizeString(importedPortal.KAVITA_API_KEY));
                 setKavitaSharedLibraryPath(normalizeString(importedRaven.KAVITA_DATA_MOUNT));
                 setKomfMode(nextSelected.has("komf") ? "managed" : "external");
@@ -986,6 +1123,57 @@ export function SetupWizard() {
             setConfigError(error instanceof Error ? error.message : String(error));
         } finally {
             event.target.value = "";
+        }
+    };
+
+    const persistDiscordAuthConfig = async () => {
+        const portalValues = effectiveValues["noona-portal"] ?? {};
+        const clientId = normalizeString(portalValues.DISCORD_CLIENT_ID).trim();
+        const clientSecret = normalizeString(portalValues.DISCORD_CLIENT_SECRET).trim();
+        if (!clientId || !clientSecret) {
+            throw new Error("Discord client ID and client secret are required before continuing to the setup summary.");
+        }
+
+        let lastError: string | null = null;
+        for (let attempt = 1; attempt <= 5; attempt += 1) {
+            try {
+                const response = await fetch("/api/noona/auth/discord/config", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({clientId, clientSecret}),
+                });
+                const payload = await response.json().catch(() => null);
+                if (!response.ok) {
+                    throw new Error(
+                        normalizeString(payload?.error).trim()
+                        || `Failed to save Discord OAuth config (HTTP ${response.status}).`,
+                    );
+                }
+                return;
+            } catch (error) {
+                lastError = error instanceof Error ? error.message : String(error);
+                if (attempt < 5) {
+                    await new Promise((resolve) => window.setTimeout(resolve, attempt * 1000));
+                }
+            }
+        }
+
+        throw new Error(lastError || "Unable to save Discord OAuth config.");
+    };
+
+    const openSetupSummary = async () => {
+        if (summaryNavigationRef.current) return;
+
+        summaryNavigationRef.current = true;
+        try {
+            await persistDiscordAuthConfig();
+            const selectedServices = Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right));
+            const nextUrl = `/setupwizard/summary?selected=${encodeURIComponent(selectedServices.join(","))}`;
+            router.push(nextUrl);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            setInstallError(detail);
+            summaryNavigationRef.current = false;
         }
     };
 
@@ -1010,8 +1198,8 @@ export function SetupWizard() {
         setInstallError(null);
         setInstallResult(null);
         setInstallProgress(null);
-        setSummaryOpen(false);
         setInstalling(true);
+        summaryNavigationRef.current = false;
         installTargetsRef.current = targetNames;
         installProgressStartedRef.current = false;
 
@@ -1056,9 +1244,10 @@ export function SetupWizard() {
                 responseEntries.some((entry) => normalizeInstallStatus(entry?.status) === "error");
 
             setInstallResult({...json, results: responseEntries});
-            setSummaryOpen(!responseHasErrors);
             if (responseHasErrors) {
                 setInstallError("Installation finished with errors. Check service statuses below.");
+            } else {
+                void openSetupSummary();
             }
 
             stopPolling();
@@ -1077,37 +1266,6 @@ export function SetupWizard() {
                 installRequestRef.current = null;
             }
             clearInstallProgressTimeout();
-        }
-    };
-
-    const finishSetup = async () => {
-        if (finishInFlightRef.current) return;
-
-        finishInFlightRef.current = true;
-        setFinishing(true);
-        setFinishError(null);
-
-        try {
-            const res = await fetch("/api/noona/setup/complete", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({
-                    selectedServices: Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right)),
-                }),
-            });
-            const json = await res.json().catch(() => ({}));
-
-            if (!res.ok) {
-                setFinishError(typeof json?.error === "string" ? json.error : `Failed to complete setup (HTTP ${res.status}).`);
-                return;
-            }
-
-            window.location.assign("/");
-        } catch (error) {
-            setFinishError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setFinishing(false);
-            finishInFlightRef.current = false;
         }
     };
 
@@ -1150,7 +1308,94 @@ export function SetupWizard() {
                         </Button>
                     </Row>
                     {isOpen && (
-                        <Column gap="12">
+                        <Column gap="16">
+                            {serviceName === "noona-portal" && (
+                                <Card fillWidth background={BG_NEUTRAL_ALPHA_WEAK} border="neutral-alpha-weak"
+                                      padding="m" radius="m">
+                                    <Column gap="12">
+                                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                            <Column gap="4">
+                                                <Text variant="label-default-s">Discord bot login test</Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Test the entered bot token, detect the application client ID, and
+                                                    pick a guild without leaving setup.
+                                                </Text>
+                                            </Column>
+                                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                <Button size="s" variant="secondary"
+                                                        onClick={() => void testDiscordConnection()}
+                                                        disabled={discordValidating}>
+                                                    {discordValidating ? "Testing..." : "Test bot login"}
+                                                </Button>
+                                                {discordValidation?.suggested && (
+                                                    <Button size="s" variant="secondary"
+                                                            onClick={() => applyDiscordSuggestedValues(discordValidation, {overwrite: true})}>
+                                                        Use detected values
+                                                    </Button>
+                                                )}
+                                            </Row>
+                                        </Row>
+
+                                        {discordValidationError && (
+                                            <Text onBackground="danger-strong" variant="body-default-xs">
+                                                {discordValidationError}
+                                            </Text>
+                                        )}
+
+                                        {discordValidation?.botUser && (
+                                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                <Badge background={BG_SUCCESS_ALPHA_WEAK} onBackground="neutral-strong">
+                                                    {normalizeString(discordValidation.botUser.tag).trim() || normalizeString(discordValidation.botUser.username).trim() || "Bot ready"}
+                                                </Badge>
+                                                {normalizeString(discordValidation.application?.id).trim() && (
+                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                                           onBackground="neutral-strong">
+                                                        client: {discordValidation.application?.id}
+                                                    </Badge>
+                                                )}
+                                                {discordValidation.application?.clientIdMatches === false && (
+                                                    <Badge background={BG_DANGER_ALPHA_WEAK}
+                                                           onBackground="neutral-strong">
+                                                        client ID mismatch
+                                                    </Badge>
+                                                )}
+                                            </Row>
+                                        )}
+
+                                        {Array.isArray(discordValidation?.guilds) && discordValidation.guilds.length > 0 && (
+                                            <Column gap="8">
+                                                <Text variant="label-default-s">Accessible guilds</Text>
+                                                {discordValidation.guilds.map((guild) => {
+                                                    const guildId = normalizeString(guild?.id).trim();
+                                                    const currentGuildId = normalizeString(effectiveValues["noona-portal"]?.DISCORD_GUILD_ID).trim();
+                                                    return (
+                                                        <Row key={guildId || guild?.name || "guild"} fillWidth
+                                                             horizontal="between" vertical="center" gap="12"
+                                                             background={BG_SURFACE} padding="12" radius="m">
+                                                            <Column gap="4" style={{minWidth: 0}}>
+                                                                <Text
+                                                                    variant="body-default-s">{normalizeString(guild?.name).trim() || guildId || "Unknown guild"}</Text>
+                                                                {guildId && (
+                                                                    <Text onBackground="neutral-weak"
+                                                                          variant="body-default-xs">
+                                                                        {guildId}
+                                                                    </Text>
+                                                                )}
+                                                            </Column>
+                                                            <Button size="s"
+                                                                    variant={currentGuildId === guildId ? "primary" : "secondary"}
+                                                                    onClick={() => useDiscordGuild(guildId)}
+                                                                    disabled={!guildId}>
+                                                                {currentGuildId === guildId ? "Selected" : "Use guild"}
+                                                            </Button>
+                                                        </Row>
+                                                    );
+                                                })}
+                                            </Column>
+                                        )}
+                                    </Column>
+                                </Card>
+                            )}
                             {visibleFields.length === 0 ? (
                                 <Text onBackground="neutral-weak">No additional fields to edit here.</Text>
                             ) : (
@@ -1359,7 +1604,7 @@ export function SetupWizard() {
                                                    placeholder={joinHostPath(storageRoot || defaultStorageRoot || "/mnt/user/noona", "raven", "downloads")}
                                                    onChange={(event) => setKavitaSharedLibraryPath(event.target.value)}/>
                                             <Input id="external-kavita-container" name="external-kavita-container"
-                                                   type="text" value={kavitaContainerName} placeholder="kavita"
+                                                   type="text" value={kavitaContainerName} placeholder="noona-kavita"
                                                    onChange={(event) => setKavitaContainerName(event.target.value)}/>
                                         </Column>
                                     )}
@@ -1431,7 +1676,7 @@ export function SetupWizard() {
                                                                            onBackground="neutral-strong">installed</Badge>}
                                                                 {MANAGED_INTEGRATIONS.has(name) &&
                                                                     <Badge background={BG_NEUTRAL_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">{name === "kavita" ? kavitaMode : komfMode}</Badge>}
+                                                                           onBackground="neutral-strong">{name === "noona-kavita" ? kavitaMode : komfMode}</Badge>}
                                                                 {ravenLocked && <Badge background={BG_BRAND_ALPHA_WEAK}
                                                                                        onBackground="neutral-strong">required
                                                                     by Kavita</Badge>}
@@ -1531,34 +1776,6 @@ export function SetupWizard() {
                 </>
             )}
 
-            {installResult !== null && summaryOpen && (
-                <Column className={styles.summaryOverlay}>
-                    <Card background={BG_SURFACE} border="neutral-alpha-weak" radius="l" padding="l"
-                          className={styles.summaryModal}>
-                        <Column gap="12">
-                            <Row horizontal="between" vertical="center" gap="12">
-                                <Heading as="h2" variant="heading-strong-l">Setup summary</Heading>
-                                <Button size="s" variant="secondary"
-                                        onClick={() => setSummaryOpen(false)}>Close</Button>
-                            </Row>
-                            <Text onBackground="neutral-weak" variant="body-default-xs">Final step: mark setup complete
-                                and return to the main app.</Text>
-                            <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
-                            <Text onBackground="neutral-weak" variant="body-default-xs">Storage
-                                root: {storageRoot || defaultStorageRoot}</Text>
-                            <Text onBackground="neutral-weak"
-                                  variant="body-default-xs">Kavita: {kavitaMode === "managed" ? "Managed by Noona" : kavitaBaseUrl || "External"}</Text>
-                            <Text onBackground="neutral-weak"
-                                  variant="body-default-xs">Komf: {komfMode === "managed" ? "Managed by Noona" : komfBaseUrl || "External"}</Text>
-                            <Button size="m" variant="primary" disabled={finishing} onClick={() => void finishSetup()}>
-                                {finishing ? "Finishing..." : "Finish setup and continue"}
-                            </Button>
-                            {finishError &&
-                                <Text onBackground="danger-strong" variant="body-default-xs">{finishError}</Text>}
-                        </Column>
-                    </Card>
-                </Column>
-            )}
         </Column>
     );
 }

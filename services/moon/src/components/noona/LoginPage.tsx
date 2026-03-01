@@ -2,15 +2,20 @@
 
 import {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Badge, Button, Card, Column, Heading, Input, Row, Spinner, Text} from "@once-ui-system/core";
-
-type AuthStatus = {
-    user?: unknown;
-    error?: string;
-};
+import {Badge, Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
 
 type SetupStatus = {
     completed?: boolean;
+};
+
+type DiscordConfigStatus = {
+    configured?: boolean;
+    error?: string;
+};
+
+type DiscordStartResponse = {
+    authorizeUrl?: string | null;
+    error?: string;
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -18,10 +23,7 @@ const normalizeString = (value: unknown): string => (typeof value === "string" ?
 export function LoginPage() {
     const router = useRouter();
     const [checking, setChecking] = useState(true);
-
-    const [username, setUsername] = useState("");
-    const [password, setPassword] = useState("");
-    const [showPassword, setShowPassword] = useState(false);
+    const [configured, setConfigured] = useState(false);
     const [loggingIn, setLoggingIn] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -34,19 +36,30 @@ export function LoginPage() {
                 const setupJson = (await setupRes.json().catch(() => null)) as SetupStatus | null;
                 const setupCompleted = setupJson?.completed === true;
 
-                const res = await fetch("/api/noona/auth/status", {cache: "no-store"});
+                const authRes = await fetch("/api/noona/auth/status", {cache: "no-store"});
                 if (cancelled) return;
-                if (res.ok) {
-                    router.replace(setupCompleted ? "/" : "/setupwizard");
+                if (authRes.ok) {
+                    router.replace(setupCompleted ? "/" : "/setupwizard/summary");
                     return;
                 }
 
                 if (!setupCompleted) {
-                    router.replace("/signup");
+                    router.replace("/setupwizard");
                     return;
                 }
-            } catch {
-                // Ignore.
+
+                const configRes = await fetch("/api/noona/auth/discord/config", {cache: "no-store"});
+                const configJson = (await configRes.json().catch(() => null)) as DiscordConfigStatus | null;
+                if (cancelled) return;
+                if (configRes.ok) {
+                    setConfigured(configJson?.configured === true);
+                } else {
+                    setError(normalizeString(configJson?.error).trim() || `Failed to load Discord auth config (HTTP ${configRes.status}).`);
+                }
+            } catch (error_) {
+                if (cancelled) return;
+                const detail = error_ instanceof Error ? error_.message : String(error_);
+                setError(detail);
             } finally {
                 if (!cancelled) setChecking(false);
             }
@@ -58,46 +71,37 @@ export function LoginPage() {
         };
     }, [router]);
 
-    const canSubmit = username.trim().length > 0 && password.length > 0;
-
-    const login = async () => {
-        if (!canSubmit || loggingIn) {
-            return;
-        }
+    const startDiscordLogin = async () => {
+        if (loggingIn) return;
 
         setLoggingIn(true);
         setError(null);
 
         try {
-            const res = await fetch("/api/noona/auth/login", {
+            const response = await fetch("/api/noona/auth/discord/start", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({username, password}),
+                body: JSON.stringify({
+                    mode: "login",
+                    returnTo: "/",
+                }),
             });
-            const json = (await res.json().catch(() => null)) as AuthStatus | null;
-
-            if (!res.ok) {
-                const msg = typeof json?.error === "string" && json.error.trim()
-                    ? json.error.trim()
-                    : `Login failed (HTTP ${res.status}).`;
-                throw new Error(msg);
+            const payload = (await response.json().catch(() => null)) as DiscordStartResponse | null;
+            if (!response.ok) {
+                throw new Error(normalizeString(payload?.error).trim() || `Discord login failed to start (HTTP ${response.status}).`);
             }
 
-            router.replace("/");
+            const authorizeUrl = normalizeString(payload?.authorizeUrl).trim();
+            if (!authorizeUrl) {
+                throw new Error("Discord login is configured, but no authorize URL was returned.");
+            }
+
+            window.location.assign(authorizeUrl);
         } catch (error_) {
-            const msg = error_ instanceof Error ? error_.message : String(error_);
-            setError(msg);
-        } finally {
+            const detail = error_ instanceof Error ? error_.message : String(error_);
+            setError(detail);
             setLoggingIn(false);
         }
-    };
-
-    const submitWithEnter = (key: string) => {
-        if (key !== "Enter") {
-            return;
-        }
-
-        void login();
     };
 
     return (
@@ -110,14 +114,12 @@ export function LoginPage() {
                                 Noona
                             </Badge>
                             <Heading as="h1" variant="heading-strong-l">
-                                Sign in
+                                Sign in with Discord
                             </Heading>
                         </Row>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
-                            Sign in with a Moon-enabled account to manage libraries, downloads, and settings.
-                        </Text>
-                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                            Press Enter to submit. Moon login permission is required for the account you use here.
+                            Moon now uses Discord OAuth for web login. Username/password sign-in is no longer part of
+                            the web flow.
                         </Text>
                     </Column>
 
@@ -129,56 +131,31 @@ export function LoginPage() {
 
                     {!checking && (
                         <Column gap="12">
-                            <Input
-                                id="username"
-                                name="username"
-                                label="Username"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                onKeyDown={(event) => submitWithEnter(event.key)}
-                                autoComplete="username"
-                                autoFocus
-                            />
-                            <Column gap="8">
-                                <Input
-                                    id="password"
-                                    name="password"
-                                    label="Password"
-                                    type={showPassword ? "text" : "password"}
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    onKeyDown={(event) => submitWithEnter(event.key)}
-                                    autoComplete="current-password"
-                                />
-                                <Row fillWidth horizontal="between" vertical="center" gap="12"
-                                     style={{flexWrap: "wrap"}}>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Use the same credentials configured in Sage.
-                                    </Text>
-                                    <Button
-                                        variant="secondary"
-                                        size="s"
-                                        onClick={() => setShowPassword((current) => !current)}
-                                    >
-                                        {showPassword ? "Hide password" : "Show password"}
-                                    </Button>
-                                </Row>
-                            </Column>
+                            {!configured && !error && (
+                                <Text onBackground="warning-strong" variant="body-default-xs">
+                                    Discord OAuth is not configured yet. Finish the setup wizard summary first.
+                                </Text>
+                            )}
 
                             {error && (
                                 <Text onBackground="danger-strong" variant="body-default-xs" aria-live="polite">
-                                    {normalizeString(error)}
+                                    {error}
                                 </Text>
                             )}
 
                             <Row gap="12" style={{flexWrap: "wrap"}}>
                                 <Button
                                     variant="primary"
-                                    disabled={checking || loggingIn || !canSubmit}
-                                    onClick={() => void login()}
+                                    disabled={checking || loggingIn || !configured}
+                                    onClick={() => void startDiscordLogin()}
                                 >
-                                    {loggingIn ? "Signing in..." : "Sign in"}
+                                    {loggingIn ? "Redirecting..." : "Continue with Discord"}
                                 </Button>
+                                {!configured && (
+                                    <Button variant="secondary" onClick={() => router.push("/setupwizard")}>
+                                        Open setup wizard
+                                    </Button>
+                                )}
                             </Row>
                         </Column>
                     )}

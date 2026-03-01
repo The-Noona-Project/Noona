@@ -75,10 +75,12 @@ instead of blindly starting every registered service.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
 - Warden now resolves a shared Noona host root and pre-creates the expected tree before service launch. Redis and
   Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
-  managed Kavita uses `kavita/config` plus the Raven download share, and managed Komf uses `komf/config`.
+  managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed Komf uses `komf/config`.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
 - Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.
+- Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create
+  matching Kavita libraries for new Raven media-type folders when Kavita sync is configured.
 - The Portal descriptor in [docker/noonaDockers.mjs](docker/noonaDockers.mjs) now includes `PORTAL_JOIN_DEFAULT_ROLES`
   and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under

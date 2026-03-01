@@ -605,8 +605,8 @@ export function registerSetupRoutes(context = {}) {
 
     app.post('/api/setup/services/noona-portal/discord/validate', async (req, res) => {
         try {
-            const {token, guildId} = req.body ?? {}
-            const payload = await discordSetupClient.fetchResources({token, guildId})
+            const {token, clientId, guildId} = req.body ?? {}
+            const payload = await discordSetupClient.fetchResources({token, clientId, guildId})
             res.json(payload)
         } catch (error) {
             if (error instanceof SetupValidationError) {

@@ -83,19 +83,19 @@ const rawList = [
         hostServiceUrl: `mongodb://localhost:27017`,
     },
     {
-        name: 'kavita',
+        name: 'noona-kavita',
         description: 'Managed Kavita library server wired to the Noona downloads folder.',
         image: 'jvmilazz0/kavita:latest',
         port: 5000,
         internalPort: 5000,
         env: [
-            'SERVICE_NAME=kavita',
+            'SERVICE_NAME=noona-kavita',
             `TZ=${DEFAULT_TIMEZONE}`,
             'KAVITA_CONFIG_HOST_MOUNT_PATH=',
             'KAVITA_LIBRARY_HOST_MOUNT_PATH=',
         ],
         envConfig: [
-            createEnvField('SERVICE_NAME', 'kavita', {
+            createEnvField('SERVICE_NAME', 'noona-kavita', {
                 label: 'Service Name',
                 readOnly: true,
                 description: 'Identifier used when naming the Kavita container.',
@@ -120,7 +120,7 @@ const rawList = [
         ],
         volumes: [],
         hostServiceUrl: `${HOST_SERVICE_URL}:5000`,
-        health: 'http://kavita:5000/',
+        health: 'http://noona-kavita:5000/',
         restartPolicy: {Name: 'unless-stopped'},
     },
     {
@@ -131,7 +131,7 @@ const rawList = [
         internalPort: 8085,
         env: [
             'SERVICE_NAME=komf',
-            'KOMF_KAVITA_BASE_URI=http://kavita:5000',
+            'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
             'KOMF_KAVITA_API_KEY=',
             'KOMF_LOG_LEVEL=INFO',
             'KOMF_KOMGA_BASE_URI=',
@@ -145,7 +145,7 @@ const rawList = [
                 readOnly: true,
                 description: 'Identifier used when naming the Komf container.',
             }),
-            createEnvField('KOMF_KAVITA_BASE_URI', 'http://kavita:5000', {
+            createEnvField('KOMF_KAVITA_BASE_URI', 'http://noona-kavita:5000', {
                 label: 'Kavita Base URI',
                 description: 'Kavita base URL used by Komf.',
             }),

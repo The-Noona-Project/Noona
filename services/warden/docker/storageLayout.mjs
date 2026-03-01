@@ -139,7 +139,7 @@ export function buildNoonaStorageLayout(rootPath, {vaultFolderName = 'vault'} = 
             'noona-mongo': {
                 data: buildFolderEntry(path.join(root, normalizedVaultFolder, 'mongo'), '/data/db'),
             },
-            kavita: {
+            'noona-kavita': {
                 config: buildFolderEntry(path.join(root, 'kavita', 'config'), '/kavita/config'),
                 manga: buildFolderEntry(path.join(root, 'raven', 'downloads'), '/manga'),
             },
@@ -160,7 +160,7 @@ export function describeNoonaStorageLayout(rootPath, options = {}) {
         'noona-vault',
         'noona-redis',
         'noona-mongo',
-        'kavita',
+        'noona-kavita',
         'komf',
     ];
 

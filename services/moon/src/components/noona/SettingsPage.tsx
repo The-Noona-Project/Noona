@@ -100,6 +100,12 @@ type AuthStatusResponse = {
         role?: string | null;
         permissions?: string[] | null;
         isBootstrapUser?: boolean | null;
+        authProvider?: string | null;
+        discordUserId?: string | null;
+        discordUsername?: string | null;
+        discordGlobalName?: string | null;
+        avatarUrl?: string | null;
+        email?: string | null;
     } | null;
     error?: string;
 };
@@ -112,6 +118,13 @@ type ManagedUser = {
     isBootstrapUser?: boolean | null;
     createdAt?: string | null;
     updatedAt?: string | null;
+    lookupKey?: string | null;
+    authProvider?: string | null;
+    discordUserId?: string | null;
+    discordUsername?: string | null;
+    discordGlobalName?: string | null;
+    avatarUrl?: string | null;
+    email?: string | null;
 };
 
 type UsersListResponse = {
@@ -189,6 +202,14 @@ const MOON_PERMISSION_LABELS: Record<MoonPermission, string> = {
     user_management: "User management",
     admin: "Admin",
 };
+const MOON_PERMISSION_DESCRIPTIONS: Record<MoonPermission, string> = {
+    moon_login: "Allows the Discord-linked account to sign in to Moon.",
+    lookup_new_title: "Lets the user search Raven for new titles from the library view.",
+    download_new_title: "Lets the user queue new title downloads from Moon.",
+    check_download_missing_titles: "Lets the user run missing-title checks and recovery downloads.",
+    user_management: "Lets the user create, edit, and delete Discord-linked Moon accounts.",
+    admin: "Grants full Moon settings and service-management access.",
+};
 const MOON_PERMISSION_ORDER: MoonPermission[] = [
     "moon_login",
     "lookup_new_title",
@@ -217,6 +238,7 @@ const PORTAL_JOIN_DEFAULT_KEYS = new Set([
 const PORTAL_DISCORD_KEYS = new Set([
     "DISCORD_BOT_TOKEN",
     "DISCORD_CLIENT_ID",
+    "DISCORD_CLIENT_SECRET",
     "DISCORD_GUILD_ID",
     "DISCORD_GUILD_ROLE_ID",
     "DISCORD_DEFAULT_ROLE_ID",
@@ -343,13 +365,8 @@ export function SettingsPage() {
     const [debugMessage, setDebugMessage] = useState<string | null>(null);
 
     const [accountLoading, setAccountLoading] = useState(false);
-    const [accountUser, setAccountUser] = useState<{ username: string; role: string } | null>(null);
-    const [accountUsername, setAccountUsername] = useState("");
-    const [accountPassword, setAccountPassword] = useState("");
-    const [accountConfirm, setAccountConfirm] = useState("");
-    const [accountSaving, setAccountSaving] = useState(false);
+    const [accountUser, setAccountUser] = useState<AuthStatusResponse["user"]>(null);
     const [accountError, setAccountError] = useState<string | null>(null);
-    const [accountMessage, setAccountMessage] = useState<string | null>(null);
 
     const [updatesLoading, setUpdatesLoading] = useState(false);
     const [updatesChecking, setUpdatesChecking] = useState(false);
@@ -390,14 +407,13 @@ export function SettingsPage() {
     const [usersError, setUsersError] = useState<string | null>(null);
     const [usersMessage, setUsersMessage] = useState<string | null>(null);
     const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
-    const [newUserUsername, setNewUserUsername] = useState("");
-    const [newUserPassword, setNewUserPassword] = useState("");
+    const [newUserDiscordId, setNewUserDiscordId] = useState("");
+    const [newUserDisplayName, setNewUserDisplayName] = useState("");
     const [newUserPermissions, setNewUserPermissions] = useState<MoonPermission[]>(["moon_login"]);
     const [editingUser, setEditingUser] = useState<Record<string, {
         username: string;
         permissions: MoonPermission[]
     }>>({});
-    const [generatedPasswords, setGeneratedPasswords] = useState<Record<string, string>>({});
 
     const catalogByName = useMemo(() => {
         const out = new Map<string, ServiceCatalogEntry>();
@@ -587,6 +603,26 @@ export function SettingsPage() {
                 patchEditor(serviceName, {error: parseError(json, `Failed to save ${serviceName} (HTTP ${res.status}).`)});
                 return;
             }
+
+            if (serviceName === "noona-portal") {
+                const clientId = normalizeString(editor.envDraft.DISCORD_CLIENT_ID).trim();
+                const clientSecret = normalizeString(editor.envDraft.DISCORD_CLIENT_SECRET).trim();
+                if (clientId && clientSecret) {
+                    const authConfigRes = await fetch("/api/noona/auth/discord/config", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({clientId, clientSecret}),
+                    });
+                    const authConfigJson = await authConfigRes.json().catch(() => null);
+                    if (!authConfigRes.ok) {
+                        patchEditor(serviceName, {
+                            error: parseError(authConfigJson, `Saved ${serviceName}, but Discord auth sync failed (HTTP ${authConfigRes.status}).`),
+                        });
+                        return;
+                    }
+                }
+            }
+
             patchEditor(serviceName, {message: "Saved and restarted service."});
             await loadServiceConfig(serviceName);
         } catch (error_) {
@@ -629,16 +665,13 @@ export function SettingsPage() {
             }
 
             const username = normalizeString(json?.user?.username).trim();
-            const role = normalizeString(json?.user?.role).trim() || "member";
             const permissions = normalizePermissions(json?.user?.permissions);
             if (!username) {
                 setAccountUser(null);
-                setAccountUsername("");
                 setCurrentPermissions([]);
                 return;
             }
-            setAccountUser({username, role});
-            setAccountUsername(username);
+            setAccountUser(json?.user ?? null);
             setCurrentPermissions(permissions);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -646,71 +679,6 @@ export function SettingsPage() {
         } finally {
             setAccountLoading(false);
             setAuthStateLoading(false);
-        }
-    };
-
-    const saveAccount = async () => {
-        if (!accountUser?.username) {
-            setAccountError("No active user session.");
-            return;
-        }
-
-        const nextUsername = accountUsername.trim();
-        if (!/^[A-Za-z0-9._-]{3,64}$/.test(nextUsername)) {
-            setAccountError("Username must be 3-64 characters (letters, numbers, ., _, -).");
-            return;
-        }
-
-        const updatesPayload: Record<string, string> = {};
-        if (nextUsername !== accountUser.username) {
-            updatesPayload.username = nextUsername;
-        }
-        if (accountPassword) {
-            if (accountPassword.length < 8) {
-                setAccountError("Password must be at least 8 characters.");
-                return;
-            }
-            if (accountPassword !== accountConfirm) {
-                setAccountError("Passwords do not match.");
-                return;
-            }
-            updatesPayload.password = accountPassword;
-        }
-        if (Object.keys(updatesPayload).length === 0) {
-            setAccountMessage("No account changes to save.");
-            setAccountError(null);
-            return;
-        }
-
-        setAccountSaving(true);
-        setAccountError(null);
-        setAccountMessage(null);
-        try {
-            const res = await fetch(`/api/noona/auth/users/${encodeURIComponent(accountUser.username)}`, {
-                method: "PUT",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(updatesPayload),
-            });
-            const json = await res.json().catch(() => null);
-            if (!res.ok) {
-                setAccountError(parseError(json, `Failed to update account (HTTP ${res.status}).`));
-                return;
-            }
-
-            const updatedUsername = normalizeString(json?.user?.username).trim() || nextUsername;
-            const updatedRole = normalizeString(json?.user?.role).trim() || accountUser.role;
-            const updatedPermissions = normalizePermissions(json?.user?.permissions);
-            setAccountUser({username: updatedUsername, role: updatedRole});
-            setAccountUsername(updatedUsername);
-            setAccountPassword("");
-            setAccountConfirm("");
-            setAccountMessage("Account updated.");
-            setCurrentPermissions(updatedPermissions);
-        } catch (error_) {
-            const msg = error_ instanceof Error ? error_.message : String(error_);
-            setAccountError(msg);
-        } finally {
-            setAccountSaving(false);
         }
     };
 
@@ -944,6 +912,7 @@ export function SettingsPage() {
     };
 
     const userLookupKey = (user: ManagedUser): string =>
+        normalizeString(user.lookupKey).trim().toLowerCase() ||
         normalizeString(user.usernameNormalized).trim().toLowerCase() ||
         normalizeString(user.username).trim().toLowerCase();
 
@@ -1019,13 +988,10 @@ export function SettingsPage() {
     };
 
     const createManagedUser = async () => {
-        const username = newUserUsername.trim();
-        if (!/^[A-Za-z0-9._-]{3,64}$/.test(username)) {
-            setUsersError("Username must be 3-64 characters (letters, numbers, ., _, -).");
-            return;
-        }
-        if (newUserPassword.length < 8) {
-            setUsersError("Password must be at least 8 characters.");
+        const discordUserId = newUserDiscordId.trim();
+        const displayName = newUserDisplayName.trim();
+        if (!/^\d{5,32}$/.test(discordUserId)) {
+            setUsersError("Discord user ID must be numeric.");
             return;
         }
 
@@ -1037,8 +1003,8 @@ export function SettingsPage() {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
-                    username,
-                    password: newUserPassword,
+                    username: displayName || `Discord ${discordUserId}`,
+                    discordUserId,
                     permissions: newUserPermissions,
                 }),
             });
@@ -1048,10 +1014,10 @@ export function SettingsPage() {
                 return;
             }
 
-            setNewUserUsername("");
-            setNewUserPassword("");
+            setNewUserDiscordId("");
+            setNewUserDisplayName("");
             setNewUserPermissions(["moon_login"]);
-            setUsersMessage(`Created ${username}.`);
+            setUsersMessage(`Created Discord user ${discordUserId}.`);
             await loadManagedUsers();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
@@ -1064,13 +1030,13 @@ export function SettingsPage() {
     const saveManagedUser = async (entry: ManagedUser) => {
         if (entry.isBootstrapUser === true) return;
         const key = userLookupKey(entry);
-        const lookup = normalizeString(entry.username).trim();
+        const lookup = normalizeString(entry.lookupKey).trim() || key;
         const draft = editingUser[key];
         if (!lookup || !draft) return;
 
         const nextUsername = draft.username.trim();
-        if (!/^[A-Za-z0-9._-]{3,64}$/.test(nextUsername)) {
-            setUsersError("Username must be 3-64 characters (letters, numbers, ., _, -).");
+        if (!nextUsername) {
+            setUsersError("Display name is required.");
             return;
         }
 
@@ -1116,44 +1082,9 @@ export function SettingsPage() {
         }
     };
 
-    const resetManagedUserPassword = async (entry: ManagedUser) => {
-        if (entry.isBootstrapUser === true) return;
-        const lookup = normalizeString(entry.username).trim();
-        const key = userLookupKey(entry);
-        if (!lookup || !key) return;
-
-        const confirmed = window.confirm(`Reset password for ${lookup}?`);
-        if (!confirmed) return;
-
-        setUsersSaving(true);
-        setUsersError(null);
-        setUsersMessage(null);
-        try {
-            const res = await fetch(`/api/noona/auth/users/${encodeURIComponent(lookup)}/reset-password`, {
-                method: "POST",
-            });
-            const json = (await res.json().catch(() => null)) as UserResetPasswordResponse | null;
-            if (!res.ok) {
-                setUsersError(parseError(json, `Failed to reset password (HTTP ${res.status}).`));
-                return;
-            }
-
-            const password = normalizeString(json?.password).trim();
-            if (password) {
-                setGeneratedPasswords((prev) => ({...prev, [key]: password}));
-            }
-            setUsersMessage(`Password reset for ${lookup}.`);
-        } catch (error_) {
-            const msg = error_ instanceof Error ? error_.message : String(error_);
-            setUsersError(msg);
-        } finally {
-            setUsersSaving(false);
-        }
-    };
-
     const deleteManagedUser = async (entry: ManagedUser) => {
         if (entry.isBootstrapUser === true) return;
-        const lookup = normalizeString(entry.username).trim();
+        const lookup = normalizeString(entry.lookupKey).trim() || userLookupKey(entry);
         const key = userLookupKey(entry);
         if (!lookup || !key) return;
 
@@ -1173,11 +1104,6 @@ export function SettingsPage() {
                 return;
             }
 
-            setGeneratedPasswords((prev) => {
-                const next = {...prev};
-                delete next[key];
-                return next;
-            });
             setUsersMessage(`Deleted ${lookup}.`);
             await loadManagedUsers();
         } catch (error_) {
@@ -1986,22 +1912,28 @@ export function SettingsPage() {
             <Column fillWidth gap="16">
                 <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Column gap="12">
-                        <Heading as="h2" variant="heading-strong-l">Create user</Heading>
+                        <Heading as="h2" variant="heading-strong-l">Create Discord user</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Moon access is assigned to Discord-linked accounts. Add the user&apos;s Discord ID, then
+                            choose which actions that account can perform after Discord sign-in.
+                        </Text>
                         <Input
-                            id="new-user-username"
-                            name="new-user-username"
-                            label="Username"
-                            value={newUserUsername}
-                            onChange={(event) => setNewUserUsername(event.target.value)}
+                            id="new-user-discord-id"
+                            name="new-user-discord-id"
+                            label="Discord user ID"
+                            value={newUserDiscordId}
+                            onChange={(event) => setNewUserDiscordId(event.target.value)}
                         />
                         <Input
-                            id="new-user-password"
-                            name="new-user-password"
-                            label="Password"
-                            type="password"
-                            value={newUserPassword}
-                            onChange={(event) => setNewUserPassword(event.target.value)}
+                            id="new-user-display-name"
+                            name="new-user-display-name"
+                            label="Display name (optional)"
+                            value={newUserDisplayName}
+                            onChange={(event) => setNewUserDisplayName(event.target.value)}
                         />
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Users sign in through Discord OAuth. The ID entered here must match their Discord account.
+                        </Text>
                         <Column gap="8">
                             <Text onBackground="neutral-weak" variant="body-default-xs">Permissions</Text>
                             <Row gap="12" style={{flexWrap: "wrap"}}>
@@ -2015,11 +1947,19 @@ export function SettingsPage() {
                                         />
                                         <Text variant="body-default-xs">{MOON_PERMISSION_LABELS[permission]}</Text>
                                     </label>
-                                ))}
+                                ))} 
                             </Row>
+                            <Column gap="8">
+                                {MOON_PERMISSION_ORDER.map((permission) => (
+                                    <Text key={`new-user-permission-help-${permission}`} onBackground="neutral-weak"
+                                          variant="body-default-xs">
+                                        {MOON_PERMISSION_LABELS[permission]}: {MOON_PERMISSION_DESCRIPTIONS[permission]}
+                                    </Text>
+                                ))}
+                            </Column>
                         </Column>
                         <Button variant="primary" disabled={usersSaving} onClick={() => void createManagedUser()}>
-                            {usersSaving ? "Saving..." : "Create user"}
+                            {usersSaving ? "Saving..." : "Create Discord user"}
                         </Button>
                     </Column>
                 </Card>
@@ -2054,7 +1994,8 @@ export function SettingsPage() {
                                         permissions: normalizePermissions(entry.permissions),
                                     };
                                     const isProtected = entry.isBootstrapUser === true;
-                                    const generatedPassword = generatedPasswords[key];
+                                    const authProvider = normalizeString(entry.authProvider).trim() || "local";
+                                    const discordUserId = normalizeString(entry.discordUserId).trim();
 
                                     return (
                                         <Card key={key || fallbackUsername} fillWidth background={BG_SURFACE}
@@ -2070,6 +2011,10 @@ export function SettingsPage() {
                                                                onBackground="neutral-strong">
                                                             {normalizeString(entry.role).trim() || "member"}
                                                         </Badge>
+                                                        <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                                               onBackground="neutral-strong">
+                                                            {authProvider}
+                                                        </Badge>
                                                         {isProtected && (
                                                             <Badge background={BG_WARNING_ALPHA_WEAK}
                                                                    onBackground="neutral-strong">
@@ -2083,10 +2028,23 @@ export function SettingsPage() {
                                                         </Text>
                                                     )}
                                                 </Row>
+                                                {discordUserId && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Discord ID: {discordUserId}
+                                                    </Text>
+                                                )}
+                                                {normalizeString(entry.discordUsername).trim() && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Discord handle: {normalizeString(entry.discordUsername).trim()}
+                                                        {normalizeString(entry.discordGlobalName).trim()
+                                                            ? ` (${normalizeString(entry.discordGlobalName).trim()})`
+                                                            : ""}
+                                                    </Text>
+                                                )}
                                                 <Input
                                                     id={`user-username-${key}`}
                                                     name={`user-username-${key}`}
-                                                    label="Username"
+                                                    label="Display name"
                                                     value={draft.username}
                                                     disabled={isProtected || usersSaving}
                                                     onChange={(event) => setEditingUsername(key, event.target.value)}
@@ -2114,6 +2072,14 @@ export function SettingsPage() {
                                                             </label>
                                                         ))}
                                                     </Row>
+                                                    <Column gap="8">
+                                                        {MOON_PERMISSION_ORDER.map((permission) => (
+                                                            <Text key={`${key}-permission-help-${permission}`}
+                                                                  onBackground="neutral-weak" variant="body-default-xs">
+                                                                {MOON_PERMISSION_LABELS[permission]}: {MOON_PERMISSION_DESCRIPTIONS[permission]}
+                                                            </Text>
+                                                        ))}
+                                                    </Column>
                                                 </Column>
                                                 <Row gap="8" style={{flexWrap: "wrap"}}>
                                                     <Button variant="primary" disabled={isProtected || usersSaving}
@@ -2121,19 +2087,10 @@ export function SettingsPage() {
                                                         Save user
                                                     </Button>
                                                     <Button variant="secondary" disabled={isProtected || usersSaving}
-                                                            onClick={() => void resetManagedUserPassword(entry)}>
-                                                        Reset password
-                                                    </Button>
-                                                    <Button variant="secondary" disabled={isProtected || usersSaving}
                                                             onClick={() => void deleteManagedUser(entry)}>
                                                         Delete user
                                                     </Button>
                                                 </Row>
-                                                {generatedPassword && (
-                                                    <Text onBackground="warning-strong" variant="body-default-xs">
-                                                        New password: {generatedPassword}
-                                                    </Text>
-                                                )}
                                             </Column>
                                         </Card>
                                     );
@@ -2154,7 +2111,7 @@ export function SettingsPage() {
                         <Column gap="4">
                             <Heading variant="display-strong-s">Settings</Heading>
                             <Text onBackground="neutral-weak" wrap="balance">
-                                Manage services, account credentials, updates, and tooling.
+                                Manage services, Discord access, updates, and tooling.
                             </Text>
                         </Column>
                         <Row gap="8" style={{flexWrap: "wrap"}}>
@@ -2355,7 +2312,7 @@ export function SettingsPage() {
                     {activeTab === "moon" && (
                         <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
-                                <Heading as="h3" variant="heading-strong-l">Username/password change</Heading>
+                                <Heading as="h3" variant="heading-strong-l">Moon account</Heading>
                                 {accountLoading && (
                                     <Row fillWidth horizontal="center" paddingY="16">
                                         <Spinner/>
@@ -2363,37 +2320,30 @@ export function SettingsPage() {
                                 )}
                                 {!accountLoading && (
                                     <Column gap="12">
-                                        <Input
-                                            id="moon-username"
-                                            name="moon-username"
-                                            label="Username"
-                                            value={accountUsername}
-                                            onChange={(event) => setAccountUsername(event.target.value)}
-                                        />
-                                        <Input
-                                            id="moon-password"
-                                            name="moon-password"
-                                            label="New password"
-                                            type="password"
-                                            value={accountPassword}
-                                            onChange={(event) => setAccountPassword(event.target.value)}
-                                        />
-                                        <Input
-                                            id="moon-confirm"
-                                            name="moon-confirm"
-                                            label="Confirm new password"
-                                            type="password"
-                                            value={accountConfirm}
-                                            onChange={(event) => setAccountConfirm(event.target.value)}
-                                        />
-                                        {accountError && <Text onBackground="danger-strong"
-                                                               variant="body-default-xs">{accountError}</Text>}
-                                        {accountMessage && <Text onBackground="neutral-weak"
-                                                                 variant="body-default-xs">{accountMessage}</Text>}
-                                        <Button variant="primary" disabled={accountSaving}
-                                                onClick={() => void saveAccount()}>
-                                            {accountSaving ? "Saving..." : "Save account"}
-                                        </Button>
+                                        {accountError && (
+                                            <Text onBackground="danger-strong"
+                                                  variant="body-default-xs">{accountError}</Text>
+                                        )}
+                                        {accountUser && (
+                                            <>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Signed in
+                                                    as {normalizeString(accountUser.username).trim() || "Unknown user"}.
+                                                </Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Provider: {normalizeString(accountUser.authProvider).trim() || "unknown"}
+                                                </Text>
+                                                {normalizeString(accountUser.discordUserId).trim() && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Discord ID: {normalizeString(accountUser.discordUserId).trim()}
+                                                    </Text>
+                                                )}
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Web login is managed by Discord OAuth. Username/password changes are
+                                                    no longer part of Moon.
+                                                </Text>
+                                            </>
+                                        )}
                                     </Column>
                                 )}
                             </Column>

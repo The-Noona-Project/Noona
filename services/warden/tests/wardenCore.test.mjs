@@ -795,12 +795,12 @@ test('installServices wires managed Kavita and Komf into the shared Noona storag
     };
     const services = {
         addon: {
-            kavita: {name: 'kavita', image: 'jvmilazz0/kavita:latest', port: 5000, env: ['TZ=UTC']},
+            'noona-kavita': {name: 'noona-kavita', image: 'jvmilazz0/kavita:latest', port: 5000, env: ['TZ=UTC']},
             komf: {
                 name: 'komf',
                 image: 'sndxr/komf:latest',
                 port: 8085,
-                env: ['KOMF_KAVITA_BASE_URI=http://kavita:5000', 'KOMF_KAVITA_API_KEY='],
+                env: ['KOMF_KAVITA_BASE_URI=http://noona-kavita:5000', 'KOMF_KAVITA_API_KEY='],
                 user: '1000:1000',
                 restartPolicy: {Name: 'unless-stopped'},
             },
@@ -824,11 +824,11 @@ test('installServices wires managed Kavita and Komf into the shared Noona storag
     });
 
     await warden.installServices([
-        {name: 'kavita'},
+        {name: 'noona-kavita'},
         {name: 'komf', env: {KOMF_KAVITA_API_KEY: 'api-key'}},
     ]);
 
-    const kavitaStart = started.find((entry) => entry.name === 'kavita');
+    const kavitaStart = started.find((entry) => entry.name === 'noona-kavita');
     const komfStart = started.find((entry) => entry.name === 'komf');
     const ravenStart = started.find((entry) => entry.name === 'noona-raven');
 
@@ -842,7 +842,7 @@ test('installServices wires managed Kavita and Komf into the shared Noona storag
     assert.ok(ravenStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/downloads`));
     assert.ok(ravenStart.env.includes('APPDATA=/downloads'));
     assert.ok(ravenStart.env.includes('KAVITA_DATA_MOUNT=/downloads'));
-    assert.ok(komfStart.env.includes('KOMF_KAVITA_BASE_URI=http://kavita:5000'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_BASE_URI=http://noona-kavita:5000'));
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=api-key'));
     assert.equal(komfStart.user, '1000:1000');
     assert.deepEqual(komfStart.restartPolicy, {Name: 'unless-stopped'});

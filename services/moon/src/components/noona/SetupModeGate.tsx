@@ -38,14 +38,7 @@ export function SetupModeGate({children}: SetupModeGateProps) {
                     setLoading(false);
                     return;
                 }
-
-                const authRes = await fetch("/api/noona/auth/status", {cache: "no-store"});
-                if (cancelled) return;
-                if (authRes.ok) {
-                    router.replace("/setupwizard");
-                    return;
-                }
-                router.replace("/signup");
+                router.replace("/setupwizard");
             } catch (error) {
                 if (cancelled) return;
                 const message = error instanceof Error ? error.message : String(error);

@@ -61,6 +61,22 @@ const VAULT_MONGO_HOST_MOUNT_PATH_KEY = 'VAULT_MONGO_HOST_MOUNT_PATH';
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
+const LEGACY_SERVICE_NAME_ALIASES = new Map([
+    ['kavita', 'noona-kavita'],
+]);
+
+function normalizeManagedServiceName(name) {
+    if (typeof name !== 'string') {
+        return '';
+    }
+
+    const trimmed = name.trim();
+    if (!trimmed) {
+        return '';
+    }
+
+    return LEGACY_SERVICE_NAME_ALIASES.get(trimmed) || trimmed;
+}
 
 function normalizeServices(servicesOption = {}) {
     const {addon = addonDockers, core = noonaDockers} = servicesOption;
@@ -98,10 +114,18 @@ function createServiceCatalog(services) {
                 continue;
             }
 
-            catalog.set(service.name, {
+            const entry = {
                 category,
                 descriptor: service,
-            });
+            };
+
+            catalog.set(service.name, entry);
+
+            for (const [alias, target] of LEGACY_SERVICE_NAME_ALIASES.entries()) {
+                if (target === service.name) {
+                    catalog.set(alias, entry);
+                }
+            }
         }
     }
 
@@ -389,14 +413,14 @@ export function createWarden(options = {}) {
         'noona-moon',
         'noona-portal',
         'noona-raven',
-        'kavita',
+        'noona-kavita',
         'komf',
         'noona-oracle',
     ];
     const minimalServiceNames = ['noona-sage', 'noona-moon'];
     const dependencyGraph = new Map([
         ['noona-vault', ['noona-mongo', 'noona-redis']],
-        ['kavita', ['noona-raven']],
+        ['noona-kavita', ['noona-raven']],
     ]);
     const requiredServices = ['noona-mongo', 'noona-redis', 'noona-vault'];
     const requiredServiceSet = new Set(requiredServices);
@@ -745,7 +769,7 @@ export function createWarden(options = {}) {
             }
         };
 
-        const sharedServiceNames = ['noona-vault', 'noona-raven', 'kavita', 'komf'];
+        const sharedServiceNames = ['noona-vault', 'noona-raven', 'noona-kavita', 'komf'];
         for (const service of sharedServiceNames) {
             if (installOverridesByName instanceof Map) {
                 const installEnv = installOverridesByName.get(service);
@@ -962,19 +986,19 @@ export function createWarden(options = {}) {
             };
         }
 
-        if (service.name === 'kavita') {
-            const defaultLayout = storageLayout.services.kavita;
+        if (service.name === 'noona-kavita') {
+            const defaultLayout = storageLayout.services['noona-kavita'];
             if (!defaultLayout) {
                 return service;
             }
 
             const configHostMount = resolveExplicitServiceHostMountPath({
-                serviceName: 'kavita',
+                serviceName: 'noona-kavita',
                 envKey: 'KAVITA_CONFIG_HOST_MOUNT_PATH',
                 installOverridesByName,
             }) || defaultLayout.config.hostPath;
             const libraryHostMount = resolveExplicitServiceHostMountPath({
-                serviceName: 'kavita',
+                serviceName: 'noona-kavita',
                 envKey: 'KAVITA_LIBRARY_HOST_MOUNT_PATH',
                 installOverridesByName,
             }) || defaultLayout.manga.hostPath;
@@ -1002,7 +1026,7 @@ export function createWarden(options = {}) {
             }) || defaultLayout.config.hostPath;
             const envWithDefaults = currentEnv.KOMF_KAVITA_BASE_URI
                 ? service.env
-                : upsertEnvEntry(service.env, 'KOMF_KAVITA_BASE_URI', 'http://kavita:5000');
+                : upsertEnvEntry(service.env, 'KOMF_KAVITA_BASE_URI', 'http://noona-kavita:5000');
 
             return {
                 ...service,
@@ -1931,7 +1955,13 @@ export function createWarden(options = {}) {
     const escapeRegExp = (value) => String(value ?? '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
     const listRegisteredServiceNames = () =>
-        Array.from(serviceCatalog.keys()).sort((left, right) => left.localeCompare(right));
+        Array.from(
+            new Set(
+                Array.from(serviceCatalog.values())
+                    .map((entry) => entry?.descriptor?.name)
+                    .filter(Boolean),
+            ),
+        ).sort((left, right) => left.localeCompare(right));
 
     const orderServicesForLifecycle = (names = []) => {
         const seen = new Set();
@@ -1942,7 +1972,7 @@ export function createWarden(options = {}) {
                 return;
             }
 
-            const trimmed = name.trim();
+            const trimmed = normalizeManagedServiceName(name);
             if (!trimmed || seen.has(trimmed) || !serviceCatalog.has(trimmed)) {
                 return;
             }
@@ -2032,7 +2062,7 @@ export function createWarden(options = {}) {
                 continue;
             }
 
-            const trimmed = entry.trim();
+            const trimmed = normalizeManagedServiceName(entry);
             if (!trimmed || seen.has(trimmed) || !serviceCatalog.has(trimmed)) {
                 continue;
             }
@@ -2127,14 +2157,14 @@ export function createWarden(options = {}) {
     const buildServiceConfigSettingsKey = (name) => `${SERVICE_CONFIG_SETTINGS_KEY_PREFIX}${name}`;
 
     const parsePersistedServiceConfigName = (document = {}) => {
-        const directName = typeof document?.service === 'string' ? document.service.trim() : '';
+        const directName = normalizeManagedServiceName(document?.service);
         if (directName) {
             return directName;
         }
 
         const key = typeof document?.key === 'string' ? document.key.trim() : '';
         if (key.startsWith(SERVICE_CONFIG_SETTINGS_KEY_PREFIX)) {
-            return key.slice(SERVICE_CONFIG_SETTINGS_KEY_PREFIX.length).trim();
+            return normalizeManagedServiceName(key.slice(SERVICE_CONFIG_SETTINGS_KEY_PREFIX.length));
         }
 
         return '';
@@ -2249,7 +2279,8 @@ export function createWarden(options = {}) {
     };
 
     const resolveRuntimeConfig = (name) => {
-        const current = serviceRuntimeConfig.get(name);
+        const normalizedName = normalizeManagedServiceName(name);
+        const current = serviceRuntimeConfig.get(normalizedName);
         if (!current || typeof current !== 'object') {
             return {env: {}, hostPort: null};
         }
@@ -2261,11 +2292,12 @@ export function createWarden(options = {}) {
     };
 
     const writeRuntimeConfig = (name, next = {}) => {
+        const normalizedName = normalizeManagedServiceName(name);
         const envOverrides = normalizeEnvOverrideMap(next.env);
         const hostPort = normalizeHostPort(next.hostPort);
 
         if (Object.keys(envOverrides).length === 0 && hostPort == null) {
-            serviceRuntimeConfig.delete(name);
+            serviceRuntimeConfig.delete(normalizedName);
             return {env: {}, hostPort: null};
         }
 
@@ -2274,7 +2306,7 @@ export function createWarden(options = {}) {
             hostPort,
         };
 
-        serviceRuntimeConfig.set(name, snapshot);
+        serviceRuntimeConfig.set(normalizedName, snapshot);
         return snapshot;
     };
 
@@ -2301,13 +2333,14 @@ export function createWarden(options = {}) {
     };
 
     const buildEffectiveServiceDescriptor = (name, {envOverrides = null} = {}) => {
-        const entry = serviceCatalog.get(name);
+        const normalizedName = normalizeManagedServiceName(name);
+        const entry = serviceCatalog.get(normalizedName);
         if (!entry) {
-            throw new Error(`Service ${name} is not registered with Warden.`);
+            throw new Error(`Service ${normalizedName || name} is not registered with Warden.`);
         }
 
         const baseDescriptor = cloneServiceDescriptor(entry.descriptor);
-        const runtime = resolveRuntimeConfig(name);
+        const runtime = resolveRuntimeConfig(normalizedName);
         const mergedOverrides = {
             ...runtime.env,
             ...normalizeEnvOverrideMap(envOverrides),
@@ -2417,18 +2450,19 @@ export function createWarden(options = {}) {
     };
 
     const checkServiceUpdate = async (name, {dockerClient = null} = {}) => {
-        const entry = serviceCatalog.get(name);
+        const normalizedName = normalizeManagedServiceName(name);
+        const entry = serviceCatalog.get(normalizedName);
         if (!entry) {
-            throw new Error(`Service ${name} is not registered with Warden.`);
+            throw new Error(`Service ${normalizedName || name} is not registered with Warden.`);
         }
 
-        const descriptor = buildEffectiveServiceDescriptor(name).descriptor;
+        const descriptor = buildEffectiveServiceDescriptor(normalizedName).descriptor;
         const image = typeof descriptor.image === 'string' ? descriptor.image.trim() : '';
         const client = dockerClient || (await ensureDockerConnection());
-        const installed = await dockerUtils.containerExists(name, {dockerInstance: client});
+        const installed = await dockerUtils.containerExists(normalizedName, {dockerInstance: client});
         if (!image) {
             const snapshot = {
-                service: name,
+                service: normalizedName,
                 image: null,
                 checkedAt: timestamp(),
                 updateAvailable: false,
@@ -2438,14 +2472,14 @@ export function createWarden(options = {}) {
                 supported: false,
                 error: 'Service image is not configured.',
             };
-            serviceUpdateSnapshots.set(name, snapshot);
+            serviceUpdateSnapshots.set(normalizedName, snapshot);
             return snapshot;
         }
 
         const resolvedImage = parseImageReference(image);
         if (!resolvedImage || resolvedImage.registry !== 'docker.io') {
             const snapshot = {
-                service: name,
+                service: normalizedName,
                 image,
                 checkedAt: timestamp(),
                 updateAvailable: false,
@@ -2455,7 +2489,7 @@ export function createWarden(options = {}) {
                 supported: false,
                 error: 'Update check currently supports Docker Hub images only.',
             };
-            serviceUpdateSnapshots.set(name, snapshot);
+            serviceUpdateSnapshots.set(normalizedName, snapshot);
             return snapshot;
         }
 
@@ -2464,7 +2498,7 @@ export function createWarden(options = {}) {
         const updateAvailable = installed && Boolean(remoteDigest) && !localDigests.includes(remoteDigest);
 
         const snapshot = {
-            service: name,
+            service: normalizedName,
             image,
             checkedAt: timestamp(),
             updateAvailable,
@@ -2475,7 +2509,7 @@ export function createWarden(options = {}) {
             error: null,
         };
 
-        serviceUpdateSnapshots.set(name, snapshot);
+        serviceUpdateSnapshots.set(normalizedName, snapshot);
         return snapshot;
     };
 

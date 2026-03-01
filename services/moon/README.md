@@ -15,12 +15,19 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Downloads page route](src/app/downloads/page.tsx)
 - [Settings page route](src/app/settings/page.tsx)
 - [Setup wizard route](src/app/setupwizard/page.tsx)
+- [Setup summary route](src/app/setupwizard/summary/page.tsx)
+- [Discord callback route](src/app/discord/callback/page.tsx)
 - [Noona page components](src/components/noona/)
 - [Setup wizard component](src/components/noona/SetupWizard.tsx)
+- [Setup summary component](src/components/noona/SetupSummaryPage.tsx)
+- [Discord callback component](src/components/noona/DiscordCallbackPage.tsx)
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
 - [Noona API routes](src/app/api/noona/)
 - [Setup layout proxy](src/app/api/noona/setup/layout/route.ts)
+- [Discord auth config proxy](src/app/api/noona/auth/discord/config/route.ts)
+- [Discord auth start proxy](src/app/api/noona/auth/discord/start/route.ts)
+- [Discord auth callback proxy](src/app/api/noona/auth/discord/callback/route.ts)
 - [Web GUI helpers](src/utils/webGui.ts)
 - [Moon UI configuration](src/resources/moon.config.ts)
 
@@ -34,18 +41,31 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
   single-service and update-all actions, Vault-backed persistence for service overrides in `noona_settings`, vault
   tools, and diagnostics.
 - `/setupwizard` - First-run stack configuration flow with storage, integrations, services, and install tabs. It
-  previews the shared Noona folder tree, defaults to managed Kavita and Komf, allows switching either one to external
-  URLs, and persists the selected managed service set for future Warden boots.
-- `/login` and `/signup` - Moon auth entry points backed by Sage auth proxies.
+  previews the shared Noona folder tree, defaults to managed `noona-kavita` and Komf, allows switching either one to
+  external URLs, includes a Discord bot login test with client/guild auto-fill for Portal setup, and persists the
+  selected managed service set for future Warden boots.
+- `/setupwizard/summary` - Dedicated post-install review page that lists installed services, descriptions, service URLs,
+  the Discord OAuth callback URL, full callback-loop testing, Discord superuser bootstrap, and final setup
+  completion.
+- `/discord/callback` - Browser callback page for the Discord OAuth round-trip used by setup bootstrap and normal Moon
+  login.
+- `/login` and `/signup` - Auth entry points for the Discord-first Moon flow. `/login` starts Discord OAuth, and
+  `/signup` now redirects back into setup instead of offering username/password signup.
+- Title detail pages now surface Kavita series links plus metadata match actions, and the footer can open the active
+  Kavita URL directly.
 
 ## API Proxy Surface (Moon -> Backend Services)
 
 - `src/app/api/noona/raven/*` - Raven search/download/library/status/history proxies.
+- `src/app/api/noona/portal/kavita/*` - Portal-backed Kavita info, title search, and metadata-match proxies.
 - `src/app/api/noona/settings/*` - service settings, Portal join option helpers, vault, ecosystem, and debug operations.
 - `src/app/api/noona/services/*` - service listing and logs.
 - `src/app/api/noona/install/*` and `src/app/api/noona/setup/*` - install/setup state and completion APIs.
 - `src/app/api/noona/setup/layout` - setup-wizard proxy for Warden's resolved storage layout tree.
-- `src/app/api/noona/auth/*` - bootstrap, login/logout, and user APIs.
+- `src/app/api/noona/setup/discord/validate` - setup-wizard Discord validation proxy for Portal bot credentials.
+- `src/app/api/noona/auth/discord/*` - Discord OAuth config, flow start, and callback completion.
+- `src/app/api/noona/auth/*` - login/logout, session status, and Discord-linked user-management APIs. The legacy
+  Moon bootstrap route now returns `410` so username/password signup cannot be used from the Moon web flow anymore.
 
 ## Key Environment Variables
 

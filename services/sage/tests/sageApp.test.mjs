@@ -1063,20 +1063,28 @@ test('createDiscordSetupClient uses limited intents during validation', async ()
                 destroy() {
                     destroyCalls.push(true)
                 },
-                async fetchGuild() {
+                async fetchApplication() {
+                    return {id: 'client-123', name: 'Noona Portal'}
+                },
+                async fetchGuilds() {
+                    return [guildStub]
+                },
+                async fetchGuildById() {
                     return guildStub
                 },
             }
         },
     })
 
-    await setupClient.fetchResources({ token: 'token', guildId: 'guild-123' })
+    const payload = await setupClient.fetchResources({token: 'token'})
 
     assert.equal(createdOptions.length, 1)
     assert.equal(loginCalls.length, 1)
     assert.equal(destroyCalls.length, 1)
     assert.deepEqual(createdOptions[0].intents, [GatewayIntentBits.Guilds])
     assert.deepEqual(createdOptions[0].partials, [])
+    assert.equal(payload.application?.id, 'client-123')
+    assert.equal(payload.suggested?.guildId, 'guild-123')
 })
 
 test('createDiscordSetupClient maps invalid Discord tokens to validation errors', async () => {
@@ -1100,7 +1108,7 @@ test('createDiscordSetupClient maps invalid Discord tokens to validation errors'
     })
 
     await assert.rejects(
-        () => setupClient.fetchResources({ token: 'bad-token', guildId: 'guild-123' }),
+        () => setupClient.fetchResources({token: 'bad-token'}),
         (error) => {
             assert.ok(error instanceof SetupValidationError)
             assert.match(error.message, /Discord rejected the provided bot token/i)
@@ -2100,6 +2108,51 @@ const finalizeBootstrapAdmin = async ({baseUrl, token}) => {
     return {response, payload}
 }
 
+const jsonResponse = (body, status = 200) =>
+    new Response(JSON.stringify(body), {
+        status,
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    })
+
+const createDiscordOauthFetchStub = ({identitiesByCode = {}} = {}) => async (url, init = {}) => {
+    const target = String(url)
+    if (target.endsWith('/oauth2/token')) {
+        const params = new URLSearchParams(String(init.body ?? ''))
+        const code = params.get('code')
+        if (!code || !identitiesByCode[code]) {
+            return jsonResponse({error: 'invalid_grant', error_description: 'Unknown authorization code.'}, 400)
+        }
+
+        return jsonResponse({
+            access_token: `token-for-${code}`,
+            token_type: 'Bearer',
+            scope: 'identify email',
+        })
+    }
+
+    if (target.endsWith('/users/@me')) {
+        const authHeader = new Headers(init.headers ?? {}).get('authorization') ?? ''
+        const accessToken = authHeader.replace(/^Bearer\s+/i, '')
+        const code = accessToken.replace(/^token-for-/, '')
+        const identity = identitiesByCode[code]
+        if (!identity) {
+            return jsonResponse({message: 'Unknown access token.'}, 401)
+        }
+
+        return jsonResponse({
+            id: identity.id,
+            username: identity.username,
+            global_name: identity.globalName,
+            avatar: identity.avatar ?? 'avatarhash',
+            email: identity.email ?? null,
+        })
+    }
+
+    throw new Error(`Unexpected Discord OAuth fetch: ${target}`)
+}
+
 test('POST /api/auth/bootstrap stores admin in memory and login works before vault is configured', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -2342,6 +2395,218 @@ test('POST /api/auth/login repairs legacy users missing usernameNormalized', asy
     const refreshedStoredUser = vault.userDocs.find((entry) => entry.username === 'CaptainPax')
     assert.ok(refreshedStoredUser)
     assert.equal(refreshedStoredUser.usernameNormalized, 'captainpax')
+})
+
+test('Discord OAuth config, callback test, and bootstrap create the first admin session', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'callback-test': {
+                        id: '123456789012345678',
+                        username: 'PaxKun',
+                        globalName: 'Pax-kun',
+                        email: 'pax@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const startTestResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'test',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/setupwizard/summary?selected=noona-portal',
+        }),
+    })
+    assert.equal(startTestResponse.status, 200)
+    const startTestPayload = await startTestResponse.json()
+    assert.ok(String(startTestPayload.authorizeUrl).includes('client_id=discord-client-id'))
+    assert.ok(typeof startTestPayload.state === 'string' && startTestPayload.state.length > 10)
+
+    const callbackTestResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'callback-test',
+            state: startTestPayload.state,
+        }),
+    })
+    assert.equal(callbackTestResponse.status, 200)
+    const callbackTestPayload = await callbackTestResponse.json()
+    assert.equal(callbackTestPayload.stage, 'tested')
+    assert.equal(callbackTestPayload.user.username, 'PaxKun')
+
+    const storedDiscordConfig = vault.settingDocs.find((entry) => entry.key === 'auth.discord')
+    assert.ok(storedDiscordConfig)
+    assert.equal(storedDiscordConfig.clientId, 'discord-client-id')
+    assert.ok(typeof storedDiscordConfig.lastTestedAt === 'string' && storedDiscordConfig.lastTestedAt.length > 10)
+    assert.equal(storedDiscordConfig.lastTestedUser.id, '123456789012345678')
+
+    const startBootstrapResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'bootstrap',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/setupwizard/summary?selected=noona-portal',
+        }),
+    })
+    assert.equal(startBootstrapResponse.status, 200)
+    const startBootstrapPayload = await startBootstrapResponse.json()
+
+    const callbackBootstrapResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'callback-test',
+            state: startBootstrapPayload.state,
+        }),
+    })
+    assert.equal(callbackBootstrapResponse.status, 200)
+    const callbackBootstrapPayload = await callbackBootstrapResponse.json()
+    assert.equal(callbackBootstrapPayload.stage, 'bootstrapped')
+    assert.ok(typeof callbackBootstrapPayload.token === 'string' && callbackBootstrapPayload.token.length > 10)
+    assert.equal(callbackBootstrapPayload.user.authProvider, 'discord')
+    assert.equal(callbackBootstrapPayload.user.discordUserId, '123456789012345678')
+
+    const storedAdmin = vault.userDocs.find((entry) => entry.discordUserId === '123456789012345678')
+    assert.ok(storedAdmin)
+    assert.equal(storedAdmin.usernameNormalized, 'discord.123456789012345678')
+    assert.equal(storedAdmin.role, 'admin')
+    assert.equal(storedAdmin.isBootstrapUser, true)
+
+    const statusResponse = await fetch(`${baseUrl}/api/auth/status`, {
+        headers: {
+            Authorization: `Bearer ${callbackBootstrapPayload.token}`,
+        },
+    })
+    assert.equal(statusResponse.status, 200)
+    const statusPayload = await statusResponse.json()
+    assert.equal(statusPayload.user.discordUserId, '123456789012345678')
+    assert.equal(statusPayload.user.role, 'admin')
+})
+
+test('auth user management creates Discord-linked users and Discord login uses OAuth callback', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'reader-login': {
+                        id: '999888777666555444',
+                        username: 'ReaderDiscord',
+                        globalName: 'Reader Prime',
+                        email: 'reader@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'Reader One',
+            discordUserId: '999888777666555444',
+            permissions: ['moon_login', 'lookup_new_title'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+    const createPayload = await createResponse.json()
+    assert.equal(createPayload.user.authProvider, 'discord')
+    assert.equal(createPayload.user.discordUserId, '999888777666555444')
+
+    const resetPasswordResponse = await fetch(`${baseUrl}/api/auth/users/discord.999888777666555444/reset-password`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+        },
+    })
+    assert.equal(resetPasswordResponse.status, 400)
+
+    const startLoginResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'login',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/',
+        }),
+    })
+    assert.equal(startLoginResponse.status, 200)
+    const startLoginPayload = await startLoginResponse.json()
+
+    const callbackLoginResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'reader-login',
+            state: startLoginPayload.state,
+        }),
+    })
+    assert.equal(callbackLoginResponse.status, 200)
+    const callbackLoginPayload = await callbackLoginResponse.json()
+    assert.equal(callbackLoginPayload.stage, 'authenticated')
+    assert.ok(typeof callbackLoginPayload.token === 'string' && callbackLoginPayload.token.length > 10)
+    assert.equal(callbackLoginPayload.user.authProvider, 'discord')
+    assert.equal(callbackLoginPayload.user.discordUserId, '999888777666555444')
+    assert.equal(callbackLoginPayload.user.username, 'Reader One')
 })
 
 test('auth user management routes create, update, list, and delete users through vault', async (t) => {

@@ -276,7 +276,20 @@ const DEFAULT_STEP_SERVICE_MAP = {
         'noona-moon',
     ],
     portal: ['noona-portal'],
-    raven: ['noona-raven', 'kavita', 'komf'],
+    raven: ['noona-raven', 'noona-kavita', 'komf'],
+}
+
+const SERVICE_NAME_ALIASES = Object.freeze({
+    kavita: 'noona-kavita',
+})
+
+const normalizeServiceName = (value) => {
+    if (typeof value !== 'string') {
+        return ''
+    }
+
+    const trimmed = value.trim()
+    return SERVICE_NAME_ALIASES[trimmed] || trimmed
 }
 
 const mapInstallationStatusToWizard = (status) => {
@@ -501,8 +514,9 @@ export const createWizardStatePublisher = ({
     const reset = async (names = []) => {
         selectedServices.clear()
         for (const name of names) {
-            if (typeof name === 'string' && name.trim()) {
-                selectedServices.add(name.trim())
+            const normalizedName = normalizeServiceName(name)
+            if (normalizedName) {
+                selectedServices.add(normalizedName)
             }
         }
 
@@ -561,7 +575,7 @@ export const createWizardStatePublisher = ({
     }
 
     const trackServiceStatus = async (serviceName, status, entry = {}) => {
-        const normalizedService = typeof serviceName === 'string' ? serviceName.trim() : ''
+        const normalizedService = normalizeServiceName(serviceName)
         if (!normalizedService) {
             return null
         }

@@ -1,6 +1,6 @@
 import {NextResponse} from "next/server";
 import {jsonError, sageJson} from "../../_backend";
-import {NOONA_SESSION_COOKIE} from "../../_auth";
+import {buildNoonaSessionCookieOptions, NOONA_SESSION_COOKIE} from "../../_auth";
 
 export const dynamic = "force-dynamic";
 
@@ -43,15 +43,7 @@ export async function POST(request: Request) {
         }
 
         const res = NextResponse.json({user}, {status: 200});
-        const forwardedProto = request.headers.get("x-forwarded-proto") ?? "http";
-        const secureCookie = process.env.NODE_ENV === "production" && forwardedProto === "https";
-        res.cookies.set(NOONA_SESSION_COOKIE, token, {
-            httpOnly: true,
-            sameSite: "lax",
-            secure: secureCookie,
-            path: "/",
-            maxAge: 60 * 60 * 24,
-        });
+        res.cookies.set(NOONA_SESSION_COOKIE, token, buildNoonaSessionCookieOptions(request));
         return res;
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

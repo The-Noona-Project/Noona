@@ -37,6 +37,67 @@ const describeKavitaRole = (role) => {
         || 'Role is available from Kavita, but Moon does not have a built-in description for it yet.';
 };
 
+const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const normalizeDistinctStrings = (...values) => {
+    const seen = new Set();
+    const normalized = [];
+
+    for (const value of values) {
+        const candidate = normalizeString(value);
+        if (!candidate) {
+            continue;
+        }
+
+        const key = candidate.toLowerCase();
+        if (seen.has(key)) {
+            continue;
+        }
+
+        seen.add(key);
+        normalized.push(candidate);
+    }
+
+    return normalized;
+};
+
+const toKavitaSeriesUrl = (baseUrl, series = {}) => {
+    const libraryId = Number.parseInt(String(series?.libraryId), 10);
+    const seriesId = Number.parseInt(String(series?.seriesId), 10);
+    if (!baseUrl || !Number.isInteger(libraryId) || !Number.isInteger(seriesId)) {
+        return null;
+    }
+
+    try {
+        return new URL(`/library/${libraryId}/series/${seriesId}`, baseUrl).toString();
+    } catch {
+        return null;
+    }
+};
+
+const normalizeSeriesSearchResult = (series = {}, baseUrl = null) => ({
+    seriesId: Number.parseInt(String(series?.seriesId), 10) || null,
+    libraryId: Number.parseInt(String(series?.libraryId), 10) || null,
+    name: normalizeString(series?.name) || null,
+    originalName: normalizeString(series?.originalName) || null,
+    localizedName: normalizeString(series?.localizedName) || null,
+    libraryName: normalizeString(series?.libraryName) || null,
+    aliases: normalizeDistinctStrings(series?.originalName, series?.localizedName)
+        .filter((entry) => entry.toLowerCase() !== normalizeString(series?.name).toLowerCase()),
+    url: toKavitaSeriesUrl(baseUrl, series),
+});
+
+const normalizeMetadataMatch = (match = {}) => ({
+    provider: normalizeString(match?.provider ?? match?.source) || null,
+    title: normalizeString(match?.title ?? match?.name) || null,
+    summary: normalizeString(match?.summary ?? match?.description) || null,
+    score: typeof match?.score === 'number' ? match.score : null,
+    coverImageUrl: normalizeString(match?.coverImageUrl ?? match?.imageUrl) || null,
+    aniListId: match?.aniListId ?? null,
+    malId: match?.malId ?? null,
+    cbrId: match?.cbrId ?? null,
+});
+
 export const registerPortalRoutes = ({
                                          app,
                                          config,
@@ -45,6 +106,8 @@ export const registerPortalRoutes = ({
                                          onboardingStore,
                                          vault,
                                      } = {}) => {
+    const kavitaBaseUrl = typeof kavita?.getBaseUrl === 'function' ? kavita.getBaseUrl() : config?.kavita?.baseUrl ?? null;
+
     app.get('/health', (_req, res) => {
         res.json({
             status: 'ok',
@@ -52,6 +115,84 @@ export const registerPortalRoutes = ({
             guildId: config.discord.guildId,
             version: config.version ?? '2.0.0',
         });
+    });
+
+    app.get('/api/portal/kavita/info', async (_req, res) => {
+        res.json({
+            baseUrl: kavitaBaseUrl,
+            managedService: 'noona-kavita',
+        });
+    });
+
+    app.get('/api/portal/kavita/title-search', async (req, res) => {
+        const query = normalizeString(req.query?.query);
+        if (!query) {
+            res.status(400).json({error: 'query is required.'});
+            return;
+        }
+
+        try {
+            const payload = await kavita?.searchTitles?.(query);
+            const series = Array.isArray(payload?.series)
+                ? payload.series.map((entry) => normalizeSeriesSearchResult(entry, kavitaBaseUrl))
+                : [];
+
+            res.json({
+                baseUrl: kavitaBaseUrl,
+                series,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to search Kavita titles for "${query}": ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/title-match', async (req, res) => {
+        const parsedSeriesId = Number.parseInt(String(req.body?.seriesId), 10);
+        if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
+            res.status(400).json({error: 'seriesId is required.'});
+            return;
+        }
+
+        try {
+            const matches = await kavita?.fetchSeriesMetadataMatches?.(parsedSeriesId) ?? [];
+            res.json({
+                seriesId: parsedSeriesId,
+                matches: Array.isArray(matches) ? matches.map((entry) => normalizeMetadataMatch(entry)) : [],
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to fetch Kavita metadata matches for series ${parsedSeriesId}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/title-match/apply', async (req, res) => {
+        const parsedSeriesId = Number.parseInt(String(req.body?.seriesId), 10);
+        if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
+            res.status(400).json({error: 'seriesId is required.'});
+            return;
+        }
+
+        try {
+            const result = await kavita?.applySeriesMetadataMatch?.({
+                seriesId: parsedSeriesId,
+                aniListId: req.body?.aniListId,
+                malId: req.body?.malId,
+                cbrId: req.body?.cbrId,
+            });
+
+            res.json({
+                success: true,
+                seriesId: parsedSeriesId,
+                result: result ?? null,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to apply Kavita metadata match for series ${parsedSeriesId}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
     });
 
     app.get('/api/portal/join-options', async (_req, res) => {

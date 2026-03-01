@@ -45,3 +45,16 @@ test('safeLoadPortalConfig throws when no vault tokens are provided', () => {
         /Missing required environment variables: VAULT_ACCESS_TOKEN/,
     );
 });
+
+test('safeLoadPortalConfig defaults Kavita base URL to the managed noona-kavita service', () => {
+    const config = safeLoadPortalConfig({
+        DISCORD_BOT_TOKEN: 'bot-token',
+        DISCORD_CLIENT_ID: 'client-id',
+        DISCORD_GUILD_ID: 'guild-id',
+        KAVITA_API_KEY: 'kavita-api-key',
+        VAULT_BASE_URL: 'https://vault.example',
+        VAULT_ACCESS_TOKEN: 'vault-token',
+    });
+
+    assert.equal(config.kavita.baseUrl, 'http://noona-kavita:5000/');
+});

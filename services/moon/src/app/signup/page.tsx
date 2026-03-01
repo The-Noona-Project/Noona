@@ -4,8 +4,8 @@ import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export async function generateMetadata() {
     return Meta.generate({
-        title: "Noona Admin Signup",
-        description: "Create the initial Noona admin account.",
+        title: "Noona Setup Redirect",
+        description: "Redirects legacy signup requests into the Discord-based setup flow.",
         baseURL: resolveMoonBaseUrl(),
         path: "/signup",
         image: "/favicon.ico",

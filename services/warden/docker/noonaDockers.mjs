@@ -21,6 +21,8 @@ const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_DOWNLOAD_THREADS = process.env.RAVEN_DOWNLOAD_THREADS || '3';
+const DEFAULT_KAVITA_BASE_URL = process.env.KAVITA_BASE_URL || 'http://noona-kavita:5000';
+const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT = process.env.RAVEN_KAVITA_LIBRARY_ROOT || '/manga';
 const DEFAULT_MOON_WEBGUI_PORT = (() => {
     const candidate = Number.parseInt(process.env.WEBGUI_PORT || '3000', 10);
     if (Number.isFinite(candidate) && candidate >= 1 && candidate <= 65535) {
@@ -122,6 +124,9 @@ const serviceDefs = rawList.map(name => {
     if (name === 'noona-raven') {
         env.push(`VAULT_URL=${DEFAULT_RAVEN_VAULT_URL}`);
         env.push(`RAVEN_DOWNLOAD_THREADS=${DEFAULT_RAVEN_DOWNLOAD_THREADS}`);
+        env.push(`KAVITA_BASE_URL=${DEFAULT_KAVITA_BASE_URL}`);
+        env.push('KAVITA_API_KEY=');
+        env.push(`KAVITA_LIBRARY_ROOT=${DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT}`);
         envConfig.push(
             createEnvField('APPDATA', '', {
                 label: 'Raven Downloads Root',
@@ -137,6 +142,21 @@ const serviceDefs = rawList.map(name => {
                     'Optional host path that Warden will bind into the container alongside the Raven downloads root.',
                 warning:
                     'Supply this when Warden cannot discover your Kavita container automatically.',
+                required: false,
+            }),
+            createEnvField('KAVITA_BASE_URL', DEFAULT_KAVITA_BASE_URL, {
+                label: 'Kavita Base URL',
+                description: 'Base URL Raven should use when syncing managed library types into Kavita.',
+                required: false,
+            }),
+            createEnvField('KAVITA_API_KEY', '', {
+                label: 'Kavita API Key',
+                description: 'API key Raven can use to create Kavita libraries for new media types.',
+                required: false,
+            }),
+            createEnvField('KAVITA_LIBRARY_ROOT', DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT, {
+                label: 'Kavita Library Root',
+                description: 'Folder path as seen from Kavita for Raven downloads when auto-creating libraries.',
                 required: false,
             }),
             createEnvField('VAULT_URL', DEFAULT_RAVEN_VAULT_URL, {
@@ -178,6 +198,11 @@ const serviceDefs = rawList.map(name => {
                 description: 'OAuth2 client identifier for the Discord application.',
             },
             {
+                key: 'DISCORD_CLIENT_SECRET',
+                label: 'Discord Client Secret',
+                description: 'OAuth2 client secret for Discord social login and callback testing.',
+            },
+            {
                 key: 'DISCORD_GUILD_ID',
                 label: 'Discord Guild ID',
                 description: 'Identifier of the Discord server that the portal should connect to.',
@@ -198,6 +223,7 @@ const serviceDefs = rawList.map(name => {
                 key: 'KAVITA_BASE_URL',
                 label: 'Kavita Base URL',
                 description: 'Base URL of the Kavita instance providing library content.',
+                defaultValue: DEFAULT_KAVITA_BASE_URL,
             },
             {
                 key: 'KAVITA_API_KEY',

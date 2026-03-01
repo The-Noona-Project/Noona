@@ -59,6 +59,23 @@ export const defaultWardenBaseUrl = (env = process.env) => {
     return first || 'http://localhost:4001'
 }
 
+const SERVICE_NAME_ALIASES = Object.freeze({
+    kavita: 'noona-kavita',
+})
+
+const normalizeServiceName = (value) => {
+    if (typeof value !== 'string') {
+        return ''
+    }
+
+    const trimmed = value.trim()
+    if (!trimmed) {
+        return ''
+    }
+
+    return SERVICE_NAME_ALIASES[trimmed] || trimmed
+}
+
 export const normalizeServiceInstallPayload = (services) => {
     if (!Array.isArray(services) || services.length === 0) {
         throw new SetupValidationError('Body must include a non-empty "services" array.')
@@ -66,7 +83,7 @@ export const normalizeServiceInstallPayload = (services) => {
 
     return services.map((entry) => {
         if (typeof entry === 'string' || typeof entry === 'number') {
-            const trimmed = String(entry).trim()
+            const trimmed = normalizeServiceName(String(entry))
             if (!trimmed) {
                 throw new SetupValidationError('Service name must be a non-empty string.')
             }
@@ -78,7 +95,7 @@ export const normalizeServiceInstallPayload = (services) => {
             throw new SetupValidationError('Service entries must be strings or objects with a "name" field.')
         }
 
-        const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+        const name = normalizeServiceName(entry.name)
         if (!name) {
             throw new SetupValidationError('Service descriptor is missing a valid "name" field.')
         }

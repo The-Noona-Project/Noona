@@ -34,6 +34,9 @@ class LibraryServiceTest {
     @Mock
     private LoggerService loggerService;
 
+    @Mock
+    private KavitaSyncService kavitaSyncService;
+
     @InjectMocks
     private LibraryService libraryService;
 
@@ -65,6 +68,7 @@ class LibraryServiceTest {
                 .containsEntry("lastDownloaded", chapter.getChapter())
                 .containsKey("lastDownloadedAt");
         verify(loggerService).info(eq("LIBRARY"), argThat(message -> message.contains("Updated title [" + title.getTitleName() + "]") && message.contains("chapter " + chapter.getChapter())));
+        verifyNoInteractions(kavitaSyncService);
     }
 
     @Test
@@ -89,6 +93,7 @@ class LibraryServiceTest {
         title.setUuid("uuid-456");
         title.setSourceUrl("http://omniscient");
         title.setLastDownloaded("1");
+        title.setType("Manhwa");
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
         when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
@@ -112,6 +117,7 @@ class LibraryServiceTest {
         Map<String, Object> set = (Map<String, Object>) update.get("$set");
         assertThat(set).containsEntry("lastDownloaded", "2");
         assertEquals("2", title.getLastDownloaded());
+        verify(kavitaSyncService).ensureLibraryForType("Manhwa", "manhwa");
     }
 
     @Test

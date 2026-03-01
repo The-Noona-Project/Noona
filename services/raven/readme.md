@@ -51,6 +51,8 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads captainpax/noona-
 - Java toolchain targets Java 21.
 - Selenium + headless Chrome are required for scraping flows.
 - Persist downloads by mounting a host directory to `/app/downloads`.
+- When `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` are configured, Raven now auto-creates matching
+  Kavita libraries for new media-type folders it writes into the shared downloads tree.
 
 ## Documentation Rule
 

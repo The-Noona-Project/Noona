@@ -31,6 +31,7 @@ public class LibraryService {
     private final VaultService vaultService;
     private final @Lazy DownloadService downloadService;
     private final LoggerService logger;
+    private final KavitaSyncService kavitaSyncService;
 
     private static final String COLLECTION = "manga_library";
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_INSTANT;
@@ -73,6 +74,12 @@ public class LibraryService {
 
         if (title.getType() != null && !title.getType().isBlank()) {
             set.put("type", title.getType());
+        }
+
+        String normalizedType = normalizeMediaType(title.getType());
+        String normalizedFolder = normalizeMediaTypeFolder(title.getType());
+        if (normalizedType != null && normalizedFolder != null) {
+            kavitaSyncService.ensureLibraryForType(normalizedType, normalizedFolder);
         }
 
         title.setLastDownloadedAt(now);

@@ -33,6 +33,10 @@ default Discord roles.
 ## HTTP Endpoints
 
 - `GET /health` - process health and guild metadata.
+- `GET /api/portal/kavita/info` - return the configured Kavita base URL and managed-service hint for Moon footer links.
+- `GET /api/portal/kavita/title-search` - search Kavita series and return direct Kavita title URLs for Moon title pages.
+- `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id.
+- `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
   picker.
 - `POST /api/portal/onboard` - create a Kavita user, store an onboarding token, and optionally persist the credential.
@@ -51,18 +55,18 @@ default Discord roles.
 
 ## Key Environment Variables
 
-| Variable                                                              | Purpose                           |
-|-----------------------------------------------------------------------|-----------------------------------|
-| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`) |
-| `DISCORD_BOT_TOKEN`                                                   | Discord bot token                 |
-| `DISCORD_CLIENT_ID`                                                   | Discord application client id     |
-| `DISCORD_GUILD_ID`                                                    | Guild scope for slash commands    |
-| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target    |
-| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection             |
-| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` |
-| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection              |
-| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL   |
-| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms    |
+| Variable                                                              | Purpose                                                                                  |
+|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------|
+| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                        |
+| `DISCORD_BOT_TOKEN`                                                   | Discord bot token                                                                        |
+| `DISCORD_CLIENT_ID`                                                   | Discord application client id                                                            |
+| `DISCORD_GUILD_ID`                                                    | Guild scope for slash commands                                                           |
+| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                           |
+| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`) |
+| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join`                                                        |
+| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection                                                                     |
+| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                          |
+| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                           |
 
 ## Local Commands
 

@@ -5,12 +5,12 @@ import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const DEFAULT_ENV_PATH = process.env.PORTAL_ENV_FILE || process.env.ENV_FILE || undefined;
 let envLoaded = false;
+const DEFAULT_MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000';
 
 const REQUIRED_STRINGS = [
     'DISCORD_BOT_TOKEN',
     'DISCORD_CLIENT_ID',
     'DISCORD_GUILD_ID',
-    'KAVITA_BASE_URL',
     'KAVITA_API_KEY',
     'VAULT_BASE_URL',
     'VAULT_ACCESS_TOKEN',
@@ -129,7 +129,7 @@ export const loadPortalConfig = (overrides = {}) => {
             defaultRoleId: discordRole,
         },
         kavita: {
-            baseUrl: normalizeUrl(env.KAVITA_BASE_URL),
+            baseUrl: normalizeUrl(env.KAVITA_BASE_URL || DEFAULT_MANAGED_KAVITA_BASE_URL),
             apiKey: env.KAVITA_API_KEY,
         },
         vault: {

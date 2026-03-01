@@ -355,7 +355,11 @@ export function registerServiceManagementApi(context = {}) {
     api.listServices = async function listServices(options = {}) {
         const {includeInstalled = true} = options;
 
-        const formatted = Array.from(serviceCatalog.values())
+        const formatted = Array.from(
+            new Map(
+                Array.from(serviceCatalog.values()).map((entry) => [entry?.descriptor?.name, entry]),
+            ).values(),
+        )
             .map(({category, descriptor}) => {
                 const effectiveDescriptor = buildEffectiveServiceDescriptor(descriptor.name).descriptor;
 

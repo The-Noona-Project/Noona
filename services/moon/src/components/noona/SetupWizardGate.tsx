@@ -34,14 +34,7 @@ export function SetupWizardGate({children}: SetupWizardGateProps) {
                     router.replace("/");
                     return;
                 }
-
-                const authRes = await fetch("/api/noona/auth/status", {cache: "no-store"});
-                if (cancelled) return;
-                if (authRes.ok) {
-                    setReady(true);
-                    return;
-                }
-                router.replace("/signup");
+                setReady(true);
             } catch (error_) {
                 if (cancelled) return;
                 const message = error_ instanceof Error ? error_.message : String(error_);

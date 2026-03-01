@@ -13,9 +13,11 @@ export const moonSite = {
 
 export const moonRoutes = {
     "/": true,
+    "/discord/callback": true,
     "/login": true,
     "/signup": true,
     "/setupwizard": true,
+    "/setupwizard/summary": true,
     "/libraries": true,
     "/downloads": true,
     "/settings": true,
