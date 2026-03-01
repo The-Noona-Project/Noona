@@ -204,9 +204,9 @@ const DERIVED_KEYS = new Set([
     "KOMF_CONFIG_HOST_MOUNT_PATH",
 ]);
 
-const DEFAULT_LOG_SERVICE = "installation";
 const LOG_POLL_INTERVAL_MS = 1200;
 const LOG_LIMIT = 140;
+const WARDEN_LOG_SERVICE = "noona-warden";
 const PORTAL_REQUIRED_KEYS = Object.freeze([
     "DISCORD_BOT_TOKEN",
     "DISCORD_CLIENT_ID",
@@ -485,7 +485,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
                 key: "logs",
                 label: "Logs",
                 hostPath: joinHostPath(safeRoot, "moon", "logs"),
-                containerPath: null
+                containerPath: "/var/log/noona"
             }]
         },
         {
@@ -495,7 +495,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
                 key: "logs",
                 label: "Logs",
                 hostPath: joinHostPath(safeRoot, "portal", "logs"),
-                containerPath: null
+                containerPath: "/var/log/noona"
             }]
         },
         {
@@ -508,7 +508,12 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
                     hostPath: joinHostPath(safeRoot, "raven", "downloads"),
                     containerPath: "/downloads"
                 },
-                {key: "logs", label: "Logs", hostPath: joinHostPath(safeRoot, "raven", "logs"), containerPath: null},
+                {
+                    key: "logs",
+                    label: "Logs",
+                    hostPath: joinHostPath(safeRoot, "raven", "logs"),
+                    containerPath: "/app/logs"
+                },
             ],
         },
         {
@@ -518,7 +523,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
                 key: "logs",
                 label: "Logs",
                 hostPath: joinHostPath(safeRoot, "sage", "logs"),
-                containerPath: null
+                containerPath: "/var/log/noona"
             }]
         },
         {
@@ -529,7 +534,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
                     key: "logs",
                     label: "Logs",
                     hostPath: joinHostPath(safeRoot, vaultFolder, "logs"),
-                    containerPath: null
+                    containerPath: "/var/log/noona"
                 },
                 {
                     key: "mongo",
@@ -782,7 +787,6 @@ export function SetupWizard() {
     const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
     const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
 
-    const [logService, setLogService] = useState(DEFAULT_LOG_SERVICE);
     const [logHistory, setLogHistory] = useState<ServiceLogHistory | null>(null);
     const [logError, setLogError] = useState<string | null>(null);
     const logPollRef = useRef<number | null>(null);
@@ -829,19 +833,6 @@ export function SetupWizard() {
         else next.delete("noona-komf");
         return next;
     }, [selected, services, kavitaMode, komfMode]);
-
-    const logServiceOptions = useMemo(() => {
-        const options = new Map<string, string>();
-        options.set("installation", "Installer");
-        options.set("noona-warden", "Warden");
-
-        for (const name of Array.from(effectiveSelected).sort((a, b) => a.localeCompare(b))) {
-            const label = SERVICE_LABELS[name] || name;
-            options.set(name, label);
-        }
-
-        return Array.from(options.entries()).map(([value, label]) => ({value, label}));
-    }, [effectiveSelected]);
 
     const managedKavitaServiceTargets = useMemo(() => {
         if (kavitaMode !== "managed") return [];
@@ -939,15 +930,10 @@ export function SetupWizard() {
         }
     };
 
-    const pollLogs = async (serviceName: string) => {
-        const normalized = normalizeServiceName(serviceName);
-        if (!normalized) {
-            return;
-        }
-
+    const pollLogs = async () => {
         try {
             const res = await fetch(
-                `/api/noona/services/${encodeURIComponent(normalized)}/logs?limit=${LOG_LIMIT}`,
+                `/api/noona/services/${encodeURIComponent(WARDEN_LOG_SERVICE)}/logs?limit=${LOG_LIMIT}`,
                 {cache: "no-store"},
             );
             const payload = (await res.json().catch(() => ({}))) as ServiceLogHistory;
@@ -1008,14 +994,20 @@ export function SetupWizard() {
 
     useEffect(() => {
         stopLogPolling();
-        void pollLogs(logService);
+        if (activeTab !== "install") {
+            return () => {
+                stopLogPolling();
+            };
+        }
 
-        logPollRef.current = window.setInterval(() => void pollLogs(logService), LOG_POLL_INTERVAL_MS);
+        void pollLogs();
+        logPollRef.current = window.setInterval(() => void pollLogs(), LOG_POLL_INTERVAL_MS);
+
         return () => {
             stopLogPolling();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [logService]);
+    }, [activeTab]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1750,7 +1742,7 @@ export function SetupWizard() {
                 </Text>
             </Column>
 
-            <Row fillWidth gap="24" className={styles.wizardShell}>
+            <Column fillWidth gap="24">
                 <Column gap="24" fillWidth>
                     {catalogError && (
                         <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
@@ -2011,142 +2003,141 @@ export function SetupWizard() {
                     )}
 
                     {activeTab === "install" && (
-                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="16">
-                                <Heading as="h2" variant="heading-strong-l">Install plan</Heading>
-                                <Row gap="8" style={{flexWrap: "wrap"}}>
-                                    <Button size="s" variant="secondary" onClick={() => downloadConfigFile()}>Download
-                                        JSON</Button>
-                                    <Button size="s" variant="secondary" onClick={() => openConfigFilePicker()}>Upload
-                                        JSON</Button>
-                                    <input ref={configInputRef} type="file" accept="application/json,.json"
-                                           onChange={(event) => void loadConfigFromFile(event)}
-                                           style={{display: "none"}} aria-label="Upload setup JSON file"/>
-                                </Row>
-                                {configMessage &&
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">{configMessage}</Text>}
-                                {configError &&
-                                    <Text onBackground="danger-strong" variant="body-default-xs">{configError}</Text>}
-                                {missingRequiredFields.length > 0 && (
+                        <Column fillWidth gap="16">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="16">
+                                    <Heading as="h2" variant="heading-strong-l">Install plan</Heading>
                                     <Row gap="8" style={{flexWrap: "wrap"}}>
-                                        {missingRequiredFields.map((entry) => (
-                                            <Badge key={`${entry.service}:${entry.key}`}
-                                                   background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">
-                                                {entry.service}:{entry.key}
-                                            </Badge>
-                                        ))}
+                                        <Button size="s" variant="secondary" onClick={() => downloadConfigFile()}>Download
+                                            JSON</Button>
+                                        <Button size="s" variant="secondary" onClick={() => openConfigFilePicker()}>Upload
+                                            JSON</Button>
+                                        <input ref={configInputRef} type="file" accept="application/json,.json"
+                                               onChange={(event) => void loadConfigFromFile(event)}
+                                               style={{display: "none"}} aria-label="Upload setup JSON file"/>
                                     </Row>
-                                )}
-                                <Button size="m" variant="primary" disabled={installing} onClick={() => void install()}>
-                                    {installing ? "Installing..." : "Install selected services"}
-                                </Button>
-                                {installError && <Text onBackground="danger-strong">{installError}</Text>}
-                                {installProgress && (
-                                    <Column gap="8">
-                                        <Row horizontal="between" vertical="center">
-                                            <Text
-                                                onBackground="neutral-weak">Status: {formatInstallStatusLabel(installProgress.status)}</Text>
-                                            <Text
-                                                onBackground="neutral-weak">{installProgress.percent != null ? `${installProgress.percent}%` : ""}</Text>
+                                    {configMessage &&
+                                        <Text onBackground="neutral-weak"
+                                              variant="body-default-xs">{configMessage}</Text>}
+                                    {configError &&
+                                        <Text onBackground="danger-strong"
+                                              variant="body-default-xs">{configError}</Text>}
+                                    {missingRequiredFields.length > 0 && (
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {missingRequiredFields.map((entry) => (
+                                                <Badge key={`${entry.service}:${entry.key}`}
+                                                       background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">
+                                                    {entry.service}:{entry.key}
+                                                </Badge>
+                                            ))}
                                         </Row>
-                                        <ProgressBar value={installProgress.percent ?? 0}
-                                                     indeterminate={installProgress.percent == null && installProgress.status !== "idle"}
-                                                     tone="brand-alpha-medium"/>
-                                        <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
+                                    )}
+                                    <Button size="m" variant="primary" disabled={installing}
+                                            onClick={() => void install()}>
+                                        {installing ? "Installing..." : "Install selected services"}
+                                    </Button>
+                                    {installError && <Text onBackground="danger-strong">{installError}</Text>}
+                                    {installProgress && (
                                         <Column gap="8">
-                                            {installProgress.items.map((item) => {
-                                                const normalized = normalizeInstallStatus(item.status);
-                                                const progressValue = normalized === "installed" || normalized === "error" ? 100 : normalized === "pending" ? 0 : null;
-                                                const tone: ProgressTone = normalized === "installed" ? "success-alpha-medium" : normalized === "error" ? "danger-alpha-medium" : normalized === "pending" ? "neutral-alpha-medium" : "brand-alpha-medium";
-                                                return (
-                                                    <Column key={item.name} gap="8">
-                                                        <Row horizontal="between" gap="12" vertical="center">
-                                                            <Text>{item.label ?? item.name}</Text>
-                                                            <Text
-                                                                onBackground="neutral-weak">{formatInstallStatusLabel(item.status)}</Text>
-                                                        </Row>
-                                                        <ProgressBar value={progressValue}
-                                                                     indeterminate={progressValue == null} tone={tone}/>
-                                                        {formatInstallDetail(item.detail) &&
-                                                            <Text onBackground="neutral-weak"
-                                                                  variant="body-default-xs">{formatInstallDetail(item.detail)}</Text>}
-                                                    </Column>
-                                                );
-                                            })}
+                                            <Row horizontal="between" vertical="center">
+                                                <Text
+                                                    onBackground="neutral-weak">Status: {formatInstallStatusLabel(installProgress.status)}</Text>
+                                                <Text
+                                                    onBackground="neutral-weak">{installProgress.percent != null ? `${installProgress.percent}%` : ""}</Text>
+                                            </Row>
+                                            <ProgressBar value={installProgress.percent ?? 0}
+                                                         indeterminate={installProgress.percent == null && installProgress.status !== "idle"}
+                                                         tone="brand-alpha-medium"/>
+                                            <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
+                                            <Column gap="8">
+                                                {installProgress.items.map((item) => {
+                                                    const normalized = normalizeInstallStatus(item.status);
+                                                    const progressValue = normalized === "installed" || normalized === "error" ? 100 : normalized === "pending" ? 0 : null;
+                                                    const tone: ProgressTone = normalized === "installed" ? "success-alpha-medium" : normalized === "error" ? "danger-alpha-medium" : normalized === "pending" ? "neutral-alpha-medium" : "brand-alpha-medium";
+                                                    return (
+                                                        <Column key={item.name} gap="8">
+                                                            <Row horizontal="between" gap="12" vertical="center">
+                                                                <Text>{item.label ?? item.name}</Text>
+                                                                <Text
+                                                                    onBackground="neutral-weak">{formatInstallStatusLabel(item.status)}</Text>
+                                                            </Row>
+                                                            <ProgressBar value={progressValue}
+                                                                         indeterminate={progressValue == null}
+                                                                         tone={tone}/>
+                                                            {formatInstallDetail(item.detail) &&
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs">{formatInstallDetail(item.detail)}</Text>}
+                                                        </Column>
+                                                    );
+                                                })}
+                                            </Column>
                                         </Column>
+                                    )}
+                                </Column>
+                            </Card>
+
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12" fillWidth>
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Column gap="4">
+                                            <Heading as="h2" variant="heading-strong-m">Live logs</Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                Live Warden output for the current install session.
+                                            </Text>
+                                        </Column>
+                                        <Badge background={BG_BRAND_ALPHA_WEAK} onBackground="neutral-strong">
+                                            Warden only
+                                        </Badge>
+                                    </Row>
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            {logHistory?.summary?.status ? `Status: ${logHistory.summary.status}` : "Status: idle"}
+                                        </Text>
+                                        <Button
+                                            size="s"
+                                            variant="secondary"
+                                            onClick={() => void pollLogs()}
+                                        >
+                                            Refresh
+                                        </Button>
+                                    </Row>
+                                    {logError &&
+                                        <Text onBackground="danger-strong" variant="body-default-xs">{logError}</Text>}
+                                    <Column className={styles.logViewport} padding="12" gap="8" fillWidth>
+                                        {logEntries.length === 0 ? (
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">Waiting for
+                                                Warden output.</Text>
+                                        ) : (
+                                            logEntries.map((entry, idx) => {
+                                                const ts = normalizeString(entry?.timestamp).trim();
+                                                const message = normalizeString(entry?.message).trim();
+                                                const detail = normalizeString(entry?.detail).trim();
+                                                const line = [ts, message, detail].filter(Boolean).join(" ");
+                                                return (
+                                                    <Text
+                                                        key={`${ts || "log"}:${idx}`}
+                                                        variant="body-default-xs"
+                                                        onBackground="neutral-weak"
+                                                        className={styles.logLine}
+                                                    >
+                                                        {line || "(empty log line)"}
+                                                    </Text>
+                                                );
+                                            })
+                                        )}
                                     </Column>
-                                )}
-                            </Column>
-                        </Card>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        {logHistory?.summary?.updatedAt ? `Updated: ${logHistory.summary.updatedAt}` : "Updated: waiting for first entry"}
+                                    </Text>
+                                </Column>
+                            </Card>
+                        </Column>
                     )}
                         </>
                     )}
                 </Column>
 
-                <Column className={styles.wizardSide} gap="12" s={{hide: true}} xs={{hide: true}}>
-                    <Card padding="16" fillWidth>
-                        <Column gap="12" fillWidth>
-                            <Row horizontal="between" vertical="center">
-                                <Heading as="h2" variant="heading-strong-m">Live logs</Heading>
-                                <Button
-                                    size="s"
-                                    variant="secondary"
-                                    onClick={() => void pollLogs(logService)}
-                                >
-                                    Refresh
-                                </Button>
-                            </Row>
-                            <Column gap="8" fillWidth>
-                                <Text onBackground="neutral-weak" variant="body-default-xs">Service</Text>
-                                <select
-                                    aria-label="Log service selection"
-                                    className={styles.nativeSelect}
-                                    value={logService}
-                                    onChange={(event) => setLogService(event.target.value)}
-                                >
-                                    {logServiceOptions.map((option) => (
-                                        <option key={option.value} value={option.value}>
-                                            {option.label}
-                                        </option>
-                                    ))}
-                                </select>
-                                {logError &&
-                                    <Text onBackground="danger-strong" variant="body-default-xs">{logError}</Text>}
-                            </Column>
-                            <Column className={styles.logViewport} padding="12" gap="8" fillWidth>
-                                {logEntries.length === 0 ? (
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">No logs yet.</Text>
-                                ) : (
-                                    logEntries.map((entry, idx) => {
-                                        const ts = normalizeString(entry?.timestamp).trim();
-                                        const message = normalizeString(entry?.message).trim();
-                                        const detail = normalizeString(entry?.detail).trim();
-                                        const line = [ts, message, detail].filter(Boolean).join(" ");
-                                        return (
-                                            <Text
-                                                key={`${ts || "log"}:${idx}`}
-                                                variant="body-default-xs"
-                                                onBackground="neutral-weak"
-                                                className={styles.logLine}
-                                            >
-                                                {line || "(empty log line)"}
-                                            </Text>
-                                        );
-                                    })
-                                )}
-                            </Column>
-                            <Row horizontal="between" vertical="center">
-                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                    {logHistory?.summary?.status ? `Status: ${logHistory.summary.status}` : ""}
-                                </Text>
-                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                    {logHistory?.summary?.updatedAt ? `Updated: ${logHistory.summary.updatedAt}` : ""}
-                                </Text>
-                            </Row>
-                        </Column>
-                    </Card>
-                </Column>
-            </Row>
+            </Column>
         </Column>
     );
 }

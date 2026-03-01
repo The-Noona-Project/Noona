@@ -77,6 +77,8 @@ instead of blindly starting every registered service.
   Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
   managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed `noona-komf` uses
   `komf/config`.
+- Managed Moon, Portal, Raven, Sage, and Vault installs now also mount dedicated log folders from the shared Noona
+  root and inject `NOONA_LOG_DIR` so each service writes a persistent `latest.log` file outside the container.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
 - Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.

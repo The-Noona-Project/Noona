@@ -48,6 +48,8 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
   selected guild, auto-provisions the managed Kavita API key into Portal/Raven/Komf after install, and persists the
   selected managed service set for future Warden boots. Portal defaults now prefill `/join` access as `*,-admin` for
   roles and `*` for libraries, and the managed Vault token is injected automatically instead of being entered by hand.
+  The install tab now contains the only live-log view, and it is scoped to Warden output for the current install
+  session.
 - `/setupwizard/summary` - Dedicated post-install review page that lists installed services, descriptions, service URLs,
   the Discord OAuth callback URL, full callback-loop testing, Discord superuser bootstrap, and final setup
   completion.
@@ -76,6 +78,8 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 ## Key Environment Variables
 
 - `WEBGUI_PORT` - port Moon binds to for `npm run dev` and `npm run start` (defaults to `3000`).
+- `NOONA_LOG_DIR` - optional directory for Moon's runtime `latest.log` file when Warden or local dev runs should
+  persist web GUI logs to disk.
 - `WARDEN_BASE_URL`, `SAGE_BASE_URL`, `RAVEN_BASE_URL`, `PORTAL_BASE_URL` - optional backend overrides for local
   proxy resolution when default container and host fallbacks are not correct.
 

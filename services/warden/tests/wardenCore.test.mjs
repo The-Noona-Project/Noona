@@ -112,6 +112,11 @@ test('startService pulls, runs, waits, and captures history when container is ab
     assert.equal(history.summary.status, 'ready');
     assert.ok(history.entries.some((entry) => entry.type === 'progress' && entry.status === 'Downloading'));
     assert.ok(history.entries.some((entry) => entry.type === 'log' && entry.message === 'line one'));
+
+    const wardenHistory = warden.getServiceHistory('noona-warden');
+    assert.ok(
+        wardenHistory.entries.some((entry) => entry.type === 'log' && entry.message.includes('Docker connection established')),
+    );
 });
 
 test('startService skips pull and run when container is already running', async () => {
@@ -655,6 +660,111 @@ test('installServices mounts Redis and Mongo under the shared Noona vault folder
     assert.ok(mongoStart.volumes.includes(expectedMongoMount));
     assert.ok(redisStart.env.includes('VAULT_DATA_FOLDER=vault-store'));
     assert.ok(mongoStart.env.includes('VAULT_DATA_FOLDER=vault-store'));
+});
+
+test('getStorageLayout exposes dedicated log container paths for managed services', () => {
+    const warden = buildWarden({
+        services: {addon: {}, core: {}},
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        hostDockerSockets: [],
+    });
+
+    const layout = warden.getStorageLayout({
+        installOverridesByName: new Map([
+            ['noona-vault', {VAULT_DATA_FOLDER: 'vault-store'}],
+        ]),
+    });
+
+    const findFolder = (serviceName, key) => {
+        const service = layout.services.find((entry) => entry.service === serviceName);
+        return service?.folders.find((entry) => entry.key === key) ?? null;
+    };
+
+    assert.equal(findFolder('noona-moon', 'logs')?.containerPath, '/var/log/noona');
+    assert.equal(findFolder('noona-portal', 'logs')?.containerPath, '/var/log/noona');
+    assert.equal(findFolder('noona-raven', 'logs')?.containerPath, '/app/logs');
+    assert.equal(findFolder('noona-sage', 'logs')?.containerPath, '/var/log/noona');
+    assert.equal(findFolder('noona-vault', 'logs')?.containerPath, '/var/log/noona');
+    assert.equal(
+        findFolder('noona-vault', 'logs')?.hostPath,
+        path.join(path.normalize('/srv/noona'), 'vault-store', 'logs'),
+    );
+});
+
+test('installServices mounts managed service log folders and injects NOONA_LOG_DIR', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                env: [...(service.env || [])],
+                volumes: [...(service.volumes || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const services = {
+        addon: {
+            'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
+            'noona-mongo': {name: 'noona-mongo', image: 'mongo', port: 27017},
+        },
+        core: {
+            'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000},
+            'noona-portal': {name: 'noona-portal', image: 'portal', port: 3003},
+            'noona-raven': {name: 'noona-raven', image: 'raven', port: 8080},
+            'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.installServices([
+        {name: 'noona-moon'},
+        {name: 'noona-portal'},
+        {name: 'noona-raven'},
+        {name: 'noona-vault', env: {VAULT_DATA_FOLDER: 'vault-store'}},
+    ]);
+
+    const moonStart = started.find((entry) => entry.name === 'noona-moon');
+    const portalStart = started.find((entry) => entry.name === 'noona-portal');
+    const ravenStart = started.find((entry) => entry.name === 'noona-raven');
+    const vaultStart = started.find((entry) => entry.name === 'noona-vault');
+
+    assert.ok(moonStart, 'Moon should be started');
+    assert.ok(portalStart, 'Portal should be started');
+    assert.ok(ravenStart, 'Raven should be started');
+    assert.ok(vaultStart, 'Vault should be started');
+
+    assert.ok(moonStart.env.includes('NOONA_LOG_DIR=/var/log/noona'));
+    assert.ok(moonStart.volumes.includes(`${path.join('/srv/noona', 'moon', 'logs')}:/var/log/noona`));
+
+    assert.ok(portalStart.env.includes('NOONA_LOG_DIR=/var/log/noona'));
+    assert.ok(portalStart.volumes.includes(`${path.join('/srv/noona', 'portal', 'logs')}:/var/log/noona`));
+
+    assert.ok(ravenStart.env.includes('NOONA_LOG_DIR=/app/logs'));
+    assert.ok(ravenStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/downloads`));
+    assert.ok(ravenStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'logs')}:/app/logs`));
+
+    assert.ok(vaultStart.env.includes('NOONA_LOG_DIR=/var/log/noona'));
+    assert.ok(vaultStart.volumes.includes(`${path.join('/srv/noona', 'vault-store', 'logs')}:/var/log/noona`));
 });
 
 test('installServices respects explicit Redis and Mongo host mount folder overrides from Vault settings', async () => {

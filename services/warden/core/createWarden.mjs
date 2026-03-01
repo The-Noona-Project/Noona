@@ -1,6 +1,7 @@
 // services/warden/core/createWarden.mjs
 import fs from 'node:fs';
 import path from 'node:path';
+import {inspect} from 'node:util';
 
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
@@ -58,6 +59,14 @@ const DEFAULT_VAULT_DATA_FOLDER_NAME = 'vault';
 const RAVEN_CONTAINER_PATHS = new Set(['/kavita-data', '/data', '/app/downloads', '/downloads']);
 const VAULT_REDIS_HOST_MOUNT_PATH_KEY = 'VAULT_REDIS_HOST_MOUNT_PATH';
 const VAULT_MONGO_HOST_MOUNT_PATH_KEY = 'VAULT_MONGO_HOST_MOUNT_PATH';
+const LOG_DIR_ENV_KEY = 'NOONA_LOG_DIR';
+const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
+    'noona-moon': '/var/log/noona',
+    'noona-portal': '/var/log/noona',
+    'noona-raven': '/app/logs',
+    'noona-sage': '/var/log/noona',
+    'noona-vault': '/var/log/noona',
+});
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
@@ -76,6 +85,22 @@ function normalizeManagedServiceName(name) {
     }
 
     return LEGACY_SERVICE_NAME_ALIASES.get(trimmed) || trimmed;
+}
+
+function formatLogHistoryValue(value) {
+    if (typeof value === 'string') {
+        return value.trim();
+    }
+
+    if (value instanceof Error) {
+        return (value.stack || value.message || '').trim();
+    }
+
+    if (value == null) {
+        return '';
+    }
+
+    return inspect(value, {depth: 4, colors: false, breakLength: Infinity}).trim();
 }
 
 function normalizeServices(servicesOption = {}) {
@@ -379,10 +404,23 @@ export function createWarden(options = {}) {
 
     const services = normalizeServices(servicesOption);
     const dockerUtils = normalizeDockerUtils(dockerUtilsOption);
-    const logger = createDefaultLogger(loggerOption);
+    const baseLogger = createDefaultLogger(loggerOption);
     const serviceCatalog = createServiceCatalog(services);
     const fsModule = fsOption || fs;
     const serviceName = env.SERVICE_NAME || 'noona-warden';
+    const wardenHistoryNames = Array.from(new Set(['noona-warden', serviceName].filter(Boolean)));
+    let recordWardenHistoryLog = null;
+    const logger = {
+        ...baseLogger,
+        log: (...args) => {
+            baseLogger.log?.(...args);
+            recordWardenHistoryLog?.('info', args);
+        },
+        warn: (...args) => {
+            baseLogger.warn?.(...args);
+            recordWardenHistoryLog?.('warn', args);
+        },
+    };
     const serviceRuntimeConfig = new Map();
     let persistedServiceRuntimeConfigLoaded = false;
     const serviceUpdateSnapshots = new Map();
@@ -878,6 +916,24 @@ export function createWarden(options = {}) {
         }
     };
 
+    const applyServiceLogMount = (service, storageLayout) => {
+        if (!service?.name || !storageLayout?.services) {
+            return service;
+        }
+
+        const logFolder = storageLayout.services[service.name]?.logs;
+        const containerPath = DEFAULT_SERVICE_LOG_MOUNT_PATHS[service.name];
+        if (!logFolder?.hostPath || !containerPath) {
+            return service;
+        }
+
+        return {
+            ...service,
+            env: upsertEnvEntry(service.env, LOG_DIR_ENV_KEY, containerPath),
+            volumes: upsertBindMount(service.volumes, containerPath, `${logFolder.hostPath}:${containerPath}`),
+        };
+    };
+
     const resolveExplicitServiceHostMountPath = ({serviceName, envKey, installOverridesByName} = {}) => {
         if (!serviceName || !envKey) {
             return null;
@@ -976,7 +1032,7 @@ export function createWarden(options = {}) {
             const containerPath = resolveRavenContainerMountPath(currentEnv, fallbackMount.containerPath);
             const bind = `${hostMount}:${containerPath}`;
 
-            return {
+            return applyServiceLogMount({
                 ...service,
                 env: upsertEnvEntry(
                     upsertEnvEntry(service.env, 'APPDATA', containerPath),
@@ -984,7 +1040,7 @@ export function createWarden(options = {}) {
                     containerPath,
                 ),
                 volumes: upsertBindMount(service.volumes, containerPath, bind),
-            };
+            }, storageLayout);
         }
 
         if (service.name === 'noona-kavita') {
@@ -1041,10 +1097,10 @@ export function createWarden(options = {}) {
         }
 
         if (service.name === 'noona-vault') {
-            return service;
+            return applyServiceLogMount(service, storageLayout);
         }
 
-        return service;
+        return applyServiceLogMount(service, storageLayout);
     };
 
     const wipePathWithFs = async (targetPath) => {
@@ -1452,6 +1508,9 @@ export function createWarden(options = {}) {
     };
 
     ensureHistory(INSTALLATION_SERVICE);
+    for (const name of wardenHistoryNames) {
+        ensureHistory(name);
+    }
 
     const refreshInstallationSummary = () => {
         const summary = (() => {
@@ -1801,6 +1860,32 @@ export function createWarden(options = {}) {
 
                 invokeWizard('trackServiceStatus', name, mappedStatus, normalized);
             }
+        }
+    };
+
+    recordWardenHistoryLog = (level, args = []) => {
+        const message = args
+            .map((value) => formatLogHistoryValue(value))
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+
+        if (!message) {
+            return;
+        }
+
+        const stream = level === 'warn' ? 'stderr' : 'stdout';
+        for (const name of wardenHistoryNames) {
+            appendHistoryEntry(
+                name,
+                {
+                    type: 'log',
+                    message,
+                    stream,
+                    level,
+                },
+                {mirrorToInstallation: false},
+            );
         }
     };
 

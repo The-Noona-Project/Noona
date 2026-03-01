@@ -2,18 +2,10 @@
   position: relative;
 }
 
-.wizardShell {
-  align-items: flex-start;
-}
-
-.wizardSide {
-  width: min(26rem, 30vw);
-  position: sticky;
-  top: 6rem;
-}
-
 .logViewport {
-  max-height: calc(100vh - 12rem);
+  width: 100%;
+  min-height: 14rem;
+  max-height: min(26rem, calc(100vh - 18rem));
   overflow: auto;
   border-radius: 0.875rem;
   border: 1px solid var(--neutral-border-medium, rgba(255, 255, 255, 0.12));

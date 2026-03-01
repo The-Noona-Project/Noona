@@ -37,15 +37,16 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 
 ## Environment Variables
 
-| Variable                   | Purpose                                          | Default                       |
-|----------------------------|--------------------------------------------------|-------------------------------|
-| `PORT`                     | HTTP listen port                                 | `3005`                        |
-| `VAULT_TOKEN_MAP`          | Service token registry                           | none                          |
-| `VAULT_SECRETS_COLLECTION` | Mongo collection for secret documents            | `vault_secrets`               |
-| `VAULT_USERS_COLLECTION`   | Mongo collection for user records                | `noona_users`                 |
-| `MONGO_URI`                | MongoDB connection URI (used by packet handlers) | `mongodb://noona-mongo:27017` |
-| `REDIS_HOST`               | Redis host (used by packet handlers)             | `noona-redis`                 |
-| `REDIS_PORT`               | Redis port                                       | `6379`                        |
+| Variable                   | Purpose                                          | Default                        |
+|----------------------------|--------------------------------------------------|--------------------------------|
+| `PORT`                     | HTTP listen port                                 | `3005`                         |
+| `VAULT_TOKEN_MAP`          | Service token registry                           | none                           |
+| `VAULT_SECRETS_COLLECTION` | Mongo collection for secret documents            | `vault_secrets`                |
+| `VAULT_USERS_COLLECTION`   | Mongo collection for user records                | `noona_users`                  |
+| `MONGO_URI`                | MongoDB connection URI (used by packet handlers) | `mongodb://noona-mongo:27017`  |
+| `REDIS_HOST`               | Redis host (used by packet handlers)             | `noona-redis`                  |
+| `REDIS_PORT`               | Redis port                                       | `6379`                         |
+| `NOONA_LOG_DIR`            | Optional directory for Vault's `latest.log`      | Warden mounts `/var/log/noona` |
 
 ## Local Commands
 ```bash

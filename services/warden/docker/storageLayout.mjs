@@ -116,20 +116,20 @@ export function buildNoonaStorageLayout(rootPath, {vaultFolderName = 'vault'} = 
         root,
         services: {
             'noona-moon': {
-                logs: buildFolderEntry(path.join(root, 'moon', 'logs')),
+                logs: buildFolderEntry(path.join(root, 'moon', 'logs'), '/var/log/noona'),
             },
             'noona-portal': {
-                logs: buildFolderEntry(path.join(root, 'portal', 'logs')),
+                logs: buildFolderEntry(path.join(root, 'portal', 'logs'), '/var/log/noona'),
             },
             'noona-raven': {
                 downloads: buildFolderEntry(path.join(root, 'raven', 'downloads'), '/downloads'),
-                logs: buildFolderEntry(path.join(root, 'raven', 'logs')),
+                logs: buildFolderEntry(path.join(root, 'raven', 'logs'), '/app/logs'),
             },
             'noona-sage': {
-                logs: buildFolderEntry(path.join(root, 'sage', 'logs')),
+                logs: buildFolderEntry(path.join(root, 'sage', 'logs'), '/var/log/noona'),
             },
             'noona-vault': {
-                logs: buildFolderEntry(path.join(root, normalizedVaultFolder, 'logs')),
+                logs: buildFolderEntry(path.join(root, normalizedVaultFolder, 'logs'), '/var/log/noona'),
                 redis: buildFolderEntry(path.join(root, normalizedVaultFolder, 'redis'), '/data'),
                 mongo: buildFolderEntry(path.join(root, normalizedVaultFolder, 'mongo'), '/data/db'),
             },

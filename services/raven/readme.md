@@ -43,7 +43,7 @@ cd services/raven
 ## Docker (from repository root)
 ```bash
 docker build --no-cache -f raven.Dockerfile -t captainpax/noona-raven .
-docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads captainpax/noona-raven
+docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir>:/app/logs captainpax/noona-raven
 ```
 
 ## Runtime Notes
@@ -51,6 +51,8 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads captainpax/noona-
 - Java toolchain targets Java 21.
 - Selenium + headless Chrome are required for scraping flows.
 - Persist downloads by mounting a host directory to `/app/downloads`.
+- Raven writes `latest.log` under `NOONA_LOG_DIR` when that environment variable is set. Warden-managed installs mount
+  Raven logs at `/app/logs`.
 - When `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` are configured, Raven now auto-creates matching
   Kavita libraries for new media-type folders it writes into the shared downloads tree.
 
