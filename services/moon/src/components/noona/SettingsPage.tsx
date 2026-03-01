@@ -22,6 +22,7 @@ type ServiceCatalogEntry = {
     description?: string | null;
     image?: string | null;
     health?: string | null;
+    hostServiceUrl?: string | null;
     installed?: boolean;
 };
 
@@ -457,6 +458,8 @@ export function SettingsPage() {
     const currentService = TAB_SERVICE[activeTab] ?? null;
     const currentEditor = currentService ? (editors[currentService] ?? defaultEditor()) : defaultEditor();
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
+    const redisServiceMeta = catalogByName.get("noona-redis") ?? null;
+    const redisStackUrl = normalizeString(redisServiceMeta?.hostServiceUrl).trim();
     const canAccessEcosystem = hasPermission(currentPermissions, "admin");
     const canManageUsers = hasPermission(currentPermissions, "user_management");
     const canShowNav = canAccessEcosystem || canManageUsers;
@@ -2408,6 +2411,36 @@ export function SettingsPage() {
 
                     {activeTab === "vault" && (
                         <>
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Column gap="4">
+                                            <Heading as="h3" variant="heading-strong-l">Redis Stack viewer</Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                Open the Redis Stack Web UI for the live Noona Redis database.
+                                            </Text>
+                                            {redisStackUrl && (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    {redisStackUrl}
+                                                </Text>
+                                            )}
+                                        </Column>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={!redisStackUrl}
+                                            onClick={() => window.open(redisStackUrl, "_blank", "noopener,noreferrer")}
+                                        >
+                                            View Redis database
+                                        </Button>
+                                    </Row>
+                                    {!redisStackUrl && (
+                                        <Text onBackground="warning-strong" variant="body-default-xs">
+                                            Redis Stack Web UI is unavailable until `noona-redis` reports a host URL.
+                                        </Text>
+                                    )}
+                                </Column>
+                            </Card>
+
                             <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                                 <Column gap="12">
                                     <Row horizontal="between" vertical="center">

@@ -47,7 +47,8 @@ default Discord roles.
 - `/ding` - health check response.
 - `/join username:<name> password:<password> confirm_password:<password> email:<email>` - create a Kavita user with the
   configured default roles/libraries, store the credential metadata, and assign the default Discord role when
-  configured.
+  configured. `PORTAL_JOIN_DEFAULT_ROLES` supports `*` plus exclusions like `*,-admin`, and
+  `PORTAL_JOIN_DEFAULT_LIBRARIES` supports `*` for all available libraries.
 - `/scan` - autocomplete Kavita libraries in Discord and queue a scan for the selected library.
 - `/search` - search Kavita series titles by name and return matching series results.
 - Boot behavior: on Discord login, Portal clears current-app global commands, clears the guild command list, then
@@ -55,18 +56,18 @@ default Discord roles.
 
 ## Key Environment Variables
 
-| Variable                                                              | Purpose                                                                                  |
-|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------|
-| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                        |
-| `DISCORD_BOT_TOKEN`                                                   | Discord bot token                                                                        |
-| `DISCORD_CLIENT_ID`                                                   | Discord application client id                                                            |
-| `DISCORD_GUILD_ID`                                                    | Guild scope for slash commands                                                           |
-| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                           |
-| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`) |
-| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join`                                                        |
-| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection                                                                     |
-| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                          |
-| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                           |
+| Variable                                                              | Purpose                                                                                        |
+|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                              |
+| `DISCORD_BOT_TOKEN`                                                   | Discord bot token                                                                              |
+| `DISCORD_CLIENT_ID`                                                   | Discord application client id                                                                  |
+| `DISCORD_GUILD_ID`                                                    | Guild scope for slash commands                                                                 |
+| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                                 |
+| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`)       |
+| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` (`*,-admin` for roles and `*` for libraries by default)      |
+| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs |
+| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                                |
+| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                                 |
 
 ## Local Commands
 

@@ -13,6 +13,7 @@ download/library routes for Moon and other clients.
 - [Route modules](routes/)
 - [Auth routes](routes/registerAuthRoutes.mjs)
 - [Setup routes](routes/registerSetupRoutes.mjs)
+- [Managed Kavita setup client](clients/managedKavitaSetupClient.mjs)
 - [Downstream clients](clients/)
 - [Wizard state](wizard/)
 - [Tests](tests/)
@@ -29,6 +30,10 @@ download/library routes for Moon and other clients.
 ## Common Endpoint Groups
 
 - Setup: `/api/setup/*`
+- Managed Kavita setup: `/api/setup/services/noona-kavita/service-key`
+    - waits for managed `noona-kavita`, creates or reuses a Kavita auth key through Kavita's own API, stores the
+      reusable key metadata in `noona_settings`, and patches selected managed services (`noona-portal`,
+      `noona-raven`, `komf`) with the generated key plus the managed `http://noona-kavita:5000` base URL.
 - Discord setup helpers: `/api/setup/services/noona-portal/discord/*`
     - validation now performs a real bot login, returns the detected application/client id, lists accessible guilds, and
       loads roles/channels when a guild is selected.

@@ -33,6 +33,22 @@
   animation: noonaProgressIndeterminate 1.1s ease-in-out infinite;
 }
 
+.nativeSelect {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.875rem;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+}
+
+.nativeSelect:focus {
+  outline: 2px solid rgba(255, 255, 255, 0.24);
+  outline-offset: 2px;
+}
+
 @keyframes noonaProgressIndeterminate {
   0% {
     transform: translateX(0);

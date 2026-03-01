@@ -134,9 +134,6 @@ const rawList = [
             'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
             'KOMF_KAVITA_API_KEY=',
             'KOMF_LOG_LEVEL=INFO',
-            'KOMF_KOMGA_BASE_URI=',
-            'KOMF_KOMGA_USER=',
-            'KOMF_KOMGA_PASSWORD=',
             'KOMF_CONFIG_HOST_MOUNT_PATH=',
         ],
         envConfig: [
@@ -156,21 +153,6 @@ const rawList = [
             createEnvField('KOMF_LOG_LEVEL', 'INFO', {
                 label: 'Komf Log Level',
                 description: 'Logging level used by the Komf container.',
-                required: false,
-            }),
-            createEnvField('KOMF_KOMGA_BASE_URI', '', {
-                label: 'Komga Base URI',
-                description: 'Optional Komga base URL if Komf should also talk to Komga.',
-                required: false,
-            }),
-            createEnvField('KOMF_KOMGA_USER', '', {
-                label: 'Komga Username',
-                description: 'Optional Komga username for Komf.',
-                required: false,
-            }),
-            createEnvField('KOMF_KOMGA_PASSWORD', '', {
-                label: 'Komga Password',
-                description: 'Optional Komga password for Komf.',
                 required: false,
             }),
             createEnvField('KOMF_CONFIG_HOST_MOUNT_PATH', '', {

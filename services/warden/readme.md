@@ -81,8 +81,12 @@ instead of blindly starting every registered service.
 - Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.
 - Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create
   matching Kavita libraries for new Raven media-type folders when Kavita sync is configured.
+- The managed Komf descriptor is now Kavita-only in setup flows. Warden no longer publishes optional Komga credentials
+  in `komf` env metadata, so Moon setup only prompts for the Kavita-linked Komf fields that Noona actually uses.
 - The Portal descriptor in [docker/noonaDockers.mjs](docker/noonaDockers.mjs) now includes `PORTAL_JOIN_DEFAULT_ROLES`
-  and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab.
+  and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab. Managed
+  installs default those values to `*,-admin` and `*`, and Warden injects Portal's Vault credential through the
+  generated `VAULT_API_TOKEN` field instead of asking users to type a Vault token during setup.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under
   `services.config.*` keys, and Warden reloads them during full boot before launching the rest of the managed stack.
 - Normal Warden shutdown and ecosystem restart now stop managed Noona services without deleting their containers, and

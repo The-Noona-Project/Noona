@@ -6,6 +6,7 @@ import express from 'express'
 
 import {debugMSG, errMSG, isDebugEnabled, log, setDebug} from '../../../utilities/etc/logger.mjs'
 import {createDiscordSetupClient} from '../clients/discordSetupClient.mjs'
+import {createManagedKavitaSetupClient} from '../clients/managedKavitaSetupClient.mjs'
 import {createRavenClient} from '../clients/ravenClient.mjs'
 import {createVaultPacketClient, isVaultClientErrorStatus} from '../clients/vaultPacketClient.mjs'
 import {createWizardStateClient} from '../wizard/wizardStateClient.mjs'
@@ -191,6 +192,7 @@ export const createSageApp = ({
                                   logger: loggerOverrides,
                                   setupClient: setupClientOverride,
                                   discordSetupClient: discordSetupClientOverride,
+                                  managedKavitaSetupClient: managedKavitaSetupClientOverride,
                                   ravenClient: ravenClientOverride,
                                   setup: setupOptions = {},
                                   raven: ravenOptions = {},
@@ -215,6 +217,12 @@ export const createSageApp = ({
     const discordSetupClient =
         discordSetupClientOverride ||
         createDiscordSetupClient({
+            logger,
+            serviceName,
+        })
+    const managedKavitaSetupClient =
+        managedKavitaSetupClientOverride ||
+        createManagedKavitaSetupClient({
             logger,
             serviceName,
         })
@@ -2221,6 +2229,7 @@ export const createSageApp = ({
         listAuthUsers,
         logger,
         markDiscordAuthConfigTested,
+        managedKavitaSetupClient,
         MOON_OP_PERMISSION_KEYS,
         normalizeHistoryLimit,
         normalizeRole,
@@ -2285,6 +2294,7 @@ export const startSage = ({
                               logger: loggerOverrides,
                               setupClient,
                               discordSetupClient,
+                              managedKavitaSetupClient,
                               ravenClient,
                               setup,
                               raven,
@@ -2301,6 +2311,7 @@ export const startSage = ({
         logger,
         setupClient,
         discordSetupClient,
+        managedKavitaSetupClient,
         ravenClient,
         setup,
         raven,

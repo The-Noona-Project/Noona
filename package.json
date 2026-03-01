@@ -1,5 +1,6 @@
 {
   "name": "noona-monorepo",
+  "description": "Noona Stack monorepo for core services, shared utilities, and Docker tooling.",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,30 +11,30 @@
     "docker:publish": "node scripts/docker-images.mjs publish"
   },
   "devDependencies": {
-    "@babel/cli": "^7.26.0",
-    "@babel/core": "^7.26.0",
-    "@babel/preset-react": "^7.26.3",
-    "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^16.2.0",
+    "@babel/cli": "^7.28.6",
+    "@babel/core": "^7.29.0",
+    "@babel/preset-react": "^7.28.5",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
-    "@types/react": "^19.2.6",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "docdash": "^2.0.1",
-    "jsdoc": "^4.0.3",
-    "jsdom": "^26.0.0",
+    "@vitejs/plugin-react": "^5.1.4",
+    "docdash": "^2.0.2",
+    "jsdoc": "^4.0.5",
+    "jsdom": "^26.1.0",
     "typescript": "^5.9.3",
-    "vite": "^7.2.2",
-    "vitest": "^3.0.4"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
   },
   "dependencies": {
     "dockerode": "^4.0.9",
-    "express": "^4.21.1",
+    "express": "^4.22.1",
     "ignore": "^7.0.5",
-    "ioredis": "^5.9.3",
+    "ioredis": "^5.10.0",
     "mongodb": "^7.1.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "redis": "^5.11.0",
     "tar-fs": "^3.1.1"
   }

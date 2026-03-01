@@ -1,7 +1,7 @@
 ﻿{
-  "name": "warden",
+  "name": "noona-warden",
   "version": "2.0.0",
-  "description": "Noona-Warden AIO Manager for Noona Dockers",
+  "description": "Noona Warden orchestrator for Docker services, setup installs, and image updates.",
   "main": "initWarden.mjs",
   "type": "module",
   "scripts": {
@@ -10,13 +10,13 @@
     "test": "node --test"
   },
   "dependencies": {
-    "dockerode": "^4.0.7",
-    "fs-extra": "^11.3.0",
-    "js-yaml": "^4.1.0",
+    "dockerode": "^4.0.9",
+    "fs-extra": "^11.3.3",
+    "js-yaml": "^4.1.1",
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "nodemon": "^3.0.3"
+    "nodemon": "^3.1.14"
   },
   "repository": {
     "type": "git",

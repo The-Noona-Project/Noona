@@ -139,8 +139,8 @@ export const loadPortalConfig = (overrides = {}) => {
                 normalizeString(env.VAULT_ACCESS_TOKEN),
         },
         join: {
-            defaultRoles: splitCsv(env.PORTAL_JOIN_DEFAULT_ROLES ?? 'Pleb'),
-            defaultLibraries: splitCsv(env.PORTAL_JOIN_DEFAULT_LIBRARIES),
+            defaultRoles: splitCsv(env.PORTAL_JOIN_DEFAULT_ROLES ?? '*,-admin'),
+            defaultLibraries: splitCsv(env.PORTAL_JOIN_DEFAULT_LIBRARIES ?? '*'),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',

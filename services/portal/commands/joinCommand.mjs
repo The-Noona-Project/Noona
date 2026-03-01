@@ -118,7 +118,10 @@ export const createJoinCommand = ({
             errMSG(`[Portal/Discord] Failed to assign default role via /join: ${error.message}`);
         });
 
-        const librarySummary = libraries.length > 0 ? libraries : createdUser.libraries;
+        const librarySummary =
+            Array.isArray(createdUser?.libraries) && createdUser.libraries.length > 0
+                ? createdUser.libraries
+                : libraries;
         await interaction.editReply?.({
             content: [
                 `Created Kavita account **${createdUser.username}**.`,

@@ -1,7 +1,7 @@
 {
   "name": "noona-sage",
   "version": "1.0.0",
-  "description": "",
+  "description": "Noona Sage setup, auth, and proxy service for Moon and Warden workflows.",
   "main": "initSage.mjs",
   "type": "module",
   "scripts": {
@@ -13,8 +13,8 @@
     "url": "https://github.com/The-Noona-Project/Noona"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "discord.js": "^14.16.3",
-    "express": "^5.1.0"
+    "cors": "^2.8.6",
+    "discord.js": "^14.25.1",
+    "express": "^5.2.1"
   }
 }

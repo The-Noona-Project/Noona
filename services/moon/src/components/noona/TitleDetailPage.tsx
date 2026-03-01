@@ -551,7 +551,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         <SetupModeGate>
             <AuthGate>
                 <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
-                        m={{paddingX: "24"}}>
+                        m={{style: {paddingInline: "24px"}}}>
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
                     <Row gap="16" vertical="center" style={{minWidth: 0}}>
                         {coverUrl && (

@@ -233,15 +233,17 @@ const serviceDefs = rawList.map(name => {
             {
                 key: 'PORTAL_JOIN_DEFAULT_ROLES',
                 label: 'Default /join Roles',
-                description: 'Comma-separated Kavita roles applied when the Discord /join command creates a user.',
-                defaultValue: 'Pleb',
+                description:
+                    'Comma-separated Kavita roles applied when the Discord /join command creates a user. Supports "*" for all roles and exclusions like "*,-admin".',
+                defaultValue: '*,-admin',
                 required: false,
             },
             {
                 key: 'PORTAL_JOIN_DEFAULT_LIBRARIES',
                 label: 'Default /join Libraries',
-                description: 'Comma-separated Kavita library names or ids granted when the Discord /join command creates a user.',
-                defaultValue: '',
+                description:
+                    'Comma-separated Kavita library names or ids granted when the Discord /join command creates a user. Use "*" to grant every available library.',
+                defaultValue: '*',
                 required: false,
             },
             {
@@ -249,11 +251,6 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Base URL',
                 description: 'URL where the Vault service is exposed for the portal.',
                 defaultValue: DEFAULT_PORTAL_VAULT_BASE_URL,
-            },
-            {
-                key: 'VAULT_ACCESS_TOKEN',
-                label: 'Vault Access Token',
-                description: 'Authentication token that allows the portal to access Vault.',
             },
             {
                 key: 'PORTAL_REDIS_NAMESPACE',

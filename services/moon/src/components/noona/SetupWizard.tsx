@@ -114,6 +114,20 @@ type DiscordSetupResponse = {
     error?: string;
 };
 
+type ManagedKavitaServiceKeyResponse = {
+    apiKey?: string | null;
+    baseUrl?: string | null;
+    mode?: string | null;
+    services?: string[] | null;
+    updatedServices?: Array<{
+        name?: string | null;
+        baseUrl?: string | null;
+        apiKeyField?: string | null;
+        restarted?: boolean | null;
+    }> | null;
+    error?: string;
+};
+
 type IntegrationMode = "managed" | "external";
 type SetupTabId = "storage" | "integrations" | "services" | "install";
 
@@ -177,6 +191,14 @@ const PORTAL_REQUIRED_KEYS = Object.freeze([
     "KAVITA_BASE_URL",
     "KAVITA_API_KEY",
 ]);
+const PORTAL_ROLE_ID_KEYS = new Set([
+    "DISCORD_GUILD_ROLE_ID",
+    "DISCORD_DEFAULT_ROLE_ID",
+    "REQUIRED_ROLE_DING",
+    "REQUIRED_ROLE_JOIN",
+    "REQUIRED_ROLE_SCAN",
+    "REQUIRED_ROLE_SEARCH",
+]);
 const INSTALL_PROGRESS_START_TIMEOUT_MS = 60_000;
 const TERMINAL_INSTALL_STATUSES = new Set(["complete", "error"]);
 const BG_SURFACE = "surface" as const;
@@ -221,6 +243,47 @@ const normalizeServiceName = (value: unknown): string => {
 
 const sanitizeEnvValue = (value: string): string =>
     value.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+
+const isManagedKavitaApiKeyField = (
+    serviceName: string,
+    key: string,
+    kavitaMode: IntegrationMode,
+    komfMode: IntegrationMode,
+): boolean => {
+    if (kavitaMode !== "managed") {
+        return false;
+    }
+
+    if ((serviceName === "noona-portal" || serviceName === "noona-raven") && key === "KAVITA_API_KEY") {
+        return true;
+    }
+
+    return serviceName === "komf" && komfMode === "managed" && key === "KOMF_KAVITA_API_KEY";
+};
+
+const isSetupFieldRequired = (
+    serviceName: string,
+    key: string,
+    {
+        kavitaMode,
+        komfMode,
+        descriptorRequired,
+    }: {
+        kavitaMode: IntegrationMode;
+        komfMode: IntegrationMode;
+        descriptorRequired: boolean;
+    },
+): boolean => {
+    if (isManagedKavitaApiKeyField(serviceName, key, kavitaMode, komfMode)) {
+        return false;
+    }
+
+    if (serviceName !== "noona-portal" || !PORTAL_REQUIRED_KEYS.includes(key)) {
+        return descriptorRequired;
+    }
+
+    return true;
+};
 
 const cloneEnvState = (values: Record<string, Record<string, string>>) =>
     Object.fromEntries(Object.entries(values).map(([serviceName, envMap]) => [serviceName, {...envMap}]));
@@ -555,11 +618,15 @@ const validateSelection = ({
                                values,
                                servicesByName,
                                storageRoot,
+                               kavitaMode,
+                               komfMode,
                            }: {
     selected: Set<string>;
     values: Record<string, Record<string, string>>;
     servicesByName: Map<string, ServiceCatalogEntry>;
     storageRoot: string;
+    kavitaMode: IntegrationMode;
+    komfMode: IntegrationMode;
 }): { ok: true } | { ok: false; message: string; missing: MissingRequiredField[] } => {
     const missing: MissingRequiredField[] = [];
     const unknownServices: string[] = [];
@@ -583,9 +650,12 @@ const validateSelection = ({
         const current = values[serviceName] ?? {};
         for (const field of envConfig) {
             if (!field?.key || field.readOnly) continue;
-            const required = serviceName === "noona-portal" && PORTAL_REQUIRED_KEYS.includes(field.key) ? true : field.required === true;
+            const required = isSetupFieldRequired(serviceName, field.key, {
+                kavitaMode,
+                komfMode,
+                descriptorRequired: field.required === true,
+            });
             if (!required) continue;
-            if (serviceName === "noona-portal" && field.key === "VAULT_ACCESS_TOKEN") continue;
             if (!normalizeString(current[field.key]).trim()) {
                 missing.push({service: serviceName, key: field.key});
             }
@@ -682,6 +752,15 @@ export function SetupWizard() {
 
     const services = catalog ?? [];
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
+    const discordRoleOptions = useMemo(() => {
+        const roles = Array.isArray(discordValidation?.roles) ? discordValidation.roles : [];
+        return roles
+            .map((entry) => ({
+                id: normalizeString(entry?.id).trim(),
+                name: normalizeString(entry?.name).trim(),
+            }))
+            .filter((entry) => entry.id);
+    }, [discordValidation]);
 
     const effectiveSelected = useMemo(() => {
         const next = new Set<string>(selected);
@@ -697,6 +776,16 @@ export function SetupWizard() {
         else next.delete("komf");
         return next;
     }, [selected, services, kavitaMode, komfMode]);
+
+    const managedKavitaServiceTargets = useMemo(() => {
+        if (kavitaMode !== "managed") return [];
+
+        const targets: string[] = [];
+        if (effectiveSelected.has("noona-portal")) targets.push("noona-portal");
+        if (effectiveSelected.has("noona-raven")) targets.push("noona-raven");
+        if (komfMode === "managed" && effectiveSelected.has("komf")) targets.push("komf");
+        return targets;
+    }, [effectiveSelected, kavitaMode, komfMode]);
 
     const effectiveValues = useMemo(
         () => buildDerivedValues({
@@ -722,10 +811,12 @@ export function SetupWizard() {
             selected: effectiveSelected,
             values: effectiveValues,
             servicesByName,
-            storageRoot
+            storageRoot,
+            kavitaMode,
+            komfMode,
         });
         return result.ok ? [] : result.missing;
-    }, [effectiveSelected, effectiveValues, servicesByName, storageRoot]);
+    }, [effectiveSelected, effectiveValues, servicesByName, storageRoot, kavitaMode, komfMode]);
 
     const vaultFolderName = useMemo(
         () => normalizeVaultFolderName(normalizeString(effectiveValues["noona-vault"]?.VAULT_DATA_FOLDER)),
@@ -940,13 +1031,14 @@ export function SetupWizard() {
             },
             guild: (Array.isArray(prev.guilds) ? prev.guilds.find((entry) => normalizeString(entry?.id).trim() === guildId) : null) ?? prev.guild ?? null,
         }) : prev);
+        void testDiscordConnection(guildId);
     };
 
-    const testDiscordConnection = async () => {
+    const testDiscordConnection = async (guildOverride?: string) => {
         const portalValues = effectiveValues["noona-portal"] ?? {};
         const token = normalizeString(portalValues.DISCORD_BOT_TOKEN).trim();
         const clientId = normalizeString(portalValues.DISCORD_CLIENT_ID).trim();
-        const guildId = normalizeString(portalValues.DISCORD_GUILD_ID).trim();
+        const guildId = normalizeString(guildOverride ?? portalValues.DISCORD_GUILD_ID).trim();
 
         if (!token) {
             setDiscordValidation(null);
@@ -1161,11 +1253,41 @@ export function SetupWizard() {
         throw new Error(lastError || "Unable to save Discord OAuth config.");
     };
 
+    const provisionManagedKavitaServiceKey = async () => {
+        if (kavitaMode !== "managed" || managedKavitaServiceTargets.length === 0) {
+            return;
+        }
+
+        const response = await fetch("/api/noona/setup/kavita/service-key", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({services: managedKavitaServiceTargets}),
+        });
+        const payload = (await response.json().catch(() => null)) as ManagedKavitaServiceKeyResponse | null;
+        if (!response.ok) {
+            throw new Error(
+                normalizeString(payload?.error).trim()
+                || `Managed Kavita key provisioning failed (HTTP ${response.status}).`,
+            );
+        }
+
+        const nextApiKey = normalizeString(payload?.apiKey).trim();
+        const nextBaseUrl = normalizeString(payload?.baseUrl).trim();
+
+        if (nextBaseUrl) {
+            setKavitaBaseUrl(nextBaseUrl);
+        }
+        if (nextApiKey) {
+            setKavitaApiKey(nextApiKey);
+        }
+    };
+
     const openSetupSummary = async () => {
         if (summaryNavigationRef.current) return;
 
         summaryNavigationRef.current = true;
         try {
+            await provisionManagedKavitaServiceKey();
             await persistDiscordAuthConfig();
             const selectedServices = Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right));
             const nextUrl = `/setupwizard/summary?selected=${encodeURIComponent(selectedServices.join(","))}`;
@@ -1184,7 +1306,9 @@ export function SetupWizard() {
             selected: effectiveSelected,
             values: effectiveValues,
             servicesByName,
-            storageRoot
+            storageRoot,
+            kavitaMode,
+            komfMode,
         });
         if (!validation.ok) {
             setInstallError(validation.message);
@@ -1276,6 +1400,15 @@ export function SetupWizard() {
         const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
         const visibleFields = envConfig.filter((field) => {
             if (!field?.key) return false;
+            if (
+                kavitaMode === "managed"
+                && (
+                    ((serviceName === "noona-portal" || serviceName === "noona-raven") && field.key === "KAVITA_API_KEY")
+                    || (serviceName === "komf" && field.key === "KOMF_KAVITA_API_KEY")
+                )
+            ) {
+                return false;
+            }
             if (showAdvanced) return true;
             if (DERIVED_KEYS.has(field.key)) return false;
             return !ADVANCED_KEYS.has(field.key);
@@ -1402,8 +1535,24 @@ export function SetupWizard() {
                                 visibleFields.map((field) => {
                                     const key = field.key;
                                     const current = effectiveValues[serviceName]?.[key] ?? "";
-                                    const required = serviceName === "noona-portal" && PORTAL_REQUIRED_KEYS.includes(key) ? true : field.required === true;
+                                    const required = isSetupFieldRequired(serviceName, key, {
+                                        kavitaMode,
+                                        komfMode,
+                                        descriptorRequired: field.required === true,
+                                    });
                                     const isMissing = required && !field.readOnly && !current.trim();
+                                    const useRoleDropdown =
+                                        serviceName === "noona-portal"
+                                        && PORTAL_ROLE_ID_KEYS.has(key)
+                                        && discordRoleOptions.length > 0;
+                                    const normalizedCurrentRole = current.trim();
+                                    const roleOptions =
+                                        useRoleDropdown && normalizedCurrentRole && !discordRoleOptions.some((role) => role.id === normalizedCurrentRole)
+                                            ? [{
+                                                id: normalizedCurrentRole,
+                                                name: `Current value (${normalizedCurrentRole})`
+                                            }, ...discordRoleOptions]
+                                            : discordRoleOptions;
 
                                     return (
                                         <Column key={key} gap="8">
@@ -1414,15 +1563,43 @@ export function SetupWizard() {
                                                 {field.readOnly && <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                                                           onBackground="neutral-strong">read-only</Badge>}
                                             </Row>
-                                            <Input
-                                                id={`${serviceName}:${key}`}
-                                                name={key}
-                                                type={isSecretKey(key) ? "password" : isUrlKey(key) ? "url" : "text"}
-                                                value={current}
-                                                disabled={field.readOnly === true}
-                                                errorMessage={isMissing ? "Required value missing." : undefined}
-                                                onChange={(event) => updateEnv(serviceName, key, event.target.value)}
-                                            />
+                                            {useRoleDropdown ? (
+                                                <Column gap="8">
+                                                    <select
+                                                        id={`${serviceName}:${key}`}
+                                                        name={key}
+                                                        aria-label={field.label || key}
+                                                        className={styles.nativeSelect}
+                                                        value={current}
+                                                        disabled={field.readOnly === true}
+                                                        onChange={(event) => updateEnv(serviceName, key, event.target.value)}
+                                                    >
+                                                        <option
+                                                            value="">{isMissing ? "Select a required guild role" : "Select a guild role"}</option>
+                                                        {roleOptions.map((role) => (
+                                                            <option key={`${key}:${role.id}`} value={role.id}>
+                                                                {role.name || role.id} ({role.id})
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <Text onBackground={isMissing ? "danger-strong" : "neutral-weak"}
+                                                          variant="body-default-xs">
+                                                        {isMissing
+                                                            ? "Required value missing."
+                                                            : "Loaded from the last successful bot login for the selected guild."}
+                                                    </Text>
+                                                </Column>
+                                            ) : (
+                                                <Input
+                                                    id={`${serviceName}:${key}`}
+                                                    name={key}
+                                                    type={isSecretKey(key) ? "password" : isUrlKey(key) ? "url" : "text"}
+                                                    value={current}
+                                                    disabled={field.readOnly === true}
+                                                    errorMessage={isMissing ? "Required value missing." : undefined}
+                                                    onChange={(event) => updateEnv(serviceName, key, event.target.value)}
+                                                />
+                                            )}
                                             {(field.description || field.warning) && (
                                                 <Column gap="4">
                                                     {field.description && <Text onBackground="neutral-weak"
@@ -1430,6 +1607,12 @@ export function SetupWizard() {
                                                     {field.warning && <Text onBackground="danger-strong"
                                                                             variant="body-default-xs">{field.warning}</Text>}
                                                 </Column>
+                                            )}
+                                            {!useRoleDropdown && serviceName === "noona-portal" && PORTAL_ROLE_ID_KEYS.has(key) && (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Run `Test bot login` after selecting a guild to load a role dropdown
+                                                    for this field.
+                                                </Text>
                                             )}
                                         </Column>
                                     );
@@ -1586,9 +1769,15 @@ export function SetupWizard() {
                                             <Text onBackground="neutral-weak" variant="body-default-xs">Warden will
                                                 install `jvmilazz0/kavita:latest`, mount a config folder under the Noona
                                                 root, and share Raven downloads into `/manga`.</Text>
-                                            <Input id="kavita-api-key" name="kavita-api-key" type="password"
-                                                   value={kavitaApiKey} placeholder="Kavita API key for Portal and Komf"
-                                                   onChange={(event) => setKavitaApiKey(event.target.value)}/>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                Noona will create a managed Kavita auth key after install and wire it
+                                                into Portal, Raven, and Komf automatically.
+                                            </Text>
+                                            {normalizeString(kavitaApiKey).trim() && (
+                                                <Badge background={BG_SUCCESS_ALPHA_WEAK} onBackground="neutral-strong">
+                                                    Managed Kavita API key ready
+                                                </Badge>
+                                            )}
                                         </Column>
                                     ) : (
                                         <Column gap="12">

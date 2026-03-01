@@ -117,7 +117,7 @@ export function LibrariesPage() {
         <SetupModeGate>
             <AuthGate>
                 <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
-                        m={{paddingX: "24"}}>
+                        m={{style: {paddingInline: "24px"}}}>
                     <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
                         <Column gap="4" style={{minWidth: 0}}>
                             <Heading variant="display-strong-s" wrap="balance">

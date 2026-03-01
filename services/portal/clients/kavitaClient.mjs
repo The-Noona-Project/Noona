@@ -29,42 +29,68 @@ const normalizeStringList = values => {
     return out;
 };
 
-const normalizeLibrarySelections = values => {
-    if (!Array.isArray(values)) {
-        return [];
+const normalizePositiveInteger = value => {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        return null;
     }
 
-    const seenIds = new Set();
-    const seenNames = new Set();
-    const out = [];
+    return String(value).trim() === String(parsed) ? parsed : null;
+};
 
-    for (const value of values) {
-        const asNumber = Number.parseInt(String(value), 10);
-        if (Number.isInteger(asNumber) && String(value).trim() === String(asNumber) && asNumber > 0) {
-            if (seenIds.has(asNumber)) {
-                continue;
+const normalizeSelectionExpressions = (values, {allowNumeric = false} = {}) => {
+    const expressions = [];
+    const seen = new Set();
+
+    for (const rawValue of Array.isArray(values) ? values : []) {
+        if (allowNumeric && typeof rawValue === 'number' && Number.isInteger(rawValue) && rawValue > 0) {
+            const key = `+id:${rawValue}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                expressions.push({exclude: false, type: 'id', value: rawValue});
             }
-
-            seenIds.add(asNumber);
-            out.push(asNumber);
             continue;
         }
 
-        const normalized = normalizeString(value);
+        const normalized = normalizeString(rawValue);
         if (!normalized) {
             continue;
         }
 
-        const key = normalized.toLowerCase();
-        if (seenNames.has(key)) {
+        if (normalized === '*') {
+            if (!seen.has('*')) {
+                seen.add('*');
+                expressions.push({wildcard: true});
+            }
             continue;
         }
 
-        seenNames.add(key);
-        out.push(normalized);
+        const exclude = normalized.startsWith('-');
+        const candidate = normalizeString(exclude ? normalized.slice(1) : normalized);
+        if (!candidate) {
+            continue;
+        }
+
+        let expression;
+        if (allowNumeric) {
+            const numericValue = normalizePositiveInteger(candidate);
+            expression = numericValue == null
+                ? {exclude, type: 'name', value: candidate}
+                : {exclude, type: 'id', value: numericValue};
+        } else {
+            expression = {exclude, type: 'name', value: candidate};
+        }
+
+        const expressionKey = `${expression.exclude ? '-' : '+'}:${expression.type}:${String(expression.value).toLowerCase()}`;
+        if (seen.has(expressionKey)) {
+            continue;
+        }
+
+        seen.add(expressionKey);
+        expressions.push(expression);
     }
 
-    return out;
+    return expressions;
 };
 
 const buildValidationError = (message, status = 400) => {
@@ -323,28 +349,50 @@ export const createKavitaClient = ({
     };
 
     const resolveConfiguredRoles = async (roles = []) => {
-        const normalizedRoles = normalizeStringList(roles);
-        if (!normalizedRoles.length) {
+        const expressions = normalizeSelectionExpressions(roles);
+        if (!expressions.length) {
             return [];
         }
 
         const availableRoles = await fetchRoles();
         if (!availableRoles.length) {
-            return normalizedRoles;
+            return expressions
+                .filter(expression => !expression.wildcard && !expression.exclude && expression.type === 'name')
+                .map(expression => expression.value);
         }
 
         const availableByKey = new Map(availableRoles.map(role => [role.toLowerCase(), role]));
-        const resolvedRoles = [];
+        const resolvedRoles = expressions.some(expression => expression.wildcard) ? [...availableRoles] : [];
+        const resolvedKeys = new Set(resolvedRoles.map(role => role.toLowerCase()));
         const missingRoles = [];
 
-        for (const role of normalizedRoles) {
-            const resolvedRole = availableByKey.get(role.toLowerCase());
-            if (!resolvedRole) {
-                missingRoles.push(role);
+        for (const expression of expressions) {
+            if (expression.wildcard) {
                 continue;
             }
 
-            resolvedRoles.push(resolvedRole);
+            const resolvedRole = availableByKey.get(expression.value.toLowerCase());
+            if (!resolvedRole) {
+                missingRoles.push(expression.value);
+                continue;
+            }
+
+            const key = resolvedRole.toLowerCase();
+            if (expression.exclude) {
+                if (resolvedKeys.has(key)) {
+                    resolvedKeys.delete(key);
+                    const resolvedIndex = resolvedRoles.findIndex(role => role.toLowerCase() === key);
+                    if (resolvedIndex >= 0) {
+                        resolvedRoles.splice(resolvedIndex, 1);
+                    }
+                }
+                continue;
+            }
+
+            if (!resolvedKeys.has(key)) {
+                resolvedKeys.add(key);
+                resolvedRoles.push(resolvedRole);
+            }
         }
 
         if (missingRoles.length) {
@@ -357,43 +405,60 @@ export const createKavitaClient = ({
     };
 
     const resolveConfiguredLibraries = async (libraries = []) => {
-        const normalizedSelections = normalizeLibrarySelections(libraries);
-        if (!normalizedSelections.length) {
+        const expressions = normalizeSelectionExpressions(libraries, {allowNumeric: true});
+        if (!expressions.length) {
             return [];
         }
 
-        const resolvedIds = [];
-        const pendingNames = [];
-
-        for (const selection of normalizedSelections) {
-            if (typeof selection === 'number') {
-                resolvedIds.push(selection);
-                continue;
-            }
-
-            pendingNames.push(selection);
-        }
-
-        if (!pendingNames.length) {
-            return [...new Set(resolvedIds)];
-        }
-
-        const availableLibraries = await fetchLibraries();
+        const requiresLibraryCatalog = expressions.some(expression => expression.wildcard || expression.type === 'name');
+        const availableLibraries = requiresLibraryCatalog ? await fetchLibraries() : [];
         const librariesByName = new Map(
             availableLibraries
-                .filter(library => library?.id != null)
-                .map(library => [normalizeString(library?.name).toLowerCase(), library]),
+                .map(library => {
+                    const id = normalizePositiveInteger(library?.id);
+                    if (id == null) {
+                        return null;
+                    }
+
+                    const name = normalizeString(library?.name);
+                    if (!name) {
+                        return null;
+                    }
+
+                    return [name.toLowerCase(), id];
+                })
+                .filter(Boolean),
         );
         const missingLibraries = [];
+        const resolvedIds = expressions.some(expression => expression.wildcard)
+            ? availableLibraries
+                .map(library => normalizePositiveInteger(library?.id))
+                .filter((id) => id != null)
+            : [];
+        const resolvedIdSet = new Set(resolvedIds);
 
-        for (const libraryName of pendingNames) {
-            const match = librariesByName.get(libraryName.toLowerCase());
-            if (!match?.id) {
-                missingLibraries.push(libraryName);
+        for (const expression of expressions) {
+            if (expression.wildcard) {
                 continue;
             }
 
-            resolvedIds.push(match.id);
+            let resolvedId = null;
+            if (expression.type === 'id') {
+                resolvedId = expression.value;
+            } else {
+                resolvedId = librariesByName.get(expression.value.toLowerCase()) ?? null;
+                if (resolvedId == null) {
+                    missingLibraries.push(expression.value);
+                    continue;
+                }
+            }
+
+            if (expression.exclude) {
+                resolvedIdSet.delete(resolvedId);
+                continue;
+            }
+
+            resolvedIdSet.add(resolvedId);
         }
 
         if (missingLibraries.length) {
@@ -406,7 +471,9 @@ export const createKavitaClient = ({
             );
         }
 
-        return [...new Set(resolvedIds)];
+        return resolvedIds.filter(id => resolvedIdSet.has(id)).concat(
+            [...resolvedIdSet].filter(id => !resolvedIds.includes(id)),
+        );
     };
 
     const createUser = async ({username, email, password, roles = [], libraries = []} = {}) => {

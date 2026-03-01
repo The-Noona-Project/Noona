@@ -120,6 +120,8 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
     assert.ok(portal, 'Portal service descriptor should be defined.');
 
     const expectations = [
+        ['PORTAL_JOIN_DEFAULT_ROLES', '*,-admin'],
+        ['PORTAL_JOIN_DEFAULT_LIBRARIES', '*'],
         ['PORTAL_REDIS_NAMESPACE', 'portal:onboarding'],
         ['PORTAL_TOKEN_TTL', '900'],
         ['PORTAL_HTTP_TIMEOUT', '10000'],
@@ -170,6 +172,17 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         assert.ok(field, `Portal envConfig should include ${key}.`);
         assert.equal(field.required, false, `${key} should be optional in setup UI.`);
     }
+
+    assert.equal(
+        portal.env.some((entry) => entry.startsWith('VAULT_ACCESS_TOKEN=')),
+        false,
+        'Portal should rely on the generated VAULT_API_TOKEN field instead of a manual VAULT_ACCESS_TOKEN prompt.',
+    );
+    assert.equal(
+        portal.envConfig.some((entry) => entry.key === 'VAULT_ACCESS_TOKEN'),
+        false,
+        'Portal envConfig should not expose a separate editable VAULT_ACCESS_TOKEN field.',
+    );
 });
 
 test('noona-portal health check points to /health endpoint', async () => {

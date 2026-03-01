@@ -95,6 +95,85 @@ test('createUser composes Kavita invite, update, and reset-password calls', asyn
     });
 });
 
+test('createUser expands wildcard role and library defaults before calling Kavita', async () => {
+    const calls = [];
+    const fetchImpl = async (url, options) => {
+        const requestUrl = new URL(url);
+        calls.push({
+            pathname: requestUrl.pathname,
+            search: requestUrl.search,
+            method: options.method,
+            body: options.body ? JSON.parse(options.body) : null,
+        });
+
+        if (requestUrl.pathname === '/api/Users') {
+            const payload = calls.filter(call => call.pathname === '/api/Users').length === 1
+                ? []
+                : [{id: 51, email: 'reader@example.com', isPending: true}];
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify(payload),
+            };
+        }
+
+        if (requestUrl.pathname === '/api/Account/roles') {
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify(['Pleb', 'Download', 'Admin']),
+            };
+        }
+
+        if (requestUrl.pathname === '/api/Library/libraries') {
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify([
+                    {id: 1, name: 'Manga'},
+                    {id: 2, name: 'Light Novels'},
+                    {id: 3, name: 'Comics'},
+                ]),
+            };
+        }
+
+        return {
+            ok: true,
+            status: 200,
+            text: async () => '',
+        };
+    };
+
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl,
+    });
+
+    const created = await kavita.createUser({
+        username: 'reader',
+        email: 'reader@example.com',
+        password: 'hunter2',
+        roles: ['*', '-admin'],
+        libraries: ['*', '-2'],
+    });
+
+    assert.deepEqual(created.roles, ['Pleb', 'Download']);
+    assert.deepEqual(created.libraries, [1, 3]);
+    assert.deepEqual(calls[3].body, {
+        email: 'reader@example.com',
+        roles: ['Pleb', 'Download'],
+        libraries: [1, 3],
+    });
+    assert.deepEqual(calls[5].body, {
+        userId: 51,
+        username: 'reader',
+        email: 'reader@example.com',
+        roles: ['Pleb', 'Download'],
+        libraries: [1, 3],
+    });
+});
+
 test('createUser rejects duplicate usernames or emails before inviting', async () => {
     const kavita = createKavitaClient({
         baseUrl: 'https://kavita.example',
