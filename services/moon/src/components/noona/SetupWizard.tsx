@@ -1,6 +1,6 @@
 "use client";
 
-import {type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {type ChangeEvent, useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
 import styles from "./SetupWizard.module.scss";
 
@@ -61,28 +61,225 @@ type InstallResponse = {
     results?: InstallResultEntry[];
 };
 
+type StorageLayoutFolder = {
+    key: string;
+    hostPath: string;
+    containerPath?: string | null;
+};
+
+type StorageLayoutService = {
+    service: string;
+    folders: StorageLayoutFolder[];
+};
+
+type StorageLayoutResponse = {
+    root?: string | null;
+    services?: StorageLayoutService[];
+    error?: string;
+};
+
+type IntegrationMode = "managed" | "external";
+type SetupTabId = "storage" | "integrations" | "services" | "install";
+
 type WizardConfigPayloadV1 = {
     version: 1;
     selected: string[];
     values: Record<string, Record<string, string>>;
 };
 
-const ALWAYS_RUNNING = new Set(["noona-moon", "noona-sage"]);
-const DEFAULT_SELECTED = new Set(["noona-portal", "noona-raven", ...ALWAYS_RUNNING]);
-const ADVANCED_KEYS = new Set(["DEBUG", "SERVICE_NAME", "VAULT_API_TOKEN", "VAULT_TOKEN_MAP"]);
+type WizardConfigPayloadV2 = {
+    version: 2;
+    selected: string[];
+    values: Record<string, Record<string, string>>;
+    storageRoot: string;
+    integrations: {
+        kavita: {
+            mode: IntegrationMode;
+            baseUrl: string;
+            apiKey: string;
+            sharedLibraryPath: string;
+            containerName: string;
+        };
+        komf: {
+            mode: IntegrationMode;
+            baseUrl: string;
+            containerName: string;
+        };
+    };
+};
 
-const isSecretKey = (key: string) => /TOKEN|API_KEY|PASSWORD/i.test(key) || key === "MONGO_URI";
-const isUrlKey = (key: string) => /_URL$|_BASE_URL$/i.test(key);
+type WizardConfigImport = Partial<WizardConfigPayloadV1> | Partial<WizardConfigPayloadV2>;
+
+type MissingRequiredField = {
+    service: string;
+    key: string;
+};
+
+type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
+
+const ALWAYS_RUNNING = new Set(["noona-moon", "noona-sage"]);
+const MANAGED_INTEGRATIONS = new Set(["kavita", "komf"]);
+const DEFAULT_SELECTED = new Set(["noona-portal", "noona-raven"]);
+const ADVANCED_KEYS = new Set(["DEBUG", "SERVICE_NAME", "VAULT_API_TOKEN", "VAULT_TOKEN_MAP"]);
+const DERIVED_KEYS = new Set([
+    "NOONA_DATA_ROOT",
+    "KAVITA_BASE_URL",
+    "KAVITA_API_KEY",
+    "KAVITA_DATA_MOUNT",
+    "KAVITA_CONFIG_HOST_MOUNT_PATH",
+    "KAVITA_LIBRARY_HOST_MOUNT_PATH",
+    "KOMF_KAVITA_BASE_URI",
+    "KOMF_KAVITA_API_KEY",
+    "KOMF_CONFIG_HOST_MOUNT_PATH",
+]);
+const PORTAL_REQUIRED_KEYS = Object.freeze([
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_CLIENT_ID",
+    "DISCORD_GUILD_ID",
+    "KAVITA_BASE_URL",
+    "KAVITA_API_KEY",
+]);
+const INSTALL_PROGRESS_START_TIMEOUT_MS = 60_000;
+const TERMINAL_INSTALL_STATUSES = new Set(["complete", "error"]);
+const BG_SURFACE = "surface" as const;
+const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
+const BG_DANGER_ALPHA_WEAK = "danger-alpha-weak" as const;
+const BG_BRAND_ALPHA_WEAK = "brand-alpha-weak" as const;
+const BG_SUCCESS_ALPHA_WEAK = "success-alpha-weak" as const;
+
+const SETUP_TABS: Array<{ id: SetupTabId; label: string; description: string }> = [
+    {id: "storage", label: "Storage", description: "Pick the Noona root folder and review shared mounts."},
+    {id: "integrations", label: "Integrations", description: "Choose managed or external Kavita and Komf."},
+    {id: "services", label: "Services", description: "Review install targets and edit service-specific settings."},
+    {id: "install", label: "Install", description: "Import/export config, run the install, and finalize setup."},
+];
+
+const SERVICE_LABELS: Record<string, string> = {
+    "noona-moon": "Moon",
+    "noona-portal": "Portal",
+    "noona-raven": "Raven",
+    "noona-sage": "Sage",
+    "noona-vault": "Vault",
+    "noona-redis": "Redis",
+    "noona-mongo": "Mongo",
+    kavita: "Kavita",
+    komf: "Komf",
+};
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
 
 const sanitizeEnvValue = (value: string): string =>
     value.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
 
+const cloneEnvState = (values: Record<string, Record<string, string>>) =>
+    Object.fromEntries(Object.entries(values).map(([serviceName, envMap]) => [serviceName, {...envMap}]));
+
+const normalizeInstallStatus = (value: string | null | undefined): string =>
+    (typeof value === "string" ? value : "").trim().toLowerCase();
+
+const clampPercent = (value: number) => {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(100, Math.round(value)));
+};
+
+const formatInstallStatusLabel = (value: string) => {
+    const normalized = normalizeInstallStatus(value);
+    if (!normalized) return "Unknown";
+    if (normalized === "complete" || normalized === "completed") return "Complete";
+    return normalized
+        .split(/[\s_-]+/)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+};
+
+const formatInstallDetail = (detail: string | null | undefined): string | null => {
+    if (!detail) return null;
+    let text = detail.trim();
+    if (!text) return null;
+
+    const hostMatch = text.match(/^host_service_url:\s*(.+)$/i);
+    if (hostMatch) {
+        const url = hostMatch[1]?.trim();
+        text = url ? `URL: ${url}` : "URL ready";
+    }
+
+    text = text.replace(/^\[[^\n]*?]\s*/, "").trim();
+    if (/\s\d+$/.test(text) && !/\d+\/\d+/.test(text)) {
+        text = text.replace(/\s\d+$/, "").trim();
+    }
+
+    if (/^\d+(?:\/\d+)?$/.test(text)) {
+        return null;
+    }
+
+    return text;
+};
+
+const isSecretKey = (key: string) => /TOKEN|API_KEY|PASSWORD/i.test(key) || key === "MONGO_URI";
+const isUrlKey = (key: string) => /_URL$|_BASE_URL$/i.test(key);
+
+const detectPathSeparator = (root: string) => (root.includes("\\") ? "\\" : "/");
+
+const joinHostPath = (root: string, ...segments: string[]) => {
+    const separator = detectPathSeparator(root);
+    const normalizedRoot = root.replace(/[\\/]+$/, "");
+    const safeSegments = segments.map((segment) => segment.replace(/[\\/]+/g, separator).replace(new RegExp(`^${separator}+|${separator}+$`, "g"), ""));
+    return [normalizedRoot, ...safeSegments.filter(Boolean)].join(separator);
+};
+
+const normalizeVaultFolderName = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return "vault";
+    if (trimmed === "." || trimmed === ".." || trimmed.includes("/") || trimmed.includes("\\")) return "vault";
+    const cleaned = trimmed.replace(/[:*?"<>|]/g, "").trim();
+    return cleaned || "vault";
+};
+
+const buildInitialEnvState = (services: ServiceCatalogEntry[]) => {
+    const state: Record<string, Record<string, string>> = {};
+
+    for (const service of services) {
+        const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
+        state[service.name] = Object.fromEntries(
+            envConfig
+                .filter((field) => field?.key)
+                .map((field) => [field.key, normalizeString(field.defaultValue ?? "")]),
+        );
+    }
+
+    return state;
+};
+
+function ProgressBar({
+                         value,
+                         tone = "brand-alpha-medium",
+                         indeterminate = false,
+                     }: {
+    value: number | null;
+    tone?: ProgressTone;
+    indeterminate?: boolean;
+}) {
+    const normalizedValue = value == null ? null : clampPercent(value);
+
+    return (
+        <Row
+            fillWidth
+            background={BG_NEUTRAL_ALPHA_WEAK}
+            className={styles.progressTrack}
+            style={{height: 8, borderRadius: 999, overflow: "hidden"}}
+        >
+            {indeterminate || normalizedValue == null ? (
+                <Row background={tone} className={styles.progressIndeterminate}/>
+            ) : (
+                <Row background={tone} style={{height: "100%", width: `${normalizedValue}%`}}/>
+            )}
+        </Row>
+    );
+}
+
 const parseMongoUriParts = (uri: string): { username: string | null; host: string | null } => {
     const trimmed = uri.trim();
-    if (!trimmed) return {username: null, host: null};
-    if (!trimmed.toLowerCase().startsWith("mongodb://")) return {username: null, host: null};
+    if (!trimmed || !trimmed.toLowerCase().startsWith("mongodb://")) return {username: null, host: null};
 
     const rest = trimmed.slice("mongodb://".length);
     const beforePath = rest.split(/[/?]/)[0] ?? "";
@@ -118,9 +315,7 @@ const deriveVaultMongoUri = (values: Record<string, Record<string, string>>): st
     }
 
     const host = parsed.host ?? "noona-mongo:27017";
-    const userEnc = encodeURIComponent(mongoUser);
-    const passEnc = encodeURIComponent(mongoPass);
-    return `mongodb://${userEnc}:${passEnc}@${host}/admin?authSource=admin`;
+    return `mongodb://${encodeURIComponent(mongoUser)}:${encodeURIComponent(mongoPass)}@${host}/admin?authSource=admin`;
 };
 
 const applyDerivedEnvState = (values: Record<string, Record<string, string>>) => {
@@ -139,175 +334,185 @@ const applyDerivedEnvState = (values: Record<string, Record<string, string>>) =>
     };
 };
 
-const buildInitialEnvState = (services: ServiceCatalogEntry[]) => {
-    const state: Record<string, Record<string, string>> = {};
+const getStoragePreview = (root: string, vaultFolderName: string) => {
+    const safeRoot = root.trim();
+    const vaultFolder = normalizeVaultFolderName(vaultFolderName);
 
-    for (const service of services) {
-        const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
-        const env: Record<string, string> = {};
-        for (const field of envConfig) {
-            if (!field?.key) continue;
-            env[field.key] = normalizeString(field.defaultValue ?? "");
-        }
-        state[service.name] = env;
-    }
-
-    return state;
+    return [
+        {
+            service: "noona-moon",
+            label: "Moon",
+            folders: [{
+                key: "logs",
+                label: "Logs",
+                hostPath: joinHostPath(safeRoot, "moon", "logs"),
+                containerPath: null
+            }]
+        },
+        {
+            service: "noona-portal",
+            label: "Portal",
+            folders: [{
+                key: "logs",
+                label: "Logs",
+                hostPath: joinHostPath(safeRoot, "portal", "logs"),
+                containerPath: null
+            }]
+        },
+        {
+            service: "noona-raven",
+            label: "Raven",
+            folders: [
+                {
+                    key: "downloads",
+                    label: "Downloads",
+                    hostPath: joinHostPath(safeRoot, "raven", "downloads"),
+                    containerPath: "/downloads"
+                },
+                {key: "logs", label: "Logs", hostPath: joinHostPath(safeRoot, "raven", "logs"), containerPath: null},
+            ],
+        },
+        {
+            service: "noona-sage",
+            label: "Sage",
+            folders: [{
+                key: "logs",
+                label: "Logs",
+                hostPath: joinHostPath(safeRoot, "sage", "logs"),
+                containerPath: null
+            }]
+        },
+        {
+            service: "noona-vault",
+            label: "Vault",
+            folders: [
+                {
+                    key: "logs",
+                    label: "Logs",
+                    hostPath: joinHostPath(safeRoot, vaultFolder, "logs"),
+                    containerPath: null
+                },
+                {
+                    key: "mongo",
+                    label: "Mongo data",
+                    hostPath: joinHostPath(safeRoot, vaultFolder, "mongo"),
+                    containerPath: "/data/db"
+                },
+                {
+                    key: "redis",
+                    label: "Redis data",
+                    hostPath: joinHostPath(safeRoot, vaultFolder, "redis"),
+                    containerPath: "/data"
+                },
+            ],
+        },
+        {
+            service: "kavita",
+            label: "Kavita",
+            folders: [
+                {
+                    key: "config",
+                    label: "Config",
+                    hostPath: joinHostPath(safeRoot, "kavita", "config"),
+                    containerPath: "/kavita/config"
+                },
+                {
+                    key: "manga",
+                    label: "Library share",
+                    hostPath: joinHostPath(safeRoot, "raven", "downloads"),
+                    containerPath: "/manga"
+                },
+            ],
+        },
+        {
+            service: "komf",
+            label: "Komf",
+            folders: [{
+                key: "config",
+                label: "Config",
+                hostPath: joinHostPath(safeRoot, "komf", "config"),
+                containerPath: "/config"
+            }]
+        },
+    ];
 };
 
-type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
-
-const BG_SURFACE = "surface" as const;
-const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
-const BG_DANGER_ALPHA_WEAK = "danger-alpha-weak" as const;
-const BG_BRAND_ALPHA_WEAK = "brand-alpha-weak" as const;
-const BG_SUCCESS_ALPHA_WEAK = "success-alpha-weak" as const;
-const INSTALL_PROGRESS_START_TIMEOUT_MS = 60_000;
-const TERMINAL_INSTALL_STATUSES = new Set(["complete", "error"]);
-
-const clampPercent = (value: number) => {
-    if (!Number.isFinite(value)) return 0;
-    return Math.max(0, Math.min(100, Math.round(value)));
+const sortServices = (left: ServiceCatalogEntry, right: ServiceCatalogEntry) => {
+    const order = ["noona-moon", "noona-sage", "noona-vault", "noona-redis", "noona-mongo", "noona-portal", "noona-raven", "kavita", "komf", "noona-oracle"];
+    const leftIndex = order.indexOf(left.name);
+    const rightIndex = order.indexOf(right.name);
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return left.name.localeCompare(right.name);
 };
 
-const normalizeInstallStatus = (value: string | null | undefined): string =>
-    (typeof value === "string" ? value : "").trim().toLowerCase();
-
-const formatInstallStatusLabel = (value: string) => {
-    const normalized = normalizeInstallStatus(value);
-
-    if (normalized === "idle") return "Idle";
-    if (normalized === "complete" || normalized === "completed") return "Complete";
-    if (normalized === "pending") return "Pending";
-    if (normalized === "downloading") return "Downloading";
-    if (normalized === "installing") return "Installing";
-    if (normalized === "installed") return "Installed";
-    if (normalized === "error") return "Error";
-
-    if (!normalized) return "Unknown";
-    return normalized;
-};
-
-const formatInstallDetail = (detail: string | null | undefined): string | null => {
-    if (!detail) return null;
-    let text = detail.trim();
-    if (!text) return null;
-
-    // Normalize legacy "host_service_url:" readouts.
-    const hostMatch = text.match(/^host_service_url:\s*(.+)$/i);
-    if (hostMatch) {
-        const url = hostMatch[1]?.trim();
-        text = url ? `URL: ${url}` : "URL ready";
-    }
-
-    // Strip docker layer/image identifiers like "[4f4fb700ef54] ".
-    text = text.replace(/^\[[^\n]*?]\s*/, "").trim();
-
-    // Drop trailing bare numbers like "Downloading 3".
-    if (/\s\d+$/.test(text) && !/\d+\/\d+/.test(text)) {
-        text = text.replace(/\s\d+$/, "").trim();
-    }
-
-    // Hide meaningless numeric-only details.
-    if (/^\d+(?:\/\d+)?$/.test(text)) {
-        return null;
-    }
-
-    return text;
-};
-
-function ProgressBar({
-                         value,
-                         tone = "brand-alpha-medium",
-                         indeterminate = false,
-                     }: {
-    value: number | null;
-    tone?: ProgressTone;
-    indeterminate?: boolean;
-}) {
-    const normalizedValue = value == null ? null : clampPercent(value);
-
-    return (
-        <Row
-            fillWidth
-            background={BG_NEUTRAL_ALPHA_WEAK}
-            className={styles.progressTrack}
-            style={{
-                height: 8,
-                borderRadius: 999,
-                overflow: "hidden",
-            }}
-        >
-            {indeterminate || normalizedValue == null ? (
-                <Row background={tone} className={styles.progressIndeterminate}/>
-            ) : (
-                <Row
-                    background={tone}
-                    style={{
-                        height: "100%",
-                        width: `${normalizedValue}%`,
-                    }}
-                />
-            )}
-        </Row>
-    );
-}
-
-const buildInstallPayload = ({
-                                 services,
-                                 selected,
-                                 values,
-                             }: {
-    services: ServiceCatalogEntry[];
-    selected: Set<string>;
+const buildDerivedValues = ({
+                                values,
+                                storageRoot,
+                                servicesByName,
+                                kavitaMode,
+                                kavitaBaseUrl,
+                                kavitaApiKey,
+                                kavitaSharedLibraryPath,
+                                komfMode,
+                            }: {
     values: Record<string, Record<string, string>>;
-}): InstallRequestEntry[] => {
-    const byName = new Map(services.map((entry) => [entry.name, entry]));
+    storageRoot: string;
+    servicesByName: Map<string, ServiceCatalogEntry>;
+    kavitaMode: IntegrationMode;
+    kavitaBaseUrl: string;
+    kavitaApiKey: string;
+    kavitaSharedLibraryPath: string;
+    komfMode: IntegrationMode;
+}) => {
+    const next = cloneEnvState(values);
+    const rootValue = storageRoot.trim();
+    const resolvedKavitaBaseUrl = kavitaMode === "managed" ? "http://kavita:5000" : kavitaBaseUrl.trim();
 
-    const targets = Array.from(selected).filter((name) => !ALWAYS_RUNNING.has(name));
-    return targets.map((name) => {
-        const svc = byName.get(name);
-        const envConfig = Array.isArray(svc?.envConfig) ? svc?.envConfig : [];
-        const current = values[name] ?? {};
+    const mergeEnv = (serviceName: string, patch: Record<string, string>) => {
+        if (!servicesByName.has(serviceName)) return;
+        next[serviceName] = {...(next[serviceName] ?? {}), ...patch};
+    };
 
-        const env: Record<string, string> = {};
-        for (const field of envConfig) {
-            if (!field?.key) continue;
-            if (field.readOnly) continue;
-            // Uploaded JSON may omit keys; treat absent/non-string values as empty.
-            const trimmed = normalizeString(current[field.key]).trim();
-            if (!trimmed) continue;
-            env[field.key] = sanitizeEnvValue(trimmed);
+    if (rootValue) {
+        for (const serviceName of ["noona-vault", "noona-raven", "kavita", "komf"]) {
+            mergeEnv(serviceName, {NOONA_DATA_ROOT: rootValue});
         }
+    }
 
-        return Object.keys(env).length > 0 ? {name, env} : {name};
+    mergeEnv("noona-portal", {
+        KAVITA_BASE_URL: resolvedKavitaBaseUrl,
+        KAVITA_API_KEY: kavitaApiKey.trim(),
     });
-};
+    mergeEnv("noona-raven", {
+        KAVITA_DATA_MOUNT: kavitaMode === "external" ? kavitaSharedLibraryPath.trim() : "",
+    });
+    mergeEnv("komf", {
+        KOMF_KAVITA_BASE_URI: resolvedKavitaBaseUrl,
+        KOMF_KAVITA_API_KEY: komfMode === "managed" ? kavitaApiKey.trim() : normalizeString(next["komf"]?.KOMF_KAVITA_API_KEY),
+    });
 
-const portalRequiredKeys = Object.freeze([
-    "DISCORD_BOT_TOKEN",
-    "DISCORD_CLIENT_ID",
-    "DISCORD_GUILD_ID",
-    "KAVITA_BASE_URL",
-    "KAVITA_API_KEY",
-]);
-
-type MissingRequiredField = {
-    service: string;
-    key: string;
+    return applyDerivedEnvState(next);
 };
 
 const validateSelection = ({
                                selected,
                                values,
                                servicesByName,
+                               storageRoot,
                            }: {
     selected: Set<string>;
     values: Record<string, Record<string, string>>;
     servicesByName: Map<string, ServiceCatalogEntry>;
+    storageRoot: string;
 }): { ok: true } | { ok: false; message: string; missing: MissingRequiredField[] } => {
     const missing: MissingRequiredField[] = [];
     const unknownServices: string[] = [];
+
+    if (!storageRoot.trim()) {
+        missing.push({service: "storage", key: "NOONA_DATA_ROOT"});
+    }
 
     if (selected.size === 0) {
         return {ok: false, message: "Select at least one service to install.", missing};
@@ -320,65 +525,94 @@ const validateSelection = ({
             continue;
         }
 
-        const envConfig = Array.isArray(service?.envConfig) ? service.envConfig : [];
+        const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
         const current = values[serviceName] ?? {};
-
         for (const field of envConfig) {
             if (!field?.key || field.readOnly) continue;
-
-            const isPortalRequired = serviceName === "noona-portal" && portalRequiredKeys.includes(field.key);
-            const required = isPortalRequired || field.required === true;
+            const required = serviceName === "noona-portal" && PORTAL_REQUIRED_KEYS.includes(field.key) ? true : field.required === true;
             if (!required) continue;
-
-            if (serviceName === "noona-portal" && field.key === "VAULT_ACCESS_TOKEN") {
-                continue;
-            }
-
-            const value = typeof current[field.key] === "string" ? current[field.key].trim() : "";
-            if (!value) {
+            if (serviceName === "noona-portal" && field.key === "VAULT_ACCESS_TOKEN") continue;
+            if (!normalizeString(current[field.key]).trim()) {
                 missing.push({service: serviceName, key: field.key});
             }
         }
     }
 
     if (unknownServices.length > 0) {
-        const labels = Array.from(new Set(unknownServices)).join(", ");
         return {
             ok: false,
-            message: `Selection contains unknown services (${labels}). Refresh the page and try again.`,
-            missing,
+            message: `Selection contains unknown services (${Array.from(new Set(unknownServices)).join(", ")}). Refresh the page and try again.`,
+            missing
         };
     }
 
     if (missing.length > 0) {
-        return {
-            ok: false,
-            message: "Fill all required settings before installing.",
-            missing,
-        };
+        return {ok: false, message: "Fill all required settings before installing.", missing};
     }
 
     return {ok: true};
 };
 
+const buildInstallPayload = ({
+                                 services,
+                                 selected,
+                                 values,
+                             }: {
+    services: ServiceCatalogEntry[];
+    selected: Set<string>;
+    values: Record<string, Record<string, string>>;
+}) =>
+    Array.from(selected)
+        .filter((name) => !ALWAYS_RUNNING.has(name))
+        .map((name) => {
+            const service = services.find((entry) => entry.name === name);
+            const envConfig = Array.isArray(service?.envConfig) ? service.envConfig : [];
+            const editableKeys = new Set(envConfig.filter((field) => field?.key && field.readOnly !== true).map((field) => field.key));
+            const env = Object.fromEntries(
+                Object.entries(values[name] ?? {})
+                    .filter(([key, value]) => {
+                        if (!normalizeString(value).trim()) return false;
+                        return editableKeys.size === 0 || editableKeys.has(key) || DERIVED_KEYS.has(key) || key === "NOONA_DATA_ROOT";
+                    })
+                    .map(([key, value]) => [key, sanitizeEnvValue(normalizeString(value).trim())]),
+            );
+
+            return Object.keys(env).length > 0 ? {name, env} : {name};
+        });
+
 export function SetupWizard() {
     const [catalog, setCatalog] = useState<ServiceCatalogEntry[] | null>(null);
     const [catalogError, setCatalogError] = useState<string | null>(null);
-
     const [selected, setSelected] = useState<Set<string>>(() => new Set(DEFAULT_SELECTED));
     const [values, setValues] = useState<Record<string, Record<string, string>>>(() => ({}));
-
+    const [storageRoot, setStorageRoot] = useState("");
+    const [defaultStorageRoot, setDefaultStorageRoot] = useState("");
+    const [activeTab, setActiveTab] = useState<SetupTabId>("storage");
     const [showAdvanced, setShowAdvanced] = useState(false);
+    const [expandedServices, setExpandedServices] = useState<Record<string, boolean>>({
+        "noona-portal": true,
+        "noona-raven": true,
+        kavita: true,
+        komf: true
+    });
+
+    const [kavitaMode, setKavitaMode] = useState<IntegrationMode>("managed");
+    const [kavitaBaseUrl, setKavitaBaseUrl] = useState("http://kavita:5000");
+    const [kavitaApiKey, setKavitaApiKey] = useState("");
+    const [kavitaSharedLibraryPath, setKavitaSharedLibraryPath] = useState("");
+    const [kavitaContainerName, setKavitaContainerName] = useState("");
+
+    const [komfMode, setKomfMode] = useState<IntegrationMode>("managed");
+    const [komfBaseUrl, setKomfBaseUrl] = useState("");
+    const [komfContainerName, setKomfContainerName] = useState("");
 
     const [configMessage, setConfigMessage] = useState<string | null>(null);
     const [configError, setConfigError] = useState<string | null>(null);
-
     const [installing, setInstalling] = useState(false);
     const [installError, setInstallError] = useState<string | null>(null);
     const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
     const [installResult, setInstallResult] = useState<InstallResponse | null>(null);
     const [summaryOpen, setSummaryOpen] = useState(false);
-
     const [finishing, setFinishing] = useState(false);
     const [finishError, setFinishError] = useState<string | null>(null);
 
@@ -393,86 +627,135 @@ export function SetupWizard() {
     const services = catalog ?? [];
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
 
-    const missingRequiredFields = useMemo(() => {
-        const result = validateSelection({selected, values, servicesByName});
-        return result.ok ? [] : result.missing;
-    }, [selected, servicesByName, values]);
+    const effectiveSelected = useMemo(() => {
+        const next = new Set<string>(selected);
+        for (const name of ALWAYS_RUNNING) next.add(name);
+        for (const service of services) {
+            if (service.required) next.add(service.name);
+        }
+        if (kavitaMode === "managed") {
+            next.add("kavita");
+            next.add("noona-raven");
+        } else next.delete("kavita");
+        if (komfMode === "managed") next.add("komf");
+        else next.delete("komf");
+        return next;
+    }, [selected, services, kavitaMode, komfMode]);
+
+    const effectiveValues = useMemo(
+        () => buildDerivedValues({
+            values,
+            storageRoot,
+            servicesByName,
+            kavitaMode,
+            kavitaBaseUrl,
+            kavitaApiKey,
+            kavitaSharedLibraryPath,
+            komfMode,
+        }),
+        [values, storageRoot, servicesByName, kavitaMode, kavitaBaseUrl, kavitaApiKey, kavitaSharedLibraryPath, komfMode],
+    );
 
     const installResultErrors = useMemo(() => {
         if (!Array.isArray(installResult?.results)) return [];
         return installResult.results.filter((entry) => normalizeInstallStatus(entry?.status) === "error");
     }, [installResult]);
 
-    const clearInstallProgressTimeout = useCallback(() => {
+    const missingRequiredFields = useMemo(() => {
+        const result = validateSelection({
+            selected: effectiveSelected,
+            values: effectiveValues,
+            servicesByName,
+            storageRoot
+        });
+        return result.ok ? [] : result.missing;
+    }, [effectiveSelected, effectiveValues, servicesByName, storageRoot]);
+
+    const vaultFolderName = useMemo(
+        () => normalizeVaultFolderName(normalizeString(effectiveValues["noona-vault"]?.VAULT_DATA_FOLDER)),
+        [effectiveValues],
+    );
+
+    const storagePreview = useMemo(() => {
+        const root = storageRoot.trim() || defaultStorageRoot.trim();
+        if (!root) return [];
+        return getStoragePreview(root, vaultFolderName).filter((entry) => {
+            if (entry.service === "kavita") return kavitaMode === "managed";
+            if (entry.service === "komf") return komfMode === "managed";
+            return true;
+        });
+    }, [storageRoot, defaultStorageRoot, vaultFolderName, kavitaMode, komfMode]);
+
+    const sortedServices = useMemo(() => {
+        const list = [...services];
+        list.sort(sortServices);
+        return list;
+    }, [services]);
+
+    const clearInstallProgressTimeout = () => {
         if (installProgressTimeoutRef.current != null) {
             window.clearTimeout(installProgressTimeoutRef.current);
             installProgressTimeoutRef.current = null;
         }
-    }, []);
+    };
 
-    const resetInstallSession = useCallback(() => {
+    const resetInstallSession = () => {
         installTargetsRef.current = new Set();
         installProgressStartedRef.current = false;
         clearInstallProgressTimeout();
-    }, [clearInstallProgressTimeout]);
+    };
 
-    const abortInstallRequest = useCallback(() => {
+    const abortInstallRequest = () => {
         if (installRequestRef.current) {
             installRequestRef.current.abort();
             installRequestRef.current = null;
         }
-    }, []);
+    };
 
-    const stopPolling = useCallback(() => {
+    const stopPolling = () => {
         if (pollRef.current != null) {
             window.clearInterval(pollRef.current);
             pollRef.current = null;
         }
-    }, []);
+    };
 
     const pollProgress = async () => {
         try {
             const res = await fetch("/api/noona/install/progress", {cache: "no-store"});
             const payload = (await res.json().catch(() => null)) as InstallProgress | null;
-            if (payload && Array.isArray(payload.items)) {
-                const activeTargets = installTargetsRef.current;
-                const sessionActive = activeTargets.size > 0;
-                const hasRelevantItems = payload.items.some((item) => activeTargets.has(item.name));
+            if (!payload || !Array.isArray(payload.items)) return;
 
-                const normalizedStatus = normalizeInstallStatus(payload.status);
-                const isFinished = TERMINAL_INSTALL_STATUSES.has(normalizedStatus);
+            const activeTargets = installTargetsRef.current;
+            const sessionActive = activeTargets.size > 0;
+            const hasRelevantItems = payload.items.some((item) => activeTargets.has(item.name));
+            const normalizedStatus = normalizeInstallStatus(payload.status);
+            const isFinished = TERMINAL_INSTALL_STATUSES.has(normalizedStatus);
 
-                if (sessionActive && !installProgressStartedRef.current) {
-                    // Ignore stale snapshots from prior runs until we see this request's
-                    // own non-terminal progress for one of the selected services.
-                    if (!hasRelevantItems || isFinished) {
-                        return;
-                    }
+            if (sessionActive && !installProgressStartedRef.current) {
+                if (!hasRelevantItems || isFinished) return;
+                installProgressStartedRef.current = true;
+                clearInstallProgressTimeout();
+            }
 
-                    installProgressStartedRef.current = true;
-                    clearInstallProgressTimeout();
+            setInstallProgress(payload);
+
+            if (sessionActive && installProgressStartedRef.current && isFinished) {
+                stopPolling();
+                resetInstallSession();
+                setInstalling(false);
+
+                if (normalizedStatus === "complete") {
+                    setInstallError(null);
+                    setInstallResult((prev) => prev ?? {results: []});
+                    setSummaryOpen(true);
+                } else {
+                    setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
                 }
 
-                setInstallProgress(payload);
-
-                if (sessionActive && installProgressStartedRef.current && isFinished) {
-                    stopPolling();
-                    resetInstallSession();
-                    setInstalling(false);
-
-                    if (normalizedStatus === "complete") {
-                        setInstallError(null);
-                        setInstallResult((prev) => prev ?? {results: []});
-                        setSummaryOpen(true);
-                    } else {
-                        setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
-                    }
-
-                    abortInstallRequest();
-                }
+                abortInstallRequest();
             }
         } catch {
-            // Keep polling; transient failures are expected during Docker pulls.
+            // Keep polling through transient failures.
         }
     };
 
@@ -482,28 +765,31 @@ export function SetupWizard() {
         const load = async () => {
             setCatalogError(null);
             setCatalog(null);
+
             try {
-                const res = await fetch("/api/noona/services", {cache: "no-store"});
-                const json = (await res.json()) as CatalogResponse;
-                if (!res.ok) {
-                    setCatalogError(json?.error || `Failed to load services (HTTP ${res.status}).`);
+                const [servicesRes, layoutRes] = await Promise.all([
+                    fetch("/api/noona/services", {cache: "no-store"}),
+                    fetch("/api/noona/setup/layout", {cache: "no-store"}),
+                ]);
+
+                const servicesJson = (await servicesRes.json().catch(() => null)) as CatalogResponse | null;
+                const layoutJson = (await layoutRes.json().catch(() => null)) as StorageLayoutResponse | null;
+                if (cancelled) return;
+
+                if (!servicesRes.ok) {
+                    setCatalogError(servicesJson?.error || `Failed to load services (HTTP ${servicesRes.status}).`);
                     return;
                 }
 
-                const list = Array.isArray(json.services) ? json.services : [];
-                if (cancelled) return;
-
+                const list = Array.isArray(servicesJson?.services) ? servicesJson.services : [];
+                const layoutRoot = normalizeString(layoutJson?.root).trim();
                 setCatalog(list);
                 setValues(applyDerivedEnvState(buildInitialEnvState(list)));
-
-                // Ensure anything marked "required" is selected by default.
-                setSelected((prev) => {
-                    const next = new Set(prev);
-                    for (const service of list) {
-                        if (service?.required) next.add(service.name);
-                    }
-                    return next;
-                });
+                if (layoutRoot) {
+                    setDefaultStorageRoot(layoutRoot);
+                    setStorageRoot((current) => current || layoutRoot);
+                    setKavitaSharedLibraryPath((current) => current || joinHostPath(layoutRoot, "raven", "downloads"));
+                }
             } catch (error) {
                 if (cancelled) return;
                 const message = error instanceof Error ? error.message : String(error);
@@ -511,26 +797,31 @@ export function SetupWizard() {
             }
         };
 
-        load();
+        void load();
         return () => {
             cancelled = true;
         };
     }, []);
 
-    useEffect(() => {
-        return () => {
-            stopPolling();
-            clearInstallProgressTimeout();
-            abortInstallRequest();
-            resetInstallSession();
-        };
-    }, [abortInstallRequest, clearInstallProgressTimeout, resetInstallSession, stopPolling]);
+    useEffect(() => () => {
+        stopPolling();
+        clearInstallProgressTimeout();
+        abortInstallRequest();
+        resetInstallSession();
+    }, []);
 
     const toggleSelected = (name: string) => {
         const service = servicesByName.get(name);
-        if (ALWAYS_RUNNING.has(name) || service?.required) {
+        if (
+            !service ||
+            ALWAYS_RUNNING.has(name) ||
+            service.required ||
+            MANAGED_INTEGRATIONS.has(name) ||
+            (name === "noona-raven" && kavitaMode === "managed")
+        ) {
             return;
         }
+
         setSelected((prev) => {
             const next = new Set(prev);
             if (next.has(name)) next.delete(name);
@@ -551,178 +842,11 @@ export function SetupWizard() {
         );
     };
 
-    const install = async () => {
-        if (!catalog) return;
-
-        const validation = validateSelection({selected, values, servicesByName});
-        if (!validation.ok) {
-            setInstallError(validation.message);
-            return;
-        }
-
-        const payload = buildInstallPayload({services: catalog, selected, values});
-
-        if (payload.length === 0) {
-            setInstallResult({results: []});
-            setSummaryOpen(true);
-            setInstalling(false);
-            setInstallError(null);
-            return;
-        }
-
-        // Track only services that this request will actually install.
-        const targetNames = new Set(payload.map((entry) => entry.name));
-
-        setInstalling(true);
-        setInstallError(null);
-        setInstallResult(null);
-        setInstallProgress(null);
-        setSummaryOpen(false);
-
-        stopPolling();
-        abortInstallRequest();
-        resetInstallSession();
-
-        installTargetsRef.current = targetNames;
-        if (targetNames.size > 0) {
-            installProgressTimeoutRef.current = window.setTimeout(() => {
-                if (installProgressStartedRef.current) return;
-
-                stopPolling();
-                resetInstallSession();
-                setInstalling(false);
-                setInstallError(
-                    "Install request was sent, but Warden did not report progress. Ensure noona-warden and noona-sage are running, then retry.",
-                );
-                abortInstallRequest();
-            }, INSTALL_PROGRESS_START_TIMEOUT_MS);
-        }
-
-        pollRef.current = window.setInterval(pollProgress, 1200);
-        void pollProgress();
-
-        const controller = new AbortController();
-        installRequestRef.current = controller;
-
-        const inspectProgressAfterInstallFailure = async (): Promise<"running" | "complete" | "error" | null> => {
-            try {
-                const progressRes = await fetch("/api/noona/install/progress", {cache: "no-store"});
-                const progressPayload = (await progressRes.json().catch(() => null)) as InstallProgress | null;
-                if (!progressPayload || !Array.isArray(progressPayload.items)) {
-                    return null;
-                }
-
-                const hasRelevantItems = progressPayload.items.some((item) => targetNames.has(item.name));
-                if (!hasRelevantItems) {
-                    return null;
-                }
-
-                const normalizedStatus = normalizeInstallStatus(progressPayload.status);
-                setInstallProgress(progressPayload);
-
-                if (normalizedStatus === "complete") {
-                    stopPolling();
-                    resetInstallSession();
-                    setInstalling(false);
-                    setInstallError(null);
-                    setInstallResult((prev) => prev ?? {results: []});
-                    setSummaryOpen(true);
-                    return "complete";
-                }
-
-                if (normalizedStatus === "error") {
-                    stopPolling();
-                    resetInstallSession();
-                    setInstalling(false);
-                    setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
-                    return "error";
-                }
-
-                if (normalizedStatus && normalizedStatus !== "idle") {
-                    installProgressStartedRef.current = true;
-                    clearInstallProgressTimeout();
-                    setInstallError(
-                        "Install request timed out at the gateway, but Warden is still installing services. Monitoring continues automatically.",
-                    );
-                    return "running";
-                }
-            } catch {
-                // Fall back to regular error handling below.
-            }
-
-            return null;
-        };
-
-        try {
-            const responsePromise = fetch("/api/noona/install", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({services: payload}),
-                signal: controller.signal,
-            });
-
-            const response = await responsePromise;
-            const json = (await response.json().catch(() => ({}))) as InstallResponse & { error?: string };
-
-            if (!response.ok) {
-                if ([502, 503, 504, 524].includes(response.status)) {
-                    const progressState = await inspectProgressAfterInstallFailure();
-                    if (progressState) {
-                        return;
-                    }
-                }
-
-                const errorMessage =
-                    typeof json?.error === "string" && json.error.trim()
-                        ? json.error.trim()
-                        : `Install failed (HTTP ${response.status}).`;
-                stopPolling();
-                resetInstallSession();
-                setInstalling(false);
-                setInstallError(errorMessage);
-                return;
-            }
-
-            const responseEntries = Array.isArray(json?.results) ? json.results : [];
-            const responseHasErrors =
-                response.status === 207 ||
-                responseEntries.some((entry) => normalizeInstallStatus(entry?.status) === "error");
-
-            // 207 Multi-Status means at least one install failed.
-            setInstallResult({
-                ...json,
-                results: responseEntries,
-            });
-            setSummaryOpen(!responseHasErrors);
-            if (responseHasErrors) {
-                setInstallError("Installation finished with errors. Check service statuses below.");
-            }
-
-            stopPolling();
-            resetInstallSession();
-            setInstalling(false);
-            void pollProgress();
-        } catch (error) {
-            if (controller.signal.aborted) {
-                return;
-            }
-
-            const progressState = await inspectProgressAfterInstallFailure();
-            if (progressState) {
-                return;
-            }
-
-            const message = error instanceof Error ? error.message : String(error);
-            stopPolling();
-            resetInstallSession();
-            setInstalling(false);
-            setInstallError(message);
-        } finally {
-            if (installRequestRef.current === controller) {
-                installRequestRef.current = null;
-            }
-            clearInstallProgressTimeout();
-        }
+    const toggleServiceExpansion = (name: string) => {
+        setExpandedServices((prev) => ({
+            ...prev,
+            [name]: !prev[name],
+        }));
     };
 
     const downloadConfigFile = () => {
@@ -735,13 +859,27 @@ export function SetupWizard() {
         }
 
         try {
-            const payload: WizardConfigPayloadV1 = {
-                version: 1,
-                selected: Array.from(selected),
+            const payload: WizardConfigPayloadV2 = {
+                version: 2,
+                selected: Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right)),
                 values,
+                storageRoot,
+                integrations: {
+                    kavita: {
+                        mode: kavitaMode,
+                        baseUrl: kavitaBaseUrl,
+                        apiKey: kavitaApiKey,
+                        sharedLibraryPath: kavitaSharedLibraryPath,
+                        containerName: kavitaContainerName,
+                    },
+                    komf: {
+                        mode: komfMode,
+                        baseUrl: komfBaseUrl,
+                        containerName: komfContainerName,
+                    },
+                },
             };
-            const formatted = JSON.stringify(payload, null, 2);
-            const blob = new Blob([formatted], {type: "application/json"});
+            const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
             const url = URL.createObjectURL(blob);
             const now = new Date().toISOString().replace(/[:.]/g, "-");
             const anchor = document.createElement("a");
@@ -753,8 +891,7 @@ export function SetupWizard() {
             URL.revokeObjectURL(url);
             setConfigMessage("Downloaded setup JSON file.");
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            setConfigError(message);
+            setConfigError(error instanceof Error ? error.message : String(error));
         }
     };
 
@@ -778,141 +915,295 @@ export function SetupWizard() {
         if (!file) return;
 
         try {
-            const raw = await file.text();
-            const parsed = JSON.parse(raw) as unknown;
-
-            if (!parsed || typeof parsed !== "object") {
-                setConfigError("Setup JSON must be an object.");
-                return;
-            }
-
-            const payload = parsed as Partial<WizardConfigPayloadV1>;
-            if (payload.version !== 1) {
+            const parsed = JSON.parse(await file.text()) as WizardConfigImport;
+            const version = Number(parsed.version);
+            if (version !== 1 && version !== 2) {
                 setConfigError("Unsupported setup JSON version.");
                 return;
             }
+            const parsedV2 = version === 2 ? (parsed as Partial<WizardConfigPayloadV2>) : null;
 
-            const nextSelected = new Set<string>();
             const knownServiceNames = new Set(catalog.map((service) => service.name));
-            const ignoredServices: string[] = [];
-            if (Array.isArray(payload.selected)) {
-                for (const entry of payload.selected) {
-                    if (typeof entry !== "string") continue;
-                    const normalized = entry.trim();
-                    if (!normalized) continue;
-                    if (knownServiceNames.has(normalized)) {
+            const nextSelected = new Set<string>();
+            if (Array.isArray(parsed.selected)) {
+                for (const entry of parsed.selected) {
+                    const normalized = normalizeString(entry).trim();
+                    if (normalized && knownServiceNames.has(normalized)) {
                         nextSelected.add(normalized);
-                    } else {
-                        ignoredServices.push(normalized);
                     }
                 }
             }
 
-            // Always force required/running services on.
-            for (const name of ALWAYS_RUNNING) nextSelected.add(name);
-            for (const service of catalog) {
-                if (service?.required) nextSelected.add(service.name);
-            }
-
-            const nextValues: Record<string, Record<string, string>> = {};
-            if (payload.values && typeof payload.values === "object") {
-                for (const [serviceName, env] of Object.entries(payload.values)) {
-                    if (!serviceName) continue;
-                    if (!knownServiceNames.has(serviceName)) continue;
-                    if (!env || typeof env !== "object") continue;
-
-                    const envMap: Record<string, string> = {};
-                    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
-                        if (!key.trim()) continue;
-                        envMap[key] = sanitizeEnvValue(typeof value === "string" ? value : String(value ?? ""));
-                    }
-
-                    nextValues[serviceName] = envMap;
+            const nextValues = cloneEnvState(buildInitialEnvState(catalog));
+            if (parsed.values && typeof parsed.values === "object") {
+                for (const [serviceName, envMap] of Object.entries(parsed.values)) {
+                    if (!knownServiceNames.has(serviceName) || !envMap || typeof envMap !== "object") continue;
+                    nextValues[serviceName] = {
+                        ...(nextValues[serviceName] ?? {}),
+                        ...Object.fromEntries(
+                            Object.entries(envMap).map(([key, value]) => [key, sanitizeEnvValue(normalizeString(value))]),
+                        ),
+                    };
                 }
             }
 
             setSelected(nextSelected);
-            setValues((prev) => {
-                if (Object.keys(nextValues).length === 0) {
-                    return prev;
+            setValues(applyDerivedEnvState(nextValues));
+
+            if (version === 2) {
+                const nextStorageRoot = normalizeString(parsedV2?.storageRoot).trim();
+                if (nextStorageRoot) {
+                    setStorageRoot(nextStorageRoot);
                 }
 
-                // Preserve catalog defaults and only replace keys provided by the uploaded config.
-                const merged = {...prev};
-                for (const [serviceName, envMap] of Object.entries(nextValues)) {
-                    merged[serviceName] = {
-                        ...(prev[serviceName] ?? {}),
-                        ...envMap,
-                    };
+                const kavita = parsedV2?.integrations?.kavita;
+                if (kavita) {
+                    setKavitaMode(kavita.mode === "external" ? "external" : "managed");
+                    setKavitaBaseUrl(normalizeString(kavita.baseUrl) || "http://kavita:5000");
+                    setKavitaApiKey(normalizeString(kavita.apiKey));
+                    setKavitaSharedLibraryPath(normalizeString(kavita.sharedLibraryPath));
+                    setKavitaContainerName(normalizeString(kavita.containerName));
                 }
-                return applyDerivedEnvState(merged);
-            });
 
-            const ignoredLabel = Array.from(new Set(ignoredServices)).join(", ");
-            setConfigMessage(
-                ignoredLabel
-                    ? `Loaded setup JSON from ${file.name}. Ignored unknown services: ${ignoredLabel}.`
-                    : `Loaded setup JSON from ${file.name}.`,
-            );
+                const komf = parsedV2?.integrations?.komf;
+                if (komf) {
+                    setKomfMode(komf.mode === "external" ? "external" : "managed");
+                    setKomfBaseUrl(normalizeString(komf.baseUrl));
+                    setKomfContainerName(normalizeString(komf.containerName));
+                }
+            } else {
+                const importedPortal = nextValues["noona-portal"] ?? {};
+                const importedRaven = nextValues["noona-raven"] ?? {};
+                setKavitaMode(nextSelected.has("kavita") ? "managed" : "external");
+                setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://kavita:5000");
+                setKavitaApiKey(normalizeString(importedPortal.KAVITA_API_KEY));
+                setKavitaSharedLibraryPath(normalizeString(importedRaven.KAVITA_DATA_MOUNT));
+                setKomfMode(nextSelected.has("komf") ? "managed" : "external");
+            }
+
+            setConfigMessage(`Loaded setup JSON from ${file.name}.`);
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            setConfigError(message);
+            setConfigError(error instanceof Error ? error.message : String(error));
         } finally {
             event.target.value = "";
         }
     };
 
-    const finishSetup = async () => {
-        if (finishInFlightRef.current) {
+    const install = async () => {
+        if (!catalog) return;
+
+        const validation = validateSelection({
+            selected: effectiveSelected,
+            values: effectiveValues,
+            servicesByName,
+            storageRoot
+        });
+        if (!validation.ok) {
+            setInstallError(validation.message);
+            setActiveTab("install");
             return;
         }
 
-        finishInFlightRef.current = true;
-        setFinishError(null);
-        setFinishing(true);
+        const payload = buildInstallPayload({services, selected: effectiveSelected, values: effectiveValues});
+        const targetNames = new Set(payload.map((entry) => entry.name));
+
+        setInstallError(null);
+        setInstallResult(null);
+        setInstallProgress(null);
+        setSummaryOpen(false);
+        setInstalling(true);
+        installTargetsRef.current = targetNames;
+        installProgressStartedRef.current = false;
+
+        clearInstallProgressTimeout();
+        installProgressTimeoutRef.current = window.setTimeout(() => {
+            if (!installProgressStartedRef.current) {
+                setInstallError("Warden did not report install progress yet. The request is still running.");
+            }
+        }, INSTALL_PROGRESS_START_TIMEOUT_MS);
+
+        stopPolling();
+        pollRef.current = window.setInterval(() => void pollProgress(), 1200);
+        void pollProgress();
+
+        const controller = new AbortController();
+        installRequestRef.current = controller;
 
         try {
-            const selectedServices = Array.from(selected).sort((left, right) => left.localeCompare(right));
+            const response = await fetch("/api/noona/install", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({services: payload}),
+                signal: controller.signal,
+            });
+
+            const json = (await response.json().catch(() => ({}))) as InstallResponse & { error?: string };
+            if (!response.ok) {
+                const errorMessage =
+                    typeof json?.error === "string" && json.error.trim()
+                        ? json.error.trim()
+                        : `Install failed (HTTP ${response.status}).`;
+                stopPolling();
+                resetInstallSession();
+                setInstalling(false);
+                setInstallError(errorMessage);
+                return;
+            }
+
+            const responseEntries = Array.isArray(json?.results) ? json.results : [];
+            const responseHasErrors =
+                response.status === 207 ||
+                responseEntries.some((entry) => normalizeInstallStatus(entry?.status) === "error");
+
+            setInstallResult({...json, results: responseEntries});
+            setSummaryOpen(!responseHasErrors);
+            if (responseHasErrors) {
+                setInstallError("Installation finished with errors. Check service statuses below.");
+            }
+
+            stopPolling();
+            resetInstallSession();
+            setInstalling(false);
+            void pollProgress();
+        } catch (error) {
+            if (!controller.signal.aborted) {
+                stopPolling();
+                resetInstallSession();
+                setInstalling(false);
+                setInstallError(error instanceof Error ? error.message : String(error));
+            }
+        } finally {
+            if (installRequestRef.current === controller) {
+                installRequestRef.current = null;
+            }
+            clearInstallProgressTimeout();
+        }
+    };
+
+    const finishSetup = async () => {
+        if (finishInFlightRef.current) return;
+
+        finishInFlightRef.current = true;
+        setFinishing(true);
+        setFinishError(null);
+
+        try {
             const res = await fetch("/api/noona/setup/complete", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({selectedServices}),
+                body: JSON.stringify({
+                    selectedServices: Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right)),
+                }),
             });
             const json = await res.json().catch(() => ({}));
 
             if (!res.ok) {
-                const message =
-                    typeof json?.error === "string" && json.error.trim()
-                        ? json.error.trim()
-                        : `Failed to complete setup (HTTP ${res.status}).`;
-                setFinishError(message);
+                setFinishError(typeof json?.error === "string" ? json.error : `Failed to complete setup (HTTP ${res.status}).`);
                 return;
             }
 
             window.location.assign("/");
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            setFinishError(message);
+            setFinishError(error instanceof Error ? error.message : String(error));
         } finally {
             setFinishing(false);
             finishInFlightRef.current = false;
         }
     };
 
-    const sorted = useMemo(() => {
-        const list = [...services];
-        list.sort((a, b) => a.name.localeCompare(b.name));
-        return list;
-    }, [services]);
+    const renderServiceCard = (serviceName: string) => {
+        const service = servicesByName.get(serviceName);
+        if (!service) return null;
+
+        const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
+        const visibleFields = envConfig.filter((field) => {
+            if (!field?.key) return false;
+            if (showAdvanced) return true;
+            if (DERIVED_KEYS.has(field.key)) return false;
+            return !ADVANCED_KEYS.has(field.key);
+        });
+
+        const isOpen = expandedServices[serviceName] === true;
+
+        return (
+            <Card key={serviceName} fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l"
+                  radius="l">
+                <Column gap="16">
+                    <Row horizontal="between" vertical="center" gap="12">
+                        <Column gap="4" style={{minWidth: 0}}>
+                            <Heading as="h3" variant="heading-strong-l">
+                                {SERVICE_LABELS[serviceName] || serviceName}
+                            </Heading>
+                            {service.description && (
+                                <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                    {service.description}
+                                </Text>
+                            )}
+                            {service.image && (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Pulls: {service.image}
+                                </Text>
+                            )}
+                        </Column>
+                        <Button size="s" variant="secondary" onClick={() => toggleServiceExpansion(serviceName)}>
+                            {isOpen ? "Hide fields" : "Show fields"}
+                        </Button>
+                    </Row>
+                    {isOpen && (
+                        <Column gap="12">
+                            {visibleFields.length === 0 ? (
+                                <Text onBackground="neutral-weak">No additional fields to edit here.</Text>
+                            ) : (
+                                visibleFields.map((field) => {
+                                    const key = field.key;
+                                    const current = effectiveValues[serviceName]?.[key] ?? "";
+                                    const required = serviceName === "noona-portal" && PORTAL_REQUIRED_KEYS.includes(key) ? true : field.required === true;
+                                    const isMissing = required && !field.readOnly && !current.trim();
+
+                                    return (
+                                        <Column key={key} gap="8">
+                                            <Row gap="8" vertical="center">
+                                                <Text variant="label-default-s">{field.label || key}</Text>
+                                                {required && <Badge background={BG_BRAND_ALPHA_WEAK}
+                                                                    onBackground="neutral-strong">required</Badge>}
+                                                {field.readOnly && <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                                                          onBackground="neutral-strong">read-only</Badge>}
+                                            </Row>
+                                            <Input
+                                                id={`${serviceName}:${key}`}
+                                                name={key}
+                                                type={isSecretKey(key) ? "password" : isUrlKey(key) ? "url" : "text"}
+                                                value={current}
+                                                disabled={field.readOnly === true}
+                                                errorMessage={isMissing ? "Required value missing." : undefined}
+                                                onChange={(event) => updateEnv(serviceName, key, event.target.value)}
+                                            />
+                                            {(field.description || field.warning) && (
+                                                <Column gap="4">
+                                                    {field.description && <Text onBackground="neutral-weak"
+                                                                                variant="body-default-xs">{field.description}</Text>}
+                                                    {field.warning && <Text onBackground="danger-strong"
+                                                                            variant="body-default-xs">{field.warning}</Text>}
+                                                </Column>
+                                            )}
+                                        </Column>
+                                    );
+                                })
+                            )}
+                        </Column>
+                    )}
+                </Column>
+            </Card>
+        );
+    };
 
     return (
-        <Column maxWidth="l" gap="xl" paddingY="12" horizontal="center">
+        <Column maxWidth="xl" gap="24" paddingY="12" horizontal="center">
             <Column gap="8" horizontal="center" align="center">
-                <Heading variant="display-strong-s" wrap="balance">
-                    Noona Setup Wizard
-                </Heading>
+                <Heading variant="display-strong-s" wrap="balance">Noona Setup Wizard</Heading>
                 <Text onBackground="neutral-weak" wrap="balance">
-                    Configure environment variables, then pull and install the remaining Noona services via Warden.
+                    Build the Noona stack around one storage root, choose managed or external integrations, then hand
+                    the install plan to Warden.
                 </Text>
             </Column>
 
@@ -920,15 +1211,11 @@ export function SetupWizard() {
                 <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
                     <Column gap="8">
                         <Row gap="8" vertical="center">
-                            <Badge background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">
-                                Backend unavailable
-                            </Badge>
-                            <Text onBackground="neutral-weak">Moon could not reach Warden/Sage.</Text>
+                            <Badge background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">Backend
+                                unavailable</Badge>
+                            <Text onBackground="neutral-weak">Moon could not reach Warden or Sage.</Text>
                         </Row>
                         <Text>{catalogError}</Text>
-                        <Text onBackground="neutral-weak">
-                            Ensure `noona-warden` and `noona-sage` are running, then refresh this page.
-                        </Text>
                     </Column>
                 </Card>
             )}
@@ -940,190 +1227,286 @@ export function SetupWizard() {
             )}
 
             {catalog && (
-                <Row fillWidth gap="24" s={{direction: "column"}}>
-                    <Column flex={1} gap="16">
-                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="16">
-                                <Row horizontal="between" vertical="center" gap="12">
-                                    <Heading as="h2" variant="heading-strong-l">
-                                        Services
-                                    </Heading>
-                                    <Button
-                                        size="s"
-                                        variant="secondary"
-                                        onClick={() => setShowAdvanced((prev) => !prev)}
-                                    >
-                                        {showAdvanced ? "Hide advanced" : "Show advanced"}
-                                    </Button>
-                                </Row>
-                                <Column gap="8">
-                                    {sorted.map((service) => {
-                                        const name = service.name;
-                                        const isChecked = selected.has(name);
-                                        const installed = service.installed === true;
-                                        const disabled = ALWAYS_RUNNING.has(name) || service.required === true;
+                <>
+                    <Row fillWidth gap="8" style={{flexWrap: "wrap"}}>
+                        <Badge background={BG_BRAND_ALPHA_WEAK}
+                               onBackground="neutral-strong">{Array.from(effectiveSelected).length} services</Badge>
+                        <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                               onBackground="neutral-strong">Storage: {storageRoot || defaultStorageRoot || "not set"}</Badge>
+                        <Badge background={BG_SUCCESS_ALPHA_WEAK}
+                               onBackground="neutral-strong">Kavita: {kavitaMode}</Badge>
+                        <Badge background={BG_SUCCESS_ALPHA_WEAK} onBackground="neutral-strong">Komf: {komfMode}</Badge>
+                    </Row>
 
-                                        return (
-                                            <Row
-                                                key={name}
-                                                fillWidth
-                                                vertical="center"
-                                                horizontal="between"
-                                                gap="12"
-                                                paddingY="8"
-                                            >
-                                                <Column gap="4" style={{minWidth: 0}}>
-                                                    <Row gap="8" vertical="center">
-                                                        <Text variant="heading-default-s">{name}</Text>
-                                                        {service.required && (
-                                                            <Badge background={BG_BRAND_ALPHA_WEAK}
-                                                                   onBackground="neutral-strong">
-                                                                required
-                                                            </Badge>
-                                                        )}
-                                                        {installed && (
+                    <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                        <Column gap="16">
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {SETUP_TABS.map((tab) => (
+                                    <Button key={tab.id} size="s"
+                                            variant={activeTab === tab.id ? "primary" : "secondary"}
+                                            onClick={() => setActiveTab(tab.id)}>
+                                        {tab.label}
+                                    </Button>
+                                ))}
+                            </Row>
+                            <Column gap="4">
+                                <Heading as="h2"
+                                         variant="heading-strong-l">{SETUP_TABS.find((entry) => entry.id === activeTab)?.label}</Heading>
+                                <Text onBackground="neutral-weak"
+                                      variant="body-default-xs">{SETUP_TABS.find((entry) => entry.id === activeTab)?.description}</Text>
+                            </Column>
+                        </Column>
+                    </Card>
+
+                    {activeTab === "storage" && (
+                        <Column fillWidth gap="16">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="16">
+                                    <Heading as="h2" variant="heading-strong-l">Noona data root</Heading>
+                                    <Input
+                                        id="noona-storage-root"
+                                        name="noona-storage-root"
+                                        type="text"
+                                        value={storageRoot}
+                                        placeholder={defaultStorageRoot || "/mnt/user/noona or %APPDATA%\\noona"}
+                                        errorMessage={!storageRoot.trim() ? "Choose a host folder for the Noona stack." : undefined}
+                                        onChange={(event) => setStorageRoot(event.target.value)}
+                                    />
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Warden now uses a single root for the stack. On Windows the default is
+                                        `%APPDATA%\\noona`; on non-Windows hosts the default is `/mnt/user/noona`.
+                                    </Text>
+                                </Column>
+                            </Card>
+
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="16">
+                                    <Heading as="h2" variant="heading-strong-l">Folder layout preview</Heading>
+                                    <Column gap="12">
+                                        {storagePreview.map((entry) => (
+                                            <Column key={entry.service} gap="8">
+                                                <Row gap="8" vertical="center">
+                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
+                                                           onBackground="neutral-strong">{entry.label}</Badge>
+                                                    <Text onBackground="neutral-weak"
+                                                          variant="body-default-xs">{entry.service}</Text>
+                                                </Row>
+                                                {entry.folders.map((folder) => (
+                                                    <Row
+                                                        key={`${entry.service}:${folder.key}`}
+                                                        fillWidth
+                                                        horizontal="between"
+                                                        vertical="center"
+                                                        gap="12"
+                                                        background={BG_NEUTRAL_ALPHA_WEAK}
+                                                        padding="12"
+                                                        radius="m"
+                                                    >
+                                                        <Column gap="4" style={{minWidth: 0}}>
+                                                            <Text variant="label-default-s">{folder.label}</Text>
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                                  wrap="balance">{folder.hostPath}</Text>
+                                                        </Column>
+                                                        {folder.containerPath && (
                                                             <Badge background={BG_SUCCESS_ALPHA_WEAK}
-                                                                   onBackground="neutral-strong">
-                                                                installed
-                                                            </Badge>
+                                                                   onBackground="neutral-strong">{folder.containerPath}</Badge>
                                                         )}
                                                     </Row>
-                                                    {service.description && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
-                                                              wrap="balance">
-                                                            {service.description}
-                                                        </Text>
-                                                    )}
-                                                    {service.image && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            Pulls: {service.image}
-                                                        </Text>
-                                                    )}
-                                                </Column>
-
-                                                <input
-                                                    type="checkbox"
-                                                    checked={isChecked}
-                                                    disabled={disabled}
-                                                    onChange={() => toggleSelected(name)}
-                                                    aria-label={`Select ${name}`}
-                                                />
-                                            </Row>
-                                        );
-                                    })}
-                                </Column>
-                            </Column>
-                        </Card>
-
-                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="12">
-                                <Heading as="h2" variant="heading-strong-l">
-                                    Install
-                                </Heading>
-
-                                <Row gap="8" style={{flexWrap: "wrap"}}>
-                                    <Button size="s" variant="secondary" onClick={() => downloadConfigFile()}>
-                                        Download JSON
-                                    </Button>
-                                    <Button size="s" variant="secondary" onClick={() => openConfigFilePicker()}>
-                                        Upload JSON
-                                    </Button>
-                                    <input
-                                        ref={configInputRef}
-                                        type="file"
-                                        accept="application/json,.json"
-                                        onChange={(event) => void loadConfigFromFile(event)}
-                                        style={{display: "none"}}
-                                        aria-label="Upload setup JSON file"
-                                    />
-                                </Row>
-
-                                {configMessage && (
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        {configMessage}
-                                    </Text>
-                                )}
-
-                                {configError && (
-                                    <Text onBackground="danger-strong" variant="body-default-xs">
-                                        {configError}
-                                    </Text>
-                                )}
-
-                                {missingRequiredFields.length > 0 && (
-                                    <Column gap="8">
-                                        <Text onBackground="neutral-weak">
-                                            Required fields missing:
-                                        </Text>
-                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            {missingRequiredFields.map((entry) => (
-                                                <Badge
-                                                    key={`${entry.service}:${entry.key}`}
-                                                    background={BG_DANGER_ALPHA_WEAK}
-                                                    onBackground="neutral-strong"
-                                                >
-                                                    {entry.service}:{entry.key}
-                                                </Badge>
-                                            ))}
-                                        </Row>
+                                                ))}
+                                            </Column>
+                                        ))}
                                     </Column>
-                                )}
+                                </Column>
+                            </Card>
+                        </Column>
+                    )}
 
-                                <Button
-                                    size="m"
-                                    variant="primary"
-                                    disabled={installing}
-                                    onClick={() => void install()}
-                                >
-                                    {installing
-                                        ? installProgress?.items?.some((item) => normalizeInstallStatus(item.status) === "downloading")
-                                            ? "Downloading..."
-                                            : "Installing..."
-                                        : "Install selected services"}
+                    {activeTab === "integrations" && (
+                        <Column fillWidth gap="16">
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="16">
+                                    <Row horizontal="between" vertical="center" gap="12">
+                                        <Heading as="h2" variant="heading-strong-l">Kavita</Heading>
+                                        <Row gap="8">
+                                            <Button size="s"
+                                                    variant={kavitaMode === "managed" ? "primary" : "secondary"}
+                                                    onClick={() => setKavitaMode("managed")}>Install with Noona</Button>
+                                            <Button size="s"
+                                                    variant={kavitaMode === "external" ? "primary" : "secondary"}
+                                                    onClick={() => setKavitaMode("external")}>I have my own</Button>
+                                        </Row>
+                                    </Row>
+                                    {kavitaMode === "managed" ? (
+                                        <Column gap="12">
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">Warden will
+                                                install `jvmilazz0/kavita:latest`, mount a config folder under the Noona
+                                                root, and share Raven downloads into `/manga`.</Text>
+                                            <Input id="kavita-api-key" name="kavita-api-key" type="password"
+                                                   value={kavitaApiKey} placeholder="Kavita API key for Portal and Komf"
+                                                   onChange={(event) => setKavitaApiKey(event.target.value)}/>
+                                        </Column>
+                                    ) : (
+                                        <Column gap="12">
+                                            <Input id="external-kavita-base-url" name="external-kavita-base-url"
+                                                   type="url" value={kavitaBaseUrl}
+                                                   placeholder="https://your-kavita.example"
+                                                   onChange={(event) => setKavitaBaseUrl(event.target.value)}/>
+                                            <Input id="external-kavita-api-key" name="external-kavita-api-key"
+                                                   type="password" value={kavitaApiKey} placeholder="Kavita API key"
+                                                   onChange={(event) => setKavitaApiKey(event.target.value)}/>
+                                            <Input id="external-kavita-library-path" name="external-kavita-library-path"
+                                                   type="text" value={kavitaSharedLibraryPath}
+                                                   placeholder={joinHostPath(storageRoot || defaultStorageRoot || "/mnt/user/noona", "raven", "downloads")}
+                                                   onChange={(event) => setKavitaSharedLibraryPath(event.target.value)}/>
+                                            <Input id="external-kavita-container" name="external-kavita-container"
+                                                   type="text" value={kavitaContainerName} placeholder="kavita"
+                                                   onChange={(event) => setKavitaContainerName(event.target.value)}/>
+                                        </Column>
+                                    )}
+                                </Column>
+                            </Card>
+
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="16">
+                                    <Row horizontal="between" vertical="center" gap="12">
+                                        <Heading as="h2" variant="heading-strong-l">Komf</Heading>
+                                        <Row gap="8">
+                                            <Button size="s" variant={komfMode === "managed" ? "primary" : "secondary"}
+                                                    onClick={() => setKomfMode("managed")}>Install with Noona</Button>
+                                            <Button size="s" variant={komfMode === "external" ? "primary" : "secondary"}
+                                                    onClick={() => setKomfMode("external")}>I have my own</Button>
+                                        </Row>
+                                    </Row>
+                                    {komfMode === "managed" ? (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">Warden will install
+                                            `sndxr/komf:latest`, mount a config folder under the Noona root, and point
+                                            Komf at the Kavita mode you selected above.</Text>
+                                    ) : (
+                                        <Column gap="12">
+                                            <Input id="external-komf-base-url" name="external-komf-base-url" type="url"
+                                                   value={komfBaseUrl} placeholder="https://your-komf.example"
+                                                   onChange={(event) => setKomfBaseUrl(event.target.value)}/>
+                                            <Input id="external-komf-container" name="external-komf-container"
+                                                   type="text" value={komfContainerName} placeholder="komf"
+                                                   onChange={(event) => setKomfContainerName(event.target.value)}/>
+                                        </Column>
+                                    )}
+                                </Column>
+                            </Card>
+                        </Column>
+                    )}
+
+                    {activeTab === "services" && (
+                        <Row fillWidth gap="24" s={{direction: "column"}}>
+                            <Column flex={1} gap="16">
+                                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l"
+                                      radius="l">
+                                    <Column gap="16">
+                                        <Row horizontal="between" vertical="center" gap="12">
+                                            <Heading as="h2" variant="heading-strong-l">Service plan</Heading>
+                                            <Button size="s" variant="secondary"
+                                                    onClick={() => setShowAdvanced((prev) => !prev)}>{showAdvanced ? "Hide advanced" : "Show advanced"}</Button>
+                                        </Row>
+                                        <Column gap="8">
+                                            {sortedServices.map((service) => {
+                                                const name = service.name;
+                                                const ravenLocked = name === "noona-raven" && kavitaMode === "managed";
+                                                const disabled =
+                                                    ALWAYS_RUNNING.has(name) ||
+                                                    service.required === true ||
+                                                    MANAGED_INTEGRATIONS.has(name) ||
+                                                    ravenLocked;
+                                                return (
+                                                    <Row key={name} fillWidth horizontal="between" vertical="center"
+                                                         gap="12" paddingY="8">
+                                                        <Column gap="4" style={{minWidth: 0}}>
+                                                            <Row gap="8" vertical="center">
+                                                                <Text
+                                                                    variant="heading-default-s">{SERVICE_LABELS[name] || name}</Text>
+                                                                {service.required &&
+                                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
+                                                                           onBackground="neutral-strong">required</Badge>}
+                                                                {service.installed &&
+                                                                    <Badge background={BG_SUCCESS_ALPHA_WEAK}
+                                                                           onBackground="neutral-strong">installed</Badge>}
+                                                                {MANAGED_INTEGRATIONS.has(name) &&
+                                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                                                           onBackground="neutral-strong">{name === "kavita" ? kavitaMode : komfMode}</Badge>}
+                                                                {ravenLocked && <Badge background={BG_BRAND_ALPHA_WEAK}
+                                                                                       onBackground="neutral-strong">required
+                                                                    by Kavita</Badge>}
+                                                            </Row>
+                                                            {service.description && <Text onBackground="neutral-weak"
+                                                                                          variant="body-default-xs"
+                                                                                          wrap="balance">{service.description}</Text>}
+                                                        </Column>
+                                                        <input type="checkbox" checked={effectiveSelected.has(name)}
+                                                               disabled={disabled} onChange={() => toggleSelected(name)}
+                                                               aria-label={`Select ${name}`}/>
+                                                    </Row>
+                                                );
+                                            })}
+                                        </Column>
+                                    </Column>
+                                </Card>
+                            </Column>
+
+                            <Column flex={2} gap="16">
+                                {Array.from(effectiveSelected)
+                                    .sort((left, right) => sortServices(servicesByName.get(left) ?? {name: left}, servicesByName.get(right) ?? {name: right}))
+                                    .map((name) => renderServiceCard(name))}
+                            </Column>
+                        </Row>
+                    )}
+
+                    {activeTab === "install" && (
+                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                            <Column gap="16">
+                                <Heading as="h2" variant="heading-strong-l">Install plan</Heading>
+                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                    <Button size="s" variant="secondary" onClick={() => downloadConfigFile()}>Download
+                                        JSON</Button>
+                                    <Button size="s" variant="secondary" onClick={() => openConfigFilePicker()}>Upload
+                                        JSON</Button>
+                                    <input ref={configInputRef} type="file" accept="application/json,.json"
+                                           onChange={(event) => void loadConfigFromFile(event)}
+                                           style={{display: "none"}} aria-label="Upload setup JSON file"/>
+                                </Row>
+                                {configMessage &&
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">{configMessage}</Text>}
+                                {configError &&
+                                    <Text onBackground="danger-strong" variant="body-default-xs">{configError}</Text>}
+                                {missingRequiredFields.length > 0 && (
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        {missingRequiredFields.map((entry) => (
+                                            <Badge key={`${entry.service}:${entry.key}`}
+                                                   background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">
+                                                {entry.service}:{entry.key}
+                                            </Badge>
+                                        ))}
+                                    </Row>
+                                )}
+                                <Button size="m" variant="primary" disabled={installing} onClick={() => void install()}>
+                                    {installing ? "Installing..." : "Install selected services"}
                                 </Button>
-
-                                {installing && !installProgress && (
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Waiting for Warden to report install progress...
-                                    </Text>
-                                )}
-
-                                {installError && (
-                                    <Text onBackground="danger-strong">{installError}</Text>
-                                )}
-
+                                {installError && <Text onBackground="danger-strong">{installError}</Text>}
                                 {installProgress && (
                                     <Column gap="8">
                                         <Row horizontal="between" vertical="center">
-                                            <Text onBackground="neutral-weak">
-                                                Status: {formatInstallStatusLabel(installProgress.status)}
-                                            </Text>
-                                            <Text onBackground="neutral-weak">
-                                                {installProgress.percent != null ? `${installProgress.percent}%` : ""}
-                                            </Text>
+                                            <Text
+                                                onBackground="neutral-weak">Status: {formatInstallStatusLabel(installProgress.status)}</Text>
+                                            <Text
+                                                onBackground="neutral-weak">{installProgress.percent != null ? `${installProgress.percent}%` : ""}</Text>
                                         </Row>
-                                        <ProgressBar
-                                            value={installProgress.percent ?? 0}
-                                            indeterminate={installProgress.percent == null && installProgress.status !== "idle"}
-                                            tone="brand-alpha-medium"
-                                        />
+                                        <ProgressBar value={installProgress.percent ?? 0}
+                                                     indeterminate={installProgress.percent == null && installProgress.status !== "idle"}
+                                                     tone="brand-alpha-medium"/>
                                         <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
                                         <Column gap="8">
                                             {installProgress.items.map((item) => {
                                                 const normalized = normalizeInstallStatus(item.status);
-                                                const isInstalled = normalized === "installed";
-                                                const isError = normalized === "error";
-                                                const isPending = normalized === "pending";
-                                                const detail = formatInstallDetail(item.detail);
-                                                const progressValue = isInstalled ? 100 : isError ? 100 : isPending ? 0 : null;
-                                                const tone: ProgressTone = isInstalled
-                                                    ? "success-alpha-medium"
-                                                    : isError
-                                                        ? "danger-alpha-medium"
-                                                        : isPending
-                                                            ? "neutral-alpha-medium"
-                                                            : "brand-alpha-medium";
-
+                                                const progressValue = normalized === "installed" || normalized === "error" ? 100 : normalized === "pending" ? 0 : null;
+                                                const tone: ProgressTone = normalized === "installed" ? "success-alpha-medium" : normalized === "error" ? "danger-alpha-medium" : normalized === "pending" ? "neutral-alpha-medium" : "brand-alpha-medium";
                                                 return (
                                                     <Column key={item.name} gap="8">
                                                         <Row horizontal="between" gap="12" vertical="center">
@@ -1131,265 +1514,50 @@ export function SetupWizard() {
                                                             <Text
                                                                 onBackground="neutral-weak">{formatInstallStatusLabel(item.status)}</Text>
                                                         </Row>
-                                                        <ProgressBar
-                                                            value={progressValue}
-                                                            indeterminate={progressValue == null}
-                                                            tone={tone}
-                                                        />
-                                                        {detail && (
-                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                                {detail}
-                                                            </Text>
-                                                        )}
+                                                        <ProgressBar value={progressValue}
+                                                                     indeterminate={progressValue == null} tone={tone}/>
+                                                        {formatInstallDetail(item.detail) &&
+                                                            <Text onBackground="neutral-weak"
+                                                                  variant="body-default-xs">{formatInstallDetail(item.detail)}</Text>}
                                                     </Column>
                                                 );
                                             })}
                                         </Column>
                                     </Column>
                                 )}
-
-                                {installResultErrors.length > 0 && (
-                                    <Column gap="8">
-                                        <Text onBackground="danger-strong" variant="body-default-xs">
-                                            Some services failed to install:
-                                        </Text>
-                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            {installResultErrors.map((entry) => (
-                                                <Badge
-                                                    key={`install-error:${entry.name}`}
-                                                    background={BG_DANGER_ALPHA_WEAK}
-                                                    onBackground="neutral-strong"
-                                                >
-                                                    {entry.name}
-                                                </Badge>
-                                            ))}
-                                        </Row>
-                                    </Column>
-                                )}
-
-                                {installResult !== null && installResultErrors.length === 0 && !installError && (
-                                    <Column gap="12">
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            Install completed. Open setup summary to finalize setup and continue.
-                                        </Text>
-                                        <Button size="m" variant="primary" onClick={() => setSummaryOpen(true)}>
-                                            Open setup summary
-                                        </Button>
-                                    </Column>
-                                )}
                             </Column>
                         </Card>
-                    </Column>
-
-                    <Column flex={2} gap="16">
-                        {Array.from(selected)
-                            .sort((a, b) => a.localeCompare(b))
-                            .map((name) => {
-                                const service = servicesByName.get(name);
-                                if (!service) return null;
-
-                                const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
-
-                                const visibleFields = envConfig.filter((field) => {
-                                    if (!field?.key) return false;
-                                    if (showAdvanced) return true;
-                                    return !ADVANCED_KEYS.has(field.key);
-                                });
-
-                                if (visibleFields.length === 0) {
-                                    return (
-                                        <Card
-                                            key={name}
-                                            fillWidth
-                                            background={BG_SURFACE}
-                                            border="neutral-alpha-weak"
-                                            padding="l"
-                                            radius="l"
-                                        >
-                                            <Column gap="8">
-                                                <Heading as="h3" variant="heading-strong-l">
-                                                    {name}
-                                                </Heading>
-                                                {service.description && (
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs"
-                                                          wrap="balance">
-                                                        {service.description}
-                                                    </Text>
-                                                )}
-                                                {service.image && (
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        Pulls: {service.image}
-                                                    </Text>
-                                                )}
-                                                <Text onBackground="neutral-weak">No configurable environment
-                                                    fields.</Text>
-                                            </Column>
-                                        </Card>
-                                    );
-                                }
-
-                                return (
-                                    <Card
-                                        key={name}
-                                        fillWidth
-                                        background={BG_SURFACE}
-                                        border="neutral-alpha-weak"
-                                        padding="l"
-                                        radius="l"
-                                    >
-                                        <Column gap="16">
-                                            <Row horizontal="between" vertical="center" gap="12">
-                                                <Column gap="4" style={{minWidth: 0}}>
-                                                    <Heading as="h3" variant="heading-strong-l">
-                                                        {name}
-                                                    </Heading>
-                                                    {service.description && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
-                                                              wrap="balance">
-                                                            {service.description}
-                                                        </Text>
-                                                    )}
-                                                    {service.image && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            Pulls: {service.image}
-                                                        </Text>
-                                                    )}
-                                                    {service.hostServiceUrl && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            {service.hostServiceUrl}
-                                                        </Text>
-                                                    )}
-                                                </Column>
-                                                {ALWAYS_RUNNING.has(name) && (
-                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
-                                                           onBackground="neutral-strong">
-                                                        running
-                                                    </Badge>
-                                                )}
-                                            </Row>
-
-                                            <Column gap="12">
-                                                {visibleFields.map((field) => {
-                                                    const key = field.key;
-                                                    const current = values[name]?.[key] ?? "";
-                                                    const required =
-                                                        name === "noona-portal" && portalRequiredKeys.includes(key)
-                                                            ? true
-                                                            : field.required === true;
-
-                                                    const isMissing =
-                                                        required &&
-                                                        !field.readOnly &&
-                                                        (!current || current.trim().length === 0) &&
-                                                        !(name === "noona-portal" && key === "VAULT_ACCESS_TOKEN");
-
-                                                    return (
-                                                        <Column key={key} gap="8">
-                                                            <Row gap="8" vertical="center">
-                                                                <Text
-                                                                    variant="label-default-s">{field.label || key}</Text>
-                                                                {required && (
-                                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">
-                                                                        required
-                                                                    </Badge>
-                                                                )}
-                                                                {field.readOnly && (
-                                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">
-                                                                        read-only
-                                                                    </Badge>
-                                                                )}
-                                                            </Row>
-
-                                                            <Input
-                                                                id={`${name}:${key}`}
-                                                                name={key}
-                                                                type={isSecretKey(key) ? "password" : isUrlKey(key) ? "url" : "text"}
-                                                                placeholder={key}
-                                                                value={current}
-                                                                disabled={field.readOnly === true}
-                                                                required={false}
-                                                                aria-required={required}
-                                                                errorMessage={isMissing ? "Required value missing." : undefined}
-                                                                onChange={(e) => updateEnv(name, key, e.target.value)}
-                                                            />
-
-                                                            {(field.description || field.warning) && (
-                                                                <Column gap="4">
-                                                                    {field.description && (
-                                                                        <Text onBackground="neutral-weak"
-                                                                              variant="body-default-xs">
-                                                                            {field.description}
-                                                                        </Text>
-                                                                    )}
-                                                                    {field.warning && (
-                                                                        <Text onBackground="danger-strong"
-                                                                              variant="body-default-xs">
-                                                                            {field.warning}
-                                                                        </Text>
-                                                                    )}
-                                                                </Column>
-                                                            )}
-                                                        </Column>
-                                                    );
-                                                })}
-                                            </Column>
-                                        </Column>
-                                    </Card>
-                                );
-                            })}
-                    </Column>
-                </Row>
+                    )}
+                </>
             )}
 
             {installResult !== null && summaryOpen && (
-                <div className={styles.summaryOverlay}>
+                <Column className={styles.summaryOverlay}>
                     <Card background={BG_SURFACE} border="neutral-alpha-weak" radius="l" padding="l"
                           className={styles.summaryModal}>
                         <Column gap="12">
                             <Row horizontal="between" vertical="center" gap="12">
-                                <Heading as="h2" variant="heading-strong-l">
-                                    Setup summary
-                                </Heading>
-                                <Button size="s" variant="secondary" onClick={() => setSummaryOpen(false)}>
-                                    Close
-                                </Button>
+                                <Heading as="h2" variant="heading-strong-l">Setup summary</Heading>
+                                <Button size="s" variant="secondary"
+                                        onClick={() => setSummaryOpen(false)}>Close</Button>
                             </Row>
-
-                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                Final step: mark setup complete and return to the main app.
-                            </Text>
-
+                            <Text onBackground="neutral-weak" variant="body-default-xs">Final step: mark setup complete
+                                and return to the main app.</Text>
                             <Line background={BG_NEUTRAL_ALPHA_WEAK}/>
-
-                            <Column gap="12">
-                                <Row gap="8" vertical="center">
-                                    <Badge background={BG_BRAND_ALPHA_WEAK} onBackground="neutral-strong">
-                                        Finalize
-                                    </Badge>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Admin account is already handled before setup. This only closes setup mode.
-                                    </Text>
-                                </Row>
-                            </Column>
-
-                            <Button
-                                size="m"
-                                variant="primary"
-                                disabled={finishing}
-                                onClick={() => void finishSetup()}
-                            >
+                            <Text onBackground="neutral-weak" variant="body-default-xs">Storage
+                                root: {storageRoot || defaultStorageRoot}</Text>
+                            <Text onBackground="neutral-weak"
+                                  variant="body-default-xs">Kavita: {kavitaMode === "managed" ? "Managed by Noona" : kavitaBaseUrl || "External"}</Text>
+                            <Text onBackground="neutral-weak"
+                                  variant="body-default-xs">Komf: {komfMode === "managed" ? "Managed by Noona" : komfBaseUrl || "External"}</Text>
+                            <Button size="m" variant="primary" disabled={finishing} onClick={() => void finishSetup()}>
                                 {finishing ? "Finishing..." : "Finish setup and continue"}
                             </Button>
-                            {finishError && (
-                                <Text onBackground="danger-strong" variant="body-default-xs">
-                                    {finishError}
-                                </Text>
-                            )}
+                            {finishError &&
+                                <Text onBackground="danger-strong" variant="body-default-xs">{finishError}</Text>}
                         </Column>
                     </Card>
-                </div>
+                </Column>
             )}
         </Column>
     );

@@ -1,6 +1,6 @@
 # Portal Service Guide
 
-## Runtime lifecycle (`initPortal.mjs`)
+## Runtime lifecycle (`app/portalRuntime.mjs`)
 
 1. **Configuration** - `safeLoadPortalConfig` merges process environment variables with overrides and validates required
    values before boot.
@@ -12,7 +12,7 @@
 4. **Server start** - `startPortalServer` creates the Express app and listens on `config.port`.
 5. **Shutdown path** - `stopPortal` closes HTTP, destroys Discord, and clears runtime references.
 
-## Configuration and environment (`shared/config.mjs`)
+## Configuration and environment (`config/portalConfig.mjs`)
 
 - Required values: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`, `KAVITA_BASE_URL`, `KAVITA_API_KEY`,
   `VAULT_BASE_URL`, and either `VAULT_ACCESS_TOKEN` or `VAULT_API_TOKEN`.
@@ -23,28 +23,28 @@
 
 ## Discord structure
 
-- `shared/discordClient.mjs` is a compatibility export for `shared/discord/client.mjs`.
-- `shared/discord/commandSynchronizer.mjs` performs boot sync by clearing current-app global commands, clearing guild
+- `discord/client.mjs` wires Discord login, interaction handling, and role assignment.
+- `discord/commandSynchronizer.mjs` performs boot sync by clearing current-app global commands, clearing guild
   slash commands, and re-registering current definitions.
-- `shared/discord/interactionRouter.mjs` routes interactions and applies permission denials and fallback error replies.
-- `shared/roleManager.mjs` enforces `REQUIRED_GUILD_ID` and `REQUIRED_ROLE_<COMMAND>`.
+- `discord/interactionRouter.mjs` routes interactions and applies permission denials and fallback error replies.
+- `discord/roleManager.mjs` enforces `REQUIRED_GUILD_ID` and `REQUIRED_ROLE_<COMMAND>`.
 
 ## Slash command structure
 
-- `shared/discordCommands.mjs` is a compatibility export for `shared/commands/index.mjs`.
-- `shared/commands/` holds one module per command (`ding`, `join`, `scan`, `search`) plus shared helpers in
-  `shared/commands/utils.mjs`.
+- `commands/` holds one module per command (`ding`, `join`, `scan`, `search`) plus shared helpers in
+  `commands/utils.mjs`.
 - Command factories receive dependencies (`discord`, `getDiscord`, `kavita`, `vault`, `onboardingStore`,
   `joinDefaults`) for
   testability.
 
 ## HTTP and persistence modules
 
-- `shared/portalApp.mjs` exposes `/health`, `/api/portal/join-options`, `/api/portal/onboard`, and
+- `app/createPortalApp.mjs` assembles the Express app and server wrapper.
+- `routes/registerPortalRoutes.mjs` exposes `/health`, `/api/portal/join-options`, `/api/portal/onboard`, and
   `/api/portal/tokens/consume`.
-- `shared/onboardingStore.mjs` manages token storage and redemption.
-- `shared/vaultClient.mjs` handles Vault secret read/write/delete and portal credential storage.
-- `shared/kavitaClient.mjs` handles Kavita invite/update/reset-password user flows plus library and title operations.
+- `storage/onboardingStore.mjs` manages token storage and redemption.
+- `clients/vaultClient.mjs` handles Vault secret read/write/delete and portal credential storage.
+- `clients/kavitaClient.mjs` handles Kavita invite/update/reset-password user flows plus library and title operations.
 
 ## npm scripts
 

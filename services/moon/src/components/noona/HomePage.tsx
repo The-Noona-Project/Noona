@@ -55,16 +55,16 @@ export function HomePage() {
                 <Column maxWidth="l" horizontal="center" gap="24" paddingY="24">
                     <Column gap="8" horizontal="center" align="center">
                         <Heading variant="display-strong-s" wrap="balance">
-                            Noona Library
+                            Noona Moon
                         </Heading>
                         <Text onBackground="neutral-weak" wrap="balance">
-                            Titles tracked by Raven. Open a title to see downloaded files and timestamps.
+                            Your Noona command deck for Raven libraries, download activity, and stack controls.
                         </Text>
                     </Column>
 
                     <Row gap="12" style={{flexWrap: "wrap"}}>
                         <Button variant="primary" onClick={() => router.push("/libraries")}>
-                            Open library
+                            Open libraries
                         </Button>
                         <Button variant="secondary" onClick={() => router.push("/downloads")}>
                             Open downloads

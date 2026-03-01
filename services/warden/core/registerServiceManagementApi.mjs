@@ -5,7 +5,7 @@ export function registerServiceManagementApi(context = {}) {
         api,
         appendHistoryEntry,
         applyEnvOverrides,
-        applyVaultDataMountForService,
+        applyStorageMountsForService,
         buildEffectiveServiceDescriptor,
         cloneEnvConfig,
         cloneMeta,
@@ -129,7 +129,7 @@ export function registerServiceManagementApi(context = {}) {
 
         const dockerClient = await ensureDockerConnection();
         const installOverridesByName = options?.installOverridesByName;
-        const effectiveService = await applyVaultDataMountForService(service, {
+        const effectiveService = await applyStorageMountsForService(service, {
             dockerClient,
             installOverridesByName,
         });

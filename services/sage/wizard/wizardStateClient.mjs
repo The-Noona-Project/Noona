@@ -276,7 +276,7 @@ const DEFAULT_STEP_SERVICE_MAP = {
         'noona-moon',
     ],
     portal: ['noona-portal'],
-    raven: ['noona-raven'],
+    raven: ['noona-raven', 'kavita', 'komf'],
 }
 
 const mapInstallationStatusToWizard = (status) => {

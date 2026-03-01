@@ -7,7 +7,7 @@ import {
     listApplicationCommands,
     resolveDiscordCommandConfig,
     summarizeCommandInventory,
-} from '../shared/discord/commandInspector.mjs';
+} from '../discord/commandInspector.mjs';
 
 test('resolveDiscordCommandConfig only requires Discord credentials', () => {
     const config = resolveDiscordCommandConfig({
@@ -99,4 +99,3 @@ test('formatCommandInventory prints a readable report', () => {
     assert.match(report, /\/ding :: Health check/);
     assert.match(report, /\/join :: Onboard member/);
 });
-

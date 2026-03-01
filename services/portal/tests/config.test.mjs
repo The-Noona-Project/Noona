@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {safeLoadPortalConfig} from '../shared/config.mjs';
+import {safeLoadPortalConfig} from '../config/portalConfig.mjs';
 
 const REQUIRED_ENV = {
     DISCORD_BOT_TOKEN: 'bot-token',

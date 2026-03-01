@@ -17,6 +17,16 @@ import {
     waitForHealthyStatus,
 } from '../docker/dockerUtilties.mjs';
 import {
+    buildNoonaStorageLayout,
+    describeNoonaStorageLayout,
+    isLikelyNamedDockerVolume,
+    normalizeContainerPath,
+    normalizePathValue,
+    normalizeVaultFolderName,
+    resolveNoonaDataRoot,
+    toAbsoluteHostPath,
+} from '../docker/storageLayout.mjs';
+import {
     isDebugEnabled as isLoggerDebugEnabled,
     log,
     setDebug as setLoggerDebug,
@@ -44,9 +54,7 @@ const describeSocketReference = (value) => {
     return `${prefix} ${value}`;
 };
 
-const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const DEFAULT_VAULT_DATA_FOLDER_NAME = 'vault';
-const DEFAULT_RAVEN_DATA_FOLDER_NAME = 'raven';
 const RAVEN_CONTAINER_PATHS = new Set(['/kavita-data', '/data', '/app/downloads', '/downloads']);
 const VAULT_REDIS_HOST_MOUNT_PATH_KEY = 'VAULT_REDIS_HOST_MOUNT_PATH';
 const VAULT_MONGO_HOST_MOUNT_PATH_KEY = 'VAULT_MONGO_HOST_MOUNT_PATH';
@@ -186,66 +194,6 @@ function parseEnvEntries(entries = []) {
     }
 
     return envMap;
-}
-
-function normalizePathValue(value) {
-    return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeContainerPath(value) {
-    const normalized = normalizePathValue(value).replace(/\\/g, '/');
-    if (!normalized) {
-        return '';
-    }
-    return normalized.replace(/\/+$/, '') || '/';
-}
-
-function isWindowsAbsolutePath(value) {
-    return WINDOWS_DRIVE_PATH_PATTERN.test(value);
-}
-
-function toAbsoluteHostPath(value, {cwd = process.cwd()} = {}) {
-    const trimmed = normalizePathValue(value);
-    if (!trimmed) {
-        return null;
-    }
-
-    if (isWindowsAbsolutePath(trimmed) || path.isAbsolute(trimmed)) {
-        return path.normalize(trimmed);
-    }
-
-    return path.normalize(path.resolve(cwd, trimmed));
-}
-
-function isLikelyNamedDockerVolume(source) {
-    const trimmed = normalizePathValue(source);
-    if (!trimmed) {
-        return true;
-    }
-
-    if (trimmed.startsWith('.')) {
-        return false;
-    }
-
-    if (isWindowsAbsolutePath(trimmed) || path.isAbsolute(trimmed)) {
-        return false;
-    }
-
-    return !trimmed.includes('/') && !trimmed.includes('\\');
-}
-
-function normalizeVaultFolderName(value, fallback = DEFAULT_VAULT_DATA_FOLDER_NAME) {
-    const trimmed = normalizePathValue(value);
-    if (!trimmed) {
-        return fallback;
-    }
-
-    if (trimmed === '.' || trimmed === '..' || trimmed.includes('/') || trimmed.includes('\\')) {
-        return fallback;
-    }
-
-    const cleaned = trimmed.replace(/[:*?"<>|]/g, '').trim();
-    return cleaned || fallback;
 }
 
 function upsertEnvEntry(entries, key, value) {
@@ -396,6 +344,7 @@ export function createWarden(options = {}) {
         dockerSocketDetector = defaultDockerSocketDetector,
         dockerFactory: dockerFactoryOption,
         fs: fsOption,
+        storageLayoutBootstrap = true,
         logLimit: logLimitOption,
         fetchImpl = fetch,
         wizardState: wizardStateOption = {},
@@ -440,11 +389,14 @@ export function createWarden(options = {}) {
         'noona-moon',
         'noona-portal',
         'noona-raven',
+        'kavita',
+        'komf',
         'noona-oracle',
     ];
     const minimalServiceNames = ['noona-sage', 'noona-moon'];
     const dependencyGraph = new Map([
         ['noona-vault', ['noona-mongo', 'noona-redis']],
+        ['kavita', ['noona-raven']],
     ]);
     const requiredServices = ['noona-mongo', 'noona-redis', 'noona-vault'];
     const requiredServiceSet = new Set(requiredServices);
@@ -749,7 +701,7 @@ export function createWarden(options = {}) {
 
         const envMap = parseEnvArray(inspection?.Config?.Env || []);
         const appData = typeof envMap.APPDATA === 'string' ? envMap.APPDATA.trim() : '';
-        const defaultDestinations = new Set(['/kavita-data', '/data', '/app/downloads']);
+        const defaultDestinations = new Set(['/kavita-data', '/data', '/app/downloads', '/downloads']);
         if (appData && appData.startsWith('/')) {
             defaultDestinations.add(appData);
         }
@@ -764,54 +716,6 @@ export function createWarden(options = {}) {
             }))
             .filter((mount) => mount.destination && defaultDestinations.has(mount.destination));
     };
-
-    const hasNoonaWorkspaceMarkers = (candidateRoot) => {
-        if (typeof fsModule?.existsSync !== 'function') {
-            return false;
-        }
-
-        try {
-            return fsModule.existsSync(path.join(candidateRoot, 'services', 'raven'));
-        } catch {
-            return false;
-        }
-    };
-
-    const resolveNoonaWorkspaceRoot = () => {
-        const seen = new Set();
-        const candidates = [];
-
-        const pushCandidate = (candidate) => {
-            const trimmed = normalizePathValue(candidate);
-            if (!trimmed) {
-                return;
-            }
-
-            const normalized = path.normalize(trimmed);
-            if (seen.has(normalized)) {
-                return;
-            }
-
-            seen.add(normalized);
-            candidates.push(normalized);
-        };
-
-        pushCandidate(env.NOONA_ROOT_DIR);
-        pushCandidate(env.NOONA_DATA_DIR);
-        pushCandidate(process.cwd());
-        pushCandidate(path.resolve(process.cwd(), '..'));
-        pushCandidate(path.resolve(process.cwd(), '..', '..'));
-
-        for (const candidate of candidates) {
-            if (hasNoonaWorkspaceMarkers(candidate)) {
-                return candidate;
-            }
-        }
-
-        return candidates[0] || path.resolve(process.cwd());
-    };
-
-    const defaultRavenHostMountPath = path.join(resolveNoonaWorkspaceRoot(), DEFAULT_RAVEN_DATA_FOLDER_NAME);
 
     const isLikelyRavenContainerPath = (candidate, appData = '') => {
         const normalizedCandidate = normalizeContainerPath(candidate).toLowerCase();
@@ -831,6 +735,40 @@ export function createWarden(options = {}) {
         return false;
     };
 
+    const resolveSharedStorageRoot = (installOverridesByName) => {
+        const candidates = [];
+
+        const appendCandidate = (value) => {
+            const trimmed = normalizePathValue(value);
+            if (trimmed) {
+                candidates.push(trimmed);
+            }
+        };
+
+        const sharedServiceNames = ['noona-vault', 'noona-raven', 'kavita', 'komf'];
+        for (const service of sharedServiceNames) {
+            if (installOverridesByName instanceof Map) {
+                const installEnv = installOverridesByName.get(service);
+                if (installEnv && typeof installEnv === 'object') {
+                    appendCandidate(installEnv.NOONA_DATA_ROOT);
+                }
+            }
+
+            const runtimeEnv = resolveRuntimeConfig(service).env;
+            appendCandidate(runtimeEnv?.NOONA_DATA_ROOT);
+        }
+
+        appendCandidate(env.NOONA_DATA_ROOT);
+        appendCandidate(env.NOONA_ROOT_DIR);
+        appendCandidate(env.NOONA_DATA_DIR);
+
+        return resolveNoonaDataRoot({
+            candidate: candidates[0] ?? null,
+            env,
+            cwd: process.cwd(),
+        });
+    };
+
     const resolveRavenHostMountFromEnv = (envMap = {}, options = {}) => {
         const appData = normalizePathValue(envMap?.APPDATA);
         const rawMount = normalizePathValue(envMap?.KAVITA_DATA_MOUNT);
@@ -846,17 +784,18 @@ export function createWarden(options = {}) {
         return null;
     };
 
-    const resolveRavenHostMountFromInstallOverrides = (installOverridesByName) => {
-        if (!(installOverridesByName instanceof Map)) {
-            return null;
+    const resolveRavenContainerMountPath = (envMap = {}, fallback = '/downloads') => {
+        const appData = normalizePathValue(envMap?.APPDATA);
+        if (appData && isLikelyRavenContainerPath(appData, appData)) {
+            return normalizeContainerPath(appData);
         }
 
-        const ravenOverrides = installOverridesByName.get('noona-raven');
-        if (!ravenOverrides || typeof ravenOverrides !== 'object') {
-            return null;
+        const rawMount = normalizePathValue(envMap?.KAVITA_DATA_MOUNT);
+        if (rawMount && isLikelyRavenContainerPath(rawMount, appData)) {
+            return normalizeContainerPath(rawMount);
         }
 
-        return resolveRavenHostMountFromEnv(ravenOverrides, {cwd: process.cwd()});
+        return normalizeContainerPath(fallback) || '/downloads';
     };
 
     const resolveVaultDataFolderName = (installOverridesByName) => {
@@ -880,23 +819,57 @@ export function createWarden(options = {}) {
         return normalizeVaultFolderName(fromProcessEnv || DEFAULT_VAULT_DATA_FOLDER_NAME);
     };
 
-    const resolveExplicitVaultHostMountPath = ({envKey, installOverridesByName} = {}) => {
-        if (!envKey) {
+    const buildStorageLayoutForSelection = (installOverridesByName) =>
+        buildNoonaStorageLayout(resolveSharedStorageRoot(installOverridesByName), {
+            vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
+        });
+
+    const ensureStorageLayoutDirectories = (storageLayout) => {
+        if (storageLayoutBootstrap !== true || !storageLayout || typeof fsModule?.mkdirSync !== 'function') {
+            return;
+        }
+
+        const targets = new Set();
+        targets.add(storageLayout.root);
+
+        for (const folders of Object.values(storageLayout.services || {})) {
+            for (const folder of Object.values(folders || {})) {
+                if (folder?.hostPath) {
+                    targets.add(folder.hostPath);
+                }
+            }
+        }
+
+        for (const target of targets) {
+            try {
+                fsModule.mkdirSync(target, {recursive: true});
+            } catch (error) {
+                logger.warn?.(
+                    `[${serviceName}] Failed to ensure storage folder ${target}: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`,
+                );
+            }
+        }
+    };
+
+    const resolveExplicitServiceHostMountPath = ({serviceName, envKey, installOverridesByName} = {}) => {
+        if (!serviceName || !envKey) {
             return null;
         }
 
         if (installOverridesByName instanceof Map) {
-            const installVaultEnv = installOverridesByName.get('noona-vault');
-            if (installVaultEnv && typeof installVaultEnv === 'object') {
-                const fromInstall = normalizePathValue(installVaultEnv[envKey]);
+            const installEnv = installOverridesByName.get(serviceName);
+            if (installEnv && typeof installEnv === 'object') {
+                const fromInstall = normalizePathValue(installEnv[envKey]);
                 if (fromInstall) {
                     return toAbsoluteHostPath(fromInstall, {cwd: process.cwd()});
                 }
             }
         }
 
-        const runtimeVaultEnv = resolveRuntimeConfig('noona-vault').env;
-        const fromRuntime = normalizePathValue(runtimeVaultEnv?.[envKey]);
+        const runtimeEnv = resolveRuntimeConfig(serviceName).env;
+        const fromRuntime = normalizePathValue(runtimeEnv?.[envKey]);
         if (fromRuntime) {
             return toAbsoluteHostPath(fromRuntime, {cwd: process.cwd()});
         }
@@ -904,10 +877,15 @@ export function createWarden(options = {}) {
         return null;
     };
 
-    const resolveRavenHostMountForVaultData = async (dockerClient, installOverridesByName) => {
-        const fromInstall = resolveRavenHostMountFromInstallOverrides(installOverridesByName);
-        if (fromInstall) {
-            return fromInstall;
+    const resolveRavenHostMountPath = async (dockerClient, installOverridesByName, fallbackHostPath) => {
+        const installRavenEnv = installOverridesByName instanceof Map
+            ? installOverridesByName.get('noona-raven')
+            : null;
+        if (installRavenEnv && typeof installRavenEnv === 'object') {
+            const fromInstall = resolveRavenHostMountFromEnv(installRavenEnv, {cwd: process.cwd()});
+            if (fromInstall) {
+                return fromInstall;
+            }
         }
 
         const runtimeRavenEnv = resolveRuntimeConfig('noona-raven').env;
@@ -925,52 +903,123 @@ export function createWarden(options = {}) {
             }
         }
 
-        return path.normalize(defaultRavenHostMountPath);
+        return path.normalize(fallbackHostPath);
     };
 
-    const applyVaultDataMountForService = async (service, {dockerClient, installOverridesByName} = {}) => {
+    const applyStorageMountsForService = async (service, {dockerClient, installOverridesByName} = {}) => {
         if (!service?.name) {
             return service;
         }
 
-        const mountSpecByService = {
-            'noona-redis': {
-                destination: '/data',
-                subdir: 'redis',
-                vaultMountEnvKey: VAULT_REDIS_HOST_MOUNT_PATH_KEY,
-            },
-            'noona-mongo': {
-                destination: '/data/db',
-                subdir: 'mongo',
-                vaultMountEnvKey: VAULT_MONGO_HOST_MOUNT_PATH_KEY,
-            },
-        };
+        const storageLayout = buildStorageLayoutForSelection(installOverridesByName);
+        ensureStorageLayoutDirectories(storageLayout);
+        const currentEnv = parseEnvEntries(service.env);
 
-        const mountSpec = mountSpecByService[service.name];
-        if (!mountSpec) {
+        if (service.name === 'noona-redis' || service.name === 'noona-mongo') {
+            const destination = service.name === 'noona-redis' ? '/data' : '/data/db';
+            const explicitHostMount = resolveExplicitServiceHostMountPath({
+                serviceName: 'noona-vault',
+                envKey: service.name === 'noona-redis'
+                    ? VAULT_REDIS_HOST_MOUNT_PATH_KEY
+                    : VAULT_MONGO_HOST_MOUNT_PATH_KEY,
+                installOverridesByName,
+            });
+            const hostMount = explicitHostMount || storageLayout.services[service.name]?.data?.hostPath;
+            if (!hostMount) {
+                return service;
+            }
+
+            const bind = `${hostMount}:${destination}`;
+            return {
+                ...service,
+                env: upsertEnvEntry(service.env, 'VAULT_DATA_FOLDER', resolveVaultDataFolderName(installOverridesByName)),
+                volumes: upsertBindMount(service.volumes, destination, bind),
+            };
+        }
+
+        if (service.name === 'noona-raven') {
+            const fallbackMount = storageLayout.services['noona-raven']?.downloads;
+            if (!fallbackMount) {
+                return service;
+            }
+
+            const hostMount = await resolveRavenHostMountPath(
+                dockerClient,
+                installOverridesByName,
+                fallbackMount.hostPath,
+            );
+            const containerPath = resolveRavenContainerMountPath(currentEnv, fallbackMount.containerPath);
+            const bind = `${hostMount}:${containerPath}`;
+
+            return {
+                ...service,
+                env: upsertEnvEntry(
+                    upsertEnvEntry(service.env, 'APPDATA', containerPath),
+                    'KAVITA_DATA_MOUNT',
+                    containerPath,
+                ),
+                volumes: upsertBindMount(service.volumes, containerPath, bind),
+            };
+        }
+
+        if (service.name === 'kavita') {
+            const defaultLayout = storageLayout.services.kavita;
+            if (!defaultLayout) {
+                return service;
+            }
+
+            const configHostMount = resolveExplicitServiceHostMountPath({
+                serviceName: 'kavita',
+                envKey: 'KAVITA_CONFIG_HOST_MOUNT_PATH',
+                installOverridesByName,
+            }) || defaultLayout.config.hostPath;
+            const libraryHostMount = resolveExplicitServiceHostMountPath({
+                serviceName: 'kavita',
+                envKey: 'KAVITA_LIBRARY_HOST_MOUNT_PATH',
+                installOverridesByName,
+            }) || defaultLayout.manga.hostPath;
+
+            return {
+                ...service,
+                volumes: upsertBindMount(
+                    upsertBindMount(service.volumes, defaultLayout.config.containerPath, `${configHostMount}:${defaultLayout.config.containerPath}`),
+                    defaultLayout.manga.containerPath,
+                    `${libraryHostMount}:${defaultLayout.manga.containerPath}`,
+                ),
+            };
+        }
+
+        if (service.name === 'komf') {
+            const defaultLayout = storageLayout.services.komf;
+            if (!defaultLayout) {
+                return service;
+            }
+
+            const configHostMount = resolveExplicitServiceHostMountPath({
+                serviceName: 'komf',
+                envKey: 'KOMF_CONFIG_HOST_MOUNT_PATH',
+                installOverridesByName,
+            }) || defaultLayout.config.hostPath;
+            const envWithDefaults = currentEnv.KOMF_KAVITA_BASE_URI
+                ? service.env
+                : upsertEnvEntry(service.env, 'KOMF_KAVITA_BASE_URI', 'http://kavita:5000');
+
+            return {
+                ...service,
+                env: envWithDefaults,
+                volumes: upsertBindMount(
+                    service.volumes,
+                    defaultLayout.config.containerPath,
+                    `${configHostMount}:${defaultLayout.config.containerPath}`,
+                ),
+            };
+        }
+
+        if (service.name === 'noona-vault') {
             return service;
         }
 
-        const folderName = resolveVaultDataFolderName(installOverridesByName);
-        const explicitHostMount = resolveExplicitVaultHostMountPath({
-            envKey: mountSpec.vaultMountEnvKey,
-            installOverridesByName,
-        });
-        let hostMount = explicitHostMount;
-        if (!hostMount) {
-            const ravenHostMount = await resolveRavenHostMountForVaultData(dockerClient, installOverridesByName);
-            const noonaRoot = path.dirname(ravenHostMount);
-            const vaultRoot = path.join(noonaRoot, folderName);
-            hostMount = path.join(vaultRoot, mountSpec.subdir);
-        }
-
-        const bind = `${hostMount}:${mountSpec.destination}`;
-
-        return {
-            ...service,
-            env: upsertEnvEntry(service.env, 'VAULT_DATA_FOLDER', folderName),
-            volumes: upsertBindMount(service.volumes, mountSpec.destination, bind),
-        };
+        return service;
     };
 
     const wipePathWithFs = async (targetPath) => {
@@ -1805,7 +1854,9 @@ export function createWarden(options = {}) {
 
                     const inspected = await client.getContainer(kavitaContainer.Id).inspect();
                     const mounts = inspected?.Mounts || [];
-                    const dataMount = mounts.find((mount) => mount?.Destination === '/data');
+                    const dataMount =
+                        mounts.find((mount) => mount?.Destination === '/manga') ||
+                        mounts.find((mount) => mount?.Destination === '/data');
 
                     if (dataMount?.Source) {
                         const rawName = Array.isArray(kavitaContainer?.Names)
@@ -1825,7 +1876,7 @@ export function createWarden(options = {}) {
 
                         const suffix = details.length ? ` (${details.join(', ')})` : '';
 
-                        logger.log?.(`[${serviceName}] Kavita data mount detected at ${dataMount.Source}${suffix}.`);
+                        logger.log?.(`[${serviceName}] Kavita library mount detected at ${dataMount.Source}${suffix}.`);
 
                         return {
                             mountPath: dataMount.Source,
@@ -1836,7 +1887,7 @@ export function createWarden(options = {}) {
                     }
 
                     logger.warn?.(
-                        `[${serviceName}] Kavita container found on ${contextLabel} but /data mount was not detected.`,
+                        `[${serviceName}] Kavita container found on ${contextLabel} but /manga or /data mount was not detected.`,
                     );
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
@@ -2467,6 +2518,15 @@ export function createWarden(options = {}) {
         BOOT_MODE,
     };
 
+    api.getStorageLayout = function getStorageLayout(options = {}) {
+        const installOverridesByName =
+            options?.installOverridesByName instanceof Map ? options.installOverridesByName : null;
+
+        return describeNoonaStorageLayout(resolveSharedStorageRoot(installOverridesByName), {
+            vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
+        });
+    };
+
     Object.defineProperty(api, 'DEBUG', {
         enumerable: true,
         get: () => runtimeDebug,
@@ -2491,7 +2551,7 @@ export function createWarden(options = {}) {
         api,
         appendHistoryEntry,
         applyEnvOverrides,
-        applyVaultDataMountForService,
+        applyStorageMountsForService,
         buildEffectiveServiceDescriptor,
         cloneEnvConfig,
         cloneMeta,

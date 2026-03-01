@@ -15,6 +15,7 @@ log streaming, and lifecycle APIs.
 - [HTTP API server](api/startWardenServer.mjs)
 - [Core descriptors](docker/noonaDockers.mjs)
 - [Addon descriptors](docker/addonDockers.mjs)
+- [Storage layout helpers](docker/storageLayout.mjs)
 - [Docker helpers](docker/dockerUtilties.mjs)
 - [Setup wizard helpers](setup/)
 - [Tests](tests/)
@@ -44,6 +45,7 @@ instead of blindly starting every registered service.
 
 - `GET /health` - Warden process health.
 - `GET /api/services` - service catalog + status.
+- `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
 - `POST /api/services/install` - install/start one or more services.
 - `GET /api/services/install/progress` - current installation timeline.
 - `GET /api/services/:name/logs` - buffered log output.
@@ -51,14 +53,15 @@ instead of blindly starting every registered service.
 
 ## Key Environment Variables
 
-| Variable           | Purpose                                        | Default                   |
-|--------------------|------------------------------------------------|---------------------------|
-| `DEBUG`            | Boot profile + log verbosity                   | `false`                   |
-| `WARDEN_API_PORT`  | Warden API listen port                         | `4001`                    |
-| `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links | `http://localhost`        |
-| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`   | `3000`                    |
-| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime          | `http://noona-vault:3005` |
-| `*_VAULT_TOKEN`    | Optional per-service token override            | generated in descriptors  |
+| Variable           | Purpose                                                                       | Default                                                   |
+|--------------------|-------------------------------------------------------------------------------|-----------------------------------------------------------|
+| `DEBUG`            | Boot profile + log verbosity                                                  | `false`                                                   |
+| `WARDEN_API_PORT`  | Warden API listen port                                                        | `4001`                                                    |
+| `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links                                | `http://localhost`                                        |
+| `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, Komf, and reserved service folders | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
+| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                  | `3000`                                                    |
+| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                         | `http://noona-vault:3005`                                 |
+| `*_VAULT_TOKEN`    | Optional per-service token override                                           | generated in descriptors                                  |
 
 ## Development Commands
 
@@ -70,8 +73,12 @@ instead of blindly starting every registered service.
 
 - Warden tracks service histories and buffered logs for diagnostics.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
+- Warden now resolves a shared Noona host root and pre-creates the expected tree before service launch. Redis and
+  Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
+  managed Kavita uses `kavita/config` plus the Raven download share, and managed Komf uses `komf/config`.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
+- Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.
 - The Portal descriptor in [docker/noonaDockers.mjs](docker/noonaDockers.mjs) now includes `PORTAL_JOIN_DEFAULT_ROLES`
   and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under

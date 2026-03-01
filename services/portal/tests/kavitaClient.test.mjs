@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import createKavitaClient from '../shared/kavitaClient.mjs';
+import createKavitaClient from '../clients/kavitaClient.mjs';
 
 test('createUser composes Kavita invite, update, and reset-password calls', async () => {
     const calls = [];

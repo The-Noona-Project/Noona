@@ -309,6 +309,17 @@ export const startWardenServer = ({
             return;
         }
 
+        if (req.method === 'GET' && url.pathname === '/api/storage/layout') {
+            try {
+                const layout = await warden.getStorageLayout?.();
+                sendJson(res, 200, layout ?? {root: null, services: []});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to load storage layout: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to load storage layout.'});
+            }
+            return;
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/services/install') {
             let body;
 

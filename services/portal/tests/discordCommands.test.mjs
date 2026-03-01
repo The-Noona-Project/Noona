@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-import createPortalSlashCommands from '../shared/discordCommands.mjs';
+import createPortalSlashCommands from '../commands/index.mjs';
 
 const createJoinInteraction = ({
                                    username = 'reader',

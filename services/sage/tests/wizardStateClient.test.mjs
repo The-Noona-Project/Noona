@@ -42,6 +42,34 @@ test('trackServiceStatus prefers layer-aware messages for step detail', async ()
     assert.ok(detailUpdate.detail?.includes('Downloading'))
 })
 
+test('reset activates the library-services step for managed Kavita and Komf selections', async () => {
+    const writes = []
+    const stateStore = {current: createDefaultWizardState()}
+    const client = {
+        async loadState() {
+            return stateStore.current
+        },
+        async writeState(nextState) {
+            writes.push(nextState)
+            stateStore.current = nextState
+            return nextState
+        },
+        async applyUpdates(nextUpdates) {
+            return {state: stateStore.current, changed: Array.isArray(nextUpdates) && nextUpdates.length > 0}
+        },
+    }
+
+    const publisher = createWizardStatePublisher({client})
+    await publisher.reset(['kavita', 'komf'])
+
+    assert.ok(writes.length > 0, 'Expected the reset to persist wizard state')
+    const latest = writes[writes.length - 1]
+    assert.equal(latest.foundation.status, 'skipped')
+    assert.equal(latest.portal.status, 'skipped')
+    assert.equal(latest.raven.status, 'in-progress')
+    assert.equal(latest.verification.status, 'pending')
+})
+
 test('createWizardStateClient retries the next Vault endpoint after a timeout', async () => {
     const state = createDefaultWizardState()
     const calls = []

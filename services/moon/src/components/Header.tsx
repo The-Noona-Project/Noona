@@ -5,7 +5,7 @@ import {useEffect, useState} from "react";
 
 import {Fade, Flex, Line, Row, ToggleButton} from "@once-ui-system/core";
 
-import {display, person, routes} from "@/resources";
+import {moonRoutes, moonShell} from "@/resources";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./Header.module.scss";
 
@@ -37,8 +37,6 @@ const TimeDisplay: React.FC<TimeDisplayProps> = ({locale}) => {
 
     return <>{currentTime}</>;
 };
-
-export default TimeDisplay;
 
 export const Header = () => {
     const pathname = usePathname() ?? "";
@@ -103,7 +101,9 @@ export const Header = () => {
                 }}
             >
                 <Row paddingLeft="12" fillWidth vertical="center" textVariant="body-default-s">
-                    {display.location && <Row s={{hide: true}}>{person.location}</Row>}
+                    <Row s={{hide: true}} onBackground="neutral-weak">
+                        {moonShell.mastheadLabel}
+                    </Row>
                 </Row>
                 <Row fillWidth horizontal="center">
                     <Row
@@ -116,10 +116,10 @@ export const Header = () => {
                         zIndex={1}
                     >
                         <Row gap="4" vertical="center" textVariant="body-default-s" suppressHydrationWarning>
-                            {showMainNav && routes["/"] && (
+                            {showMainNav && moonRoutes["/"] && (
                                 <ToggleButton prefixIcon="home" href="/" selected={pathname === "/"}/>
                             )}
-                            {showMainNav && routes["/libraries"] && (
+                            {showMainNav && moonRoutes["/libraries"] && (
                                 <>
                                     <Row s={{hide: true}}>
                                         <ToggleButton
@@ -138,7 +138,7 @@ export const Header = () => {
                                     </Row>
                                 </>
                             )}
-                            {showMainNav && routes["/downloads"] && (
+                            {showMainNav && moonRoutes["/downloads"] && (
                                 <>
                                     <Row s={{hide: true}}>
                                         <ToggleButton
@@ -157,7 +157,7 @@ export const Header = () => {
                                     </Row>
                                 </>
                             )}
-                            {showMainNav && routes["/settings"] && (
+                            {showMainNav && moonRoutes["/settings"] && (
                                 <>
                                     <Row s={{hide: true}}>
                                         <ToggleButton
@@ -176,7 +176,7 @@ export const Header = () => {
                                     </Row>
                                 </>
                             )}
-                            {routes["/setupwizard"] && showSetup && (
+                            {moonRoutes["/setupwizard"] && showSetup && (
                                 <>
                                     <Row s={{hide: true}}>
                                         <ToggleButton
@@ -195,7 +195,7 @@ export const Header = () => {
                                     </Row>
                                 </>
                             )}
-                            {display.themeSwitcher && (
+                            {moonShell.showThemeSwitcher && (
                                 <>
                                     <Line background="neutral-alpha-medium" vert maxHeight="24"/>
                                     <ThemeToggle/>
@@ -213,7 +213,7 @@ export const Header = () => {
                         gap="20"
                     >
                         <Flex s={{hide: true}}>
-                            {display.time && <TimeDisplay/>}
+                            {moonShell.showTime && <TimeDisplay/>}
                         </Flex>
                     </Flex>
                 </Flex>

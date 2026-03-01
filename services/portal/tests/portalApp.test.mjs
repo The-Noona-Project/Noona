@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-import {createPortalApp} from '../shared/portalApp.mjs';
+import {createPortalApp} from '../app/createPortalApp.mjs';
 
 const startServer = async app => new Promise(resolve => {
     const server = app.listen(0, '127.0.0.1', () => {

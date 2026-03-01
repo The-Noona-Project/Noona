@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Events} from 'discord.js';
 
-import {createDiscordClient} from '../shared/discordClient.mjs';
-import createPortalSlashCommands from '../shared/discordCommands.mjs';
+import {createDiscordClient} from '../discord/client.mjs';
+import createPortalSlashCommands from '../commands/index.mjs';
 
 class FakeClient extends EventEmitter {
     constructor() {

@@ -93,6 +93,45 @@ test('GET /api/services can include installed services when requested', async (t
     assert.deepEqual(calls, [{ includeInstalled: true }]);
 });
 
+test('GET /api/storage/layout returns the Warden storage layout payload', async (t) => {
+    const warden = {
+        async getStorageLayout() {
+            return {
+                root: '/srv/noona',
+                services: [
+                    {
+                        service: 'noona-vault',
+                        folders: [
+                            {key: 'mongo', hostPath: '/srv/noona/vault/mongo', containerPath: '/data/db'},
+                            {key: 'redis', hostPath: '/srv/noona/vault/redis', containerPath: '/data'},
+                        ],
+                    },
+                ],
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/storage/layout`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        root: '/srv/noona',
+        services: [
+            {
+                service: 'noona-vault',
+                folders: [
+                    {key: 'mongo', hostPath: '/srv/noona/vault/mongo', containerPath: '/data/db'},
+                    {key: 'redis', hostPath: '/srv/noona/vault/redis', containerPath: '/data'},
+                ],
+            },
+        ],
+    });
+});
+
 test('POST /api/services/install returns results and status code for errors', async (t) => {
     const installCalls = [];
     const warden = {

@@ -30,8 +30,6 @@ COPY --from=builder /workspace/services/moon/.next ./.next
 COPY --from=builder /workspace/services/moon/public ./public
 COPY --from=builder /workspace/services/moon/next.config.mjs ./next.config.mjs
 COPY --from=builder /workspace/services/moon/scripts ./scripts
-COPY --from=builder /workspace/services/moon/src/app/blog/posts ./src/app/blog/posts
-COPY --from=builder /workspace/services/moon/src/app/work/projects ./src/app/work/projects
 
 EXPOSE 3000
 

@@ -17,7 +17,7 @@ import {
     ToastProvider,
     TransitionStyle,
 } from "@once-ui-system/core";
-import {dataStyle, style} from "../resources";
+import {moonDataStyle, moonTheme} from "../resources";
 import {iconLibrary} from "../resources/icons";
 import {NoonaSiteNotificationsProvider} from "./noona/SiteNotifications";
 
@@ -25,27 +25,27 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <LayoutProvider>
       <ThemeProvider
-        brand={style.brand as Schemes}
-        accent={style.accent as Schemes}
-        neutral={style.neutral as NeutralColor}
-        solid={style.solid as SolidType}
-        solidStyle={style.solidStyle as SolidStyle}
-        border={style.border as BorderStyle}
-        surface={style.surface as SurfaceStyle}
-        transition={style.transition as TransitionStyle}
-        scaling={style.scaling as ScalingSize}
+          brand={moonTheme.brand as Schemes}
+          accent={moonTheme.accent as Schemes}
+          neutral={moonTheme.neutral as NeutralColor}
+          solid={moonTheme.solid as SolidType}
+          solidStyle={moonTheme.solidStyle as SolidStyle}
+          border={moonTheme.border as BorderStyle}
+          surface={moonTheme.surface as SurfaceStyle}
+          transition={moonTheme.transition as TransitionStyle}
+          scaling={moonTheme.scaling as ScalingSize}
       >
         <DataThemeProvider
-          variant={dataStyle.variant as ChartVariant}
-          mode={dataStyle.mode as ChartMode}
-          height={dataStyle.height}
+            variant={moonDataStyle.variant as ChartVariant}
+            mode={moonDataStyle.mode as ChartMode}
+            height={moonDataStyle.height}
           axis={{
-              stroke: dataStyle.axis.stroke,
+              stroke: moonDataStyle.axis.stroke,
           }}
           tick={{
-            fill: dataStyle.tick.fill,
-            fontSize: dataStyle.tick.fontSize,
-              line: dataStyle.tick.line,
+              fill: moonDataStyle.tick.fill,
+              fontSize: moonDataStyle.tick.fontSize,
+              line: moonDataStyle.tick.line,
           }}
         >
           <ToastProvider>

@@ -26,11 +26,11 @@ export const DEFAULT_WIZARD_STEP_METADATA = Object.freeze([
     },
     {
         id: 'raven',
-        title: 'Raven deployment',
-        description: 'Launch Raven and monitor installer progress.',
+        title: 'Library services',
+        description: 'Launch Raven, Kavita, and Komf and monitor installer progress.',
         optional: false,
         icon: 'raven',
-        capabilities: Object.freeze(['raven', 'deployment', 'monitoring']),
+        capabilities: Object.freeze(['raven', 'kavita', 'komf', 'deployment', 'monitoring']),
     },
     {
         id: 'verification',

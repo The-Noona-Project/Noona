@@ -19,12 +19,14 @@ function buildWarden(options = {}) {
     const {
         dockerInstance = createStubDocker(),
         hostDockerSockets = [],
+        storageLayoutBootstrap = false,
         ...rest
     } = options;
 
     return createWarden({
         dockerInstance,
         hostDockerSockets,
+        storageLayoutBootstrap,
         ...rest,
     });
 }
@@ -592,7 +594,7 @@ test('installServices merges environment overrides before starting services', as
     assert.ok(resultNames.includes('noona-sage'));
 });
 
-test('installServices mounts Redis and Mongo under a Vault folder next to Raven mount', async () => {
+test('installServices mounts Redis and Mongo under the shared Noona vault folder', async () => {
     const started = [];
     const dockerUtils = {
         ensureNetwork: async () => {
@@ -628,6 +630,7 @@ test('installServices mounts Redis and Mongo under a Vault folder next to Raven 
     const warden = buildWarden({
         dockerUtils,
         services,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
         dockerInstance: createStubDocker({
             listContainers: async () => [],
         }),
@@ -644,7 +647,7 @@ test('installServices mounts Redis and Mongo under a Vault folder next to Raven 
     assert.ok(redisStart, 'Redis should be started');
     assert.ok(mongoStart, 'Mongo should be started');
 
-    const expectedVaultRoot = path.join(path.dirname(path.normalize('/srv/noona/raven')), 'vault-store');
+    const expectedVaultRoot = path.join(path.normalize('/srv/noona'), 'vault-store');
     const expectedRedisMount = `${path.join(expectedVaultRoot, 'redis')}:/data`;
     const expectedMongoMount = `${path.join(expectedVaultRoot, 'mongo')}:/data/db`;
 
@@ -690,6 +693,7 @@ test('installServices respects explicit Redis and Mongo host mount folder overri
     const warden = buildWarden({
         dockerUtils,
         services,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
         dockerInstance: createStubDocker({
             listContainers: async () => [],
         }),
@@ -741,6 +745,7 @@ test('startService defaults Redis Vault folder name to "vault"', async () => {
     const warden = buildWarden({
         dockerUtils,
         services: {addon: {}, core: {}},
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
         dockerInstance: createStubDocker({
             getContainer: () => ({
                 inspect: async () => {
@@ -762,6 +767,139 @@ test('startService defaults Redis Vault folder name to "vault"', async () => {
     const mount = service.volumes.find((entry) => typeof entry === 'string' && entry.endsWith(':/data'));
     assert.ok(mount, 'Redis should include a /data bind mount');
     assert.match(mount, /vault[\\/]+redis:\/data$/);
+});
+
+test('installServices wires managed Kavita and Komf into the shared Noona storage root', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                env: [...(service.env || [])],
+                volumes: [...(service.volumes || [])],
+                user: service.user ?? null,
+                restartPolicy: service.restartPolicy ?? null,
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const services = {
+        addon: {
+            kavita: {name: 'kavita', image: 'jvmilazz0/kavita:latest', port: 5000, env: ['TZ=UTC']},
+            komf: {
+                name: 'komf',
+                image: 'sndxr/komf:latest',
+                port: 8085,
+                env: ['KOMF_KAVITA_BASE_URI=http://kavita:5000', 'KOMF_KAVITA_API_KEY='],
+                user: '1000:1000',
+                restartPolicy: {Name: 'unless-stopped'},
+            },
+            'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
+            'noona-mongo': {name: 'noona-mongo', image: 'mongo', port: 27017},
+        },
+        core: {
+            'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            'noona-raven': {name: 'noona-raven', image: 'raven'},
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.installServices([
+        {name: 'kavita'},
+        {name: 'komf', env: {KOMF_KAVITA_API_KEY: 'api-key'}},
+    ]);
+
+    const kavitaStart = started.find((entry) => entry.name === 'kavita');
+    const komfStart = started.find((entry) => entry.name === 'komf');
+    const ravenStart = started.find((entry) => entry.name === 'noona-raven');
+
+    assert.ok(kavitaStart, 'Kavita should be started');
+    assert.ok(komfStart, 'Komf should be started');
+    assert.ok(ravenStart, 'Raven should be started as part of the selected install set');
+
+    assert.ok(kavitaStart.volumes.includes(`${path.join('/srv/noona', 'kavita', 'config')}:/kavita/config`));
+    assert.ok(kavitaStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/manga`));
+    assert.ok(komfStart.volumes.includes(`${path.join('/srv/noona', 'komf', 'config')}:/config`));
+    assert.ok(ravenStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/downloads`));
+    assert.ok(ravenStart.env.includes('APPDATA=/downloads'));
+    assert.ok(ravenStart.env.includes('KAVITA_DATA_MOUNT=/downloads'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_BASE_URI=http://kavita:5000'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=api-key'));
+    assert.equal(komfStart.user, '1000:1000');
+    assert.deepEqual(komfStart.restartPolicy, {Name: 'unless-stopped'});
+});
+
+test('startService bootstraps the shared Noona storage tree before launching services', async () => {
+    const mkdirCalls = [];
+    const warden = buildWarden({
+        storageLayoutBootstrap: true,
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': {name: 'noona-sage', image: 'sage', port: 3004},
+            },
+        },
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        fs: {
+            mkdirSync(target, options) {
+                mkdirCalls.push({target, options});
+            },
+        },
+        dockerUtils: {
+            ensureNetwork: async () => {
+            },
+            attachSelfToNetwork: async () => {
+            },
+            containerExists: async () => false,
+            pullImageIfNeeded: async () => {
+            },
+            runContainerWithLogs: async (_service, _network, tracked) => {
+                tracked.add('noona-sage');
+            },
+            waitForHealthyStatus: async () => {
+            },
+        },
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.startService({name: 'noona-sage', image: 'sage', port: 3004});
+
+    const ensuredTargets = new Set(mkdirCalls.map((entry) => entry.target));
+    assert.ok(ensuredTargets.has(path.normalize('/srv/noona')));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'moon', 'logs'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'portal', 'logs'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'raven', 'downloads'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'sage', 'logs'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'vault', 'mongo'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'vault', 'redis'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'kavita', 'config'))));
+    assert.ok(ensuredTargets.has(path.normalize(path.join('/srv/noona', 'komf', 'config'))));
+
+    for (const call of mkdirCalls) {
+        assert.deepEqual(call.options, {recursive: true});
+    }
 });
 
 test('installServices reports invalid environment overrides', async () => {

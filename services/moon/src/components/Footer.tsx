@@ -1,4 +1,5 @@
 import {IconButton, Row, SmartLink, Text} from "@once-ui-system/core";
+import {moonSite} from "@/resources";
 import styles from "./Footer.module.scss";
 
 export const Footer = () => {
@@ -33,13 +34,11 @@ export const Footer = () => {
                 }}
             >
                 <Text variant="body-default-s" onBackground="neutral-strong">
-                    <Text onBackground="neutral-weak">(c) {currentYear} /</Text>
-                    <Text paddingX="4">Website built by Pax-kun</Text>
-                    <Text onBackground="neutral-weak">
-                        {/* Usage of this template requires attribution. Please don't remove the link to Once UI unless you have a Pro license. */}
-                        / Powered by{" "}
-                        <SmartLink href="https://once-ui.com/">Once UI</SmartLink>
+                    <Text onBackground="neutral-weak">(c) {currentYear}</Text>
+                    <Text paddingX="4">
+                        <SmartLink href={moonSite.repositoryUrl}>{moonSite.organization}</SmartLink>
                     </Text>
+                    <Text onBackground="neutral-weak">/ {moonSite.shortTitle} maintained by {moonSite.maintainer}</Text>
                 </Text>
                 <Row gap="16">
                     {links.map((item) => (
