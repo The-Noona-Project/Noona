@@ -5,7 +5,7 @@ FROM node:24-bookworm-slim AS ui-builder
 WORKDIR /workspace/services/kavita/UI/Web
 
 COPY services/kavita/UI/Web/package.json services/kavita/UI/Web/package-lock.json ./
-RUN npm ci --legacy-peer-deps
+RUN npm install --legacy-peer-deps
 
 COPY services/kavita/UI/Web/ ./
 RUN npm run prod
