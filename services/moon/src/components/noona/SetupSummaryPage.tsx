@@ -62,7 +62,7 @@ const FALLBACK_DESCRIPTIONS: Record<string, string> = {
     "noona-redis": "Redis stores live stack state such as sessions, wizard progress, and cache entries.",
     "noona-mongo": "Mongo stores Noona settings, users, metadata, and service data.",
     "noona-kavita": "Kavita is the reader and library server for your downloaded manga.",
-    komf: "Komf enriches Kavita titles with metadata and matching automation.",
+    "noona-komf": "Komf enriches Kavita titles with metadata and matching automation.",
 };
 const SERVICE_ORDER = [
     "noona-moon",
@@ -73,7 +73,7 @@ const SERVICE_ORDER = [
     "noona-portal",
     "noona-raven",
     "noona-kavita",
-    "komf",
+    "noona-komf",
 ] as const;
 const SERVICE_ORDER_INDEX = new Map<string, number>(
     SERVICE_ORDER.map((service, index) => [service, index]),

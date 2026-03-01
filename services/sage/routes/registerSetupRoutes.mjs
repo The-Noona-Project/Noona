@@ -6,7 +6,7 @@ import {createDefaultWizardState, resolveWizardStateOperation} from '../wizard/w
 
 const MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000'
 const MANAGED_KAVITA_SERVICE_ACCOUNT_KEY = 'setup.managedKavitaServiceAccount'
-const MANAGED_KAVITA_TARGET_SERVICES = Object.freeze(['noona-portal', 'noona-raven', 'komf'])
+const MANAGED_KAVITA_TARGET_SERVICES = Object.freeze(['noona-portal', 'noona-raven', 'noona-komf'])
 const MANAGED_KAVITA_READY_RETRIES = 20
 const MANAGED_KAVITA_READY_DELAY_MS = 1500
 
@@ -64,7 +64,7 @@ const resolveManagedKavitaEnvKey = (serviceName) => {
         case 'noona-portal':
         case 'noona-raven':
             return 'KAVITA_API_KEY'
-        case 'komf':
+        case 'noona-komf':
             return 'KOMF_KAVITA_API_KEY'
         default:
             return null
@@ -76,7 +76,7 @@ const resolveManagedKavitaBaseUrlKey = (serviceName) => {
         case 'noona-portal':
         case 'noona-raven':
             return 'KAVITA_BASE_URL'
-        case 'komf':
+        case 'noona-komf':
             return 'KOMF_KAVITA_BASE_URI'
         default:
             return null
@@ -98,7 +98,7 @@ const buildManagedKavitaEnvPatch = (serviceName, env, apiKey, baseUrl) => {
                 KAVITA_API_KEY: apiKey,
                 KAVITA_LIBRARY_ROOT: normalizeString(env.KAVITA_LIBRARY_ROOT) || '/manga',
             }
-        case 'komf':
+        case 'noona-komf':
             return {
                 ...env,
                 KOMF_KAVITA_BASE_URI: baseUrl,

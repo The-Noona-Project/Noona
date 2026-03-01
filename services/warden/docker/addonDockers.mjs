@@ -124,20 +124,20 @@ const rawList = [
         restartPolicy: {Name: 'unless-stopped'},
     },
     {
-        name: 'komf',
+        name: 'noona-komf',
         description: 'Managed Komf metadata helper wired to Kavita by default.',
         image: 'sndxr/komf:latest',
         port: 8085,
         internalPort: 8085,
         env: [
-            'SERVICE_NAME=komf',
+            'SERVICE_NAME=noona-komf',
             'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
             'KOMF_KAVITA_API_KEY=',
             'KOMF_LOG_LEVEL=INFO',
             'KOMF_CONFIG_HOST_MOUNT_PATH=',
         ],
         envConfig: [
-            createEnvField('SERVICE_NAME', 'komf', {
+            createEnvField('SERVICE_NAME', 'noona-komf', {
                 label: 'Service Name',
                 readOnly: true,
                 description: 'Identifier used when naming the Komf container.',

@@ -769,7 +769,7 @@ test('startService defaults Redis Vault folder name to "vault"', async () => {
     assert.match(mount, /vault[\\/]+redis:\/data$/);
 });
 
-test('installServices wires managed Kavita and Komf into the shared Noona storage root', async () => {
+test('installServices wires managed Kavita and noona-komf into the shared Noona storage root', async () => {
     const started = [];
     const dockerUtils = {
         ensureNetwork: async () => {
@@ -796,8 +796,8 @@ test('installServices wires managed Kavita and Komf into the shared Noona storag
     const services = {
         addon: {
             'noona-kavita': {name: 'noona-kavita', image: 'jvmilazz0/kavita:latest', port: 5000, env: ['TZ=UTC']},
-            komf: {
-                name: 'komf',
+            'noona-komf': {
+                name: 'noona-komf',
                 image: 'sndxr/komf:latest',
                 port: 8085,
                 env: ['KOMF_KAVITA_BASE_URI=http://noona-kavita:5000', 'KOMF_KAVITA_API_KEY='],
@@ -825,11 +825,11 @@ test('installServices wires managed Kavita and Komf into the shared Noona storag
 
     await warden.installServices([
         {name: 'noona-kavita'},
-        {name: 'komf', env: {KOMF_KAVITA_API_KEY: 'api-key'}},
+        {name: 'noona-komf', env: {KOMF_KAVITA_API_KEY: 'api-key'}},
     ]);
 
     const kavitaStart = started.find((entry) => entry.name === 'noona-kavita');
-    const komfStart = started.find((entry) => entry.name === 'komf');
+    const komfStart = started.find((entry) => entry.name === 'noona-komf');
     const ravenStart = started.find((entry) => entry.name === 'noona-raven');
 
     assert.ok(kavitaStart, 'Kavita should be started');

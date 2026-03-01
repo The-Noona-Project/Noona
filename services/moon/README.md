@@ -44,10 +44,10 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - `/setupwizard` - First-run stack configuration flow with storage, integrations, services, and install tabs. It
   previews the shared Noona folder tree, defaults to managed `noona-kavita` and Komf, allows switching either one to
   external URLs, includes a Discord bot login test with client/guild auto-fill for Portal setup, upgrades Portal
-  role-id fields into guild-role dropdowns after a successful Discord validation, auto-provisions the managed Kavita
-  API key into Portal/Raven/Komf after install, and persists the selected managed service set for future Warden boots.
-  Portal defaults now prefill `/join` access as `*,-admin` for roles and `*` for libraries, and the managed Vault
-  token is injected automatically instead of being entered by hand.
+  role-id fields into guild-role dropdowns after a successful Discord validation, refreshes those dropdowns for the
+  selected guild, auto-provisions the managed Kavita API key into Portal/Raven/Komf after install, and persists the
+  selected managed service set for future Warden boots. Portal defaults now prefill `/join` access as `*,-admin` for
+  roles and `*` for libraries, and the managed Vault token is injected automatically instead of being entered by hand.
 - `/setupwizard/summary` - Dedicated post-install review page that lists installed services, descriptions, service URLs,
   the Discord OAuth callback URL, full callback-loop testing, Discord superuser bootstrap, and final setup
   completion.
@@ -68,7 +68,7 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - `src/app/api/noona/setup/layout` - setup-wizard proxy for Warden's resolved storage layout tree.
 - `src/app/api/noona/setup/discord/validate` - setup-wizard Discord validation proxy for Portal bot credentials.
 - `src/app/api/noona/setup/kavita/service-key` - setup-wizard proxy that provisions or reuses the managed Kavita auth
-  key after install and applies it to Portal, Raven, and Komf.
+  key after install and applies it to Portal, Raven, and `noona-komf`.
 - `src/app/api/noona/auth/discord/*` - Discord OAuth config, flow start, and callback completion.
 - `src/app/api/noona/auth/*` - login/logout, session status, and Discord-linked user-management APIs. The legacy
   Moon bootstrap route now returns `410` so username/password signup cannot be used from the Moon web flow anymore.

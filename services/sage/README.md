@@ -33,10 +33,11 @@ download/library routes for Moon and other clients.
 - Managed Kavita setup: `/api/setup/services/noona-kavita/service-key`
     - waits for managed `noona-kavita`, creates or reuses a Kavita auth key through Kavita's own API, stores the
       reusable key metadata in `noona_settings`, and patches selected managed services (`noona-portal`,
-      `noona-raven`, `komf`) with the generated key plus the managed `http://noona-kavita:5000` base URL.
+      `noona-raven`, `noona-komf`) with the generated key plus the managed `http://noona-kavita:5000` base URL.
 - Discord setup helpers: `/api/setup/services/noona-portal/discord/*`
     - validation now performs a real bot login, returns the detected application/client id, lists accessible guilds, and
-      loads roles/channels when a guild is selected.
+      loads roles/channels when a guild is selected, falling back to Discord's REST guild resources when the gateway
+      collections come back empty.
 - Moon auth and Discord OAuth: `/api/auth/*`
     - `/api/auth/discord/config` stores the Discord OAuth client id/secret used by Moon setup and login.
     - `/api/auth/discord/start` creates a full Discord OAuth round-trip for callback testing, setup bootstrap, or normal

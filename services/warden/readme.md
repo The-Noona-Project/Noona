@@ -53,15 +53,15 @@ instead of blindly starting every registered service.
 
 ## Key Environment Variables
 
-| Variable           | Purpose                                                                       | Default                                                   |
-|--------------------|-------------------------------------------------------------------------------|-----------------------------------------------------------|
-| `DEBUG`            | Boot profile + log verbosity                                                  | `false`                                                   |
-| `WARDEN_API_PORT`  | Warden API listen port                                                        | `4001`                                                    |
-| `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links                                | `http://localhost`                                        |
-| `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, Komf, and reserved service folders | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
-| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                  | `3000`                                                    |
-| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                         | `http://noona-vault:3005`                                 |
-| `*_VAULT_TOKEN`    | Optional per-service token override                                           | generated in descriptors                                  |
+| Variable           | Purpose                                                                               | Default                                                   |
+|--------------------|---------------------------------------------------------------------------------------|-----------------------------------------------------------|
+| `DEBUG`            | Boot profile + log verbosity                                                          | `false`                                                   |
+| `WARDEN_API_PORT`  | Warden API listen port                                                                | `4001`                                                    |
+| `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links                                        | `http://localhost`                                        |
+| `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
+| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                          | `3000`                                                    |
+| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                                 | `http://noona-vault:3005`                                 |
+| `*_VAULT_TOKEN`    | Optional per-service token override                                                   | generated in descriptors                                  |
 
 ## Development Commands
 
@@ -75,7 +75,8 @@ instead of blindly starting every registered service.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
 - Warden now resolves a shared Noona host root and pre-creates the expected tree before service launch. Redis and
   Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
-  managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed Komf uses `komf/config`.
+  managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed `noona-komf` uses
+  `komf/config`.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
 - Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.

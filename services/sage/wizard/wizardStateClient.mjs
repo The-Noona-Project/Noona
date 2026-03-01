@@ -276,11 +276,12 @@ const DEFAULT_STEP_SERVICE_MAP = {
         'noona-moon',
     ],
     portal: ['noona-portal'],
-    raven: ['noona-raven', 'noona-kavita', 'komf'],
+    raven: ['noona-raven', 'noona-kavita', 'noona-komf'],
 }
 
 const SERVICE_NAME_ALIASES = Object.freeze({
     kavita: 'noona-kavita',
+    komf: 'noona-komf',
 })
 
 const normalizeServiceName = (value) => {

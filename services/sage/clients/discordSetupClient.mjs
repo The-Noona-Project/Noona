@@ -142,6 +142,39 @@ const normaliseDiscordLoginError = (error) => {
     return null
 }
 
+const fetchDiscordResource = async ({token, path, fetchImpl}) => {
+    const response = await fetchImpl(`https://discord.com/api/v10${path}`, {
+        headers: {
+            Authorization: `Bot ${token}`,
+            Accept: 'application/json',
+        },
+    })
+
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+        const message =
+            normalizeString(payload?.message) ||
+            `Discord responded with status ${response.status} while loading setup resources.`
+        throw new Error(message)
+    }
+
+    return payload
+}
+
+const mapRestRole = (role) => ({
+    id: role?.id ?? null,
+    name: role?.name ?? null,
+    color: typeof role?.color === 'number' ? role.color : null,
+    position: typeof role?.position === 'number' ? role.position : null,
+    managed: Boolean(role?.managed),
+})
+
+const mapRestChannel = (channel) => ({
+    id: channel?.id ?? null,
+    name: channel?.name ?? null,
+    type: typeof channel?.type === 'number' ? channel.type : null,
+})
+
 const withDiscordClient = async (
     {token, guildId, logger, serviceName, createClient = createDiscordClient},
     handler,
@@ -182,6 +215,7 @@ export const createDiscordSetupClient = ({
     logger,
     serviceName = 'noona-sage',
     createClient = createDiscordClient,
+                                             fetchImpl = fetch,
 } = {}) => {
     const resolveCredentials = (credentials = {}) => ({
         token: ensureNonEmpty(credentials.token, 'Discord bot token'),
@@ -223,6 +257,23 @@ export const createDiscordSetupClient = ({
                     }
                 }
 
+                if (resolvedGuildId && roles.length === 0) {
+                    try {
+                        const fetchedRoles = await fetchDiscordResource({
+                            token,
+                            path: `/guilds/${encodeURIComponent(resolvedGuildId)}/roles`,
+                            fetchImpl,
+                        })
+                        roles = Array.isArray(fetchedRoles)
+                            ? fetchedRoles.map(mapRestRole).filter(isUsableRole).sort(sortRoles)
+                            : []
+                    } catch (error) {
+                        logger?.error?.(
+                            `[${serviceName}] Failed to load Discord roles via REST fallback: ${error instanceof Error ? error.message : error}`,
+                        )
+                    }
+                }
+
                 let channels = []
                 if (guild) {
                     try {
@@ -233,6 +284,23 @@ export const createDiscordSetupClient = ({
                             `[${serviceName}] Failed to load Discord channels: ${error instanceof Error ? error.message : error}`,
                         )
                         channels = []
+                    }
+                }
+
+                if (resolvedGuildId && channels.length === 0) {
+                    try {
+                        const fetchedChannels = await fetchDiscordResource({
+                            token,
+                            path: `/guilds/${encodeURIComponent(resolvedGuildId)}/channels`,
+                            fetchImpl,
+                        })
+                        channels = Array.isArray(fetchedChannels)
+                            ? fetchedChannels.map(mapRestChannel).filter(isUsableChannel)
+                            : []
+                    } catch (error) {
+                        logger?.error?.(
+                            `[${serviceName}] Failed to load Discord channels via REST fallback: ${error instanceof Error ? error.message : error}`,
+                        )
                     }
                 }
 

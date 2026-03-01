@@ -1087,6 +1087,100 @@ test('createDiscordSetupClient uses limited intents during validation', async ()
     assert.equal(payload.suggested?.guildId, 'guild-123')
 })
 
+test('createDiscordSetupClient falls back to Discord REST resources when guild role fetch returns empty', async () => {
+    const fetchCalls = []
+    const setupClient = createDiscordSetupClient({
+        serviceName: 'test-sage',
+        logger: {
+            error: () => {
+            },
+            info: () => {
+            },
+        },
+        fetchImpl: async (url) => {
+            fetchCalls.push(String(url))
+
+            if (String(url).endsWith('/roles')) {
+                return {
+                    ok: true,
+                    async json() {
+                        return [
+                            {id: 'role-1', name: 'Members', managed: false, position: 3, color: 0},
+                            {id: 'role-2', name: 'Bot Managed', managed: true, position: 4, color: 0},
+                        ]
+                    },
+                }
+            }
+
+            if (String(url).endsWith('/channels')) {
+                return {
+                    ok: true,
+                    async json() {
+                        return [
+                            {id: 'channel-1', name: 'general', type: 0},
+                        ]
+                    },
+                }
+            }
+
+            throw new Error(`Unexpected URL: ${url}`)
+        },
+        createClient() {
+            return {
+                async login() {
+                },
+                destroy() {
+                },
+                async fetchApplication() {
+                    return {id: 'client-123', name: 'Noona Portal'}
+                },
+                async fetchGuilds() {
+                    return [{id: 'guild-123', name: 'Guild Name', description: null, icon: null}]
+                },
+                async fetchGuildById() {
+                    return {
+                        id: 'guild-123',
+                        name: 'Guild Name',
+                        description: null,
+                        icon: null,
+                        roles: {
+                            async fetch() {
+                                return []
+                            }
+                        },
+                        channels: {
+                            async fetch() {
+                                return []
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    const payload = await setupClient.fetchResources({token: 'token', guildId: 'guild-123'})
+
+    assert.deepEqual(payload.roles, [
+        {
+            id: 'role-1',
+            name: 'Members',
+            color: 0,
+            position: 3,
+            managed: false,
+        },
+    ])
+    assert.deepEqual(payload.channels, [
+        {
+            id: 'channel-1',
+            name: 'general',
+            type: 0,
+        },
+    ])
+    assert.ok(fetchCalls.some((entry) => entry.endsWith('/guilds/guild-123/roles')))
+    assert.ok(fetchCalls.some((entry) => entry.endsWith('/guilds/guild-123/channels')))
+})
+
 test('createDiscordSetupClient maps invalid Discord tokens to validation errors', async () => {
     const destroyCalls = []
 
@@ -2024,7 +2118,7 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
     const serviceConfigs = new Map([
         ['noona-portal', {env: {DISCORD_BOT_TOKEN: 'bot-token'}}],
         ['noona-raven', {env: {KAVITA_LIBRARY_ROOT: ''}}],
-        ['komf', {env: {KOMF_LOG_LEVEL: 'INFO'}}],
+        ['noona-komf', {env: {KOMF_LOG_LEVEL: 'INFO'}}],
     ])
     const updateCalls = []
     const managedCalls = []
@@ -2079,7 +2173,7 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
     const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({services: ['noona-portal', 'noona-raven', 'komf']}),
+        body: JSON.stringify({services: ['noona-portal', 'noona-raven', 'noona-komf']}),
     })
 
     assert.equal(response.status, 200)
@@ -2087,7 +2181,7 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
     assert.equal(payload.apiKey, 'managed-kavita-key')
     assert.equal(payload.baseUrl, 'http://noona-kavita:5000')
     assert.equal(payload.mode, 'register')
-    assert.deepEqual(payload.services, ['noona-portal', 'noona-raven', 'komf'])
+    assert.deepEqual(payload.services, ['noona-portal', 'noona-raven', 'noona-komf'])
     assert.equal(managedCalls.length, 1)
 
     assert.equal(updateCalls.length, 3)
@@ -2114,7 +2208,7 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
         },
     ])
     assert.deepEqual(updateCalls[2], [
-        'komf',
+        'noona-komf',
         {
             env: {
                 KOMF_LOG_LEVEL: 'INFO',
@@ -2160,7 +2254,7 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
                     }
                 }
 
-                if (name === 'komf') {
+                if (name === 'noona-komf') {
                     return {
                         env: {
                             KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',
@@ -2200,7 +2294,7 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
     const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({services: ['noona-portal', 'komf']}),
+        body: JSON.stringify({services: ['noona-portal', 'noona-komf']}),
     })
 
     assert.equal(response.status, 200)
@@ -2220,7 +2314,7 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
             },
         ],
         [
-            'komf',
+            'noona-komf',
             {
                 env: {
                     KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',

@@ -414,13 +414,14 @@ export function createWarden(options = {}) {
         'noona-portal',
         'noona-raven',
         'noona-kavita',
-        'komf',
+        'noona-komf',
         'noona-oracle',
     ];
     const minimalServiceNames = ['noona-sage', 'noona-moon'];
     const dependencyGraph = new Map([
         ['noona-vault', ['noona-mongo', 'noona-redis']],
         ['noona-kavita', ['noona-raven']],
+        ['noona-komf', ['noona-kavita']],
     ]);
     const requiredServices = ['noona-mongo', 'noona-redis', 'noona-vault'];
     const requiredServiceSet = new Set(requiredServices);
@@ -769,7 +770,7 @@ export function createWarden(options = {}) {
             }
         };
 
-        const sharedServiceNames = ['noona-vault', 'noona-raven', 'noona-kavita', 'komf'];
+        const sharedServiceNames = ['noona-vault', 'noona-raven', 'noona-kavita', 'noona-komf'];
         for (const service of sharedServiceNames) {
             if (installOverridesByName instanceof Map) {
                 const installEnv = installOverridesByName.get(service);
@@ -1013,14 +1014,14 @@ export function createWarden(options = {}) {
             };
         }
 
-        if (service.name === 'komf') {
-            const defaultLayout = storageLayout.services.komf;
+        if (service.name === 'noona-komf') {
+            const defaultLayout = storageLayout.services['noona-komf'];
             if (!defaultLayout) {
                 return service;
             }
 
             const configHostMount = resolveExplicitServiceHostMountPath({
-                serviceName: 'komf',
+                serviceName: 'noona-komf',
                 envKey: 'KOMF_CONFIG_HOST_MOUNT_PATH',
                 installOverridesByName,
             }) || defaultLayout.config.hostPath;

@@ -62,6 +62,26 @@ type InstallResponse = {
     results?: InstallResultEntry[];
 };
 
+type ServiceLogEntry = {
+    timestamp?: string | null;
+    level?: string | null;
+    stream?: string | null;
+    message?: string | null;
+    detail?: string | null;
+};
+
+type ServiceLogHistory = {
+    service?: string | null;
+    entries?: ServiceLogEntry[] | null;
+    summary?: {
+        status?: string | null;
+        percent?: number | null;
+        detail?: string | null;
+        updatedAt?: string | null;
+    } | null;
+    error?: string;
+};
+
 type StorageLayoutFolder = {
     key: string;
     hostPath: string;
@@ -168,7 +188,7 @@ type MissingRequiredField = {
 type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
 
 const ALWAYS_RUNNING = new Set(["noona-moon", "noona-sage"]);
-const MANAGED_INTEGRATIONS = new Set(["noona-kavita", "komf"]);
+const MANAGED_INTEGRATIONS = new Set(["noona-kavita", "noona-komf"]);
 const DEFAULT_SELECTED = new Set(["noona-portal", "noona-raven"]);
 const ADVANCED_KEYS = new Set(["DEBUG", "SERVICE_NAME", "VAULT_API_TOKEN", "VAULT_TOKEN_MAP"]);
 const DERIVED_KEYS = new Set([
@@ -183,6 +203,10 @@ const DERIVED_KEYS = new Set([
     "KOMF_KAVITA_API_KEY",
     "KOMF_CONFIG_HOST_MOUNT_PATH",
 ]);
+
+const DEFAULT_LOG_SERVICE = "installation";
+const LOG_POLL_INTERVAL_MS = 1200;
+const LOG_LIMIT = 140;
 const PORTAL_REQUIRED_KEYS = Object.freeze([
     "DISCORD_BOT_TOKEN",
     "DISCORD_CLIENT_ID",
@@ -227,11 +251,12 @@ const SERVICE_LABELS: Record<string, string> = {
     "noona-redis": "Redis",
     "noona-mongo": "Mongo",
     "noona-kavita": "Kavita",
-    komf: "Komf",
+    "noona-komf": "Komf",
 };
 
 const SERVICE_NAME_ALIASES: Record<string, string> = {
     kavita: "noona-kavita",
+    komf: "noona-komf",
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -258,7 +283,7 @@ const isManagedKavitaApiKeyField = (
         return true;
     }
 
-    return serviceName === "komf" && komfMode === "managed" && key === "KOMF_KAVITA_API_KEY";
+    return serviceName === "noona-komf" && komfMode === "managed" && key === "KOMF_KAVITA_API_KEY";
 };
 
 const isSetupFieldRequired = (
@@ -539,7 +564,7 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
             ],
         },
         {
-            service: "komf",
+            service: "noona-komf",
             label: "Komf",
             folders: [{
                 key: "config",
@@ -552,13 +577,35 @@ const getStoragePreview = (root: string, vaultFolderName: string) => {
 };
 
 const sortServices = (left: ServiceCatalogEntry, right: ServiceCatalogEntry) => {
-    const order = ["noona-moon", "noona-sage", "noona-vault", "noona-redis", "noona-mongo", "noona-portal", "noona-raven", "noona-kavita", "komf", "noona-oracle"];
-    const leftIndex = order.indexOf(left.name);
-    const rightIndex = order.indexOf(right.name);
+    const leftIndex = INSTALL_ORDER_INDEX.get(left.name) ?? -1;
+    const rightIndex = INSTALL_ORDER_INDEX.get(right.name) ?? -1;
     if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
     if (leftIndex >= 0) return -1;
     if (rightIndex >= 0) return 1;
     return left.name.localeCompare(right.name);
+};
+
+const INSTALL_ORDER = [
+    "noona-moon",
+    "noona-sage",
+    "noona-vault",
+    "noona-redis",
+    "noona-mongo",
+    "noona-raven",
+    "noona-kavita",
+    "noona-portal",
+    "noona-komf",
+    "noona-oracle",
+] as const;
+const INSTALL_ORDER_INDEX = new Map<string, number>(INSTALL_ORDER.map((name, idx) => [name, idx]));
+
+const sortServiceNamesForInstall = (left: string, right: string) => {
+    const leftIndex = INSTALL_ORDER_INDEX.get(left) ?? -1;
+    const rightIndex = INSTALL_ORDER_INDEX.get(right) ?? -1;
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return left.localeCompare(right);
 };
 
 const buildDerivedValues = ({
@@ -590,7 +637,7 @@ const buildDerivedValues = ({
     };
 
     if (rootValue) {
-        for (const serviceName of ["noona-vault", "noona-raven", "noona-kavita", "komf"]) {
+        for (const serviceName of ["noona-vault", "noona-raven", "noona-kavita", "noona-komf"]) {
             mergeEnv(serviceName, {NOONA_DATA_ROOT: rootValue});
         }
     }
@@ -605,9 +652,9 @@ const buildDerivedValues = ({
         KAVITA_API_KEY: kavitaApiKey.trim(),
         KAVITA_LIBRARY_ROOT: kavitaMode === "managed" ? "/manga" : normalizeString(next["noona-raven"]?.KAVITA_LIBRARY_ROOT),
     });
-    mergeEnv("komf", {
+    mergeEnv("noona-komf", {
         KOMF_KAVITA_BASE_URI: resolvedKavitaBaseUrl,
-        KOMF_KAVITA_API_KEY: komfMode === "managed" ? kavitaApiKey.trim() : normalizeString(next["komf"]?.KOMF_KAVITA_API_KEY),
+        KOMF_KAVITA_API_KEY: komfMode === "managed" ? kavitaApiKey.trim() : normalizeString(next["noona-komf"]?.KOMF_KAVITA_API_KEY),
     });
 
     return applyDerivedEnvState(next);
@@ -688,6 +735,7 @@ const buildInstallPayload = ({
 }) =>
     Array.from(selected)
         .filter((name) => !ALWAYS_RUNNING.has(name))
+        .sort(sortServiceNamesForInstall)
         .map((name) => {
             const service = services.find((entry) => entry.name === name);
             const envConfig = Array.isArray(service?.envConfig) ? service.envConfig : [];
@@ -718,7 +766,7 @@ export function SetupWizard() {
         "noona-portal": true,
         "noona-raven": true,
         "noona-kavita": true,
-        komf: true
+        "noona-komf": true
     });
 
     const [kavitaMode, setKavitaMode] = useState<IntegrationMode>("managed");
@@ -733,6 +781,11 @@ export function SetupWizard() {
 
     const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
     const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
+
+    const [logService, setLogService] = useState(DEFAULT_LOG_SERVICE);
+    const [logHistory, setLogHistory] = useState<ServiceLogHistory | null>(null);
+    const [logError, setLogError] = useState<string | null>(null);
+    const logPollRef = useRef<number | null>(null);
     const [discordValidating, setDiscordValidating] = useState(false);
 
     const [configMessage, setConfigMessage] = useState<string | null>(null);
@@ -772,10 +825,23 @@ export function SetupWizard() {
             next.add("noona-kavita");
             next.add("noona-raven");
         } else next.delete("noona-kavita");
-        if (komfMode === "managed") next.add("komf");
-        else next.delete("komf");
+        if (komfMode === "managed") next.add("noona-komf");
+        else next.delete("noona-komf");
         return next;
     }, [selected, services, kavitaMode, komfMode]);
+
+    const logServiceOptions = useMemo(() => {
+        const options = new Map<string, string>();
+        options.set("installation", "Installer");
+        options.set("noona-warden", "Warden");
+
+        for (const name of Array.from(effectiveSelected).sort((a, b) => a.localeCompare(b))) {
+            const label = SERVICE_LABELS[name] || name;
+            options.set(name, label);
+        }
+
+        return Array.from(options.entries()).map(([value, label]) => ({value, label}));
+    }, [effectiveSelected]);
 
     const managedKavitaServiceTargets = useMemo(() => {
         if (kavitaMode !== "managed") return [];
@@ -783,7 +849,7 @@ export function SetupWizard() {
         const targets: string[] = [];
         if (effectiveSelected.has("noona-portal")) targets.push("noona-portal");
         if (effectiveSelected.has("noona-raven")) targets.push("noona-raven");
-        if (komfMode === "managed" && effectiveSelected.has("komf")) targets.push("komf");
+        if (komfMode === "managed" && effectiveSelected.has("noona-komf")) targets.push("noona-komf");
         return targets;
     }, [effectiveSelected, kavitaMode, komfMode]);
 
@@ -828,7 +894,7 @@ export function SetupWizard() {
         if (!root) return [];
         return getStoragePreview(root, vaultFolderName).filter((entry) => {
             if (entry.service === "noona-kavita") return kavitaMode === "managed";
-            if (entry.service === "komf") return komfMode === "managed";
+            if (entry.service === "noona-komf") return komfMode === "managed";
             return true;
         });
     }, [storageRoot, defaultStorageRoot, vaultFolderName, kavitaMode, komfMode]);
@@ -863,6 +929,40 @@ export function SetupWizard() {
         if (pollRef.current != null) {
             window.clearInterval(pollRef.current);
             pollRef.current = null;
+        }
+    };
+
+    const stopLogPolling = () => {
+        if (logPollRef.current != null) {
+            window.clearInterval(logPollRef.current);
+            logPollRef.current = null;
+        }
+    };
+
+    const pollLogs = async (serviceName: string) => {
+        const normalized = normalizeServiceName(serviceName);
+        if (!normalized) {
+            return;
+        }
+
+        try {
+            const res = await fetch(
+                `/api/noona/services/${encodeURIComponent(normalized)}/logs?limit=${LOG_LIMIT}`,
+                {cache: "no-store"},
+            );
+            const payload = (await res.json().catch(() => ({}))) as ServiceLogHistory;
+
+            if (!res.ok) {
+                const message = normalizeString((payload as any)?.error).trim() || `Unable to load logs (HTTP ${res.status}).`;
+                setLogError(message);
+                return;
+            }
+
+            setLogError(null);
+            setLogHistory(payload);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            setLogError(message);
         }
     };
 
@@ -905,6 +1005,17 @@ export function SetupWizard() {
             // Keep polling through transient failures.
         }
     };
+
+    useEffect(() => {
+        stopLogPolling();
+        void pollLogs(logService);
+
+        logPollRef.current = window.setInterval(() => void pollLogs(logService), LOG_POLL_INTERVAL_MS);
+        return () => {
+            stopLogPolling();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [logService]);
 
     useEffect(() => {
         let cancelled = false;
@@ -978,8 +1089,10 @@ export function SetupWizard() {
     };
 
     const updateEnv = (serviceName: string, key: string, nextValue: string) => {
-        if (serviceName === "noona-portal" && ["DISCORD_BOT_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_GUILD_ID"].includes(key)) {
+        if (serviceName === "noona-portal" && ["DISCORD_BOT_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET"].includes(key)) {
             setDiscordValidation(null);
+            setDiscordValidationError(null);
+        } else if (serviceName === "noona-portal" && key === "DISCORD_GUILD_ID") {
             setDiscordValidationError(null);
         }
         setValues((prev) =>
@@ -1207,7 +1320,7 @@ export function SetupWizard() {
                 setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://noona-kavita:5000");
                 setKavitaApiKey(normalizeString(importedPortal.KAVITA_API_KEY));
                 setKavitaSharedLibraryPath(normalizeString(importedRaven.KAVITA_DATA_MOUNT));
-                setKomfMode(nextSelected.has("komf") ? "managed" : "external");
+                setKomfMode(nextSelected.has("noona-komf") ? "managed" : "external");
             }
 
             setConfigMessage(`Loaded setup JSON from ${file.name}.`);
@@ -1404,7 +1517,7 @@ export function SetupWizard() {
                 kavitaMode === "managed"
                 && (
                     ((serviceName === "noona-portal" || serviceName === "noona-raven") && field.key === "KAVITA_API_KEY")
-                    || (serviceName === "komf" && field.key === "KOMF_KAVITA_API_KEY")
+                    || (serviceName === "noona-komf" && field.key === "KOMF_KAVITA_API_KEY")
                 )
             ) {
                 return false;
@@ -1625,6 +1738,8 @@ export function SetupWizard() {
         );
     };
 
+    const logEntries = Array.isArray(logHistory?.entries) ? logHistory.entries : [];
+
     return (
         <Column maxWidth="xl" gap="24" paddingY="12" horizontal="center">
             <Column gap="8" horizontal="center" align="center">
@@ -1635,27 +1750,29 @@ export function SetupWizard() {
                 </Text>
             </Column>
 
-            {catalogError && (
-                <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
-                    <Column gap="8">
-                        <Row gap="8" vertical="center">
-                            <Badge background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">Backend
-                                unavailable</Badge>
-                            <Text onBackground="neutral-weak">Moon could not reach Warden or Sage.</Text>
+            <Row fillWidth gap="24" className={styles.wizardShell}>
+                <Column gap="24" fillWidth>
+                    {catalogError && (
+                        <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
+                            <Column gap="8">
+                                <Row gap="8" vertical="center">
+                                    <Badge background={BG_DANGER_ALPHA_WEAK} onBackground="neutral-strong">Backend
+                                        unavailable</Badge>
+                                    <Text onBackground="neutral-weak">Moon could not reach Warden or Sage.</Text>
+                                </Row>
+                                <Text>{catalogError}</Text>
+                            </Column>
+                        </Card>
+                    )}
+
+                    {!catalog && !catalogError && (
+                        <Row fillWidth horizontal="center" paddingY="64">
+                            <Spinner/>
                         </Row>
-                        <Text>{catalogError}</Text>
-                    </Column>
-                </Card>
-            )}
+                    )}
 
-            {!catalog && !catalogError && (
-                <Row fillWidth horizontal="center" paddingY="64">
-                    <Spinner/>
-                </Row>
-            )}
-
-            {catalog && (
-                <>
+                    {catalog && (
+                        <>
                     <Row fillWidth gap="8" style={{flexWrap: "wrap"}}>
                         <Badge background={BG_BRAND_ALPHA_WEAK}
                                onBackground="neutral-strong">{Array.from(effectiveSelected).length} services</Badge>
@@ -1821,7 +1938,7 @@ export function SetupWizard() {
                                                    value={komfBaseUrl} placeholder="https://your-komf.example"
                                                    onChange={(event) => setKomfBaseUrl(event.target.value)}/>
                                             <Input id="external-komf-container" name="external-komf-container"
-                                                   type="text" value={komfContainerName} placeholder="komf"
+                                                   type="text" value={komfContainerName} placeholder="noona-komf"
                                                    onChange={(event) => setKomfContainerName(event.target.value)}/>
                                         </Column>
                                     )}
@@ -1962,9 +2079,74 @@ export function SetupWizard() {
                             </Column>
                         </Card>
                     )}
-                </>
-            )}
+                        </>
+                    )}
+                </Column>
 
+                <Column className={styles.wizardSide} gap="12" s={{hide: true}} xs={{hide: true}}>
+                    <Card padding="16" fillWidth>
+                        <Column gap="12" fillWidth>
+                            <Row horizontal="between" vertical="center">
+                                <Heading as="h2" variant="heading-strong-m">Live logs</Heading>
+                                <Button
+                                    size="s"
+                                    variant="secondary"
+                                    onClick={() => void pollLogs(logService)}
+                                >
+                                    Refresh
+                                </Button>
+                            </Row>
+                            <Column gap="8" fillWidth>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">Service</Text>
+                                <select
+                                    aria-label="Log service selection"
+                                    className={styles.nativeSelect}
+                                    value={logService}
+                                    onChange={(event) => setLogService(event.target.value)}
+                                >
+                                    {logServiceOptions.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                                {logError &&
+                                    <Text onBackground="danger-strong" variant="body-default-xs">{logError}</Text>}
+                            </Column>
+                            <Column className={styles.logViewport} padding="12" gap="8" fillWidth>
+                                {logEntries.length === 0 ? (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">No logs yet.</Text>
+                                ) : (
+                                    logEntries.map((entry, idx) => {
+                                        const ts = normalizeString(entry?.timestamp).trim();
+                                        const message = normalizeString(entry?.message).trim();
+                                        const detail = normalizeString(entry?.detail).trim();
+                                        const line = [ts, message, detail].filter(Boolean).join(" ");
+                                        return (
+                                            <Text
+                                                key={`${ts || "log"}:${idx}`}
+                                                variant="body-default-xs"
+                                                onBackground="neutral-weak"
+                                                className={styles.logLine}
+                                            >
+                                                {line || "(empty log line)"}
+                                            </Text>
+                                        );
+                                    })
+                                )}
+                            </Column>
+                            <Row horizontal="between" vertical="center">
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    {logHistory?.summary?.status ? `Status: ${logHistory.summary.status}` : ""}
+                                </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    {logHistory?.summary?.updatedAt ? `Updated: ${logHistory.summary.updatedAt}` : ""}
+                                </Text>
+                            </Row>
+                        </Column>
+                    </Card>
+                </Column>
+            </Row>
         </Column>
     );
 }

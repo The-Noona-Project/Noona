@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 
 import addonDockers from '../docker/addonDockers.mjs'
 
-test('komf addon descriptor only exposes Kavita-specific configuration fields', () => {
-    const komf = addonDockers.komf
+test('noona-komf addon descriptor only exposes Kavita-specific configuration fields', () => {
+    const komf = addonDockers['noona-komf']
     assert.ok(komf)
 
     const envKeys = new Set((Array.isArray(komf.env) ? komf.env : []).map((entry) => String(entry).split('=')[0]))
