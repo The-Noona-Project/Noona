@@ -1,0 +1,173 @@
+.viewport-container {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: calc((var(--vh) * 100) - 9.8125rem);
+  margin-bottom: 0.625rem;
+
+  &.empty {
+    height: auto;
+  }
+}
+
+.content-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  margin-bottom: 0.625rem;
+}
+
+.card-container {
+  display: inline-block;
+  width: 100%;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 10rem);
+  grid-gap: 0.5rem;
+  justify-content: space-between;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-items: start;
+
+
+}
+
+@media (max-width: 576px) {
+  .grid {
+    grid-gap: 0.3rem;
+  }
+}
+
+.jump-bar {
+  display: flex;
+  flex-flow: column;
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  overflow: hidden;
+  padding: 0 0.3125rem;
+  align-items: center;
+  justify-content: space-around;
+
+  @media (max-width: 576px) {
+    padding: 0 0.3125rem 0 0.3125rem;
+  }
+
+  .btn {
+    text-decoration: none;
+    color: hsla(0, 0%, 100%, .7);
+    height: 1.5625rem;
+    text-align: center;
+    padding: 0 0.3125rem;
+    -webkit-tap-highlight-color: transparent;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    cursor: pointer;
+    line-height: inherit;
+    margin: 0;
+    outline: none;
+    text-align: inherit;
+    text-decoration: none;
+    touch-action: manipulation;
+    transition: color .2s;
+    -webkit-user-select: none;
+    user-select: none;
+
+    &:hover {
+      color: var(--primary-color);
+    }
+
+    .active {
+      font-weight: bold;
+    }
+
+    &.disabled {
+      color: lightgrey;
+      cursor: not-allowed;
+    }
+  }
+}
+
+.virtual-scroller, virtual-scroller {
+  width: 100%;
+  height: calc(var(--vh) * 100 - 9.6875rem);
+  mask-image: linear-gradient(to bottom, transparent, black 0%, black 97%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 0%, black 97%, transparent 100%);
+  overflow: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.3) rgba(0, 0, 0, 0.1);
+  scrollbar-width: thin;
+
+}
+
+virtual-scroller.empty {
+  display: none;
+}
+
+.vertical.selfScroll {
+  &::-webkit-scrollbar {
+    width: inherit;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: transparent; /*makes it invisible when not hovering*/
+  }
+
+  &:hover {
+    &::-webkit-scrollbar-thumb {
+      background-color: rgba(255, 255, 255, 0.3); /*On hover, it will turn grey*/
+    }
+  }
+}
+
+h2 {
+  display: inline-block;
+  word-break: break-all;
+}
+
+
+.flip-button {
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  width: 1.5625rem;
+  height: 1.5625rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.flip-button-inner {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  text-align: center;
+  transition: transform 0.6s;
+  transform-style: preserve-3d;
+
+  top: 0;
+  left: 0;
+}
+
+.flip-button:hover .flip-button-inner {
+  transform: rotateY(180deg);
+}
+
+.flip-button-front, .flip-button-back {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  backface-visibility: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.125rem;
+  border-radius: 0.25rem;
+  transform-style: preserve-3d;
+}
+
+.flip-button-back {
+  transform: rotateY(180deg);
+}

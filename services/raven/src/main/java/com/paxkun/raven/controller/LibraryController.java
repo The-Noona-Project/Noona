@@ -132,20 +132,58 @@ public class LibraryController {
         return ResponseEntity.ok(response);
     }
 
+    @DeleteMapping("/v1/library/title/{uuid}/files")
+    public ResponseEntity<?> deleteTitleFiles(
+            @PathVariable String uuid,
+            @RequestBody(required = false) DeleteTitleFilesRequest request
+    ) {
+        if (uuid == null || uuid.isBlank()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "uuid is required."));
+        }
+
+        if (request == null || request.names() == null || request.names().isEmpty()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "names must include at least one file name."));
+        }
+
+        NewTitle title = libraryService.getTitleByUuid(uuid.trim());
+        if (title == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        int deleted = libraryService.deleteDownloadedFiles(title, request.names());
+        return ResponseEntity.ok(java.util.Map.of(
+                "deleted", deleted,
+                "requested", request.names().size(),
+                "uuid", title.getUuid()
+        ));
+    }
+
     public record LibraryTitleRequest(String title, String sourceUrl) {
     }
 
     public record LibraryTitleUpdateRequest(String title, String sourceUrl) {
     }
 
-    /**
-     * Endpoint to check all titles for new chapters.
-     * Calls Vault to get the library data, scrapes sources,
-     * and queues downloads for missing chapters.
-     */
+    public record DeleteTitleFilesRequest(List<String> names) {
+    }
+
+    @PostMapping("/v1/library/title/{uuid}/checkForNew")
+    public ResponseEntity<?> checkTitleForNewChapters(@PathVariable String uuid) {
+        if (uuid == null || uuid.isBlank()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "uuid is required."));
+        }
+
+        LibraryService.TitleSyncResult result = libraryService.checkForNewChaptersByUuid(uuid.trim());
+        if (result == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
     @PostMapping("/v1/library/checkForNew")
-    public ResponseEntity<String> checkForNewChapters() {
-        String result = libraryService.checkForNewChapters();
+    public ResponseEntity<LibraryService.LibrarySyncSummary> checkForNewChapters() {
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
         return ResponseEntity.ok(result);
     }
 }

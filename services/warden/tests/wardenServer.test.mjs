@@ -1,9 +1,9 @@
 // services/warden/tests/wardenServer.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
+import {once} from 'node:events';
 
-import { startWardenServer } from '../shared/wardenServer.mjs';
+import {startWardenServer} from '../api/startWardenServer.mjs';
 
 const listen = async (options = {}) => {
     const { server } = startWardenServer({
@@ -93,6 +93,45 @@ test('GET /api/services can include installed services when requested', async (t
     assert.deepEqual(calls, [{ includeInstalled: true }]);
 });
 
+test('GET /api/storage/layout returns the Warden storage layout payload', async (t) => {
+    const warden = {
+        async getStorageLayout() {
+            return {
+                root: '/srv/noona',
+                services: [
+                    {
+                        service: 'noona-vault',
+                        folders: [
+                            {key: 'mongo', hostPath: '/srv/noona/vault/mongo', containerPath: '/data/db'},
+                            {key: 'redis', hostPath: '/srv/noona/vault/redis', containerPath: '/data'},
+                        ],
+                    },
+                ],
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/storage/layout`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        root: '/srv/noona',
+        services: [
+            {
+                service: 'noona-vault',
+                folders: [
+                    {key: 'mongo', hostPath: '/srv/noona/vault/mongo', containerPath: '/data/db'},
+                    {key: 'redis', hostPath: '/srv/noona/vault/redis', containerPath: '/data'},
+                ],
+            },
+        ],
+    });
+});
+
 test('POST /api/services/install returns results and status code for errors', async (t) => {
     const installCalls = [];
     const warden = {
@@ -129,6 +168,63 @@ test('POST /api/services/install returns results and status code for errors', as
         { name: 'noona-sage', env: { DEBUG: 'true' } },
         { name: 'noona-bad' },
     ]]);
+});
+
+test('POST /api/services/install accepts async installs and reports an active session', async (t) => {
+    const installCalls = [];
+    let resolveInstall;
+    const progress = {
+        status: 'installing',
+        percent: 0,
+        items: [{name: 'noona-kavita', status: 'pending'}],
+    };
+    const warden = {
+        listServices: async () => [],
+        getInstallationProgress: async () => progress,
+        installServices: async (services) => {
+            installCalls.push(services);
+            await new Promise((resolve) => {
+                resolveInstall = resolve;
+            });
+            return [{name: 'noona-kavita', status: 'installed'}];
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(async () => {
+        resolveInstall?.();
+        await closeServer(server);
+    });
+
+    const body = JSON.stringify({services: [{name: 'noona-kavita'}]});
+    const firstResponse = await fetch(`${baseUrl}/api/services/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body,
+    });
+
+    assert.equal(firstResponse.status, 202);
+    assert.deepEqual(await firstResponse.json(), {
+        accepted: true,
+        started: true,
+        alreadyRunning: false,
+        progress,
+    });
+
+    const secondResponse = await fetch(`${baseUrl}/api/services/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body,
+    });
+
+    assert.equal(secondResponse.status, 202);
+    assert.deepEqual(await secondResponse.json(), {
+        accepted: true,
+        started: false,
+        alreadyRunning: true,
+        progress,
+    });
+    assert.deepEqual(installCalls, [[{name: 'noona-kavita'}]]);
 });
 
 test('POST /api/services/install validates payload', async (t) => {
@@ -171,6 +267,33 @@ test('GET /api/services/install/progress forwards to warden summary', async (t) 
         status: 'installing',
         percent: 50,
         items: [{ name: 'noona-sage', status: 'installing' }],
+    });
+});
+
+test('GET /api/services/installation/logs returns installation history from warden', async (t) => {
+    const warden = {
+        async getServiceHistory(name, options) {
+            return {
+                service: name,
+                entries: [{type: 'status', status: 'installing', message: 'Installing noona-kavita'}],
+                summary: {status: 'installing', percent: 25, detail: null, updatedAt: 'now'},
+                limit: options?.limit ?? null,
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/services/installation/logs?limit=5`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'installation',
+        entries: [{type: 'status', status: 'installing', message: 'Installing noona-kavita'}],
+        summary: {status: 'installing', percent: 25, detail: null, updatedAt: 'now'},
+        limit: '5',
     });
 });
 
@@ -268,4 +391,93 @@ test('POST /api/services/noona-raven/detect returns detection payload', async (t
     const response = await fetch(`${baseUrl}/api/services/noona-raven/detect`, { method: 'POST' });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data/path' } });
+});
+
+test('GET /api/debug returns debug state payload', async (t) => {
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        getDebug() {
+            return {enabled: true, value: 'true'};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/debug`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: true, value: 'true'});
+});
+
+test('POST /api/debug updates warden debug mode', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async setDebug(enabled) {
+            calls.push(enabled);
+            return {enabled, value: enabled ? 'true' : 'false'};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/debug`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: false}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: false, value: 'false'});
+    assert.deepEqual(calls, [false]);
+});
+
+test('POST /api/ecosystem/restart delegates to warden restartEcosystem', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async restartEcosystem(options) {
+            calls.push(options);
+            return {ok: true};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/ecosystem/restart`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({trackedOnly: false}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {ok: true});
+    assert.deepEqual(calls, [{trackedOnly: false}]);
+});
+
+test('POST /api/ecosystem/factory-reset delegates to warden factoryResetEcosystem', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async factoryResetEcosystem(options) {
+            calls.push(options);
+            return {ok: true, cleaned: true};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/ecosystem/factory-reset`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({deleteDockers: true, deleteRavenDownloads: true}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {ok: true, cleaned: true});
+    assert.deepEqual(calls, [{deleteDockers: true, deleteRavenDownloads: true}]);
 });

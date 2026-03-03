@@ -1,0 +1,8 @@
+.offcanvas {
+  color: var(--drawer-text-color);
+  background-color: var(--drawer-bg-color);
+}
+
+.hide-if-empty:empty {
+  display: none !important;
+}

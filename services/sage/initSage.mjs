@@ -1,5 +1,5 @@
 // services/sage/initSage.mjs
 
-import { startSage } from './shared/sageApp.mjs'
+import {startSage} from './app/createSageApp.mjs'
 
 startSage()

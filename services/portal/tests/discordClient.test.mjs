@@ -2,11 +2,11 @@
 
 import EventEmitter from 'node:events';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { Events } from 'discord.js';
+import {test} from 'node:test';
+import {Events} from 'discord.js';
 
-import { createDiscordClient } from '../shared/discordClient.mjs';
-import createPortalSlashCommands from '../shared/discordCommands.mjs';
+import {createDiscordClient} from '../discord/client.mjs';
+import createPortalSlashCommands from '../commands/index.mjs';
 
 class FakeClient extends EventEmitter {
     constructor() {
@@ -61,7 +61,7 @@ const emitAndWait = (emitter, event, payload) => {
     return new Promise(resolve => setImmediate(resolve));
 };
 
-test('createDiscordClient registers slash commands during login', async () => {
+test('createDiscordClient clears global and guild commands before registering slash commands during login', async () => {
     const fakeClient = new FakeClient();
     fakeClient.user = { tag: 'TestBot#0001' };
 
@@ -82,10 +82,44 @@ test('createDiscordClient registers slash commands during login', async () => {
     await loginPromise;
 
     assert.equal(fakeClient.lastLoginToken, 'test-token');
-    assert.equal(fakeClient.application.commands.calls.length, 1);
-    const [{ definitions, guildId }] = fakeClient.application.commands.calls;
-    assert.equal(guildId, 'guild-123');
-    assert.deepEqual(definitions, [{ name: 'ding', description: 'Test ding' }]);
+    assert.equal(fakeClient.application.commands.calls.length, 3);
+
+    const [clearGlobalCall, clearGuildCall, registerCall] = fakeClient.application.commands.calls;
+    assert.equal(clearGlobalCall.guildId, undefined);
+    assert.deepEqual(clearGlobalCall.definitions, []);
+
+    assert.equal(clearGuildCall.guildId, 'guild-123');
+    assert.deepEqual(clearGuildCall.definitions, []);
+
+    assert.equal(registerCall.guildId, 'guild-123');
+    assert.deepEqual(registerCall.definitions, [{name: 'ding', description: 'Test ding'}]);
+});
+
+test('createDiscordClient clears global and guild commands on login when no handlers are defined', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    assert.equal(fakeClient.application.commands.calls.length, 2);
+    assert.deepEqual(fakeClient.application.commands.calls[0], {
+        definitions: [],
+        guildId: undefined,
+    });
+    assert.deepEqual(fakeClient.application.commands.calls[1], {
+        definitions: [],
+        guildId: 'guild-123',
+    });
 });
 
 test('interaction handler executes matching slash command', async () => {
@@ -120,6 +154,49 @@ test('interaction handler executes matching slash command', async () => {
     assert.equal(replies.length, 1);
     assert.equal(replies[0].ephemeral, true);
     assert.match(replies[0].content, /Dong/i);
+});
+
+test('interaction handler executes matching autocomplete handler', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const responses = [];
+    const commands = new Map([
+        ['scan', {
+            definition: {name: 'scan', description: 'Scan library'},
+            autocomplete: async interaction => {
+                await interaction.respond([{name: 'Manga', value: '1'}]);
+            },
+        }],
+    ]);
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands,
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const interaction = {
+        isChatInputCommand: () => false,
+        isAutocomplete: () => true,
+        commandName: 'scan',
+        respond: async payload => {
+            responses.push(payload);
+        },
+        member: {roles: {cache: new Map()}},
+        guildId: 'guild-123',
+        user: {tag: 'Member#0001', id: 'member-001'},
+    };
+
+    await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+    assert.deepEqual(responses, [[{name: 'Manga', value: '1'}]]);
 });
 
 test('interaction handler blocks command execution when guild does not match REQUIRED_GUILD_ID', async () => {

@@ -1,0 +1,12 @@
+.offcanvas {
+  color: var(--drawer-text-color);
+  background-color: var(--drawer-bg-color);
+}
+
+.offcanvas-end, .offcanvas-start, .offcanvas-top {
+  top: var(--nav-offset);
+}
+
+.offcanvas-bottom {
+  height: 40vh !important;
+}

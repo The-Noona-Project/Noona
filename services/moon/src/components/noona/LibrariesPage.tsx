@@ -1,47 +1,30 @@
 "use client";
 
 import {useEffect, useMemo, useState} from "react";
-import {useRouter} from "next/navigation";
-import {Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {Badge, Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
+import {AuthGate} from "./AuthGate";
 
 type RavenTitle = {
     title?: string | null;
     titleName?: string | null;
     uuid?: string | null;
-    sourceUrl?: string | null;
     lastDownloaded?: string | null;
-};
-
-type RavenSearchOption = {
-    index?: string | null;
-    option_number?: string | null;
-    title?: string | null;
-    href?: string | null;
-};
-
-type RavenSearchResponse = {
-    searchId?: string | null;
-    options?: RavenSearchOption[] | null;
+    coverUrl?: string | null;
+    type?: string | null;
+    chapterCount?: number | null;
+    chaptersDownloaded?: number | null;
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const TITLE_CARD_WIDTH = 240;
+const TITLE_CARD_HEIGHT = 340;
 
 export function LibrariesPage() {
-    const router = useRouter();
     const [titles, setTitles] = useState<RavenTitle[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [query, setQuery] = useState("");
-
-    const [addOpen, setAddOpen] = useState(false);
-    const [addQuery, setAddQuery] = useState("");
-    const [searching, setSearching] = useState(false);
-    const [searchError, setSearchError] = useState<string | null>(null);
-    const [searchResult, setSearchResult] = useState<RavenSearchResponse | null>(null);
-    const [selectedOption, setSelectedOption] = useState<number | null>(null);
-    const [queueing, setQueueing] = useState(false);
-    const [queueError, setQueueError] = useState<string | null>(null);
-    const [queueMessage, setQueueMessage] = useState<string | null>(null);
+    const [typeFilter, setTypeFilter] = useState<string>("All");
 
     const load = async () => {
         setError(null);
@@ -77,386 +60,277 @@ export function LibrariesPage() {
         void load();
     }, []);
 
-    const closeAdd = () => {
-        setAddOpen(false);
-        setAddQuery("");
-        setSearching(false);
-        setSearchError(null);
-        setSearchResult(null);
-        setSelectedOption(null);
-        setQueueing(false);
-        setQueueError(null);
-        setQueueMessage(null);
-    };
+    const libraryTabs = useMemo(() => {
+        const list = titles ?? [];
+        const counts = new Map<string, number>();
 
-    const openAdd = () => {
-        setAddOpen(true);
-        setAddQuery("");
-        setSearching(false);
-        setSearchError(null);
-        setSearchResult(null);
-        setSelectedOption(null);
-        setQueueing(false);
-        setQueueError(null);
-        setQueueMessage(null);
-    };
+        for (const entry of list) {
+            const raw = normalizeString(entry?.type).trim();
+            const key = raw || "Unknown";
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+
+        const sorted = Array.from(counts.keys()).filter((key) => key !== "Unknown");
+        sorted.sort((a, b) => a.localeCompare(b));
+
+        if (counts.has("Unknown")) {
+            sorted.push("Unknown");
+        }
+
+        return ["All", ...sorted];
+    }, [titles]);
 
     useEffect(() => {
-        if (!addOpen) {
-            return;
+        if (!libraryTabs.includes(typeFilter)) {
+            setTypeFilter("All");
         }
-
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                closeAdd();
-            }
-        };
-
-        window.addEventListener("keydown", onKeyDown);
-        return () => window.removeEventListener("keydown", onKeyDown);
-    }, [addOpen]);
-
-    const performSearch = async () => {
-        const needle = addQuery.trim();
-        if (!needle) {
-            return;
-        }
-
-        setSearching(true);
-        setSearchError(null);
-        setSearchResult(null);
-        setSelectedOption(null);
-        setQueueError(null);
-        setQueueMessage(null);
-
-        try {
-            const res = await fetch("/api/noona/raven/search", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({query: needle}),
-            });
-
-            const json = (await res.json().catch(() => null)) as unknown;
-            if (!res.ok) {
-                const message =
-                    json && typeof json === "object" && "error" in json && typeof (json as {
-                        error?: unknown
-                    }).error === "string"
-                        ? String((json as { error?: unknown }).error)
-                        : `Search failed (HTTP ${res.status}).`;
-                throw new Error(message);
-            }
-
-            setSearchResult(json && typeof json === "object" ? (json as RavenSearchResponse) : null);
-        } catch (error_) {
-            const message = error_ instanceof Error ? error_.message : String(error_);
-            setSearchError(message);
-        } finally {
-            setSearching(false);
-        }
-    };
-
-    const queueDownload = async () => {
-        const searchId = normalizeString(searchResult?.searchId).trim();
-        if (!searchId || selectedOption == null) {
-            return;
-        }
-
-        setQueueing(true);
-        setQueueError(null);
-        setQueueMessage(null);
-
-        try {
-            const res = await fetch("/api/noona/raven/download", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({searchId, optionIndex: selectedOption}),
-            });
-
-            const json = (await res.json().catch(() => null)) as unknown;
-            if (!res.ok) {
-                const message =
-                    json && typeof json === "object" && "error" in json && typeof (json as {
-                        error?: unknown
-                    }).error === "string"
-                        ? String((json as { error?: unknown }).error)
-                        : `Queue failed (HTTP ${res.status}).`;
-                throw new Error(message);
-            }
-
-            setQueueMessage("Download queued. Raven will add the title to your library as it runs.");
-            void load();
-        } catch (error_) {
-            const message = error_ instanceof Error ? error_.message : String(error_);
-            setQueueError(message);
-        } finally {
-            setQueueing(false);
-        }
-    };
+    }, [libraryTabs, typeFilter]);
 
     const filtered = useMemo(() => {
         const list = titles ?? [];
         const needle = query.trim().toLowerCase();
-        if (!needle) return list;
+        const normalizedType = typeFilter === "All" ? "" : typeFilter.trim().toLowerCase();
 
         return list.filter((entry) => {
+            if (normalizedType) {
+                const rawType = normalizeString(entry.type).trim();
+                const entryType = rawType ? rawType.toLowerCase() : "unknown";
+
+                if (normalizedType === "unknown") {
+                    if (rawType) return false;
+                } else if (entryType !== normalizedType) {
+                    return false;
+                }
+            }
+
+            if (!needle) {
+                return true;
+            }
+
             const title = normalizeString(entry.title ?? entry.titleName).toLowerCase();
             const uuid = normalizeString(entry.uuid).toLowerCase();
             return title.includes(needle) || uuid.includes(needle);
         });
-    }, [query, titles]);
+    }, [query, titles, typeFilter]);
 
     return (
         <SetupModeGate>
-            <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
-                <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
-                    <Column gap="4" style={{minWidth: 0}}>
-                        <Heading variant="display-strong-s" wrap="balance">
-                            Library
-                        </Heading>
-                        <Text onBackground="neutral-weak" wrap="balance">
-                            Titles tracked by Raven. Click a card to view downloaded files.
-                        </Text>
-                    </Column>
-                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                        <Button variant="primary" onClick={() => openAdd()}>
-                            Add to library
-                        </Button>
-                        <Button variant="secondary" onClick={() => void load()}>
-                            Refresh
-                        </Button>
-                    </Row>
-                </Row>
-
-                <Input
-                    id="library-search"
-                    name="library-search"
-                    type="text"
-                    placeholder="Search titles..."
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                />
-
-                {error && (
-                    <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
-                        <Column gap="8">
-                            <Heading as="h2" variant="heading-strong-l">
-                                Raven unavailable
+            <AuthGate>
+                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
+                        m={{style: {paddingInline: "24px"}}}>
+                    <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
+                        <Column gap="4" style={{minWidth: 0}}>
+                            <Heading variant="display-strong-s" wrap="balance">
+                                Library
                             </Heading>
-                            <Text>{error}</Text>
-                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                Ensure `noona-raven` is installed and running.
+                            <Text onBackground="neutral-weak" wrap="balance">
+                                Titles tracked by Raven. Click a card to view downloaded files.
                             </Text>
                         </Column>
-                    </Card>
-                )}
-
-                {!titles && !error && (
-                    <Row fillWidth horizontal="center" paddingY="64">
-                        <Spinner/>
+                        <Row gap="12" style={{flexWrap: "wrap"}}>
+                            <Button variant="primary" href="/downloads">
+                                Open downloads
+                            </Button>
+                            <Button variant="secondary" onClick={() => void load()}>
+                                Refresh
+                            </Button>
+                        </Row>
                     </Row>
-                )}
 
-                {titles && (
-                    <Row
-                        fillWidth
-                        gap="16"
-                        style={{
-                            display: "grid",
-                            gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-                        }}
-                    >
-                        {filtered.map((entry) => {
-                            const uuid = normalizeString(entry.uuid);
-                            const title = normalizeString(entry.title ?? entry.titleName) || uuid || "Untitled";
-                            const lastDownloaded = normalizeString(entry.lastDownloaded);
-
-                            const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
-
-                            return (
-                                <SmartLink key={uuid || title} href={href}>
-                                    <Card background="surface" border="neutral-alpha-weak" padding="l" radius="l"
-                                          fillWidth>
-                                        <Column gap="8">
-                                            <Heading as="h3" variant="heading-strong-m" wrap="balance">
-                                                {title}
-                                            </Heading>
-                                            {lastDownloaded && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Last downloaded: {lastDownloaded}
-                                                </Text>
-                                            )}
-                                            {uuid && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    {uuid}
-                                                </Text>
-                                            )}
-                                        </Column>
-                                    </Card>
-                                </SmartLink>
-                            );
-                        })}
+                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                        {libraryTabs.map((value) => (
+                            <Button
+                                key={value}
+                                variant={typeFilter === value ? "primary" : "secondary"}
+                                onClick={() => setTypeFilter(value)}
+                            >
+                                {value}
+                            </Button>
+                        ))}
                     </Row>
-                )}
 
-                {addOpen && (
-                    <div
-                        role="presentation"
-                        onClick={(event) => {
-                            if (event.target === event.currentTarget) {
-                                closeAdd();
-                            }
-                        }}
-                        style={{
-                            position: "fixed",
-                            inset: 0,
-                            background: "rgba(0,0,0,0.55)",
-                            zIndex: 50,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            padding: "24px",
-                        }}
-                    >
-                        <Card
-                            background="surface"
-                            border="neutral-alpha-weak"
-                            padding="l"
-                            radius="l"
-                            fillWidth
-                            style={{maxWidth: 760, maxHeight: "85vh", overflow: "auto"}}
-                        >
-                            <Column gap="16">
-                                <Row horizontal="between" vertical="center" gap="12">
-                                    <Column gap="4" style={{minWidth: 0}}>
-                                        <Heading as="h2" variant="heading-strong-l">
-                                            Add to library
-                                        </Heading>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Search a title, then confirm the Raven download source.
-                                        </Text>
-                                    </Column>
-                                    <Button variant="secondary" onClick={() => closeAdd()}>
-                                        Close
-                                    </Button>
-                                </Row>
+                    <Input
+                        id="library-search"
+                        name="library-search"
+                        type="text"
+                        placeholder="Search titles..."
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                    />
 
-                                <Row gap="8" style={{flexWrap: "wrap"}}>
-                                    <Input
-                                        id="add-title-query"
-                                        name="add-title-query"
-                                        type="text"
-                                        placeholder="Search titles (ex: Absolute Duo)"
-                                        value={addQuery}
-                                        onChange={(e) => setAddQuery(e.target.value)}
-                                    />
-                                    <Button
-                                        variant="primary"
-                                        disabled={searching || !addQuery.trim()}
-                                        onClick={() => void performSearch()}
-                                    >
-                                        {searching ? "Searching..." : "Search"}
-                                    </Button>
-                                </Row>
-
-                                {searchError && (
-                                    <Text onBackground="danger-strong" variant="body-default-xs">
-                                        {searchError}
-                                    </Text>
-                                )}
-
-                                {searching && (
-                                    <Row fillWidth horizontal="center" paddingY="24">
-                                        <Spinner/>
-                                    </Row>
-                                )}
-
-                                {searchResult && (
-                                    <Column gap="12">
-                                        <Heading as="h3" variant="heading-strong-m">
-                                            Results
-                                        </Heading>
-
-                                        {(!Array.isArray(searchResult.options) || searchResult.options.length === 0) && (
-                                            <Text onBackground="neutral-weak">No results found.</Text>
-                                        )}
-
-                                        {Array.isArray(searchResult.options) && searchResult.options.length > 0 && (
-                                            <Column gap="8">
-                                                {searchResult.options.map((option, idx) => {
-                                                    const title = normalizeString(option?.title).trim();
-                                                    const href = normalizeString(option?.href).trim();
-                                                    const optionIndexRaw = normalizeString(option?.option_number ?? option?.index).trim();
-                                                    const optionIndexParsed = optionIndexRaw ? Number(optionIndexRaw) : NaN;
-                                                    const optionIndex = Number.isFinite(optionIndexParsed) ? optionIndexParsed : idx + 1;
-                                                    const checked = selectedOption === optionIndex;
-
-                                                    return (
-                                                        <Card
-                                                            key={`${optionIndex}-${title || href}`}
-                                                            background="surface"
-                                                            border={checked ? "brand-alpha-weak" : "neutral-alpha-weak"}
-                                                            padding="m"
-                                                            radius="l"
-                                                            fillWidth
-                                                            style={{cursor: "pointer"}}
-                                                            onClick={() => setSelectedOption(optionIndex)}
-                                                        >
-                                                            <Column gap="8">
-                                                                <Row horizontal="between" vertical="center" gap="12">
-                                                                    <Text variant="heading-default-s" wrap="balance">
-                                                                        {title || `Option ${optionIndex}`}
-                                                                    </Text>
-                                                                    <input
-                                                                        type="radio"
-                                                                        name="download-source"
-                                                                        checked={checked}
-                                                                        onChange={() => setSelectedOption(optionIndex)}
-                                                                        aria-label={`Select option ${optionIndex}`}
-                                                                    />
-                                                                </Row>
-                                                                {href && (
-                                                                    <Text onBackground="neutral-weak"
-                                                                          variant="body-default-xs">
-                                                                        Source:{" "}
-                                                                        <SmartLink href={href}>
-                                                                            {href}
-                                                                        </SmartLink>
-                                                                    </Text>
-                                                                )}
-                                                            </Column>
-                                                        </Card>
-                                                    );
-                                                })}
-
-                                                <Row gap="12" style={{flexWrap: "wrap"}}>
-                                                    <Button
-                                                        variant="primary"
-                                                        disabled={queueing || selectedOption == null}
-                                                        onClick={() => void queueDownload()}
-                                                    >
-                                                        {queueing ? "Queueing..." : "Confirm download"}
-                                                    </Button>
-                                                    {queueMessage && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            {queueMessage}
-                                                        </Text>
-                                                    )}
-                                                    {queueError && (
-                                                        <Text onBackground="danger-strong" variant="body-default-xs">
-                                                            {queueError}
-                                                        </Text>
-                                                    )}
-                                                </Row>
-                                            </Column>
-                                        )}
-                                    </Column>
-                                )}
+                    {error && (
+                        <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                            <Column gap="8">
+                                <Heading as="h2" variant="heading-strong-l">
+                                    Raven unavailable
+                                </Heading>
+                                <Text>{error}</Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Ensure `noona-raven` is installed and running.
+                                </Text>
                             </Column>
                         </Card>
-                    </div>
-                )}
-            </Column>
+                    )}
+
+                    {!titles && !error && (
+                        <Row fillWidth horizontal="center" paddingY="64">
+                            <Spinner/>
+                        </Row>
+                    )}
+
+                    {titles && (
+                        <Row
+                            fillWidth
+                            gap="16"
+                            style={{
+                                display: "grid",
+                                rowGap: "20px",
+                                gridTemplateColumns: `repeat(auto-fill, minmax(${TITLE_CARD_WIDTH}px, ${TITLE_CARD_WIDTH}px))`,
+                                justifyContent: "center",
+                            }}
+                            s={{style: {gridTemplateColumns: "1fr", justifyContent: "stretch"}}}
+                        >
+                            {filtered.map((entry) => {
+                                const uuid = normalizeString(entry.uuid);
+                                const title = normalizeString(entry.title ?? entry.titleName).trim() || uuid || "Untitled";
+                                const lastDownloaded = normalizeString(entry.lastDownloaded);
+                                const coverUrl = normalizeString(entry.coverUrl).trim();
+                                const type = normalizeString(entry.type).trim();
+                                const chapterCount = typeof entry.chapterCount === "number" && Number.isFinite(entry.chapterCount) ? entry.chapterCount : null;
+                                const chaptersDownloaded = typeof entry.chaptersDownloaded === "number" && Number.isFinite(entry.chaptersDownloaded) ? entry.chaptersDownloaded : null;
+                                const downloadTotal = typeof chaptersDownloaded === "number" ? chaptersDownloaded : 0;
+                                const chapterTotalText = typeof chapterCount === "number"
+                                    ? `${downloadTotal}/${chapterCount}`
+                                    : `${downloadTotal}`;
+
+                                const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
+
+                                return (
+                                    <SmartLink
+                                        key={uuid || title}
+                                        href={href}
+                                        unstyled
+                                        fillWidth
+                                        style={{display: "block", width: "100%"}}
+                                    >
+                                        <Card
+                                            background="surface"
+                                            border="neutral-alpha-weak"
+                                            padding="0"
+                                            radius="l"
+                                            fillWidth
+                                            style={{
+                                                position: "relative",
+                                                overflow: "hidden",
+                                                width: "100%",
+                                                height: TITLE_CARD_HEIGHT,
+                                            }}
+                                        >
+                                            {coverUrl && (
+                                                <img
+                                                    src={coverUrl}
+                                                    alt={`${title} cover`}
+                                                    style={{
+                                                        position: "absolute",
+                                                        inset: 0,
+                                                        width: "100%",
+                                                        height: "100%",
+                                                        objectFit: "cover",
+                                                    }}
+                                                    loading="lazy"
+                                                />
+                                            )}
+                                            {!coverUrl && (
+                                                <Row
+                                                    fill
+                                                    background="neutral-alpha-weak"
+                                                    style={{
+                                                        position: "absolute",
+                                                        inset: 0,
+                                                    }}
+                                                />
+                                            )}
+
+                                            <Column
+                                                fill
+                                                style={{
+                                                    position: "absolute",
+                                                    inset: 0,
+                                                    justifyContent: "space-between",
+                                                }}
+                                            >
+                                                <Column
+                                                    gap="8"
+                                                    padding="12"
+                                                    background="overlay"
+                                                    style={{
+                                                        background: "linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.15) 100%)",
+                                                    }}
+                                                >
+                                                    <Row horizontal="between" vertical="center" gap="8"
+                                                         style={{flexWrap: "wrap"}}>
+                                                        {type && (
+                                                            <Badge background="neutral-alpha-weak"
+                                                                   onBackground="neutral-strong">
+                                                                {type}
+                                                            </Badge>
+                                                        )}
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            {chapterTotalText}
+                                                        </Badge>
+                                                    </Row>
+                                                    <Heading
+                                                        as="h3"
+                                                        variant="heading-strong-m"
+                                                        onBackground="neutral-strong"
+                                                        wrap="balance"
+                                                        style={{
+                                                            minWidth: 0,
+                                                            lineHeight: 1.2,
+                                                            display: "-webkit-box",
+                                                            WebkitLineClamp: 2,
+                                                            WebkitBoxOrient: "vertical",
+                                                            overflow: "hidden",
+                                                        }}
+                                                    >
+                                                        {title}
+                                                    </Heading>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Downloaded: {chapterTotalText}
+                                                    </Text>
+                                                </Column>
+
+                                                <Row
+                                                    padding="12"
+                                                    background="overlay"
+                                                    style={{
+                                                        background: "linear-gradient(0deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0) 100%)",
+                                                    }}
+                                                >
+                                                    <Text
+                                                        onBackground="neutral-weak"
+                                                        variant="body-default-xs"
+                                                        style={{
+                                                            minWidth: 0,
+                                                            display: "-webkit-box",
+                                                            WebkitLineClamp: 1,
+                                                            WebkitBoxOrient: "vertical",
+                                                            overflow: "hidden",
+                                                        }}
+                                                    >
+                                                        {lastDownloaded ? `Last: ${lastDownloaded}` : uuid || "No chapter metadata yet"}
+                                                    </Text>
+                                                </Row>
+                                            </Column>
+                                        </Card>
+                                    </SmartLink>
+                                );
+                            })}
+                        </Row>
+                    )}
+                </Column>
+            </AuthGate>
         </SetupModeGate>
     );
 }

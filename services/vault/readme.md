@@ -1,104 +1,62 @@
-# 🗝️ Noona Vault
+# Vault (Noona Stack 2.2)
 
-**Noona Vault** is the storage and authentication microservice for the Noona ecosystem. It manages data storage requests and routes them to the appropriate backend (MongoDB, Redis), and validates incoming requests with deterministic API tokens issued by Warden.
+Vault is the shared data and authentication broker for Noona services. It validates caller tokens, routes packet
+operations to storage adapters, and exposes APIs for users, secrets, and runtime debug control.
 
----
+## Quick Navigation
 
-## 🚀 Features
+- [Service rules](AGENTS.md)
+- [Stack overview](../../README.md)
+- [Entrypoint](initVault.mjs)
+- [App builder](app/createVaultApp.mjs)
+- [Auth helpers](auth/tokenAuth.mjs)
+- [Route modules](routes/)
+- [User helpers](users/)
+- [Packet dispatcher](../../utilities/database/packetParser.mjs)
+- [Mongo helpers](../../utilities/database/mongo/)
+- [Redis helpers](../../utilities/database/redis/)
+- [Tests](tests/vaultApp.test.mjs)
 
-- REST API for storing and retrieving data
-- Supports **MongoDB** and **Redis**
-- Simple token-based authentication for Noona services
-- Extensible for future file/SFTP storage integrations
+## Primary Route Groups
 
----
+- `GET /v1/vault/health` - service health string.
+- `GET /v1/vault/debug` and `POST /v1/vault/debug` - read/update debug mode (token protected).
+- `POST /v1/vault/handle` - generic packet dispatch to storage handlers (token protected).
+- `GET /api/users`, `GET /api/users/:username`, `POST /api/users`, `PUT /api/users/:username`,
+  `DELETE /api/users/:username` - user management APIs (token protected).
+- `POST /api/users/authenticate` - username/password auth check (token protected).
+- `GET /api/secrets/:path`, `PUT /api/secrets/:path`, `DELETE /api/secrets/:path` - secret read/write/delete (token
+  protected).
 
-## ⚙️ Endpoints
+## Authentication
 
-### Health Check
+- Protected routes require `Authorization: Bearer <token>`.
+- Tokens are loaded from `VAULT_TOKEN_MAP` (`service:token,service:token` format).
+- `app/createVaultApp.mjs` wires the token registry, and `auth/tokenAuth.mjs` attaches `req.serviceName` for authorized
+  callers.
 
-`GET /v1/vault/health`
+## Environment Variables
 
-Returns `Vault is up and running`.
+| Variable                   | Purpose                                          | Default                        |
+|----------------------------|--------------------------------------------------|--------------------------------|
+| `PORT`                     | HTTP listen port                                 | `3005`                         |
+| `VAULT_TOKEN_MAP`          | Service token registry                           | none                           |
+| `VAULT_SECRETS_COLLECTION` | Mongo collection for secret documents            | `vault_secrets`                |
+| `VAULT_USERS_COLLECTION`   | Mongo collection for user records                | `noona_users`                  |
+| `MONGO_URI`                | MongoDB connection URI (used by packet handlers) | `mongodb://noona-mongo:27017`  |
+| `REDIS_HOST`               | Redis host (used by packet handlers)             | `noona-redis`                  |
+| `REDIS_PORT`               | Redis port                                       | `6379`                         |
+| `NOONA_LOG_DIR`            | Optional directory for Vault's `latest.log`      | Warden mounts `/var/log/noona` |
 
----
-
-### Store Data
-
-`POST /v1/vault/store`
-
-**Body:**
-
-```json
-{
-  "storageType": "mongo | redis",
-  "key": "yourKeyIfRedis",
-  "value": { "your": "data" },
-  "collection": "collectionNameIfMongo"
-}
-````
-
----
-
-### Get Data
-
-`POST /v1/vault/get`
-
-**Body:**
-
-```json
-{
-  "storageType": "mongo | redis",
-  "key": "yourKeyIfRedis",
-  "collection": "collectionNameIfMongo",
-  "query": { "your": "mongoQuery" }
-}
-```
-
----
-
-## 🔐 Authentication
-
-All routes (except health check) require a valid **service token** sent via the standard Authorization header:
-
-```
-Authorization: Bearer <service_token>
-```
-
-Tokens are provided to Vault through the `VAULT_TOKEN_MAP` environment variable. The value is a comma-separated list of `service:token` pairs (e.g. `noona-moon:moon-token,noona-sage:sage-token`). Requests presenting a token not present in the map will be rejected with `401 Unauthorized`.
-
----
-
-## 📦 Environment Variables
-
-| Variable         | Description                        | Example                     |
-| ---------------- | ---------------------------------- | --------------------------- |
-| `PORT`           | Port Vault listens on              | 4000                        |
-| `VAULT_TOKEN_MAP` | Comma-separated `service:token` pairs | `noona-moon:moon123,noona-sage:sage456` |
-| `MONGO_URI`      | MongoDB connection URI             | mongodb://noona-mongo:27017 |
-| `REDIS_HOST`     | Redis host (default `noona-redis`) | noona-redis                 |
-
----
-
-## 🐳 Running with Docker
-
+## Local Commands
 ```bash
-docker build -f deployment/vault.Dockerfile -t noona-vault .
-docker run -e MONGO_URI=mongodb://noona-mongo:27017 -e VAULT_TOKEN_MAP=noona-moon:moon123,noona-sage:sage456 -e REDIS_HOST=noona-redis -p 4000:4000 noona-vault
+cd services/vault
+npm install
+node initVault.mjs
+npm test
 ```
 
----
+## Documentation Rule
 
-## 📝 Future Plans
-
-* User authentication endpoints
-* SFTP storage integration
-* Advanced role-based permissions
-
----
-
-### 🔧 Maintained by
-
-**Noona Project**
-
-
+When you add or change Vault route contracts, packet operations, auth behavior, or collection defaults, update this
+README and link the exact code paths touched so service integrations stay traceable.

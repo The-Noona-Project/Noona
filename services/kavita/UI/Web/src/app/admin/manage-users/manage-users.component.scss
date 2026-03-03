@@ -1,0 +1,38 @@
+@use '../../../theme/variables' as theme;
+
+.custom-position {
+  right: 0.9375rem;
+  top: -2.625rem;
+}
+
+.presence {
+  font-size: 0.75rem;
+  color: var(--primary-color);
+}
+
+.user-info > div {
+  margin-top: 0.1875rem;
+}
+
+.highlight {
+  color: var(--primary-color);
+}
+
+.pending-badge {
+  font-size: 0.75rem;
+}
+
+
+.member-name {
+  word-break: keep-all;
+  margin: 0;
+}
+
+.actions {
+  min-width: 9.5rem;
+}
+
+.list-group-item:nth-child(even) {
+  background-color: var(--elevation-layer1);
+}
+

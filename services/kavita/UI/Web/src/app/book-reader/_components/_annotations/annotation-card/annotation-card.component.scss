@@ -1,0 +1,31 @@
+.annotation-card {
+  max-width: 25rem;
+  width: 25rem;
+
+  .card-body {
+    height: 7.78rem;
+    overflow: auto;
+  }
+}
+
+.content-quote {
+  color: var(--drawer-text-color);
+  max-height: 20rem;
+  overflow: hidden;
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.spoilers {
+  filter: blur(0.1875rem);
+}
+
+:host ::ng-deep quill-view {
+  color: var(--drawer-text-color);
+}
+
+:host ::ng-deep .ql-editor {
+  padding: 0;
+}

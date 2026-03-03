@@ -1,0 +1,114 @@
+.progressTrack {
+  position: relative;
+}
+
+.logViewport {
+  width: 100%;
+  min-height: 14rem;
+  max-height: min(26rem, calc(100vh - 18rem));
+  overflow: auto;
+  border-radius: 0.875rem;
+  border: 1px solid var(--neutral-border-medium, rgba(255, 255, 255, 0.12));
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.logLine {
+  font-family: var(--font-code);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.summaryOverlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 100dvh;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.summaryModal {
+  width: min(640px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  margin: 0 auto;
+  overflow: auto;
+}
+
+.progressIndeterminate {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  animation: noonaProgressIndeterminate 1.1s ease-in-out infinite;
+}
+
+.nativeSelect {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.75rem 2.75rem 0.75rem 0.875rem;
+  border: 1px solid var(--neutral-border-medium, rgba(255, 255, 255, 0.12));
+  border-radius: 0.875rem;
+  background-color: var(--page-background, rgba(9, 12, 18, 0.94));
+  background-image: linear-gradient(45deg, transparent 50%, var(--neutral-on-background-weak, rgba(255, 255, 255, 0.72)) 50%),
+  linear-gradient(135deg, var(--neutral-on-background-weak, rgba(255, 255, 255, 0.72)) 50%, transparent 50%);
+  background-position: calc(100% - 1.2rem) calc(50% - 0.16rem),
+  calc(100% - 0.9rem) calc(50% - 0.16rem);
+  background-repeat: no-repeat;
+  background-size: 0.42rem 0.42rem;
+  color: var(--neutral-on-background-strong, rgba(255, 255, 255, 0.96));
+  font: inherit;
+  line-height: 1.4;
+  appearance: none;
+  cursor: pointer;
+  transition: border-color 140ms ease,
+  background-color 140ms ease;
+}
+
+.nativeSelect:hover {
+  border-color: var(--neutral-border-strong, rgba(255, 255, 255, 0.2));
+}
+
+.nativeSelect:focus {
+  border-color: var(--brand-background-medium, rgba(111, 148, 241, 0.45));
+  outline: 2px solid var(--brand-background-medium, rgba(111, 148, 241, 0.45));
+  outline-offset: 2px;
+}
+
+.nativeSelect:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.nativeSelect option,
+.nativeSelect optgroup {
+  background: var(--page-background, rgba(9, 12, 18, 0.98));
+  color: var(--neutral-on-background-strong, rgba(255, 255, 255, 0.96));
+}
+
+.nativeSelect option[value=""] {
+  color: var(--neutral-on-background-weak, rgba(255, 255, 255, 0.72));
+}
+
+:global(html[data-theme="dark"]) .nativeSelect {
+  color-scheme: dark;
+}
+
+:global(html[data-theme="light"]) .nativeSelect {
+  color-scheme: light;
+}
+
+@keyframes noonaProgressIndeterminate {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}

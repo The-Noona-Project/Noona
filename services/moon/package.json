@@ -1,37 +1,38 @@
 {
-  "name": "@once-ui-system/magic-portfolio",
-  "version": "2.3.0",
+  "name": "noona-moon",
+  "version": "2.2.0",
+  "description": "Noona Moon web console for libraries, downloads, setup, and service operations.",
+  "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/runNext.mjs dev",
     "build": "next build",
     "biome-write": "npx @biomejs/biome format --write .",
-    "start": "next start -H 0.0.0.0 -p 3000",
-    "lint": "next lint"
+    "start": "node scripts/runNext.mjs start",
+    "lint": "eslint ."
   },
   "dependencies": {
-    "@mdx-js/loader": "^3.1.0",
-    "@next/mdx": "^16.0.10",
-    "@once-ui-system/core": "latest",
+    "@once-ui-system/core": "^1.6.3",
     "classnames": "^2.5.1",
-    "cookie": "^1.0.2",
-    "gray-matter": "^4.0.3",
-    "lint-staged": "^16.1.5",
-    "next": "^16.0.10",
-    "next-mdx-remote": "^6.0.0",
+    "next": "^16.1.6",
+    "noona-utilities": "file:../../utilities",
     "react": "^19.2.4",
-    "react-dom": "^19.2.3",
+    "react-dom": "^19.2.4",
     "react-icons": "^5.5.0",
-    "sass": "^1.86.3",
-    "transliteration": "^2.3.5"
+    "sass": "^1.97.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "@types/cookie": "^0.6.0",
-    "@types/node": "^20.17.30",
-    "@types/react": "^19.2.4",
+    "@biomejs/biome": "^2.4.5",
+    "@types/node": "^25.3.3",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "eslint": "^9.25.0",
-    "typescript": "^5.8.3",
-    "tzdata": "^1.0.44"
+    "eslint": "^9.39.3",
+    "eslint-config-next": "^16.1.6",
+    "lint-staged": "^16.3.0",
+    "typescript": "^5.9.3",
+    "tzdata": "^1.0.47"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Noona-Project/Noona"
   }
 }

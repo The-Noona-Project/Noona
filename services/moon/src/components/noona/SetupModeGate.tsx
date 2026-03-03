@@ -2,7 +2,7 @@
 
 import {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Badge, Button, Card, Column, Row, Spinner, Text} from "@once-ui-system/core";
+import {Button, Card, Column, Row, Spinner, Text} from "@once-ui-system/core";
 
 type SetupStatus = {
     completed: boolean;
@@ -13,29 +13,37 @@ type SetupModeGateProps = {
     children: React.ReactNode;
 };
 
+const normalizeError = (value: unknown, fallback: string): string =>
+    typeof value === "string" && value.trim() ? value.trim() : fallback;
+
 export function SetupModeGate({children}: SetupModeGateProps) {
     const router = useRouter();
     const [setup, setSetup] = useState<SetupStatus | null>(null);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         let cancelled = false;
 
         const load = async () => {
+            setLoading(true);
+
             try {
-                const res = await fetch("/api/noona/setup/status", {cache: "no-store"});
-                const json = (await res.json().catch(() => null)) as SetupStatus | null;
+                const setupRes = await fetch("/api/noona/setup/status", {cache: "no-store"});
+                const setupJson = (await setupRes.json().catch(() => null)) as SetupStatus | null;
                 if (cancelled) return;
 
-                if (json && typeof json.completed === "boolean") {
-                    setSetup(json);
+                const completed = setupJson?.completed === true;
+                if (completed) {
+                    setSetup({completed: true});
+                    setLoading(false);
                     return;
                 }
-
-                setSetup({completed: false, error: "Unable to determine setup status."});
+                router.replace("/setupwizard");
             } catch (error) {
                 if (cancelled) return;
                 const message = error instanceof Error ? error.message : String(error);
-                setSetup({completed: false, error: message});
+                setSetup({completed: false, error: normalizeError(message, "Unable to determine setup status.")});
+                setLoading(false);
             }
         };
 
@@ -43,15 +51,9 @@ export function SetupModeGate({children}: SetupModeGateProps) {
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [router]);
 
-    useEffect(() => {
-        if (setup && setup.completed === false && !setup.error) {
-            router.replace("/setupwizard");
-        }
-    }, [router, setup]);
-
-    if (!setup) {
+    if (loading) {
         return (
             <Row fillWidth horizontal="center" paddingY="64">
                 <Spinner/>
@@ -59,27 +61,22 @@ export function SetupModeGate({children}: SetupModeGateProps) {
         );
     }
 
-    if (setup.completed === false) {
-        return (
-            <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
-                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
-                    <Column gap="12">
-                        <Row gap="8" vertical="center">
-                            <Badge background="brand-alpha-weak" onBackground="neutral-strong">
-                                Setup required
-                            </Badge>
-                            <Text onBackground="neutral-weak">Noona is not configured yet.</Text>
-                        </Row>
-                        {setup.error && <Text onBackground="danger-strong">{setup.error}</Text>}
-                        <Button variant="primary" onClick={() => router.push("/setupwizard")}>
-                            Open setup wizard
-                        </Button>
-                    </Column>
-                </Card>
-            </Column>
-        );
+    if (setup?.completed === true) {
+        return <>{children}</>;
     }
 
-    return <>{children}</>;
+    return (
+        <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
+            <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Text onBackground="danger-strong">
+                        {setup?.error || "Unable to determine setup mode."}
+                    </Text>
+                    <Button variant="secondary" onClick={() => window.location.reload()}>
+                        Retry
+                    </Button>
+                </Column>
+            </Card>
+        </Column>
+    );
 }
-

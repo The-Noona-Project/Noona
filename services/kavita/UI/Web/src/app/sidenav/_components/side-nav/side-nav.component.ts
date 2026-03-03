@@ -1,0 +1,233 @@
+import {ChangeDetectionStrategy, ChangeDetectorRef, Component, DestroyRef, effect, inject} from '@angular/core';
+import {NavigationEnd, Router} from '@angular/router';
+import {NgbTooltip} from '@ng-bootstrap/ng-bootstrap';
+import {distinctUntilChanged, filter, map, tap} from 'rxjs/operators';
+import {ImageService} from 'src/app/_services/image.service';
+import {EVENTS, MessageHubService} from 'src/app/_services/message-hub.service';
+import {UtilityService} from '../../../shared/_services/utility.service';
+import {Library, LibraryType} from '../../../_models/library/library';
+import {AccountService} from '../../../_services/account.service';
+import {ActionFactoryService} from '../../../_services/action-factory.service';
+import {NavService} from '../../../_services/nav.service';
+import {takeUntilDestroyed} from "@angular/core/rxjs-interop";
+import {BehaviorSubject, merge, Observable, of, ReplaySubject, startWith, switchMap} from "rxjs";
+import {AsyncPipe, NgClass} from "@angular/common";
+import {SideNavItemComponent} from "../side-nav-item/side-nav-item.component";
+import {FilterPipe} from "../../../_pipes/filter.pipe";
+import {FormsModule} from "@angular/forms";
+import {translate, TranslocoDirective} from "@jsverse/transloco";
+import {CardActionablesComponent} from "../../../_single-module/card-actionables/card-actionables.component";
+import {SideNavStream} from "../../../_models/sidenav/sidenav-stream";
+import {SideNavStreamType} from "../../../_models/sidenav/sidenav-stream-type.enum";
+import {WikiLink} from "../../../_models/wiki";
+import {SettingsTabId} from "../../preference-nav/preference-nav.component";
+import {LicenseService} from "../../../_services/license.service";
+import {CdkDrag, CdkDragDrop, CdkDropList} from "@angular/cdk/drag-drop";
+import {ToastrService} from "ngx-toastr";
+import {KeyBindService} from "../../../_services/key-bind.service";
+import {KeyBindTarget} from "../../../_models/preferences/preferences";
+import {BreakpointService} from "../../../_services/breakpoint.service";
+import {ActionItem} from "../../../_models/actionables/action-item";
+import {Action} from "../../../_models/actionables/action";
+import {ActionResult} from "../../../_models/actionables/action-result";
+
+@Component({
+  selector: 'app-side-nav',
+  imports: [SideNavItemComponent, CardActionablesComponent, FilterPipe, FormsModule, TranslocoDirective, NgbTooltip,
+    NgClass, AsyncPipe, CdkDropList, CdkDrag],
+  templateUrl: './side-nav.component.html',
+  styleUrls: ['./side-nav.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush
+})
+export class SideNavComponent {
+  private readonly router = inject(Router);
+  protected readonly utilityService = inject(UtilityService);
+  private readonly messageHub = inject(MessageHubService);
+  protected readonly navService = inject(NavService);
+  private readonly cdRef = inject(ChangeDetectorRef);
+  private readonly imageService = inject(ImageService);
+  protected readonly accountService = inject(AccountService);
+  protected readonly licenseService = inject(LicenseService);
+  private readonly destroyRef = inject(DestroyRef);
+  private readonly actionFactoryService = inject(ActionFactoryService);
+  private readonly toastr = inject(ToastrService);
+  private readonly keyBindService = inject(KeyBindService);
+  protected readonly breakpointService = inject(BreakpointService);
+
+
+  cachedData: SideNavStream[] | null = null;
+  actions: ActionItem<Library>[] = this.actionFactoryService.getLibraryActions();
+  homeActions: ActionItem<{}>[] = this.actionFactoryService.getSideNavHomeActions();
+
+  filterQuery: string = '';
+  filterLibrary = (stream: SideNavStream) => {
+    return stream.name.toLowerCase().indexOf((this.filterQuery || '').toLowerCase()) >= 0;
+  }
+  showAll: boolean = false;
+  editMode: boolean = false;
+  totalSize = 0;
+  isReadOnly = this.accountService.hasReadOnlyRole;
+
+  private showAllSubject = new BehaviorSubject<boolean>(false);
+  showAll$ = this.showAllSubject.asObservable();
+
+  private loadDataSubject = new ReplaySubject<void>();
+  loadData$ = this.loadDataSubject.asObservable();
+
+  loadDataOnInit$: Observable<SideNavStream[]> = this.loadData$.pipe(
+    switchMap(() => {
+      if (this.cachedData != null) {
+        return of(this.cachedData);
+      }
+      return this.navService.getSideNavStreams().pipe(
+        map(data => {
+          this.cachedData = data; // Cache the data after initial load
+          return data;
+        })
+      );
+    })
+  );
+
+  navStreams$: Observable<SideNavStream[]> = merge(
+    this.showAll$.pipe(
+      startWith(false),
+      distinctUntilChanged(),
+      tap(showAll => this.showAll = showAll),
+      switchMap(showAll =>
+        showAll
+          ? this.loadDataOnInit$.pipe(
+            tap(d => this.totalSize = d.length),
+          )
+          : this.loadDataOnInit$.pipe(
+            tap(d => this.totalSize = d.length),
+            map(d => d.slice(0, this.ItemLimit))
+          )
+      ),
+      takeUntilDestroyed(this.destroyRef),
+    ), this.messageHub.messages$.pipe(
+      filter(event => event.event === EVENTS.LibraryModified || event.event === EVENTS.SideNavUpdate),
+      tap(() => {
+        this.cachedData = null; // Reset cached data to null to get latest
+      }),
+      switchMap(() => {
+        if (this.showAll) return this.loadDataOnInit$;
+        else return this.loadDataOnInit$.pipe(map(d => d.slice(0, this.ItemLimit)))
+      }), // Reload data when events occur
+      takeUntilDestroyed(this.destroyRef),
+    )
+  ).pipe(
+    startWith(null),
+    filter(data => data !== null),
+    takeUntilDestroyed(this.destroyRef),
+  );
+
+  collapseSideNavOnMobileNav$ = this.router.events.pipe(
+    filter(event => event instanceof NavigationEnd),
+    takeUntilDestroyed(this.destroyRef),
+    map(evt => evt as NavigationEnd),
+    filter(() => this.breakpointService.isMobile() && this.navService.sideNavCollapsedSignal()),
+    filter(collapsed => !collapsed)
+  );
+
+
+  constructor() {
+    // Ensure that on mobile, we are collapsed by default
+    if (this.breakpointService.isMobile()) {
+      this.navService.collapseSideNav(true);
+    }
+
+    this.collapseSideNavOnMobileNav$.subscribe(() => {
+      this.navService.collapseSideNav(false);
+    });
+
+    this.keyBindService.registerListener(
+      this.destroyRef,
+      (e) => this.router.navigate(['/settings'], {fragment: SettingsTabId.Account}),
+      [KeyBindTarget.NavigateToSettings],
+      {condition$: this.navService.sideNavVisibility$},
+    );
+
+    this.keyBindService.registerListener(
+      this.destroyRef,
+      (e) => this.router.navigate(['/settings'], {fragment: SettingsTabId.Scrobbling}),
+      [KeyBindTarget.NavigateToScrobbling],
+      {condition$: this.licenseService.hasValidLicense$},
+    );
+
+    effect(() => {
+      const user = this.accountService.currentUser();
+      if (!user) return;
+      this.loadDataSubject.next();
+    })
+
+  }
+
+  performHomeAction(event: ActionItem<{}> | ActionResult<{}>) {
+    if (event.action === Action.Edit) {
+      this.showMore(true);
+    }
+  }
+
+  getLibraryTypeIcon(format: LibraryType) {
+    switch (format) {
+      case LibraryType.Book:
+      case LibraryType.LightNovel:
+        return 'fa-book';
+      case LibraryType.Comic:
+      case LibraryType.ComicVine:
+      case LibraryType.Manga:
+        return 'fa-book-open';
+      case LibraryType.Images:
+        return 'fa-images';
+    }
+  }
+
+  getLibraryImage(library: Library) {
+    if (library.coverImage) return this.imageService.getLibraryCoverImage(library.id);
+    return null;
+  }
+
+
+  toggleNavBar() {
+    this.navService.toggleSideNav();
+  }
+
+  showMore(edit: boolean = false) {
+    this.showAllSubject.next(true);
+    this.editMode = edit;
+    this.cdRef.markForCheck();
+  }
+
+  showLess() {
+    this.filterQuery = '';
+    this.showAllSubject.next(false);
+    this.editMode = false;
+    this.cdRef.markForCheck();
+  }
+
+  async reorderDrop($event: CdkDragDrop<any, any, SideNavStream>) {
+    // Don't allow dropping on non SideNav items
+    const fixedSideNavItems = 3;
+    if ($event.currentIndex < fixedSideNavItems) {
+      return;
+    }
+
+    const stream = $event.item.data;
+    // Offset the home, back, and customize button
+    this.navService.updateSideNavStreamPosition(stream.name, stream.id, stream.order, $event.currentIndex - 3, false).subscribe({
+      next: () => {
+        this.showAllSubject.next(this.showAll);
+        this.cdRef.markForCheck();
+      },
+      error: err => {
+        console.error(err);
+        this.toastr.error(translate('errors.generic'));
+      }
+    });
+  }
+
+  protected readonly WikiLink = WikiLink;
+  protected readonly ItemLimit = 13;
+  protected readonly SideNavStreamType = SideNavStreamType;
+  protected readonly SettingsTabId = SettingsTabId;
+}

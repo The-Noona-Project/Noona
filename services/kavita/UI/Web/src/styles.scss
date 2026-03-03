@@ -1,0 +1,144 @@
+@use 'swiper/swiper-bundle.min' as swiper;
+
+@use './theme/variables' as theme;
+
+// Import themes which define the css variables we use to customize the app
+@use './theme/themes/dark';
+
+// Import colors for overrides of bootstrap theme
+@use './theme/toastr' as toastr;
+
+@use '../node_modules/quill/dist/quill.snow.css' as quill;
+
+// Bootstrap must be after _colors since we define the colors there
+@use '../node_modules/bootstrap/scss/bootstrap';
+
+@use '../node_modules/charts.css/dist/charts.min' as charts;
+
+@use '../node_modules/@siemens/ngx-datatable/themes/bootstrap.css' as ngxDatatableBootstrap;
+@use '../node_modules/@siemens/ngx-datatable/assets/icons.css' as ngxDatatableIcons;
+
+// Import all the customized theme overrides
+@use './theme/components/input';
+@use './theme/components/anchors';
+@use './theme/components/nav';
+@use './theme/components/badge';
+@use './theme/components/buttons';
+@use './theme/components/toast';
+@use './theme/components/checkbox';
+@use './theme/components/list';
+@use './theme/components/navbar';
+@use './theme/components/popover';
+@use './theme/components/pagination';
+@use './theme/components/dropdown';
+@use './theme/components/accordion';
+@use './theme/components/breadcrumb';
+@use './theme/components/ratingstar';
+@use './theme/components/modal';
+@use './theme/components/card';
+@use './theme/components/slider';
+@use './theme/components/radios';
+@use './theme/components/selects';
+@use './theme/components/progress';
+@use './theme/components/sidenav';
+@use './theme/components/carousel';
+@use './theme/components/offcanvas';
+@use './theme/components/table';
+@use './theme/components/alerts';
+@use './theme/components/typeahead';
+@use './theme/components/tooltip';
+@use './theme/components/stat-card';
+
+@use './theme/utilities/headings';
+@use './theme/utilities/utilities';
+@use './theme/utilities/animations';
+@use './theme/utilities/global';
+@use "./theme/utilities/spinners";
+
+@use './theme/directives/resize';
+
+
+// Global Styles
+@font-face {
+  font-family: "EBGarmond";
+  src: url("assets/fonts/EB Garamond/EBGaramond-VariableFont_wght.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Spartan";
+  src: url("assets/fonts/Spartan/Spartan-VariableFont_wght.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Poppins";
+  src: url("assets/fonts/Poppins/Poppins.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "League Spartan";
+  src: url("assets/fonts/League_Spartan/LeagueSpartan-VariableFont_wght.ttf");
+  font-display: swap;
+}
+
+label, select, .clickable {
+  cursor: pointer;
+}
+
+.form-check-input[disabled] ~ .form-check-label, .form-check-input:disabled ~ .form-check-label {
+  cursor: default;
+}
+
+// Needed for fullscreen
+app-root {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3);
+}
+
+
+::-webkit-scrollbar-thumb {
+  background-clip: padding-box;
+  border: 0.1875rem solid transparent;
+  border-radius: 0.5rem;
+  min-height: 3.125rem;
+}
+
+body {
+  font-family: 'Poppins', sans-serif;
+  overflow: hidden; // When this is enabled, it will break the webtoon reader. The nav.service will automatically remove/apply on toggling them
+  scrollbar-color: rgba(255, 255, 255, 0.3) rgba(0, 0, 0, 0.1);
+  scrollbar-width: thin;
+  padding: 0;
+  margin: 0;
+
+  @media (max-width: theme.$grid-breakpoints-lg) {
+    /* Setting this break the readers */
+    //margin-top: var(--nav-mobile-offset) !important;
+    //height: calc(var(--vh)* 100 - var(--nav-mobile-offset)) !important;
+  }
+
+}
+
+.setting-section-break {
+  height: 0.0625rem;
+  background-color: var(--setting-break-color);
+  margin: 1.875rem 0;
+}
+
+// Handle reduced motion
+@media (prefers-reduced-motion: reduce), (update: slow) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+// Handle disable animation
+.no-animations *, .no-animations *::before, .no-animations *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}

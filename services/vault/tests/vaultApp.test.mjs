@@ -1,14 +1,10 @@
 // services/vault/tests/vaultApp.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
+import {once} from 'node:events';
 
-import {
-    createVaultApp,
-    createRequireAuth,
-    extractBearerToken,
-    parseTokenMap,
-} from '../shared/vaultApp.mjs';
+import {createVaultApp} from '../app/createVaultApp.mjs';
+import {createRequireAuth, extractBearerToken, parseTokenMap,} from '../auth/tokenAuth.mjs';
 
 function createMockResponse() {
     return {
@@ -23,6 +19,90 @@ function createMockResponse() {
             return this;
         },
     };
+}
+
+function matchesQuery(doc, query = {}) {
+    if (!query || typeof query !== 'object') {
+        return true;
+    }
+
+    return Object.entries(query).every(([key, value]) => doc?.[key] === value);
+}
+
+function applyMongoUpdate(doc, update = {}, {isInsert = false} = {}) {
+    if (isInsert && update?.$setOnInsert && typeof update.$setOnInsert === 'object') {
+        Object.assign(doc, update.$setOnInsert);
+    }
+
+    if (update?.$set && typeof update.$set === 'object') {
+        Object.assign(doc, update.$set);
+    }
+
+    return doc;
+}
+
+function createUsersPacketHandler(initialUsers = []) {
+    const users = initialUsers.map((entry, idx) => ({_id: idx + 1, ...entry}));
+
+    const findCollection = (collection) => {
+        if (collection === 'noona_users') return users;
+        return null;
+    };
+
+    const handlePacket = async (packet) => {
+        const collection = packet?.payload?.collection;
+        const target = findCollection(collection);
+        if (!target) {
+            return {status: 'ok', data: []};
+        }
+
+        const operation = packet?.operation;
+        const query = packet?.payload?.query ?? {};
+        if (operation === 'find') {
+            const found = target.find((doc) => matchesQuery(doc, query));
+            return found ? {status: 'ok', data: {...found}} : {error: 'No document found'};
+        }
+
+        if (operation === 'findMany') {
+            return {status: 'ok', data: target.filter((doc) => matchesQuery(doc, query)).map((doc) => ({...doc}))};
+        }
+
+        if (operation === 'insert') {
+            const next = {_id: target.length + 1, ...(packet?.payload?.data ?? {})};
+            target.push(next);
+            return {status: 'ok', insertedId: next._id};
+        }
+
+        if (operation === 'update') {
+            const idx = target.findIndex((doc) => matchesQuery(doc, query));
+            if (idx >= 0) {
+                target[idx] = applyMongoUpdate({...target[idx]}, packet?.payload?.update ?? {}, {isInsert: false});
+                return {status: 'ok', matched: 1, modified: 1};
+            }
+
+            if (packet?.payload?.upsert === true) {
+                const inserted = applyMongoUpdate({...query}, packet?.payload?.update ?? {}, {isInsert: true});
+                if (!Object.prototype.hasOwnProperty.call(inserted, '_id')) {
+                    inserted._id = target.length + 1;
+                }
+                target.push(inserted);
+                return {status: 'ok', matched: 0, modified: 0};
+            }
+
+            return {status: 'ok', matched: 0, modified: 0};
+        }
+
+        if (operation === 'delete') {
+            const idx = target.findIndex((doc) => matchesQuery(doc, query));
+            if (idx < 0) return {status: 'ok', deleted: 0};
+            target.splice(idx, 1);
+            return {status: 'ok', deleted: 1};
+        }
+
+        return {error: `Unsupported operation ${operation}`};
+    };
+
+    return {users, handlePacket};
 }
 
 test('parseTokenMap builds lookup tables from VAULT_TOKEN_MAP', () => {
@@ -255,6 +335,84 @@ test('GET /v1/vault/health responds with status message', async () => {
     );
 });
 
+test('GET /v1/vault/debug returns current debug state', async () => {
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        isDebugEnabled: () => true,
+        handlePacket: async () => ({}),
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/debug`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: true});
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('POST /v1/vault/debug updates debug state', async () => {
+    let enabled = false;
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        isDebugEnabled: () => enabled,
+        setDebug: value => {
+            enabled = value === true;
+        },
+        handlePacket: async () => ({}),
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/debug`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({enabled: true}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {enabled: true});
+    assert.equal(enabled, true);
+
+    const badResponse = await fetch(`http://127.0.0.1:${port}/v1/vault/debug`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({enabled: 'maybe'}),
+    });
+    assert.equal(badResponse.status, 400);
+    const badPayload = await badResponse.json();
+    assert.equal(badPayload.error, 'enabled must be a boolean value.');
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('POST /v1/vault/handle returns array payloads from handler', async () => {
     const packets = [];
     const mockResult = {
@@ -445,6 +603,215 @@ test('DELETE /api/secrets/:path deletes secret via packet handler', async () => 
             query: {path: 'portal/delete-me'},
         },
     }]);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('POST /api/users creates a user and GET /api/users lists sanitized users', async () => {
+    const store = createUsersPacketHandler();
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: store.handlePacket,
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const createRes = await fetch(`http://127.0.0.1:${port}/api/users`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPax',
+            password: 'Password123',
+            role: 'admin',
+        }),
+    });
+
+    assert.equal(createRes.status, 201);
+    const createPayload = await createRes.json();
+    assert.equal(createPayload.ok, true);
+    assert.equal(createPayload.user.username, 'CaptainPax');
+    assert.equal(createPayload.user.role, 'admin');
+    assert.equal(Object.prototype.hasOwnProperty.call(createPayload.user, 'passwordHash'), false);
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/users`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+    assert.equal(listRes.status, 200);
+    const listPayload = await listRes.json();
+    assert.equal(Array.isArray(listPayload.users), true);
+    assert.equal(listPayload.users.length, 1);
+    assert.equal(listPayload.users[0].usernameNormalized, 'captainpax');
+
+    assert.ok(typeof store.users[0].passwordHash === 'string' && store.users[0].passwordHash.startsWith('scrypt$'));
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('POST /api/users/authenticate validates credentials via hashed passwords', async () => {
+    const store = createUsersPacketHandler();
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: store.handlePacket,
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    await fetch(`http://127.0.0.1:${port}/api/users`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPax',
+            password: 'Password123',
+            role: 'admin',
+        }),
+    });
+
+    const okRes = await fetch(`http://127.0.0.1:${port}/api/users/authenticate`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPax',
+            password: 'Password123',
+        }),
+    });
+    assert.equal(okRes.status, 200);
+    const okPayload = await okRes.json();
+    assert.equal(okPayload.authenticated, true);
+    assert.equal(okPayload.user.username, 'CaptainPax');
+
+    const badRes = await fetch(`http://127.0.0.1:${port}/api/users/authenticate`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPax',
+            password: 'WrongPassword',
+        }),
+    });
+    assert.equal(badRes.status, 401);
+    const badPayload = await badRes.json();
+    assert.equal(badPayload.error, 'Invalid credentials.');
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('PUT and DELETE /api/users update and remove users', async () => {
+    const store = createUsersPacketHandler();
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: store.handlePacket,
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    await fetch(`http://127.0.0.1:${port}/api/users`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPax',
+            password: 'Password123',
+            role: 'member',
+        }),
+    });
+
+    const updateRes = await fetch(`http://127.0.0.1:${port}/api/users/CaptainPax`, {
+        method: 'PUT',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPaxPrime',
+            password: 'Password456',
+            role: 'admin',
+        }),
+    });
+    assert.equal(updateRes.status, 200);
+    const updatePayload = await updateRes.json();
+    assert.equal(updatePayload.user.username, 'CaptainPaxPrime');
+    assert.equal(updatePayload.user.role, 'admin');
+
+    const oldLoginRes = await fetch(`http://127.0.0.1:${port}/api/users/authenticate`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPax',
+            password: 'Password123',
+        }),
+    });
+    assert.equal(oldLoginRes.status, 401);
+
+    const newLoginRes = await fetch(`http://127.0.0.1:${port}/api/users/authenticate`, {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            username: 'CaptainPaxPrime',
+            password: 'Password456',
+        }),
+    });
+    assert.equal(newLoginRes.status, 200);
+
+    const deleteRes = await fetch(`http://127.0.0.1:${port}/api/users/CaptainPaxPrime`, {
+        method: 'DELETE',
+        headers: {authorization: 'Bearer secret'},
+    });
+    assert.equal(deleteRes.status, 200);
+    assert.deepEqual(await deleteRes.json(), {deleted: true});
+
+    const missingRes = await fetch(`http://127.0.0.1:${port}/api/users/CaptainPaxPrime`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+    assert.equal(missingRes.status, 404);
 
     await new Promise((resolve, reject) =>
         server.close(err => (err ? reject(err) : resolve()))

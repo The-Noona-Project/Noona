@@ -1,6 +1,7 @@
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
+import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
 import com.paxkun.raven.service.download.DownloadProgress;
 import com.paxkun.raven.service.download.SearchTitle;
@@ -9,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * DownloadController handles endpoints for searching and downloading manga titles and chapters.
@@ -21,6 +23,7 @@ import java.util.List;
 public class DownloadController {
 
     private final DownloadService downloadService;
+    private final LibraryService libraryService;
     private final LoggerService logger;
 
     /**
@@ -92,6 +95,56 @@ public class DownloadController {
                 "DOWNLOAD_CONTROLLER",
                 "Returning " + status.size() + " progress entries");
         return ResponseEntity.ok(status);
+    }
+
+    @GetMapping("/status/history")
+    public ResponseEntity<List<DownloadProgress>> getHistory() {
+        logger.debug("DOWNLOAD_CONTROLLER", "History request received");
+        List<DownloadProgress> history = downloadService.getDownloadHistory();
+        return ResponseEntity.ok(history);
+    }
+
+    @GetMapping("/status/summary")
+    public ResponseEntity<Map<String, Object>> getStatusSummary() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Status summary request received");
+        DownloadProgress currentDownload = downloadService.getPrimaryActiveDownloadStatus();
+        LibraryService.CheckActivity currentCheck = libraryService.getCurrentCheckActivity();
+
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("activeDownloads", downloadService.getActiveDownloadCount());
+        payload.put("maxThreads", downloadService.getConfiguredDownloadThreads());
+        payload.put("threadRateLimitsKbps", downloadService.getThreadRateLimitsKbps());
+
+        if (currentDownload != null) {
+            Map<String, Object> currentDownloadPayload = new java.util.LinkedHashMap<>();
+            currentDownloadPayload.put("title", currentDownload.getTitle());
+            currentDownloadPayload.put("currentChapter", currentDownload.getCurrentChapter());
+            currentDownloadPayload.put("completedChapters", currentDownload.getCompletedChapters());
+            currentDownloadPayload.put("totalChapters", currentDownload.getTotalChapters());
+            currentDownloadPayload.put("status", currentDownload.getStatus());
+            currentDownloadPayload.put("queuedAt", currentDownload.getQueuedAt());
+            currentDownloadPayload.put("lastUpdated", currentDownload.getLastUpdated());
+
+            payload.put("state", "downloading");
+            payload.put("statusText", "Downloading " + currentDownload.getTitle());
+            payload.put("currentDownload", currentDownloadPayload);
+        } else if (currentCheck != null) {
+            Map<String, Object> currentCheckPayload = new java.util.LinkedHashMap<>();
+            currentCheckPayload.put("mode", currentCheck.mode());
+            currentCheckPayload.put("title", currentCheck.title());
+            currentCheckPayload.put("checkedTitles", currentCheck.checkedTitles());
+            currentCheckPayload.put("totalTitles", currentCheck.totalTitles());
+            currentCheckPayload.put("updatedAt", currentCheck.updatedAt());
+
+            payload.put("state", "checking");
+            payload.put("statusText", "Checking " + currentCheck.title());
+            payload.put("currentCheck", currentCheckPayload);
+        } else {
+            payload.put("state", "idle");
+            payload.put("statusText", "Idle");
+        }
+
+        return ResponseEntity.ok(payload);
     }
 
     /**

@@ -4,6 +4,7 @@ import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
+import {AuthGate} from "./AuthGate";
 
 type RavenTitle = {
     title?: string | null;
@@ -16,6 +17,8 @@ type RavenTitle = {
     chaptersDownloaded?: number | null;
     downloadPath?: string | null;
     summary?: string | null;
+    coverUrl?: string | null;
+    type?: string | null;
 };
 
 type TitleFile = {
@@ -31,7 +34,76 @@ type TitleFilesResponse = {
     files: TitleFile[];
 };
 
+type TitleSyncResponse = {
+    status?: string | null;
+    message?: string | null;
+    totalQueued?: number | null;
+    newChaptersQueued?: number | null;
+    missingChaptersQueued?: number | null;
+};
+
+type KavitaSeriesResult = {
+    seriesId?: number | null;
+    libraryId?: number | null;
+    name?: string | null;
+    originalName?: string | null;
+    localizedName?: string | null;
+    libraryName?: string | null;
+    aliases?: string[] | null;
+    url?: string | null;
+};
+
+type KavitaSearchResponse = {
+    baseUrl?: string | null;
+    series?: KavitaSeriesResult[] | null;
+    error?: string;
+};
+
+type KavitaMetadataMatch = {
+    provider?: string | null;
+    title?: string | null;
+    summary?: string | null;
+    score?: number | null;
+    coverImageUrl?: string | null;
+    aniListId?: number | string | null;
+    malId?: number | string | null;
+    cbrId?: number | string | null;
+};
+
+type KavitaMetadataResponse = {
+    seriesId?: number | null;
+    matches?: KavitaMetadataMatch[] | null;
+    error?: string;
+};
+
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+const normalizeKavitaProviderId = (value: unknown): string | null => {
+    if (value == null) return null;
+    const normalized = String(value).trim();
+    return normalized || null;
+};
+
+const selectPreferredKavitaSeries = (series: KavitaSeriesResult[], titleName: string) => {
+    const normalizedTitle = normalizeString(titleName).trim().toLowerCase();
+    if (!normalizedTitle) {
+        return series[0] ?? null;
+    }
+
+    const exact = series.find((entry) => normalizeString(entry?.name).trim().toLowerCase() === normalizedTitle);
+    if (exact) {
+        return exact;
+    }
+
+    const aliasExact = series.find((entry) =>
+        Array.isArray(entry?.aliases) && entry.aliases.some((alias) => normalizeString(alias).trim().toLowerCase() === normalizedTitle),
+    );
+    if (aliasExact) {
+        return aliasExact;
+    }
+
+    return series[0] ?? null;
+};
 
 const formatBytes = (value: number | null | undefined) => {
     const bytes = typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -63,7 +135,31 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
 
+    const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+    const [deletingFiles, setDeletingFiles] = useState(false);
+    const [deleteFilesError, setDeleteFilesError] = useState<string | null>(null);
+    const [deleteFilesMessage, setDeleteFilesMessage] = useState<string | null>(null);
+    const [syncingTitle, setSyncingTitle] = useState(false);
+    const [syncTitleMessage, setSyncTitleMessage] = useState<string | null>(null);
+    const [syncTitleError, setSyncTitleError] = useState<string | null>(null);
+    const [kavitaSearchLoading, setKavitaSearchLoading] = useState(false);
+    const [kavitaSearchError, setKavitaSearchError] = useState<string | null>(null);
+    const [kavitaSeries, setKavitaSeries] = useState<KavitaSeriesResult[]>([]);
+    const [selectedKavitaSeriesId, setSelectedKavitaSeriesId] = useState<number | null>(null);
+    const [kavitaMetadataLoading, setKavitaMetadataLoading] = useState(false);
+    const [kavitaMetadataError, setKavitaMetadataError] = useState<string | null>(null);
+    const [kavitaMetadataMessage, setKavitaMetadataMessage] = useState<string | null>(null);
+    const [kavitaMetadataMatches, setKavitaMetadataMatches] = useState<KavitaMetadataMatch[]>([]);
+    const [kavitaMetadataApplyingId, setKavitaMetadataApplyingId] = useState<string | null>(null);
+
     const fileCount = files?.files?.length ?? 0;
+    const coverUrl = normalizeString(title?.coverUrl).trim();
+    const mediaType = normalizeString(title?.type).trim();
+    const currentTitleName = normalizeString(title?.title ?? title?.titleName).trim();
+    const selectedKavitaSeries = useMemo(
+        () => kavitaSeries.find((entry) => typeof entry?.seriesId === "number" && entry.seriesId === selectedKavitaSeriesId) ?? null,
+        [kavitaSeries, selectedKavitaSeriesId],
+    );
 
     const latestFileTimestamp = useMemo(() => {
         const list = files?.files ?? [];
@@ -83,6 +179,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setError(null);
         setTitle(null);
         setFiles(null);
+        setSelectedFiles(new Set());
+        setDeleteFilesError(null);
+        setDeleteFilesMessage(null);
 
         try {
             const [titleRes, filesRes] = await Promise.all([
@@ -130,6 +229,133 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     useEffect(() => {
         void load();
     }, [normalizedUuid]);
+
+    const loadKavitaSeries = async (query: string) => {
+        const normalizedQuery = normalizeString(query).trim();
+        if (!normalizedQuery) {
+            setKavitaSeries([]);
+            setSelectedKavitaSeriesId(null);
+            setKavitaSearchError(null);
+            return;
+        }
+
+        setKavitaSearchLoading(true);
+        setKavitaSearchError(null);
+        setKavitaMetadataError(null);
+        setKavitaMetadataMessage(null);
+        setKavitaMetadataMatches([]);
+
+        try {
+            const response = await fetch(`/api/noona/portal/kavita/search?query=${encodeURIComponent(normalizedQuery)}`, {
+                cache: "no-store",
+            });
+            const payload = (await response.json().catch(() => null)) as KavitaSearchResponse | null;
+            if (!response.ok) {
+                throw new Error(normalizeString(payload?.error).trim() || `Kavita search failed (HTTP ${response.status}).`);
+            }
+
+            const series = Array.isArray(payload?.series) ? payload.series : [];
+            const preferred = selectPreferredKavitaSeries(series, normalizedQuery);
+            setKavitaSeries(series);
+            setSelectedKavitaSeriesId(typeof preferred?.seriesId === "number" ? preferred.seriesId : null);
+        } catch (error_) {
+            setKavitaSeries([]);
+            setSelectedKavitaSeriesId(null);
+            setKavitaSearchError(error_ instanceof Error ? error_.message : String(error_));
+        } finally {
+            setKavitaSearchLoading(false);
+        }
+    };
+
+    const loadKavitaMetadataMatches = async () => {
+        if (selectedKavitaSeriesId == null) {
+            setKavitaMetadataError("Pick a Kavita title match first.");
+            return;
+        }
+
+        setKavitaMetadataLoading(true);
+        setKavitaMetadataError(null);
+        setKavitaMetadataMessage(null);
+
+        try {
+            const response = await fetch("/api/noona/portal/kavita/title-match", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({seriesId: selectedKavitaSeriesId}),
+            });
+            const payload = (await response.json().catch(() => null)) as KavitaMetadataResponse | null;
+            if (!response.ok) {
+                throw new Error(normalizeString(payload?.error).trim() || `Kavita metadata lookup failed (HTTP ${response.status}).`);
+            }
+
+            setKavitaMetadataMatches(Array.isArray(payload?.matches) ? payload.matches : []);
+            setKavitaMetadataMessage("Fetched metadata candidates from Kavita.");
+        } catch (error_) {
+            setKavitaMetadataMatches([]);
+            setKavitaMetadataError(error_ instanceof Error ? error_.message : String(error_));
+        } finally {
+            setKavitaMetadataLoading(false);
+        }
+    };
+
+    const applyKavitaMetadataMatch = async (match: KavitaMetadataMatch) => {
+        if (selectedKavitaSeriesId == null) {
+            setKavitaMetadataError("Pick a Kavita title match first.");
+            return;
+        }
+
+        const aniListId = normalizeKavitaProviderId(match.aniListId);
+        const malId = normalizeKavitaProviderId(match.malId);
+        const cbrId = normalizeKavitaProviderId(match.cbrId);
+        if (!aniListId && !malId && !cbrId) {
+            setKavitaMetadataError("The selected metadata candidate does not include any provider ids Kavita can apply.");
+            return;
+        }
+
+        const applyingId = [aniListId, malId, cbrId].filter(Boolean).join(":");
+        setKavitaMetadataApplyingId(applyingId);
+        setKavitaMetadataError(null);
+        setKavitaMetadataMessage(null);
+
+        try {
+            const response = await fetch("/api/noona/portal/kavita/title-match/apply", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    seriesId: selectedKavitaSeriesId,
+                    aniListId,
+                    malId,
+                    cbrId,
+                }),
+            });
+            const payload = (await response.json().catch(() => null)) as KavitaMetadataResponse | null;
+            if (!response.ok) {
+                throw new Error(normalizeString(payload?.error).trim() || `Kavita metadata apply failed (HTTP ${response.status}).`);
+            }
+
+            setKavitaMetadataMessage("Applied the selected Kavita metadata match.");
+        } catch (error_) {
+            setKavitaMetadataError(error_ instanceof Error ? error_.message : String(error_));
+        } finally {
+            setKavitaMetadataApplyingId(null);
+        }
+    };
+
+    useEffect(() => {
+        if (!currentTitleName) {
+            setKavitaSeries([]);
+            setSelectedKavitaSeriesId(null);
+            return;
+        }
+
+        void loadKavitaSeries(currentTitleName);
+    }, [currentTitleName]);
+
+    useEffect(() => {
+        setKavitaMetadataMatches([]);
+        setKavitaMetadataError(null);
+        setKavitaMetadataMessage(null);
+    }, [selectedKavitaSeriesId]);
 
     const save = async () => {
         setSaveError(null);
@@ -194,47 +420,211 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         }
     };
 
+    const checkForNewAndMissingChapters = async () => {
+        setSyncingTitle(true);
+        setSyncTitleMessage(null);
+        setSyncTitleError(null);
+
+        try {
+            const res = await fetch(`/api/noona/raven/title/${encodeURIComponent(normalizedUuid)}/checkForNew`, {
+                method: "POST",
+            });
+
+            const json = (await res.json().catch(() => null)) as unknown;
+            if (!res.ok) {
+                const message =
+                    json && typeof json === "object" && "error" in json && typeof (json as {
+                        error?: unknown
+                    }).error === "string"
+                        ? String((json as { error?: unknown }).error)
+                        : `Check failed (HTTP ${res.status}).`;
+                throw new Error(message);
+            }
+
+            const payload = json && typeof json === "object" ? (json as TitleSyncResponse) : null;
+            const totalQueued = typeof payload?.totalQueued === "number" && Number.isFinite(payload.totalQueued)
+                ? payload.totalQueued
+                : null;
+            const newCount =
+                typeof payload?.newChaptersQueued === "number" && Number.isFinite(payload.newChaptersQueued)
+                    ? payload.newChaptersQueued
+                    : null;
+            const missingCount =
+                typeof payload?.missingChaptersQueued === "number" && Number.isFinite(payload.missingChaptersQueued)
+                    ? payload.missingChaptersQueued
+                    : null;
+
+            const fallbackMessage = totalQueued != null && totalQueued > 0
+                ? `Queued ${totalQueued} chapter(s)${newCount != null && missingCount != null ? ` (${newCount} new, ${missingCount} missing)` : ""}.`
+                : "No new or missing chapters found.";
+            setSyncTitleMessage(normalizeString(payload?.message).trim() || fallbackMessage);
+            await load();
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setSyncTitleError(message);
+        } finally {
+            setSyncingTitle(false);
+        }
+    };
+
+    const toggleFileSelection = (name: string) => {
+        setSelectedFiles((prev) => {
+            const next = new Set(prev);
+            if (next.has(name)) next.delete(name);
+            else next.add(name);
+            return next;
+        });
+    };
+
+    const selectAllFiles = () => {
+        const fileList = files?.files ?? [];
+        setSelectedFiles(new Set(fileList.map((entry) => entry.name)));
+    };
+
+    const clearFileSelection = () => {
+        setSelectedFiles(new Set());
+    };
+
+    const deleteSelectedFiles = async (names: string[]) => {
+        const normalized = names.map((entry) => normalizeString(entry).trim()).filter(Boolean);
+        if (normalized.length === 0) return;
+
+        setDeletingFiles(true);
+        setDeleteFilesError(null);
+        setDeleteFilesMessage(null);
+        try {
+            const res = await fetch(`/api/noona/raven/title/${encodeURIComponent(normalizedUuid)}/files`, {
+                method: "DELETE",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({names: normalized}),
+            });
+
+            const json = (await res.json().catch(() => null)) as unknown;
+            if (!res.ok) {
+                const message =
+                    json && typeof json === "object" && "error" in json && typeof (json as {
+                        error?: unknown
+                    }).error === "string"
+                        ? String((json as { error?: unknown }).error)
+                        : `Delete failed (HTTP ${res.status}).`;
+                throw new Error(message);
+            }
+
+            setSelectedFiles((prev) => {
+                const next = new Set(prev);
+                for (const name of normalized) next.delete(name);
+                return next;
+            });
+            await load();
+            setDeleteFilesMessage(`Deleted ${normalized.length} file(s).`);
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setDeleteFilesError(message);
+        } finally {
+            setDeletingFiles(false);
+        }
+    };
+
     if (!normalizedUuid) {
         return (
             <SetupModeGate>
-                <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
-                    <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
-                        <Column gap="8">
-                            <Heading as="h2" variant="heading-strong-l">
-                                Invalid title
-                            </Heading>
-                            <Text onBackground="neutral-weak">Missing UUID.</Text>
-                            <Button variant="primary" onClick={() => router.push("/libraries")}>
-                                Back to library
-                            </Button>
-                        </Column>
-                    </Card>
-                </Column>
+                <AuthGate>
+                    <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
+                        <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                            <Column gap="8">
+                                <Heading as="h2" variant="heading-strong-l">
+                                    Invalid title
+                                </Heading>
+                                <Text onBackground="neutral-weak">Missing UUID.</Text>
+                                <Button variant="primary" onClick={() => router.push("/libraries")}>
+                                    Back to library
+                                </Button>
+                            </Column>
+                        </Card>
+                    </Column>
+                </AuthGate>
             </SetupModeGate>
         );
     }
 
     return (
         <SetupModeGate>
-            <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
+            <AuthGate>
+                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
+                        m={{style: {paddingInline: "24px"}}}>
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
-                    <Column gap="4" style={{minWidth: 0}}>
-                        <Heading variant="display-strong-s" wrap="balance">
-                            {normalizeString(title?.title ?? title?.titleName) || "Title"}
-                        </Heading>
-                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                            {normalizedUuid}
-                        </Text>
-                    </Column>
+                    <Row gap="16" vertical="center" style={{minWidth: 0}}>
+                        {coverUrl && (
+                            <img
+                                src={coverUrl}
+                                alt={`${normalizeString(title?.title ?? title?.titleName) || "Title"} cover`}
+                                style={{
+                                    width: 64,
+                                    height: 96,
+                                    objectFit: "cover",
+                                    borderRadius: 12,
+                                    border: "1px solid rgba(255,255,255,0.12)",
+                                    flex: "0 0 auto",
+                                }}
+                                loading="lazy"
+                            />
+                        )}
+                        <Column gap="8" style={{minWidth: 0}}>
+                            <Heading variant="display-strong-s" wrap="balance">
+                                {normalizeString(title?.title ?? title?.titleName) || "Title"}
+                            </Heading>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {mediaType && (
+                                    <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                        {mediaType}
+                                    </Badge>
+                                )}
+                                <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                    {normalizedUuid}
+                                </Badge>
+                            </Row>
+                        </Column>
+                    </Row>
                     <Row gap="12" style={{flexWrap: "wrap"}}>
                         <Button variant="secondary" onClick={() => router.push("/libraries")}>
                             Back
+                        </Button>
+                        {typeof selectedKavitaSeries?.url === "string" && selectedKavitaSeries.url.trim() && (
+                            <Button variant="secondary"
+                                    onClick={() => window.open(selectedKavitaSeries.url ?? "", "_blank", "noopener,noreferrer")}>
+                                Open in Kavita
+                            </Button>
+                        )}
+                        <Button
+                            variant="secondary"
+                            onClick={() => void checkForNewAndMissingChapters()}
+                            disabled={syncingTitle || loading}
+                        >
+                            {syncingTitle ? "Checking..." : "Check new/missing"}
                         </Button>
                         <Button variant="secondary" onClick={() => void load()} disabled={loading}>
                             Refresh
                         </Button>
                     </Row>
                 </Row>
+
+                    {(syncTitleError || syncTitleMessage) && (
+                        <Card
+                            fillWidth
+                            background="surface"
+                            border={syncTitleError ? "danger-alpha-weak" : "neutral-alpha-weak"}
+                            padding="m"
+                            radius="l"
+                        >
+                            <Text
+                                variant="body-default-xs"
+                                onBackground={syncTitleError ? "danger-strong" : "neutral-weak"}
+                                wrap="balance"
+                            >
+                                {syncTitleError || syncTitleMessage}
+                            </Text>
+                        </Card>
+                    )}
 
                 {error && (
                     <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
@@ -265,6 +655,11 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                     {typeof title?.lastDownloaded === "string" && title.lastDownloaded.trim() && (
                                         <Badge background="success-alpha-weak" onBackground="neutral-strong">
                                             last chapter: {title.lastDownloaded}
+                                        </Badge>
+                                    )}
+                                    {mediaType && (
+                                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            type: {mediaType}
                                         </Badge>
                                     )}
                                     {typeof title?.chapterCount === "number" && Number.isFinite(title.chapterCount) && (
@@ -312,6 +707,147 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
                         <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
+                                <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                    <Heading as="h2" variant="heading-strong-l">
+                                        Kavita
+                                    </Heading>
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={!currentTitleName || kavitaSearchLoading}
+                                            onClick={() => void loadKavitaSeries(currentTitleName)}
+                                        >
+                                            {kavitaSearchLoading ? "Searching..." : "Refresh Kavita search"}
+                                        </Button>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={selectedKavitaSeriesId == null || kavitaMetadataLoading}
+                                            onClick={() => void loadKavitaMetadataMatches()}
+                                        >
+                                            {kavitaMetadataLoading ? "Matching..." : "Search metadata matches"}
+                                        </Button>
+                                    </Row>
+                                </Row>
+
+                                {(kavitaSearchError || kavitaMetadataError || kavitaMetadataMessage) && (
+                                    <Column gap="4">
+                                        {kavitaSearchError && (
+                                            <Text onBackground="danger-strong" variant="body-default-xs">
+                                                {kavitaSearchError}
+                                            </Text>
+                                        )}
+                                        {kavitaMetadataError && (
+                                            <Text onBackground="danger-strong" variant="body-default-xs">
+                                                {kavitaMetadataError}
+                                            </Text>
+                                        )}
+                                        {kavitaMetadataMessage && (
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                {kavitaMetadataMessage}
+                                            </Text>
+                                        )}
+                                    </Column>
+                                )}
+
+                                {kavitaSeries.length === 0 && !kavitaSearchLoading && !kavitaSearchError && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        No Kavita series matches found for this title yet.
+                                    </Text>
+                                )}
+
+                                {kavitaSeries.length > 0 && (
+                                    <Column gap="8">
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Select the Kavita title entry Moon should use for metadata matching and
+                                            direct links.
+                                        </Text>
+                                        {kavitaSeries.map((entry) => {
+                                            const entrySeriesId = typeof entry.seriesId === "number" ? entry.seriesId : null;
+                                            const selected = entrySeriesId != null && entrySeriesId === selectedKavitaSeriesId;
+                                            return (
+                                                <Row
+                                                    key={`${entrySeriesId ?? "series"}:${entry.libraryId ?? "library"}`}
+                                                    fillWidth horizontal="between" vertical="center" gap="12"
+                                                    background={selected ? "brand-alpha-weak" : "neutral-alpha-weak"}
+                                                    padding="12" radius="m">
+                                                    <Column gap="4" style={{minWidth: 0}}>
+                                                        <Text variant="body-default-s">
+                                                            {normalizeString(entry.name).trim() || "Unnamed Kavita series"}
+                                                        </Text>
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            {normalizeString(entry.libraryName).trim() || "Unknown library"}
+                                                            {Array.isArray(entry.aliases) && entry.aliases.length > 0 ? ` • ${entry.aliases.join(", ")}` : ""}
+                                                        </Text>
+                                                    </Column>
+                                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                        {typeof entry.url === "string" && entry.url.trim() && (
+                                                            <Button variant="secondary"
+                                                                    onClick={() => window.open(entry.url ?? "", "_blank", "noopener,noreferrer")}>
+                                                                Open
+                                                            </Button>
+                                                        )}
+                                                        <Button
+                                                            variant={selected ? "primary" : "secondary"}
+                                                            disabled={entrySeriesId == null}
+                                                            onClick={() => setSelectedKavitaSeriesId(entrySeriesId)}
+                                                        >
+                                                            {selected ? "Selected" : "Use title"}
+                                                        </Button>
+                                                    </Row>
+                                                </Row>
+                                            );
+                                        })}
+                                    </Column>
+                                )}
+
+                                {kavitaMetadataMatches.length > 0 && (
+                                    <Column gap="8">
+                                        <Text variant="label-default-s">Metadata candidates</Text>
+                                        {kavitaMetadataMatches.map((match, index) => {
+                                            const matchKey = [
+                                                normalizeKavitaProviderId(match.aniListId),
+                                                normalizeKavitaProviderId(match.malId),
+                                                normalizeKavitaProviderId(match.cbrId),
+                                                String(index),
+                                            ].filter(Boolean).join(":");
+                                            const applying = kavitaMetadataApplyingId === matchKey;
+                                            return (
+                                                <Row key={matchKey} fillWidth horizontal="between" vertical="center"
+                                                     gap="12" background="neutral-alpha-weak" padding="12" radius="m">
+                                                    <Column gap="4" style={{minWidth: 0}}>
+                                                        <Text variant="body-default-s">
+                                                            {normalizeString(match.title).trim() || "Untitled metadata result"}
+                                                        </Text>
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            {normalizeString(match.provider).trim() || "Unknown provider"}
+                                                            {typeof match.score === "number" && Number.isFinite(match.score) ? ` • score ${match.score}` : ""}
+                                                        </Text>
+                                                        {normalizeString(match.summary).trim() && (
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                                  wrap="balance">
+                                                                {match.summary}
+                                                            </Text>
+                                                        )}
+                                                    </Column>
+                                                    <Button
+                                                        variant="secondary"
+                                                        disabled={applying}
+                                                        onClick={() => void applyKavitaMetadataMatch(match)}
+                                                    >
+                                                        {applying ? "Applying..." : "Apply match"}
+                                                    </Button>
+                                                </Row>
+                                            );
+                                        })}
+                                    </Column>
+                                )}
+                            </Column>
+                        </Card>
+
+                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Column gap="12">
                                 <Heading as="h2" variant="heading-strong-l">
                                     Edit
                                 </Heading>
@@ -349,9 +885,34 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
                         <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
-                                <Heading as="h2" variant="heading-strong-l">
-                                    Downloaded files
-                                </Heading>
+                                <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                    <Heading as="h2" variant="heading-strong-l">
+                                        Downloaded files
+                                    </Heading>
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={!files || files.files.length === 0 || deletingFiles}
+                                            onClick={() => selectAllFiles()}
+                                        >
+                                            Select all
+                                        </Button>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={selectedFiles.size === 0 || deletingFiles}
+                                            onClick={() => clearFileSelection()}
+                                        >
+                                            Clear selection
+                                        </Button>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={selectedFiles.size === 0 || deletingFiles}
+                                            onClick={() => void deleteSelectedFiles(Array.from(selectedFiles))}
+                                        >
+                                            {deletingFiles ? "Deleting..." : `Delete selected (${selectedFiles.size})`}
+                                        </Button>
+                                    </Row>
+                                </Row>
 
                                 {!files && (
                                     <Text onBackground="neutral-weak">No file metadata available yet.</Text>
@@ -363,6 +924,20 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
                                 {files && files.files.length > 0 && (
                                     <Column gap="8">
+                                        {(deleteFilesError || deleteFilesMessage) && (
+                                            <Column gap="4">
+                                                {deleteFilesError && (
+                                                    <Text onBackground="danger-strong" variant="body-default-xs">
+                                                        {deleteFilesError}
+                                                    </Text>
+                                                )}
+                                                {deleteFilesMessage && (
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        {deleteFilesMessage}
+                                                    </Text>
+                                                )}
+                                            </Column>
+                                        )}
                                         <Line background="neutral-alpha-weak"/>
                                         {files.files.map((file) => {
                                             const modified =
@@ -370,22 +945,41 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                                 (typeof file.modifiedAtMs === "number" && Number.isFinite(file.modifiedAtMs)
                                                     ? new Date(file.modifiedAtMs).toISOString()
                                                     : "");
+                                            const checked = selectedFiles.has(file.name);
 
                                             return (
                                                 <Row key={file.name} horizontal="between" gap="12">
-                                                    <Column gap="4" style={{minWidth: 0}}>
-                                                        <Text variant="body-default-s" wrap="balance">
-                                                            {file.name}
-                                                        </Text>
-                                                        {modified && (
-                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                                {modified}
+                                                    <Row gap="8" style={{minWidth: 0}}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={checked}
+                                                            onChange={() => toggleFileSelection(file.name)}
+                                                            aria-label={`Select ${file.name}`}
+                                                        />
+                                                        <Column gap="4" style={{minWidth: 0}}>
+                                                            <Text variant="body-default-s" wrap="balance">
+                                                                {file.name}
                                                             </Text>
-                                                        )}
-                                                    </Column>
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        {formatBytes(file.sizeBytes)}
-                                                    </Text>
+                                                            {modified && (
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs">
+                                                                    {modified}
+                                                                </Text>
+                                                            )}
+                                                        </Column>
+                                                    </Row>
+                                                    <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            {formatBytes(file.sizeBytes)}
+                                                        </Text>
+                                                        <Button
+                                                            variant="secondary"
+                                                            disabled={deletingFiles}
+                                                            onClick={() => void deleteSelectedFiles([file.name])}
+                                                        >
+                                                            Delete
+                                                        </Button>
+                                                    </Row>
                                                 </Row>
                                             );
                                         })}
@@ -419,6 +1013,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                     </Column>
                 )}
             </Column>
+            </AuthGate>
         </SetupModeGate>
     );
 }

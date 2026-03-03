@@ -1,7 +1,11 @@
 // services/warden/docker/dockerUtilties.mjs
+import fs from 'node:fs';
+import path from 'node:path';
+
 import Docker from 'dockerode';
 import fetch from 'node-fetch';
 import {debugMSG, log, warn} from '../../../utilities/etc/logger.mjs';
+import {isLikelyNamedDockerVolume} from './storageLayout.mjs';
 
 const docker = new Docker();
 
@@ -91,6 +95,63 @@ const buildNameMatcher = (target) => {
     // Matches exact container names as well as common docker-compose naming patterns:
     //   project_service_1, project-service-1, etc.
     return new RegExp(`(^|[._-])${escaped}([._-]\\d+)?$`, 'i');
+};
+
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
+
+const parseBindMountEntry = (entry) => {
+    if (typeof entry !== 'string') {
+        return null;
+    }
+
+    const trimmed = entry.trim();
+    if (!trimmed || trimmed.startsWith('\\\\.\\pipe\\')) {
+        return null;
+    }
+
+    if (WINDOWS_ABSOLUTE_PATH_PATTERN.test(trimmed)) {
+        const separatorIndex = trimmed.indexOf(':', 2);
+        if (separatorIndex < 0) {
+            return null;
+        }
+
+        return {
+            source: trimmed.slice(0, separatorIndex),
+        };
+    }
+
+    const separatorIndex = trimmed.indexOf(':');
+    if (separatorIndex < 0) {
+        return null;
+    }
+
+    return {
+        source: trimmed.slice(0, separatorIndex),
+    };
+};
+
+const ensureBindMountDirectories = (entries = []) => {
+    for (const entry of entries) {
+        const parsed = parseBindMountEntry(entry);
+        if (!parsed?.source) {
+            continue;
+        }
+
+        if (isLikelyNamedDockerVolume(parsed.source)) {
+            continue;
+        }
+
+        const sourcePath = path.isAbsolute(parsed.source)
+            ? parsed.source
+            : path.resolve(process.cwd(), parsed.source);
+
+        try {
+            fs.mkdirSync(sourcePath, {recursive: true});
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            warn(`[dockerUtil] Failed to ensure bind mount folder '${sourcePath}': ${message}`);
+        }
+    }
 };
 
 /**
@@ -294,6 +355,7 @@ export async function runContainerWithLogs(
 ) {
     const { dockerInstance = docker, onLog } = options;
     const binds = service.volumes || [];
+    ensureBindMountDirectories(binds);
 
     // Avoid double-injecting SERVICE_NAME
     const envVars = [...(service.env || [])];
@@ -315,7 +377,9 @@ export async function runContainerWithLogs(
         HostConfig: {
             PortBindings: ports,
             Binds: binds.length ? binds : undefined,
+            RestartPolicy: service.restartPolicy || undefined,
         },
+        User: service.user || undefined,
         NetworkingConfig: {
             EndpointsConfig: {
                 [networkName]: {},

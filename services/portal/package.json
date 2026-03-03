@@ -7,17 +7,18 @@
   "scripts": {
     "start": "node initPortal.mjs",
     "dev": "nodemon initPortal.mjs",
+    "commands:list": "node scripts/listCommands.mjs",
     "test": "node --test"
   },
   "dependencies": {
     "chalk": "^5.6.2",
-    "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5",
-    "express": "^5.1.0",
-    "ioredis": "^5.6.1"
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.10.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "nodemon": "^3.1.14"
   },
   "repository": {
     "type": "git",

@@ -1,0 +1,18 @@
+@use '../variables' as theme;
+
+@media(max-width: theme.$grid-breakpoints-sm) {
+  .phone-hidden {
+    display: none;
+  }
+}
+
+@media(min-width: theme.$grid-breakpoints-sm) {
+  .not-phone-hidden {
+    display: none;
+  }
+}
+
+.redlines * {
+  outline: 1px solid red;
+  outline-offset: -0.0625rem;
+}

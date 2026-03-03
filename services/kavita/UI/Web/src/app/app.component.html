@@ -1,0 +1,41 @@
+<div [ngClass]="{'no-transitions' : transitionState()}">
+  @let currentUser = accountService.currentUser();
+  @if (currentUser && (navService.navbarVisible$ | async) === true) {
+    <div class="fullpage-background">
+      <div class="background-area">
+        <canvas id="backgroundCanvas" class="default-background"
+                style="width: 100%; height: calc(var('--vh') * 100);"></canvas>
+      </div>
+    </div>
+  }
+  <app-nav-header/>
+
+  @let sideNavVisible = navService.sideNavVisibilitySignal();
+  @let sideNavCollapsed = navService.sideNavCollapsedSignal();
+  @let usePreferenceSideNav = navService.usePreferenceSideNav$ | async;
+
+  <div [ngClass]="{'closed' : sideNavCollapsed, 'content-wrapper': sideNavVisible}">
+    @if (sideNavVisible) {
+      @if (usePreferenceSideNav) {
+        <app-preference-nav/>
+      } @else {
+        <app-side-nav/>
+      }
+    }
+
+    <div [ngClass]="{'g-0': !sideNavVisible}">
+      <a id="content"></a>
+      @if (sideNavVisible) {
+        <div>
+          <div class="companion-bar" [ngClass]="{'companion-bar-content': !sideNavCollapsed || usePreferenceSideNav,
+                  'companion-bar-collapsed': (sideNavCollapsed && usePreferenceSideNav)}">
+            <router-outlet/>
+          </div>
+        </div>
+      } @else {
+        <router-outlet/>
+      }
+    </div>
+  </div>
+
+</div>

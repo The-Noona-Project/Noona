@@ -1,6 +1,14 @@
 ﻿// services/warden/docker/addonDockers.mjs
 
-const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
+import {resolveHostServiceBase, resolveHostServiceHost, resolveSharedHostEnvEntries,} from './hostServiceUrl.mjs';
+
+const HOST_SERVICE_URL = resolveHostServiceBase();
+const HOST_SERVICE_HOST = resolveHostServiceHost();
+const SHARED_HOST_ENV = resolveSharedHostEnvEntries();
+const DEFAULT_TIMEZONE = process.env.TZ || 'UTC';
+const DEFAULT_KAVITA_ADMIN_USERNAME = process.env.KAVITA_ADMIN_USERNAME || '';
+const DEFAULT_KAVITA_ADMIN_EMAIL = process.env.KAVITA_ADMIN_EMAIL || '';
+const DEFAULT_KAVITA_ADMIN_PASSWORD = process.env.KAVITA_ADMIN_PASSWORD || '';
 
 const createEnvField = (key, defaultValue, {
     label = key,
@@ -21,6 +29,7 @@ const createEnvField = (key, defaultValue, {
 const rawList = [
     {
         name: 'noona-redis',
+        description: 'Redis Stack used for caching, wizard state, and ephemeral service coordination.',
         image: 'redis/redis-stack:7.2.0-v19',
         port: 8001,
         internalPort: 8001,
@@ -32,7 +41,7 @@ const rawList = [
             '6379/tcp': {},
             '8001/tcp': {},
         },
-        env: ['SERVICE_NAME=noona-redis'],
+        env: [...SHARED_HOST_ENV, 'SERVICE_NAME=noona-redis'],
         envConfig: [
             createEnvField('SERVICE_NAME', 'noona-redis', {
                 label: 'Service Name',
@@ -46,6 +55,7 @@ const rawList = [
     },
     {
         name: 'noona-mongo',
+        description: 'MongoDB backing store used by Vault for persistent data.',
         image: 'mongo:8',
         port: 27017,
         internalPort: 27017,
@@ -56,6 +66,7 @@ const rawList = [
             '27017/tcp': {},
         },
         env: [
+            ...SHARED_HOST_ENV,
             'MONGO_INITDB_ROOT_USERNAME=root',
             'MONGO_INITDB_ROOT_PASSWORD=example',
             'SERVICE_NAME=noona-mongo',
@@ -77,7 +88,118 @@ const rawList = [
         ],
         volumes: ['/noona-mongo-data:/data/db'],
         health: null, // Mongo doesn't expose an HTTP endpoint
-        hostServiceUrl: `mongodb://localhost:27017`,
+        hostServiceUrl: `mongodb://${HOST_SERVICE_HOST}:27017`,
+    },
+    {
+        name: 'noona-kavita',
+        description: 'Managed Kavita library server wired to the Noona downloads folder.',
+        image: 'captainpax/noona-kavita:latest',
+        port: 5000,
+        internalPort: 5000,
+        env: [
+            ...SHARED_HOST_ENV,
+            'SERVICE_NAME=noona-kavita',
+            `TZ=${DEFAULT_TIMEZONE}`,
+            'KAVITA_CONFIG_HOST_MOUNT_PATH=',
+            'KAVITA_LIBRARY_HOST_MOUNT_PATH=',
+            `KAVITA_ADMIN_USERNAME=${DEFAULT_KAVITA_ADMIN_USERNAME}`,
+            `KAVITA_ADMIN_EMAIL=${DEFAULT_KAVITA_ADMIN_EMAIL}`,
+            `KAVITA_ADMIN_PASSWORD=${DEFAULT_KAVITA_ADMIN_PASSWORD}`,
+        ],
+        envConfig: [
+            createEnvField('SERVICE_NAME', 'noona-kavita', {
+                label: 'Service Name',
+                readOnly: true,
+                description: 'Identifier used when naming the Kavita container.',
+            }),
+            createEnvField('TZ', DEFAULT_TIMEZONE, {
+                label: 'Timezone',
+                description: 'Timezone used by the managed Kavita container.',
+                required: false,
+            }),
+            createEnvField('KAVITA_CONFIG_HOST_MOUNT_PATH', '', {
+                label: 'Kavita Config Folder',
+                description: 'Optional host folder mounted into Kavita at /kavita/config.',
+                warning: 'Leave empty to use the default Noona storage root under kavita/config.',
+                required: false,
+            }),
+            createEnvField('KAVITA_LIBRARY_HOST_MOUNT_PATH', '', {
+                label: 'Kavita Library Folder',
+                description: 'Optional host folder mounted into Kavita at /manga for the shared library.',
+                warning: 'Leave empty to share the default Noona Raven downloads folder.',
+                required: false,
+            }),
+            createEnvField('KAVITA_ADMIN_USERNAME', DEFAULT_KAVITA_ADMIN_USERNAME, {
+                label: 'Initial Kavita Admin Username',
+                description: 'Optional username the managed noona-kavita image should use when bootstrapping the first admin account.',
+                warning: 'Provide this with the matching email and password if you want Noona to create the first Kavita admin automatically.',
+                required: false,
+            }),
+            createEnvField('KAVITA_ADMIN_EMAIL', DEFAULT_KAVITA_ADMIN_EMAIL, {
+                label: 'Initial Kavita Admin Email',
+                description: 'Optional email address used when the managed noona-kavita image registers the first admin account.',
+                warning: 'Provide this with the matching username and password if you want Noona to create the first Kavita admin automatically.',
+                required: false,
+            }),
+            createEnvField('KAVITA_ADMIN_PASSWORD', DEFAULT_KAVITA_ADMIN_PASSWORD, {
+                label: 'Initial Kavita Admin Password',
+                description: 'Optional password used when the managed noona-kavita image registers the first admin account.',
+                warning: 'Store and rotate this carefully if you keep it in managed service settings.',
+                required: false,
+            }),
+        ],
+        volumes: [],
+        hostServiceUrl: `${HOST_SERVICE_URL}:5000`,
+        health: 'http://noona-kavita:5000/api/Health',
+        healthTries: 60,
+        healthDelayMs: 1000,
+        restartPolicy: {Name: 'unless-stopped'},
+    },
+    {
+        name: 'noona-komf',
+        description: 'Managed Komf metadata helper wired to Kavita by default.',
+        image: 'sndxr/komf:latest',
+        port: 8085,
+        internalPort: 8085,
+        env: [
+            ...SHARED_HOST_ENV,
+            'SERVICE_NAME=noona-komf',
+            'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+            'KOMF_KAVITA_API_KEY=',
+            'KOMF_LOG_LEVEL=INFO',
+            'KOMF_CONFIG_HOST_MOUNT_PATH=',
+        ],
+        envConfig: [
+            createEnvField('SERVICE_NAME', 'noona-komf', {
+                label: 'Service Name',
+                readOnly: true,
+                description: 'Identifier used when naming the Komf container.',
+            }),
+            createEnvField('KOMF_KAVITA_BASE_URI', 'http://noona-kavita:5000', {
+                label: 'Kavita Base URI',
+                description: 'Kavita base URL used by Komf.',
+            }),
+            createEnvField('KOMF_KAVITA_API_KEY', '', {
+                label: 'Kavita API Key',
+                description: 'API key Komf uses to talk to Kavita.',
+            }),
+            createEnvField('KOMF_LOG_LEVEL', 'INFO', {
+                label: 'Komf Log Level',
+                description: 'Logging level used by the Komf container.',
+                required: false,
+            }),
+            createEnvField('KOMF_CONFIG_HOST_MOUNT_PATH', '', {
+                label: 'Komf Config Folder',
+                description: 'Optional host folder mounted into Komf at /config.',
+                warning: 'Leave empty to use the default Noona storage root under komf/config.',
+                required: false,
+            }),
+        ],
+        volumes: [],
+        hostServiceUrl: `${HOST_SERVICE_URL}:8085`,
+        health: null,
+        user: '1000:1000',
+        restartPolicy: {Name: 'unless-stopped'},
     },
 ];
 

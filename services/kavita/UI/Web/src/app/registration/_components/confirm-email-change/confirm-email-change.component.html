@@ -1,0 +1,20 @@
+<ng-container *transloco="let t; prefix: 'confirm-email-change'">
+  <app-splash-container>
+    <ng-container title><h2>{{ t('title') }}</h2></ng-container>
+    <ng-container body>
+      @if (!confirmed) {
+        {{ t('non-confirm-description') }}
+      } @else {
+        <div class="card">
+          <div class="card-body">
+            <div class="card-title">
+              <h3><i class="fa-regular fa-circle-check me-2" style="font-size: 1.8rem"
+                     aria-hidden="true"></i>{{ t('success') }}</h3>
+            </div>
+            <p>{{ t('confirm-description') }}</p>
+          </div>
+        </div>
+      }
+    </ng-container>
+  </app-splash-container>
+</ng-container>

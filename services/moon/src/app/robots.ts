@@ -1,12 +1,14 @@
-import {baseURL} from "@/resources";
+import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export default function robots() {
+    const baseUrl = resolveMoonBaseUrl();
+
     return {
         rules: [
             {
                 userAgent: "*",
             },
         ],
-        sitemap: `${baseURL}/sitemap.xml`,
+        sitemap: `${baseUrl}/sitemap.xml`,
     };
 }

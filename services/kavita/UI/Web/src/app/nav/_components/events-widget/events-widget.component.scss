@@ -1,0 +1,133 @@
+.dark-menu {
+  background-color: var(--navbar-bg-color);
+  border-color: var(--event-widget-border-color); // rgba(1, 4, 9, 0.5);
+}
+
+.dark-menu-item {
+  color: var(--event-widget-text-color);
+  background-color: var(--event-widget-item-bg-color); // rgb(1, 4, 9)
+  border-color: var(--event-widget-item-border-color); // rgba(53, 53, 53, 0.5)
+}
+
+// Popovers need to be their own component
+::ng-deep .bs-popover-bottom > .popover-arrow::after, .bs-popover-bottom > .popover-arrow::before {
+  border-bottom-color: transparent;
+}
+
+.colored {
+  color: var(--event-widget-activity-bg-color) !important;
+}
+
+.widget-button--indicator {
+  position: absolute;
+  top: 1.5rem;
+  color: var(--event-widget-activity-bg-color);
+
+  &.error {
+    color: var(--event-widget-error-bg-color) !important;
+  }
+
+  &.info {
+    color: var(--event-widget-info-bg-color) !important;
+  }
+
+  &.update {
+    color: var(--event-widget-update-bg-color) !important;
+  }
+}
+
+::ng-deep .nav-events {
+
+  .popover-body {
+    min-width: 18.75rem;
+    max-width: 18.75rem;
+    padding: 0;
+    box-shadow: 0 0 0.75rem rgb(0 0 0 / 75%);
+    max-height: calc(100vh - 3.75rem);
+    overflow-y: auto;
+  }
+
+  .popover {
+    min-width: 18.75rem;
+  }
+}
+
+.progress-container {
+  width: 100%;
+}
+
+.progress {
+  padding: 0;
+}
+
+.accent-text {
+  width: 100%;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.small-spinner {
+  width: 1rem;
+  height: 1rem;
+}
+
+
+.btn-icon {
+  color: var(--event-widget-text-color);
+}
+
+
+.dark-menu-item {
+  &.update-available {
+    cursor: pointer;
+    opacity: 1;
+
+    i.fa {
+      color: var(--primary-color) !important;
+    }
+
+    color: var(--primary-color);
+  }
+
+  &.error {
+    cursor: pointer;
+    position: relative;
+
+    .h6 {
+      color: var(--event-widget-error-bg-color);
+    }
+
+    i.fa {
+      color: var(--primary-color) !important;
+    }
+
+    .btn-close {
+      top: 0.3125rem;
+      right: 0.625rem;
+      font-size: 0.6875rem;
+      position: absolute;
+    }
+  }
+
+  &.info {
+    cursor: pointer;
+    position: relative;
+
+    .h6 {
+      color: var(--event-widget-info-bg-color);
+    }
+
+    i.fa {
+      color: var(--primary-color) !important;
+    }
+
+    .btn-close {
+      top: 2.1875rem;
+      right: 0.625rem;
+      font-size: 0.6875rem;
+      position: absolute;
+    }
+  }
+
+}

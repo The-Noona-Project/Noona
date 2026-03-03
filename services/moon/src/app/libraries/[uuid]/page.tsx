@@ -1,5 +1,6 @@
 import {Meta} from "@once-ui-system/core";
 import {TitleDetailPage} from "@/components/noona/TitleDetailPage";
+import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export async function generateMetadata({params}: { params: Promise<{ uuid: string }> }) {
     const routeParams = await params;
@@ -8,7 +9,7 @@ export async function generateMetadata({params}: { params: Promise<{ uuid: strin
     return Meta.generate({
         title: uuid ? `Noona Title ${uuid}` : "Noona Title",
         description: "View downloaded files and status for this title.",
-        baseURL: "http://localhost:3000",
+        baseURL: resolveMoonBaseUrl(),
         path: uuid ? `/libraries/${uuid}` : "/libraries",
         image: "/favicon.ico",
     });
@@ -20,4 +21,3 @@ export default async function TitlePage({params}: { params: Promise<{ uuid: stri
 
     return <TitleDetailPage uuid={uuid}/>;
 }
-

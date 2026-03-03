@@ -1,0 +1,34 @@
+<ng-container *transloco="let t; prefix: 'files-over-time'">
+  <div class="card stats-card p-4">
+    <h3 class="stats-title mb-2">{{ t('title') }}</h3>
+
+    <div class="row g-0">
+      @if (isLoading()) {
+        <div class="d-flex justify-content-center p-4" role="status" aria-label="Loading">
+          <span class="spinner-border"></span>
+        </div>
+      } @else if (chartData(); as chart) {
+        @if (chart.hasData) {
+
+          <app-line-chart
+            [axisLabels]="chart.axisLabels"
+            [data]="chart.data"
+            [legendLabels]="chart.legendLabels"
+            [showLegend]="false"
+            [clampOutliers]="true"
+          />
+        } @else {
+          <app-stats-no-data [message]="t('no-data')"/>
+        }
+      }
+    </div>
+
+    @let mostFiles = mostFilesInADay();
+    @if (mostFiles.count > 0) {
+      <div class="stats-note text-muted">
+        {{ t('most-files', {date: mostFiles.date, count: mostFiles.count | number}) }}
+      </div>
+    }
+
+  </div>
+</ng-container>

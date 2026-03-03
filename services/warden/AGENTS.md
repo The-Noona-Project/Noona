@@ -4,7 +4,7 @@
 
 ## 1. Role & Architecture Overview
 - The Warden service is the orchestrator for the Noona stack. It bootstraps Docker containers defined in `docker/noonaDockers.mjs` and `docker/addonDockers.mjs`, exposes orchestration APIs, and coordinates install-time status tracking.
-- `createWarden` (see `shared/wardenCore.mjs`) is the central factory. It:
+- `createWarden` (see `core/createWarden.mjs`) is the central factory. It:
   - Normalizes the service catalogs, combining the core and addon descriptors into a single lookup map used throughout the API.
   - Creates/obtains the Docker network (`ensureNetwork`) and binds the Warden container to it (`attachSelfToNetwork`).
   - Maintains a shared `trackedContainers` set so any container started by the API can be shut down with `shutdownAll()`.
@@ -36,7 +36,7 @@
   - Instantiates the Warden (`createWarden()`), starts the HTTP API (`startWardenServer`), and listens on `WARDEN_API_PORT` (default `4001`).
   - Registers SIGINT/SIGTERM handlers to close the HTTP server and invoke `warden.shutdownAll()` for a clean teardown.
   - Calls `warden.init()` which ensures the Docker network exists, attaches the Warden container, and boots either the minimal or "super" stack based on `DEBUG` (`false`/unset keeps to minimal, `super` launches the full catalog in dependency order).
-- The API exposed via `shared/wardenServer.mjs` includes:
+- The API exposed via `api/startWardenServer.mjs` includes:
   - `GET /health` – liveness probe for the API process.
   - `GET /api/services` – list core/addon services with install status; `?includeInstalled=false` filters out running containers.
   - `POST /api/services/install` – install one or more services; returns multi-status (`207`) when any install fails.
@@ -49,6 +49,8 @@
 - **Key environment variables:**
   - `DEBUG` – selects launch mode and enables log streaming (`true`/`super` streams container stdout via `utilities/etc/logger.mjs`).
   - `WARDEN_API_PORT` – HTTP port for `startWardenServer` (defaults to `4001`).
+  - `WEBGUI_PORT` - Moon web GUI port injected by the `noona-moon` descriptor; Warden also uses it for Moon host/health
+    defaults.
   - `HOST_SERVICE_URL`/`RAVEN_VAULT_URL`/`*_VAULT_TOKEN` – documented in [`readme.md`](./readme.md); ensure descriptors reference them in `envConfig` so setup wizards prompt appropriately.
 - **Debugging tips:**
   1. Hit `GET /health` and `GET /api/services` to confirm Warden is reachable and descriptors are loading.

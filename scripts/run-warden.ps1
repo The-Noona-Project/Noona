@@ -10,7 +10,10 @@ param(
 if (-not $NetworkName) { $NetworkName = 'noona-network' }
 if (-not $ContainerName) { $ContainerName = 'noona-warden' }
 if (-not $WardenImage) { $WardenImage = 'captainpax/noona-warden:latest' }
-if (-not $DebugMode) { $DebugMode = 'false' }
+if (-not $DebugMode)
+{
+    $DebugMode = 'false'
+}
 if ($WardenPort) { $WardenPort = [int]$WardenPort } else { $WardenPort = 4001 }
 
 if (-not $DockerSocketPath) {

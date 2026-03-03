@@ -1,0 +1,19 @@
+.bulk-select-container {
+  z-index: 1;
+  top: 0;
+  position: sticky;
+
+  .bulk-select {
+    background-color: var(--bulk-selection-bg-color);
+    border-bottom: 0.125rem solid var(--primary-color);
+    color: var(--bulk-selection-text-color) !important;
+
+    .btn-icon {
+      color: var(--bulk-selection-text-color);
+    }
+  }
+}
+
+.highlight {
+  color: var(--bulk-selection-highlight-text-color) !important;
+}

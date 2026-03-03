@@ -1,0 +1,118 @@
+// TODO: This has been moved into entity-card. Find what is needed for other cards and streamline it.
+
+.card {
+  background-color: var(--card-bg-color);
+  color: var(--card-text-color);
+  border-color: var(--card-border-color);
+  position: relative;
+  border: var(--card-border);
+  border-radius: var(--card-border-radius);
+
+  &:hover {
+    .card-actions {
+      visibility: visible;
+    }
+  }
+
+  .card-overlay {
+    background-color: var(--card-overlay-bg-color);
+
+    &:hover {
+      background-color: var(--card-overlay-hover-bg-color);
+      cursor: pointer;
+    }
+  }
+}
+
+$image-filter-height: 10rem;
+
+.card-title {
+  --bs-card-title-color: var(--card-title-text-color);
+}
+
+.card-item-container {
+  .card {
+    max-width: var(--card-image-width);
+    cursor: pointer;
+    padding-left: 0;
+    padding-right: 0;
+    box-sizing: border-box;
+    position: relative;
+    color: var(--card-text-color);
+    border: 1px var(--card-border-color);
+    box-sizing: border-box;
+  }
+
+  .card-title {
+    font-size: 0.85rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+    display: block;
+    margin-top: 0;
+    margin-bottom: 0;
+    text-align: center;
+    padding: 0.625rem;
+  }
+
+  .overlay {
+    height: var(--card-image-height);
+    border-top-left-radius: 0.25rem;
+    border-top-right-radius: 0.25rem;
+    z-index: 10;
+
+    //&.filter {
+    //    height: $image-filter-height;
+    //
+    //    .card-overlay {
+    //        height: $image-filter-height;
+    //    }
+    //}
+
+    & .card-title {
+      color: var(--card-overlay-text-color);
+    }
+
+    & + .card-body {
+      color: var(--card-overlay-text-color);
+    }
+  }
+
+  .card-body {
+    padding: 0 0.3125rem !important;
+    background-color: var(--card-body-bg-color);
+    border-width: var(--card-border-width);
+    border-style: var(--card-border-style);
+    border-color: var(--card-border-color);
+    position: absolute;
+    z-index: 115;
+    width: 100%;
+    bottom: 2.4375rem;
+    font-size: 0.8rem;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    max-height: 3.625rem;
+    overflow: hidden;
+  }
+
+  .card-title {
+    width: 100%;
+    max-width: 8.125rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin: 0 auto;
+  }
+
+  .card-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: var(--card-image-height);
+    z-index: 10;
+    transition: all 0.2s;
+    border-top-left-radius: 0.25rem;
+    border-top-right-radius: 0.25rem;
+  }
+}

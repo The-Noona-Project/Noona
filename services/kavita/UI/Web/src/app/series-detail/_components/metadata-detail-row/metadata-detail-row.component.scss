@@ -1,0 +1,16 @@
+.publisher-img-container {
+  background-color: var(--card-bg-color);
+  border-radius: 0.1875rem;
+  padding: 0.125rem 0.3125rem;
+  font-size: 0.8rem;
+  vertical-align: middle;
+
+  div {
+    min-height: 2rem;
+    line-height: 2rem;
+  }
+}
+
+.small-text {
+  font-size: 0.8rem;
+}

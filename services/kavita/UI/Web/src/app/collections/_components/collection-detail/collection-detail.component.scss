@@ -1,0 +1,50 @@
+.main-container {
+  margin-top: 0.625rem;
+  padding: 0 0 0 0.625rem;
+}
+
+
+.poster {
+  width: 100%;
+  max-width: 18.75rem;
+}
+
+@media(max-width: var(--grid-breakpoints-sm)) {
+  .poster {
+    display: none;
+  }
+}
+
+@media(max-width: var(--grid-breakpoints-sm)) {
+  .read-btn--text {
+    display: none;
+  }
+}
+
+.card-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 10rem);
+  grid-gap: 0.5rem;
+  justify-content: space-around;
+  padding-bottom: 1.25rem;
+}
+
+
+.virtual-scroller, virtual-scroller {
+  width: 100%;
+  height: calc(100vh - 5.3125rem);
+  max-height: calc(var(--vh) * 100 - 10.625rem);
+}
+
+h2 {
+  margin-bottom: 0;
+  word-break: break-all;
+}
+
+.under-image {
+  background-color: var(--breadcrumb-bg-color);
+  color: white;
+  border-bottom-left-radius: 0.3125rem;
+  border-bottom-right-radius: 0.3125rem;
+  text-align: center;
+}

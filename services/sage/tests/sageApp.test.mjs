@@ -2,23 +2,19 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
+import {once} from 'node:events'
+import crypto from 'node:crypto'
 
-import { ChannelType, GatewayIntentBits } from 'discord.js'
+import {ChannelType, GatewayIntentBits} from 'discord.js'
 
+import {createSageApp, normalizeServiceInstallPayload, SetupValidationError, startSage,} from '../app/createSageApp.mjs'
 import {
-    SetupValidationError,
-    createSageApp,
-    normalizeServiceInstallPayload,
-    startSage,
-} from '../shared/sageApp.mjs'
-import {
-    createDefaultWizardState,
-    DEFAULT_WIZARD_STEP_METADATA,
     appendWizardStepHistoryEntries,
     applyWizardStateUpdates,
-} from '../shared/wizardStateSchema.mjs'
-import { createDiscordSetupClient } from '../shared/discordSetupClient.mjs'
+    createDefaultWizardState,
+    DEFAULT_WIZARD_STEP_METADATA,
+} from '../wizard/wizardStateSchema.mjs'
+import {createDiscordSetupClient} from '../clients/discordSetupClient.mjs'
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -49,8 +45,14 @@ const createRavenStub = (overrides = {}) => ({
     async getLibrary() {
         throw new Error('getLibrary should not be called')
     },
+    async checkLibraryForNewChapters() {
+        throw new Error('checkLibraryForNewChapters should not be called')
+    },
     async getTitle() {
         throw new Error('getTitle should not be called')
+    },
+    async checkTitleForNewChapters() {
+        throw new Error('checkTitleForNewChapters should not be called')
     },
     async createTitle() {
         throw new Error('createTitle should not be called')
@@ -64,6 +66,9 @@ const createRavenStub = (overrides = {}) => ({
     async listTitleFiles() {
         throw new Error('listTitleFiles should not be called')
     },
+    async deleteTitleFiles() {
+        throw new Error('deleteTitleFiles should not be called')
+    },
     async searchTitle() {
         throw new Error('searchTitle should not be called')
     },
@@ -75,6 +80,348 @@ const createRavenStub = (overrides = {}) => ({
     },
     ...overrides,
 })
+
+const matchesQuery = (doc, query = {}) => {
+    if (!query || typeof query !== 'object') {
+        return true
+    }
+
+    return Object.entries(query).every(([key, value]) => doc?.[key] === value)
+}
+
+const applyMongoUpdate = (doc, update = {}, {isInsert = false} = {}) => {
+    if (isInsert && update?.$setOnInsert && typeof update.$setOnInsert === 'object') {
+        Object.assign(doc, update.$setOnInsert)
+    }
+    if (update?.$set && typeof update.$set === 'object') {
+        Object.assign(doc, update.$set)
+    }
+    return doc
+}
+
+const createVaultAuthStub = ({users = [], settings = []} = {}) => {
+    const userDocs = users.map((entry) => ({...entry}))
+    const settingDocs = settings.map((entry) => ({...entry}))
+    const redisStore = new Map()
+    const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeUsername = (value) => normalizeString(value)
+    const normalizeUsernameKey = (value) => normalizeUsername(value).toLowerCase()
+    const normalizeRole = (value, fallback = 'member') => {
+        const normalized = normalizeString(value).toLowerCase()
+        if (normalized === 'admin' || normalized === 'member') {
+            return normalized
+        }
+        return fallback
+    }
+    const MOON_OP_PERMISSION_KEYS = [
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+        'user_management',
+        'admin',
+    ]
+    const DEFAULT_MEMBER_PERMISSION_KEYS = [
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+    ]
+    const sortPermissions = (permissions = []) => {
+        const set = new Set(Array.isArray(permissions) ? permissions : [])
+        return MOON_OP_PERMISSION_KEYS.filter((entry) => set.has(entry))
+    }
+    const normalizePermissionKey = (value) => normalizeString(value).toLowerCase()
+    const normalizePermissions = (value) => {
+        if (!Array.isArray(value)) {
+            return []
+        }
+
+        const next = []
+        for (const entry of value) {
+            const key = normalizePermissionKey(entry)
+            if (!key || !MOON_OP_PERMISSION_KEYS.includes(key)) {
+                continue
+            }
+            next.push(key)
+        }
+        return sortPermissions(Array.from(new Set(next)))
+    }
+    const defaultPermissionsForRole = (role) =>
+        normalizeRole(role, 'member') === 'admin'
+            ? [...MOON_OP_PERMISSION_KEYS]
+            : [...DEFAULT_MEMBER_PERMISSION_KEYS]
+
+    const hashPassword = (password) => {
+        const salt = crypto.randomBytes(16)
+        const derived = crypto.scryptSync(password, salt, 64, {
+            N: 16384,
+            r: 8,
+            p: 1,
+        })
+        return `scrypt$16384$8$1$${salt.toString('base64')}$${derived.toString('base64')}`
+    }
+
+    const verifyPassword = (password, stored) => {
+        if (typeof password !== 'string' || !password || typeof stored !== 'string' || !stored) {
+            return false
+        }
+
+        const parts = stored.split('$')
+        if (parts.length !== 6 || parts[0] !== 'scrypt') {
+            return false
+        }
+
+        const N = Number(parts[1])
+        const r = Number(parts[2])
+        const p = Number(parts[3])
+        const salt = Buffer.from(parts[4], 'base64')
+        const expected = Buffer.from(parts[5], 'base64')
+        const derived = crypto.scryptSync(password, salt, expected.length, {N, r, p})
+        return crypto.timingSafeEqual(derived, expected)
+    }
+
+    const lookupKeyForUser = (user) => {
+        const normalized = normalizeUsernameKey(user?.usernameNormalized)
+        if (normalized) return normalized
+        return normalizeUsernameKey(user?.username)
+    }
+
+    const toPublicUser = (user) => ({
+        username: normalizeUsername(user?.username),
+        usernameNormalized: lookupKeyForUser(user),
+        role: (() => {
+            const normalizedRole = normalizeRole(user?.role, 'member')
+            const permissions = normalizePermissions(user?.permissions)
+            if (permissions.includes('admin')) return 'admin'
+            if (normalizedRole === 'admin') return 'admin'
+            return 'member'
+        })(),
+        permissions: (() => {
+            const normalizedRole = normalizeRole(user?.role, 'member')
+            const existing = normalizePermissions(user?.permissions)
+            const hasExplicitPermissions = Array.isArray(user?.permissions)
+            if (hasExplicitPermissions) {
+                if (existing.includes('admin')) {
+                    return existing
+                }
+                if (normalizedRole === 'admin') {
+                    return sortPermissions([...existing, 'admin'])
+                }
+                return sortPermissions(existing.filter((entry) => entry !== 'admin'))
+            }
+            return defaultPermissionsForRole(normalizedRole)
+        })(),
+        isBootstrapUser: Boolean(user?.isBootstrapUser),
+        createdAt: normalizeString(user?.createdAt) || null,
+        updatedAt: normalizeString(user?.updatedAt) || null,
+    })
+
+    const findUserIndex = (lookup) => userDocs.findIndex((entry) => lookupKeyForUser(entry) === normalizeUsernameKey(lookup))
+
+    const createVaultError = (message, status) => {
+        const error = new Error(message)
+        error.status = status
+        error.payload = {error: message}
+        return error
+    }
+
+    const updateCollection = (collectionName, query = {}, update = {}, {upsert = false} = {}) => {
+        const target = collectionName === 'noona_users' ? userDocs : settingDocs
+        const index = target.findIndex((doc) => matchesQuery(doc, query))
+
+        if (index >= 0) {
+            target[index] = applyMongoUpdate({...target[index]}, update, {isInsert: false})
+            return {status: 'ok', matched: 1, modified: 1}
+        }
+
+        if (!upsert) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const inserted = applyMongoUpdate({...query}, update, {isInsert: true})
+        target.push(inserted)
+        return {status: 'ok', matched: 0, modified: 0}
+    }
+
+    return {
+        userDocs,
+        settingDocs,
+        redisStore,
+        client: {
+            mongo: {
+                async findOne(collectionName, query = {}) {
+                    if (collectionName === 'noona_users') {
+                        return userDocs.find((doc) => matchesQuery(doc, query)) ?? null
+                    }
+                    if (collectionName === 'noona_settings') {
+                        return settingDocs.find((doc) => matchesQuery(doc, query)) ?? null
+                    }
+                    return null
+                },
+                async insert(collectionName, data = {}) {
+                    if (collectionName === 'noona_users') {
+                        userDocs.push({...data})
+                        return {status: 'ok', insertedId: `user-${userDocs.length}`}
+                    }
+                    if (collectionName === 'noona_settings') {
+                        settingDocs.push({...data})
+                        return {status: 'ok', insertedId: `setting-${settingDocs.length}`}
+                    }
+                    return {status: 'ok', insertedId: null}
+                },
+                async findMany(collectionName, query = {}) {
+                    if (collectionName === 'noona_users') {
+                        return userDocs.filter((doc) => matchesQuery(doc, query)).map((entry) => ({...entry}))
+                    }
+                    if (collectionName === 'noona_settings') {
+                        return settingDocs.filter((doc) => matchesQuery(doc, query)).map((entry) => ({...entry}))
+                    }
+                    return []
+                },
+                async update(collectionName, query = {}, update = {}, options = {}) {
+                    return updateCollection(collectionName, query, update, options)
+                },
+            },
+            redis: {
+                async set(key, value) {
+                    redisStore.set(key, value)
+                    return {status: 'ok'}
+                },
+                async get(key) {
+                    return redisStore.get(key) ?? null
+                },
+                async del(key) {
+                    return redisStore.delete(key) ? 1 : 0
+                },
+            },
+            users: {
+                async list() {
+                    return userDocs.map((entry) => toPublicUser(entry))
+                },
+                async get(username) {
+                    const idx = findUserIndex(username)
+                    if (idx < 0) return null
+                    return toPublicUser(userDocs[idx])
+                },
+                async create(payload = {}) {
+                    const {username, password, role = 'member', permissions, isBootstrapUser = false} = payload
+                    const hasPermissionsInput = Object.prototype.hasOwnProperty.call(payload ?? {}, 'permissions')
+                    const usernameTrimmed = normalizeUsername(username)
+                    const lookupKey = normalizeUsernameKey(usernameTrimmed)
+                    if (!lookupKey) {
+                        throw createVaultError('username is required.', 400)
+                    }
+                    if (findUserIndex(usernameTrimmed) >= 0) {
+                        throw createVaultError('User already exists.', 409)
+                    }
+
+                    const now = new Date().toISOString()
+                    let nextRole = normalizeRole(role, 'member')
+                    let nextPermissions = hasPermissionsInput
+                        ? normalizePermissions(permissions)
+                        : defaultPermissionsForRole(nextRole)
+                    if (nextRole === 'admin' && !nextPermissions.includes('admin')) {
+                        nextPermissions = sortPermissions([...nextPermissions, 'admin'])
+                    }
+                    if (nextRole !== 'admin' && nextPermissions.includes('admin')) {
+                        nextRole = 'admin'
+                    }
+                    if (nextRole !== 'admin') {
+                        nextPermissions = sortPermissions(nextPermissions.filter((entry) => entry !== 'admin'))
+                    }
+                    const doc = {
+                        username: usernameTrimmed,
+                        usernameNormalized: lookupKey,
+                        passwordHash: hashPassword(password),
+                        role: nextRole,
+                        permissions: nextPermissions,
+                        isBootstrapUser: Boolean(isBootstrapUser),
+                        createdAt: now,
+                        updatedAt: now,
+                    }
+                    userDocs.push(doc)
+                    return {ok: true, user: toPublicUser(doc)}
+                },
+                async update(lookupUsername, updates = {}) {
+                    const idx = findUserIndex(lookupUsername)
+                    if (idx < 0) {
+                        throw createVaultError('User not found.', 404)
+                    }
+
+                    const target = {...userDocs[idx]}
+                    if (Object.prototype.hasOwnProperty.call(updates, 'username')) {
+                        const nextUsername = normalizeUsername(updates.username)
+                        const nextLookup = normalizeUsernameKey(nextUsername)
+                        const conflictIdx = findUserIndex(nextUsername)
+                        if (conflictIdx >= 0 && conflictIdx !== idx) {
+                            throw createVaultError('Username is already in use.', 409)
+                        }
+                        target.username = nextUsername
+                        target.usernameNormalized = nextLookup
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(updates, 'password')) {
+                        target.passwordHash = hashPassword(updates.password)
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(updates, 'role')) {
+                        target.role = normalizeRole(updates.role, normalizeRole(target.role, 'member'))
+                    }
+                    if (Object.prototype.hasOwnProperty.call(updates, 'permissions')) {
+                        target.permissions = normalizePermissions(updates.permissions)
+                    }
+                    if (Object.prototype.hasOwnProperty.call(updates, 'isBootstrapUser')) {
+                        target.isBootstrapUser = Boolean(updates.isBootstrapUser)
+                    }
+
+                    if (Object.prototype.hasOwnProperty.call(updates, 'role') && !Object.prototype.hasOwnProperty.call(updates, 'permissions')) {
+                        target.permissions = defaultPermissionsForRole(target.role)
+                    }
+                    if (Object.prototype.hasOwnProperty.call(updates, 'permissions') && !Object.prototype.hasOwnProperty.call(updates, 'role')) {
+                        target.role = target.permissions.includes('admin') ? 'admin' : 'member'
+                    }
+                    if (normalizeRole(target.role, 'member') === 'admin' && !normalizePermissions(target.permissions).includes('admin')) {
+                        target.permissions = sortPermissions([...normalizePermissions(target.permissions), 'admin'])
+                    }
+                    if (normalizeRole(target.role, 'member') !== 'admin') {
+                        target.permissions = sortPermissions(normalizePermissions(target.permissions).filter((entry) => entry !== 'admin'))
+                    }
+
+                    target.updatedAt = new Date().toISOString()
+                    userDocs[idx] = target
+                    return {ok: true, user: toPublicUser(target)}
+                },
+                async delete(lookupUsername) {
+                    const idx = findUserIndex(lookupUsername)
+                    if (idx < 0) {
+                        return {deleted: false}
+                    }
+                    userDocs.splice(idx, 1)
+                    return {deleted: true}
+                },
+                async authenticate({username, password} = {}) {
+                    const idx = findUserIndex(username)
+                    if (idx < 0) {
+                        return {authenticated: false, user: null}
+                    }
+
+                    const target = userDocs[idx]
+                    const lookupKey = normalizeUsernameKey(username)
+                    if (!normalizeUsernameKey(target.usernameNormalized) && lookupKey) {
+                        target.usernameNormalized = lookupKey
+                    }
+
+                    if (!verifyPassword(password, target.passwordHash)) {
+                        return {authenticated: false, user: null}
+                    }
+
+                    return {authenticated: true, user: toPublicUser(target)}
+                },
+            },
+        },
+    }
+}
 
 test('normalizeServiceInstallPayload normalizes entries and trims values', () => {
     const payload = normalizeServiceInstallPayload([
@@ -716,20 +1063,122 @@ test('createDiscordSetupClient uses limited intents during validation', async ()
                 destroy() {
                     destroyCalls.push(true)
                 },
-                async fetchGuild() {
+                async fetchApplication() {
+                    return {id: 'client-123', name: 'Noona Portal'}
+                },
+                async fetchGuilds() {
+                    return [guildStub]
+                },
+                async fetchGuildById() {
                     return guildStub
                 },
             }
         },
     })
 
-    await setupClient.fetchResources({ token: 'token', guildId: 'guild-123' })
+    const payload = await setupClient.fetchResources({token: 'token'})
 
     assert.equal(createdOptions.length, 1)
     assert.equal(loginCalls.length, 1)
     assert.equal(destroyCalls.length, 1)
     assert.deepEqual(createdOptions[0].intents, [GatewayIntentBits.Guilds])
     assert.deepEqual(createdOptions[0].partials, [])
+    assert.equal(payload.application?.id, 'client-123')
+    assert.equal(payload.suggested?.guildId, 'guild-123')
+})
+
+test('createDiscordSetupClient falls back to Discord REST resources when guild role fetch returns empty', async () => {
+    const fetchCalls = []
+    const setupClient = createDiscordSetupClient({
+        serviceName: 'test-sage',
+        logger: {
+            error: () => {
+            },
+            info: () => {
+            },
+        },
+        fetchImpl: async (url) => {
+            fetchCalls.push(String(url))
+
+            if (String(url).endsWith('/roles')) {
+                return {
+                    ok: true,
+                    async json() {
+                        return [
+                            {id: 'role-1', name: 'Members', managed: false, position: 3, color: 0},
+                            {id: 'role-2', name: 'Bot Managed', managed: true, position: 4, color: 0},
+                        ]
+                    },
+                }
+            }
+
+            if (String(url).endsWith('/channels')) {
+                return {
+                    ok: true,
+                    async json() {
+                        return [
+                            {id: 'channel-1', name: 'general', type: 0},
+                        ]
+                    },
+                }
+            }
+
+            throw new Error(`Unexpected URL: ${url}`)
+        },
+        createClient() {
+            return {
+                async login() {
+                },
+                destroy() {
+                },
+                async fetchApplication() {
+                    return {id: 'client-123', name: 'Noona Portal'}
+                },
+                async fetchGuilds() {
+                    return [{id: 'guild-123', name: 'Guild Name', description: null, icon: null}]
+                },
+                async fetchGuildById() {
+                    return {
+                        id: 'guild-123',
+                        name: 'Guild Name',
+                        description: null,
+                        icon: null,
+                        roles: {
+                            async fetch() {
+                                return []
+                            }
+                        },
+                        channels: {
+                            async fetch() {
+                                return []
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    })
+
+    const payload = await setupClient.fetchResources({token: 'token', guildId: 'guild-123'})
+
+    assert.deepEqual(payload.roles, [
+        {
+            id: 'role-1',
+            name: 'Members',
+            color: 0,
+            position: 3,
+            managed: false,
+        },
+    ])
+    assert.deepEqual(payload.channels, [
+        {
+            id: 'channel-1',
+            name: 'general',
+            type: 0,
+        },
+    ])
+    assert.ok(fetchCalls.some((entry) => entry.endsWith('/guilds/guild-123/roles')))
+    assert.ok(fetchCalls.some((entry) => entry.endsWith('/guilds/guild-123/channels')))
 })
 
 test('createDiscordSetupClient maps invalid Discord tokens to validation errors', async () => {
@@ -753,7 +1202,7 @@ test('createDiscordSetupClient maps invalid Discord tokens to validation errors'
     })
 
     await assert.rejects(
-        () => setupClient.fetchResources({ token: 'bad-token', guildId: 'guild-123' }),
+        () => setupClient.fetchResources({token: 'bad-token'}),
         (error) => {
             assert.ok(error instanceof SetupValidationError)
             assert.match(error.message, /Discord rejected the provided bot token/i)
@@ -875,8 +1324,59 @@ test('POST /api/setup/install forwards request to setup client', async (t) => {
     })
 
     assert.equal(response.status, 207)
-    assert.deepEqual(await response.json(), { results: [{ name: 'noona-sage', status: 'installed' }] })
+    assert.deepEqual(await response.json(), {
+        results: [{name: 'noona-sage', status: 'installed'}],
+        accepted: false,
+        started: false,
+        alreadyRunning: false,
+        progress: null,
+    })
     assert.deepEqual(calls, [[{ name: 'noona-sage', env: { DEBUG: 'true' } }]])
+})
+
+test('POST /api/setup/install forwards async install mode to setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices(services, options) {
+                calls.push({services, options})
+                return {
+                    status: 202,
+                    results: [],
+                    accepted: true,
+                    started: true,
+                    alreadyRunning: false,
+                    progress: {status: 'installing', percent: 0, items: [{name: 'noona-kavita', status: 'pending'}]},
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: [{name: 'noona-kavita'}]}),
+    })
+
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {
+        results: [],
+        accepted: true,
+        started: true,
+        alreadyRunning: false,
+        progress: {status: 'installing', percent: 0, items: [{name: 'noona-kavita', status: 'pending'}]},
+    })
+    assert.deepEqual(calls, [{
+        services: [{name: 'noona-kavita'}],
+        options: {async: true},
+    }])
 })
 
 test('POST /api/setup/install validates payload', async (t) => {
@@ -945,6 +1445,43 @@ test('setupClient.installServices normalizes payload before forwarding to Warden
         { name: 'noona-sage' },
         { name: 'noona-moon', env: { DEBUG: 'false' } },
     ])
+})
+
+test('setupClient.installServices can request async forwarding to Warden', async (t) => {
+    const bodies = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            fetchImpl: async (url, options = {}) => {
+                bodies.push({url, body: options.body})
+                return {
+                    ok: true,
+                    status: 202,
+                    async json() {
+                        return {accepted: true, started: true, alreadyRunning: false}
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-sage']}),
+    })
+
+    assert.equal(response.status, 202)
+    await response.json()
+
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].url, 'http://warden.local/api/services/install?async=true')
+    const parsedBody = JSON.parse(bodies[0].body)
+    assert.deepEqual(parsedBody.services, [{name: 'noona-sage'}])
 })
 
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
@@ -1168,6 +1705,46 @@ test('GET /api/raven/library surfaces Raven errors', async (t) => {
     assert.ok(payload.error.includes('Raven library'))
 })
 
+test('POST /api/raven/library/checkForNew proxies Raven library sync', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkLibraryForNewChapters() {
+                calls.push('sync')
+                return {checkedTitles: 2, queuedChapters: 5}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/checkForNew`, {method: 'POST'})
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {checkedTitles: 2, queuedChapters: 5})
+    assert.deepEqual(calls, ['sync'])
+})
+
+test('POST /api/raven/library/checkForNew surfaces Raven errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkLibraryForNewChapters() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/checkForNew`, {method: 'POST'})
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to check Raven library for updates'))
+})
+
 test('GET /api/raven/title/:uuid proxies Raven title lookups', async (t) => {
     const calls = []
     const app = createSageApp({
@@ -1203,6 +1780,46 @@ test('GET /api/raven/title/:uuid returns 404 for unknown titles', async (t) => {
     t.after(() => closeServer(server))
 
     const response = await fetch(`${baseUrl}/api/raven/title/missing`)
+    assert.equal(response.status, 404)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('not found'))
+})
+
+test('POST /api/raven/title/:uuid/checkForNew proxies title sync', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkTitleForNewChapters(uuid) {
+                calls.push(uuid)
+                return {uuid, status: 'updated', totalQueued: 3}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/title-123/checkForNew`, {method: 'POST'})
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {uuid: 'title-123', status: 'updated', totalQueued: 3})
+    assert.deepEqual(calls, ['title-123'])
+})
+
+test('POST /api/raven/title/:uuid/checkForNew returns 404 for unknown titles', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkTitleForNewChapters() {
+                return null
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title/missing/checkForNew`, {method: 'POST'})
     assert.equal(response.status, 404)
     const payload = await response.json()
     assert.ok(payload.error.includes('not found'))
@@ -1584,6 +2201,358 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data' } })
 })
 
+test('POST /api/setup/services/noona-kavita/service-key provisions a managed key and updates selected services', async (t) => {
+    const vault = createVaultAuthStub()
+    const serviceConfigs = new Map([
+        ['noona-portal', {env: {DISCORD_BOT_TOKEN: 'bot-token'}}],
+        ['noona-raven', {env: {KAVITA_LIBRARY_ROOT: ''}}],
+        ['noona-komf', {env: {KOMF_LOG_LEVEL: 'INFO'}}],
+    ])
+    const updateCalls = []
+    const managedCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                return serviceConfigs.get(name) ?? {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                serviceConfigs.set(name, {env: {...(updates?.env ?? {})}})
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: {
+                        username: 'noona-system',
+                        email: 'noona-system@noona.local',
+                        password: 'super-secret',
+                    },
+                    mode: 'register',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            services: ['noona-portal', 'noona-raven', 'noona-komf'],
+            account: {
+                username: 'reader-admin',
+                email: 'reader-admin@example.com',
+                password: 'Password123!',
+            },
+        }),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'managed-kavita-key')
+    assert.equal(payload.baseUrl, 'http://noona-kavita:5000')
+    assert.equal(payload.mode, 'register')
+    assert.deepEqual(payload.services, ['noona-portal', 'noona-raven', 'noona-komf'])
+    assert.equal(managedCalls.length, 1)
+    assert.deepEqual(managedCalls[0], {
+        account: {
+            username: 'reader-admin',
+            email: 'reader-admin@example.com',
+            password: 'Password123!',
+        },
+        allowRegister: true,
+    })
+
+    assert.equal(updateCalls.length, 3)
+    assert.deepEqual(updateCalls[0], [
+        'noona-portal',
+        {
+            env: {
+                DISCORD_BOT_TOKEN: 'bot-token',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ])
+    assert.deepEqual(updateCalls[1], [
+        'noona-raven',
+        {
+            env: {
+                KAVITA_LIBRARY_ROOT: '/manga',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ])
+    assert.deepEqual(updateCalls[2], [
+        'noona-komf',
+        {
+            env: {
+                KOMF_LOG_LEVEL: 'INFO',
+                KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',
+                KOMF_KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ])
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'setup.managedKavitaServiceAccount')
+    assert.ok(stored)
+    assert.equal(stored.value?.apiKey, 'managed-kavita-key')
+    assert.deepEqual(stored.value?.account, {
+        username: 'noona-system',
+        email: 'noona-system@noona.local',
+    })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key validates partial managed account payloads', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig() {
+                return {env: {}}
+            },
+            async updateServiceConfig() {
+                throw new Error('updateServiceConfig should not be called')
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                throw new Error('ensureServiceApiKey should not be called')
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            services: ['noona-portal'],
+            account: {
+                username: 'reader-admin',
+                email: '',
+                password: 'Password123!',
+            },
+        }),
+    })
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {
+        error: 'Managed Kavita account requires a username, email, and password.',
+    })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key reuses an existing service key when one is already configured', async (t) => {
+    const managedCalls = []
+    const updateCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-portal') {
+                    return {
+                        env: {
+                            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                            KAVITA_API_KEY: 'existing-service-key',
+                        },
+                    }
+                }
+
+                if (name === 'noona-komf') {
+                    return {
+                        env: {
+                            KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',
+                            KOMF_KAVITA_API_KEY: '',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                managedCalls.push('called')
+                return {
+                    apiKey: 'should-not-run',
+                    account: null,
+                    mode: 'register',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal', 'noona-komf']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'existing-service-key')
+    assert.equal(payload.mode, 'existing')
+    assert.deepEqual(managedCalls, [])
+    assert.deepEqual(updateCalls, [
+        [
+            'noona-portal',
+            {
+                env: {
+                    KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                    KAVITA_API_KEY: 'existing-service-key',
+                },
+                restart: true,
+            },
+        ],
+        [
+            'noona-komf',
+            {
+                env: {
+                    KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',
+                    KOMF_KAVITA_API_KEY: 'existing-service-key',
+                },
+                restart: true,
+            },
+        ],
+    ])
+})
+
+test('POST /api/setup/services/noona-kavita/service-key falls back to managed noona-kavita env credentials', async (t) => {
+    const managedCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {
+                        env: {
+                            KAVITA_ADMIN_USERNAME: 'reader-admin',
+                            KAVITA_ADMIN_EMAIL: 'reader-admin@example.com',
+                            KAVITA_ADMIN_PASSWORD: 'Password123!',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: {
+                        username: 'reader-admin',
+                        email: 'reader-admin@example.com',
+                        password: 'Password123!',
+                    },
+                    mode: 'login',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal']}),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal(managedCalls.length, 1)
+    assert.deepEqual(managedCalls[0], {
+        account: {
+            username: 'reader-admin',
+            email: 'reader-admin@example.com',
+            password: 'Password123!',
+        },
+        allowRegister: true,
+    })
+})
+
 test('GET /api/setup/services/:name/health proxies health payloads', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -1631,6 +2600,1420 @@ test('GET /api/setup/services/:name/health surfaces validation errors', async (t
     assert.equal(response.status, 400)
     const payload = await response.json()
     assert.equal(payload.error, 'Unsupported service for health check')
+})
+
+const bootstrapAdminAndLogin = async ({baseUrl, username = 'CaptainPax', password = 'Password123'} = {}) => {
+    const bootstrapResponse = await fetch(`${baseUrl}/api/auth/bootstrap`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, password}),
+    })
+    assert.equal(bootstrapResponse.status, 200)
+    const bootstrapPayload = await bootstrapResponse.json()
+    assert.equal(bootstrapPayload.ok, true)
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, password}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    assert.equal(typeof loginPayload.token, 'string')
+    assert.equal(loginPayload.user.username, username)
+    assert.equal(loginPayload.user.role, 'admin')
+
+    return {
+        username,
+        password,
+        token: loginPayload.token,
+        bootstrapPayload,
+    }
+}
+
+const finalizeBootstrapAdmin = async ({baseUrl, token}) => {
+    const response = await fetch(`${baseUrl}/api/auth/bootstrap/finalize`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+        },
+    })
+    const payload = await response.json()
+    return {response, payload}
+}
+
+const jsonResponse = (body, status = 200) =>
+    new Response(JSON.stringify(body), {
+        status,
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    })
+
+const createDiscordOauthFetchStub = ({identitiesByCode = {}} = {}) => async (url, init = {}) => {
+    const target = String(url)
+    if (target.endsWith('/oauth2/token')) {
+        const params = new URLSearchParams(String(init.body ?? ''))
+        const code = params.get('code')
+        if (!code || !identitiesByCode[code]) {
+            return jsonResponse({error: 'invalid_grant', error_description: 'Unknown authorization code.'}, 400)
+        }
+
+        return jsonResponse({
+            access_token: `token-for-${code}`,
+            token_type: 'Bearer',
+            scope: 'identify email',
+        })
+    }
+
+    if (target.endsWith('/users/@me')) {
+        const authHeader = new Headers(init.headers ?? {}).get('authorization') ?? ''
+        const accessToken = authHeader.replace(/^Bearer\s+/i, '')
+        const code = accessToken.replace(/^token-for-/, '')
+        const identity = identitiesByCode[code]
+        if (!identity) {
+            return jsonResponse({message: 'Unknown access token.'}, 401)
+        }
+
+        return jsonResponse({
+            id: identity.id,
+            username: identity.username,
+            global_name: identity.globalName,
+            avatar: identity.avatar ?? 'avatarhash',
+            email: identity.email ?? null,
+        })
+    }
+
+    throw new Error(`Unexpected Discord OAuth fetch: ${target}`)
+}
+
+test('POST /api/auth/bootstrap stores admin in memory and login works before vault is configured', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const statusBefore = await fetch(`${baseUrl}/api/auth/bootstrap/status`)
+    assert.equal(statusBefore.status, 200)
+    assert.deepEqual(await statusBefore.json(), {
+        setupCompleted: false,
+        adminExists: false,
+        username: null,
+        persisted: false,
+    })
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const statusAfter = await fetch(`${baseUrl}/api/auth/bootstrap/status`)
+    assert.equal(statusAfter.status, 200)
+    assert.deepEqual(await statusAfter.json(), {
+        setupCompleted: false,
+        adminExists: true,
+        username: 'CaptainPax',
+        persisted: false,
+    })
+
+    const authStatus = await fetch(`${baseUrl}/api/auth/status`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(authStatus.status, 200)
+    const authPayload = await authStatus.json()
+    assert.equal(authPayload.user.username, 'CaptainPax')
+    assert.equal(authPayload.user.role, 'admin')
+})
+
+test('POST /api/auth/bootstrap/finalize persists pending admin into vault storage', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    assert.equal(vault.userDocs.length, 0)
+
+    const {response, payload} = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(response.status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.persisted, true)
+    assert.equal(payload.created, true)
+    assert.equal(payload.username, 'CaptainPax')
+
+    const createdAdmin = vault.userDocs.find((entry) => entry.role === 'admin')
+    assert.ok(createdAdmin)
+    assert.equal(createdAdmin.username, 'CaptainPax')
+    assert.equal(createdAdmin.usernameNormalized, 'captainpax')
+    assert.ok(typeof createdAdmin.passwordHash === 'string' && createdAdmin.passwordHash.startsWith('scrypt$'))
+
+    const secondFinalize = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(secondFinalize.response.status, 200)
+    assert.equal(secondFinalize.payload.persisted, false)
+})
+
+test('POST /api/auth/bootstrap/finalize updates existing admin credentials when admin already exists', async (t) => {
+    const oldPasswordHash =
+        'scrypt$16384$8$1$R0Q4jRjN0Bhiw91o0q4LYQ==$XWwI3dI7X9gJQTLf5+3xHzrJQkEM6GShAb8ehIg4s0v8fu4vW7nKfknB/olqV+Y4x9D9iJ8qC6C0VJkpA8Y3jw=='
+
+    const vault = createVaultAuthStub({
+        users: [
+            {
+                username: 'admin',
+                usernameNormalized: 'admin',
+                role: 'admin',
+                passwordHash: oldPasswordHash,
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+            },
+        ],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const {response, payload} = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(response.status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.created, false)
+    assert.equal(payload.persisted, true)
+
+    const updatedAdmin = vault.userDocs.find((entry) => entry.role === 'admin')
+    assert.ok(updatedAdmin)
+    assert.equal(updatedAdmin.username, 'CaptainPax')
+    assert.equal(updatedAdmin.usernameNormalized, 'captainpax')
+    assert.equal(updatedAdmin.createdAt, '2026-01-01T00:00:00.000Z')
+    assert.ok(typeof updatedAdmin.passwordHash === 'string' && updatedAdmin.passwordHash.startsWith('scrypt$'))
+    assert.notEqual(updatedAdmin.passwordHash, oldPasswordHash)
+})
+
+test('POST /api/auth/bootstrap/finalize promotes existing username and demotes stale admin records', async (t) => {
+    const vault = createVaultAuthStub({
+        users: [
+            {
+                username: 'admin',
+                usernameNormalized: 'admin',
+                role: 'admin',
+                passwordHash:
+                    'scrypt$16384$8$1$R0Q4jRjN0Bhiw91o0q4LYQ==$XWwI3dI7X9gJQTLf5+3xHzrJQkEM6GShAb8ehIg4s0v8fu4vW7nKfknB/olqV+Y4x9D9iJ8qC6C0VJkpA8Y3jw==',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+                username: 'CaptainPax',
+                usernameNormalized: 'captainpax',
+                role: 'member',
+                passwordHash:
+                    'scrypt$16384$8$1$R0Q4jRjN0Bhiw91o0q4LYQ==$XWwI3dI7X9gJQTLf5+3xHzrJQkEM6GShAb8ehIg4s0v8fu4vW7nKfknB/olqV+Y4x9D9iJ8qC6C0VJkpA8Y3jw==',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+            },
+        ],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const {response, payload} = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(response.status, 200)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.persisted, true)
+
+    const currentAdmin = vault.userDocs.find((entry) => entry.usernameNormalized === 'captainpax')
+    assert.ok(currentAdmin)
+    assert.equal(currentAdmin.role, 'admin')
+    assert.ok(typeof currentAdmin.passwordHash === 'string' && currentAdmin.passwordHash.startsWith('scrypt$'))
+
+    const previousAdmin = vault.userDocs.find((entry) => entry.usernameNormalized === 'admin')
+    assert.ok(previousAdmin)
+    assert.equal(previousAdmin.role, 'member')
+})
+
+test('POST /api/auth/bootstrap returns conflict when setup is already completed', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/auth/bootstrap`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'CaptainPax', password: 'Password123'}),
+    })
+
+    assert.equal(response.status, 409)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Setup already completed.')
+})
+
+test('POST /api/auth/login repairs legacy users missing usernameNormalized', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'captainpax')
+    assert.ok(storedUser)
+    delete storedUser.usernameNormalized
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'CaptainPax', password: 'Password123'}),
+    })
+
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    assert.equal(loginPayload.user.username, 'CaptainPax')
+    assert.equal(loginPayload.user.role, 'admin')
+
+    const refreshedStoredUser = vault.userDocs.find((entry) => entry.username === 'CaptainPax')
+    assert.ok(refreshedStoredUser)
+    assert.equal(refreshedStoredUser.usernameNormalized, 'captainpax')
+})
+
+test('Discord OAuth config, callback test, and bootstrap create the first admin session', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'callback-test': {
+                        id: '123456789012345678',
+                        username: 'PaxKun',
+                        globalName: 'Pax-kun',
+                        email: 'pax@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const startTestResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'test',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/setupwizard/summary?selected=noona-portal',
+        }),
+    })
+    assert.equal(startTestResponse.status, 200)
+    const startTestPayload = await startTestResponse.json()
+    assert.ok(String(startTestPayload.authorizeUrl).includes('client_id=discord-client-id'))
+    assert.ok(typeof startTestPayload.state === 'string' && startTestPayload.state.length > 10)
+
+    const callbackTestResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'callback-test',
+            state: startTestPayload.state,
+        }),
+    })
+    assert.equal(callbackTestResponse.status, 200)
+    const callbackTestPayload = await callbackTestResponse.json()
+    assert.equal(callbackTestPayload.stage, 'tested')
+    assert.equal(callbackTestPayload.user.username, 'PaxKun')
+
+    const storedDiscordConfig = vault.settingDocs.find((entry) => entry.key === 'auth.discord')
+    assert.ok(storedDiscordConfig)
+    assert.equal(storedDiscordConfig.clientId, 'discord-client-id')
+    assert.ok(typeof storedDiscordConfig.lastTestedAt === 'string' && storedDiscordConfig.lastTestedAt.length > 10)
+    assert.equal(storedDiscordConfig.lastTestedUser.id, '123456789012345678')
+
+    const startBootstrapResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'bootstrap',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/setupwizard/summary?selected=noona-portal',
+        }),
+    })
+    assert.equal(startBootstrapResponse.status, 200)
+    const startBootstrapPayload = await startBootstrapResponse.json()
+
+    const callbackBootstrapResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'callback-test',
+            state: startBootstrapPayload.state,
+        }),
+    })
+    assert.equal(callbackBootstrapResponse.status, 200)
+    const callbackBootstrapPayload = await callbackBootstrapResponse.json()
+    assert.equal(callbackBootstrapPayload.stage, 'bootstrapped')
+    assert.ok(typeof callbackBootstrapPayload.token === 'string' && callbackBootstrapPayload.token.length > 10)
+    assert.equal(callbackBootstrapPayload.user.authProvider, 'discord')
+    assert.equal(callbackBootstrapPayload.user.discordUserId, '123456789012345678')
+
+    const storedAdmin = vault.userDocs.find((entry) => entry.discordUserId === '123456789012345678')
+    assert.ok(storedAdmin)
+    assert.equal(storedAdmin.usernameNormalized, 'discord.123456789012345678')
+    assert.equal(storedAdmin.role, 'admin')
+    assert.equal(storedAdmin.isBootstrapUser, true)
+
+    const statusResponse = await fetch(`${baseUrl}/api/auth/status`, {
+        headers: {
+            Authorization: `Bearer ${callbackBootstrapPayload.token}`,
+        },
+    })
+    assert.equal(statusResponse.status, 200)
+    const statusPayload = await statusResponse.json()
+    assert.equal(statusPayload.user.discordUserId, '123456789012345678')
+    assert.equal(statusPayload.user.role, 'admin')
+})
+
+test('auth user management creates Discord-linked users and Discord login uses OAuth callback', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'reader-login': {
+                        id: '999888777666555444',
+                        username: 'ReaderDiscord',
+                        globalName: 'Reader Prime',
+                        email: 'reader@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'Reader One',
+            discordUserId: '999888777666555444',
+            permissions: ['moon_login', 'lookup_new_title'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+    const createPayload = await createResponse.json()
+    assert.equal(createPayload.user.authProvider, 'discord')
+    assert.equal(createPayload.user.discordUserId, '999888777666555444')
+
+    const resetPasswordResponse = await fetch(`${baseUrl}/api/auth/users/discord.999888777666555444/reset-password`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+        },
+    })
+    assert.equal(resetPasswordResponse.status, 400)
+
+    const startLoginResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'login',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/',
+        }),
+    })
+    assert.equal(startLoginResponse.status, 200)
+    const startLoginPayload = await startLoginResponse.json()
+
+    const callbackLoginResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'reader-login',
+            state: startLoginPayload.state,
+        }),
+    })
+    assert.equal(callbackLoginResponse.status, 200)
+    const callbackLoginPayload = await callbackLoginResponse.json()
+    assert.equal(callbackLoginPayload.stage, 'authenticated')
+    assert.ok(typeof callbackLoginPayload.token === 'string' && callbackLoginPayload.token.length > 10)
+    assert.equal(callbackLoginPayload.user.authProvider, 'discord')
+    assert.equal(callbackLoginPayload.user.discordUserId, '999888777666555444')
+    assert.equal(callbackLoginPayload.user.username, 'Reader One')
+})
+
+test('auth user management routes create, update, list, and delete users through vault', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderPrime', role: 'admin'}),
+    })
+    assert.equal(updateResponse.status, 200)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.user.username, 'ReaderPrime')
+    assert.equal(updatePayload.user.role, 'admin')
+
+    const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json()
+    assert.ok(Array.isArray(listPayload.users))
+    assert.ok(listPayload.users.some((entry) => entry.username === 'ReaderPrime'))
+
+    const deleteResponse = await fetch(`${baseUrl}/api/auth/users/ReaderPrime`, {
+        method: 'DELETE',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(deleteResponse.status, 200)
+    assert.deepEqual(await deleteResponse.json(), {deleted: true})
+})
+
+test('auth user management updates legacy Discord users missing authProvider metadata', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const now = new Date().toISOString()
+    vault.userDocs.push({
+        username: 'Reader Legacy',
+        usernameNormalized: 'discord.222333444555666777',
+        discordUserId: '222333444555666777',
+        role: 'member',
+        permissions: ['moon_login'],
+        createdAt: now,
+        updatedAt: now,
+    })
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/discord.222333444555666777`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'Reader Legacy Prime',
+            permissions: ['moon_login', 'lookup_new_title', 'download_new_title'],
+        }),
+    })
+    assert.equal(updateResponse.status, 200)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.user.authProvider, 'discord')
+    assert.equal(updatePayload.user.discordUserId, '222333444555666777')
+    assert.equal(updatePayload.user.username, 'Reader Legacy Prime')
+    assert.deepEqual(updatePayload.user.permissions, ['moon_login', 'lookup_new_title', 'download_new_title'])
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'discord.222333444555666777')
+    assert.ok(storedUser)
+    assert.equal(storedUser.authProvider, 'discord')
+    assert.equal(storedUser.authProviderId, '222333444555666777')
+    assert.equal(storedUser.username, 'Reader Legacy Prime')
+    assert.deepEqual(storedUser.permissions, ['moon_login', 'lookup_new_title', 'download_new_title'])
+})
+
+test('auth user management surfaces Vault write failures instead of reporting false success', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+
+    vault.client.mongo.update = async () => ({status: 'ok', matched: 0, modified: 0})
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({permissions: ['moon_login']}),
+    })
+    assert.equal(updateResponse.status, 502)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.error, 'Vault did not persist auth user update.')
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'readerone')
+    assert.ok(storedUser)
+    assert.deepEqual(storedUser.permissions, [
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+    ])
+})
+
+test('auth user management keeps bootstrap protection on legacy setup user records', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const setupUserDoc = vault.userDocs.find((entry) => entry.usernameNormalized === 'captainpax')
+    assert.ok(setupUserDoc)
+    // Simulate legacy records created before bootstrap protection was persisted.
+    setupUserDoc.isBootstrapUser = false
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'ReaderAdmin',
+            password: 'Password123',
+            permissions: ['moon_login', 'admin'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+    const createPayload = await createResponse.json()
+    assert.equal(createPayload.user.username, 'ReaderAdmin')
+    assert.equal(createPayload.user.role, 'admin')
+    assert.equal(createPayload.user.isBootstrapUser, false)
+
+    const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json()
+    const setupUser = listPayload.users.find((entry) => entry.username === 'CaptainPax')
+    const readerAdmin = listPayload.users.find((entry) => entry.username === 'ReaderAdmin')
+    assert.ok(setupUser)
+    assert.ok(readerAdmin)
+    assert.equal(setupUser.isBootstrapUser, true)
+    assert.equal(readerAdmin.isBootstrapUser, false)
+})
+
+test('auth user management protects setup account and can reset non-protected user passwords', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'ReaderOne',
+            password: 'Password123',
+            role: 'member',
+            permissions: ['moon_login'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const resetResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne/reset-password`, {
+        method: 'POST',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(resetResponse.status, 200)
+    const resetPayload = await resetResponse.json()
+    assert.equal(resetPayload.ok, true)
+    assert.equal(resetPayload.user.username, 'ReaderOne')
+    assert.ok(typeof resetPayload.password === 'string' && resetPayload.password.length >= 12)
+
+    const readerLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'ReaderOne', password: resetPayload.password}),
+    })
+    assert.equal(readerLoginResponse.status, 200)
+
+    const protectedUpdateResponse = await fetch(`${baseUrl}/api/auth/users/CaptainPax`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'CaptainPax2'}),
+    })
+    assert.equal(protectedUpdateResponse.status, 403)
+
+    const protectedResetResponse = await fetch(`${baseUrl}/api/auth/users/CaptainPax/reset-password`, {
+        method: 'POST',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(protectedResetResponse.status, 403)
+
+    const protectedDeleteResponse = await fetch(`${baseUrl}/api/auth/users/CaptainPax`, {
+        method: 'DELETE',
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(protectedDeleteResponse.status, 403)
+})
+
+test('auth user management routes require user_management permission', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'ReaderOne',
+            password: 'Password123',
+            role: 'member',
+            permissions: ['moon_login'],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const readerLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123'}),
+    })
+    assert.equal(readerLoginResponse.status, 200)
+    const readerPayload = await readerLoginResponse.json()
+    const readerToken = readerPayload.token
+    assert.ok(typeof readerToken === 'string' && readerToken.length > 10)
+
+    const forbiddenListResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${readerToken}`},
+    })
+    assert.equal(forbiddenListResponse.status, 403)
+})
+
+test('login requires moon_login permission', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'NoLoginUser',
+            password: 'Password123',
+            role: 'member',
+            permissions: [],
+        }),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'NoLoginUser', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 403)
+    const payload = await loginResponse.json()
+    assert.equal(payload.error, 'Moon login permission is required for this account.')
+})
+
+test('auth default permissions routes persist defaults and apply them to new member accounts', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'auth.default_member_permissions',
+            permissions: ['moon_login', 'download_new_title'],
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const getDefaultsResponse = await fetch(`${baseUrl}/api/auth/users/default-permissions`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getDefaultsResponse.status, 200)
+    assert.deepEqual(await getDefaultsResponse.json(), {
+        key: 'auth.default_member_permissions',
+        defaultPermissions: ['moon_login', 'download_new_title'],
+        permissions: ['moon_login', 'lookup_new_title', 'download_new_title', 'check_download_missing_titles', 'user_management', 'admin'],
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const putDefaultsResponse = await fetch(`${baseUrl}/api/auth/users/default-permissions`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            permissions: ['moon_login', 'lookup_new_title', 'user_management'],
+        }),
+    })
+    assert.equal(putDefaultsResponse.status, 200)
+    const putDefaultsPayload = await putDefaultsResponse.json()
+    assert.equal(putDefaultsPayload.ok, true)
+    assert.deepEqual(putDefaultsPayload.defaultPermissions, ['moon_login', 'lookup_new_title', 'user_management'])
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'DefaultedUser', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+    const createPayload = await createResponse.json()
+    assert.deepEqual(createPayload.user.permissions, ['moon_login', 'lookup_new_title', 'user_management'])
+
+    const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json()
+    assert.deepEqual(listPayload.defaultPermissions, ['moon_login', 'lookup_new_title', 'user_management'])
+})
+
+test('Discord OAuth login auto-creates a Discord user with configured default permissions', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'auth.default_member_permissions',
+            permissions: ['moon_login', 'download_new_title'],
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'new-reader-login': {
+                        id: '222333444555666777',
+                        username: 'BrandNewReader',
+                        globalName: 'Brand New Reader',
+                        email: 'brand-new@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const startLoginResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'login',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/',
+        }),
+    })
+    assert.equal(startLoginResponse.status, 200)
+    const startLoginPayload = await startLoginResponse.json()
+
+    const callbackLoginResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'new-reader-login',
+            state: startLoginPayload.state,
+        }),
+    })
+    assert.equal(callbackLoginResponse.status, 200)
+    const callbackLoginPayload = await callbackLoginResponse.json()
+    assert.equal(callbackLoginPayload.stage, 'authenticated')
+    assert.equal(callbackLoginPayload.user.authProvider, 'discord')
+    assert.equal(callbackLoginPayload.user.discordUserId, '222333444555666777')
+    assert.equal(callbackLoginPayload.user.username, 'Brand New Reader')
+    assert.deepEqual(callbackLoginPayload.user.permissions, ['moon_login', 'download_new_title'])
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'discord.222333444555666777')
+    assert.ok(storedUser)
+    assert.equal(storedUser.authProvider, 'discord')
+    assert.deepEqual(storedUser.permissions, ['moon_login', 'download_new_title'])
+})
+
+test('settings download worker routes read and update per-thread rate limits', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.workers',
+            threadRateLimitsKbps: [128, 0, 256],
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const getResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getResponse.status, 200)
+    assert.deepEqual(await getResponse.json(), {
+        key: 'downloads.workers',
+        threadRateLimitsKbps: [128, 0, 256],
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            threadRateLimitsKbps: [512, -1, '1000'],
+        }),
+    })
+    assert.equal(putResponse.status, 200)
+    const putPayload = await putResponse.json()
+    assert.equal(putPayload.key, 'downloads.workers')
+    assert.deepEqual(putPayload.threadRateLimitsKbps, [512, 0, 1000])
+    assert.ok(typeof putPayload.updatedAt === 'string')
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.workers')
+    assert.ok(stored)
+    assert.deepEqual(stored.threadRateLimitsKbps, [512, 0, 1000])
+})
+
+test('settings debug routes read and update live debug mode', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{key: 'noona.debug', enabled: false, updatedAt: '2026-01-01T00:00:00.000Z'}],
+    })
+    const debugCalls = []
+    const setupClient = {
+        async setDebug(enabled) {
+            debugCalls.push(enabled)
+            return {enabled}
+        },
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient,
+        ravenClient: createRavenStub({
+            async setDebug() {
+                return {enabled: true}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const getRes = await fetch(`${baseUrl}/api/settings/debug`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getRes.status, 200)
+    assert.deepEqual(await getRes.json(), {
+        key: 'noona.debug',
+        enabled: false,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const putRes = await fetch(`${baseUrl}/api/settings/debug`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({enabled: true}),
+    })
+    assert.equal(putRes.status, 200)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.key, 'noona.debug')
+    assert.equal(putPayload.enabled, true)
+    assert.ok(typeof putPayload.updatedAt === 'string')
+    assert.deepEqual(debugCalls, [true])
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'noona.debug')
+    assert.ok(stored)
+    assert.equal(stored.enabled, true)
+})
+
+test('settings factory reset route requires valid password and wipes storage before restart', async (t) => {
+    const vault = createVaultAuthStub()
+    const wipeCalls = []
+    vault.client.mongo.wipe = async () => {
+        wipeCalls.push('mongo')
+        return {status: 'ok'}
+    }
+    vault.client.redis.wipe = async () => {
+        wipeCalls.push('redis')
+        return {status: 'ok'}
+    }
+
+    const restartCalls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async factoryResetEcosystem(options = {}) {
+                restartCalls.push(options)
+                return {
+                    ok: true,
+                    ravenDownloads: {
+                        requested: true,
+                        mountCount: 0,
+                        entries: [],
+                        deleted: true,
+                    },
+                    dockerCleanup: {
+                        requested: true,
+                        containersRemoved: ['c-sage'],
+                        imagesRemoved: ['img-sage'],
+                        containerErrors: [],
+                        imageErrors: [],
+                    },
+                }
+            },
+        },
+        settings: {
+            baseUrl: 'https://noona.local',
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token, password} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const badRes = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({password: 'WrongPassword123'}),
+    })
+    assert.equal(badRes.status, 401)
+    const badPayload = await badRes.json()
+    assert.equal(badPayload.error, 'Invalid password.')
+
+    const okRes = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({password, deleteRavenDownloads: true, deleteDockers: true}),
+    })
+    assert.equal(okRes.status, 202)
+    const okPayload = await okRes.json()
+    assert.equal(okPayload.ok, true)
+    assert.equal(okPayload.restartQueued, true)
+    assert.equal(okPayload.deleteRavenDownloads, true)
+    assert.equal(okPayload.deleteDockers, true)
+    assert.equal(okPayload.redirectTo, 'https://noona.local')
+    assert.equal(okPayload.result?.ok, true)
+    assert.equal(okPayload.result?.ravenDownloads?.deleted, true)
+    assert.equal(okPayload.result?.dockerCleanup?.requested, true)
+
+    assert.deepEqual(wipeCalls, ['mongo', 'redis'])
+    assert.deepEqual(restartCalls, [{
+        deleteRavenDownloads: true,
+        deleteDockers: true,
+        setupCompleted: false,
+        forceFull: false,
+    }])
+})
+
+test('settings factory reset route fails when selected cleanup targets are not fully deleted', async (t) => {
+    const vault = createVaultAuthStub()
+    vault.client.mongo.wipe = async () => ({status: 'ok'})
+    vault.client.redis.wipe = async () => ({status: 'ok'})
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async factoryResetEcosystem() {
+                return {
+                    ok: true,
+                    ravenDownloads: {
+                        requested: true,
+                        mountCount: 1,
+                        entries: [{
+                            target: '/srv/noona/raven',
+                            destination: '/kavita-data',
+                            type: 'bind',
+                            deleted: false,
+                            reason: 'permission denied',
+                        }],
+                        deleted: false,
+                    },
+                    dockerCleanup: {
+                        requested: true,
+                        containersRemoved: [],
+                        imagesRemoved: [],
+                        containerErrors: [],
+                        imageErrors: [],
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token, password} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const response = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            password,
+            deleteRavenDownloads: true,
+            deleteDockers: true,
+        }),
+    })
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.match(payload.error, /cleanup errors/i)
+    assert.match(payload.error, /permission denied/i)
+})
+
+test('settings factory reset route falls back to SERVER_IP for redirect URLs', async (t) => {
+    const previousServerIp = process.env.SERVER_IP
+    process.env.SERVER_IP = '192.168.1.25'
+
+    try {
+        const vault = createVaultAuthStub()
+        vault.client.mongo.wipe = async () => ({status: 'ok'})
+        vault.client.redis.wipe = async () => ({status: 'ok'})
+
+        const app = createSageApp({
+            serviceName: 'test-sage',
+            vaultClient: vault.client,
+            setupClient: {
+                async factoryResetEcosystem() {
+                    return {
+                        ok: true,
+                        ravenDownloads: {
+                            requested: false,
+                            mountCount: 0,
+                            entries: [],
+                            deleted: true,
+                        },
+                        dockerCleanup: {
+                            requested: false,
+                            containersRemoved: [],
+                            imagesRemoved: [],
+                            containerErrors: [],
+                            imageErrors: [],
+                        },
+                    }
+                },
+            },
+        })
+
+        const {server, baseUrl} = await listen(app)
+        t.after(() => closeServer(server))
+
+        const {token, password} = await bootstrapAdminAndLogin({baseUrl})
+        const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+        assert.equal(finalized.response.status, 200)
+
+        const response = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({password}),
+        })
+        assert.equal(response.status, 202)
+
+        const payload = await response.json()
+        assert.equal(payload.redirectTo, 'http://192.168.1.25')
+    } finally {
+        if (previousServerIp === undefined) {
+            delete process.env.SERVER_IP
+        } else {
+            process.env.SERVER_IP = previousServerIp
+        }
+    }
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {

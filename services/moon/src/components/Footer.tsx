@@ -1,13 +1,23 @@
+"use client";
+
+import {usePathname} from "next/navigation";
 import {IconButton, Row, SmartLink, Text} from "@once-ui-system/core";
+import {moonSite} from "@/resources";
+import {FooterKavitaButton} from "./FooterKavitaButton";
 import styles from "./Footer.module.scss";
 
 export const Footer = () => {
+    const pathname = usePathname() ?? "";
+    if (pathname === "/rebooting") {
+        return null;
+    }
+
     const currentYear = new Date().getFullYear();
     const links = [
         {
             name: "GitHub",
             icon: "github",
-            link: "https://github.com/The-Noona-Project",
+            link: "https://github.com/The-Noona-Project/Noona",
         },
         {
             name: "Discord",
@@ -29,17 +39,15 @@ export const Footer = () => {
                 s={{
                     direction: "column",
                     horizontal: "center",
-                    align: "center",
+                    style: {textAlign: "center"},
                 }}
             >
                 <Text variant="body-default-s" onBackground="neutral-strong">
-                    <Text onBackground="neutral-weak">(c) {currentYear} /</Text>
-                    <Text paddingX="4">Website built by Pax-kun</Text>
-                    <Text onBackground="neutral-weak">
-                        {/* Usage of this template requires attribution. Please don't remove the link to Once UI unless you have a Pro license. */}
-                        / Powered by{" "}
-                        <SmartLink href="https://once-ui.com/products/magic-portfolio">Once UI</SmartLink>
+                    <Text onBackground="neutral-weak">(c) {currentYear}</Text>
+                    <Text paddingX="4">
+                        <SmartLink href={moonSite.repositoryUrl}>{moonSite.organization}</SmartLink>
                     </Text>
+                    <Text onBackground="neutral-weak">/ {moonSite.shortTitle} maintained by {moonSite.maintainer}</Text>
                 </Text>
                 <Row gap="16">
                     {links.map((item) => (
@@ -52,6 +60,7 @@ export const Footer = () => {
                             variant="ghost"
                         />
                     ))}
+                    <FooterKavitaButton/>
                 </Row>
             </Row>
             <Row height="80" hide s={{hide: false}}/>

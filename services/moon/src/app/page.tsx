@@ -1,13 +1,15 @@
 import {Meta} from "@once-ui-system/core";
 import {HomePage} from "@/components/noona/HomePage";
+import {moonSite} from "@/resources";
+import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export async function generateMetadata() {
     return Meta.generate({
-        title: "Noona",
-        description: "Browse your Noona libraries and downloads.",
-        baseURL: "http://localhost:3000",
+        title: moonSite.title,
+        description: moonSite.description,
+        baseURL: resolveMoonBaseUrl(),
         path: "/",
-        image: "/favicon.ico",
+        image: moonSite.image,
     });
 }
 

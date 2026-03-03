@@ -1,0 +1,69 @@
+<ng-container *transloco="let t; prefix: 'book-line-overlay'">
+  @if (showOverlay()) {
+    <div class="overlay">
+
+      <div class="row g-0 justify-content-between">
+        @switch (mode()) {
+          @case (BookLineOverlayMode.None) {
+            <div class="col-auto">
+              <button class="btn btn-icon btn-sm" (click)="copy()">
+                <i class="fa-solid fa-copy" aria-hidden="true"></i>
+                <div>{{ t('copy') }}</div>
+              </button>
+            </div>
+
+            @if (!hasSelectedAnnotation()) {
+              <div class="col-auto">
+                <button class="btn btn-icon btn-sm" (click)="switchMode(BookLineOverlayMode.Annotate)">
+                  <i class="fa-solid fa-highlighter" aria-hidden="true"></i>
+                  <div>{{ t('annotate') }}</div>
+                </button>
+              </div>
+            }
+
+            <div class="col-auto">
+              <button class="btn btn-icon btn-sm" (click)="switchMode(BookLineOverlayMode.Bookmark)">
+                <i class="fa-solid fa-book-bookmark" aria-hidden="true"></i>
+                <div>{{ t('bookmark') }}</div>
+              </button>
+            </div>
+
+            <div class="col-auto">
+              <button class="btn btn-icon btn-sm" (click)="reset()">
+                <i class="fa-solid fa-times-circle" aria-hidden="true"></i>
+                <div>{{ t('close') }}</div>
+              </button>
+            </div>
+          }
+          @case (BookLineOverlayMode.Annotate) {
+            <!--There is no secondary rendering here, it pops up a drawer -->
+          }
+          @case (BookLineOverlayMode.Bookmark) {
+            <form [formGroup]="bookmarkForm">
+              <div class="input-group">
+                <input id="bookmark-name" class="form-control" formControlName="name" type="text"
+                       [placeholder]="t('bookmark-label')"
+                       [class.is-invalid]="bookmarkForm.get('name')?.invalid && bookmarkForm.get('name')?.touched"
+                       aria-describedby="bookmark-name-btn">
+                <button class="btn btn-outline-primary" id="bookmark-name-btn" (click)="createPTOC()">{{ t('save') }}
+                </button>
+                @if (bookmarkForm.dirty || bookmarkForm.touched) {
+                  <div id="bookmark-name-validations" class="invalid-feedback">
+                    @if (bookmarkForm.get('name')?.errors?.required) {
+                      <div role="status">
+                        {{ t('required-field') }}
+                      </div>
+                    }
+                  </div>
+                }
+
+              </div>
+            </form>
+          }
+        }
+      </div>
+
+
+    </div>
+  }
+</ng-container>

@@ -1,0 +1,46 @@
+<div class="main-container container-fluid">
+  <ng-container *transloco="let t; prefix: 'all-collections'">
+    <app-side-nav-companion-bar [hasFilter]="false" (filterOpen)="filterOpen.emit($event)">
+      <h4 title>{{ t('title') }}</h4>
+      <h5 subtitle>{{ t('item-count', {num: collections().length | number}) }}</h5>
+    </app-side-nav-companion-bar>
+
+    <app-card-detail-layout
+      [isLoading]="isLoading()"
+      [items]="collectionEntities()"
+      [filterOpen]="filterOpen"
+      [jumpBarKeys]="jumpbarKeys()"
+      [trackByIdentity]="trackByIdentity"
+    >
+
+      <ng-template #topBar>
+        <app-bulk-operations/>
+      </ng-template>
+
+      <ng-template #cardItem let-item let-position="idx">
+        <app-entity-card [entity]="item" [index]="position" [maxIndex]="collectionEntities().length"
+                         [config]="collectionConfig()" (reload)="loadPage()" (dataChanged)="updateCollection($event)">
+          <ng-template #subtitle>
+            <app-collection-owner [collection]="item.data"/>
+          </ng-template>
+          <ng-template #title let-entity>
+            <app-promoted-icon [promoted]="entity.data.promoted"/>
+            {{ entity.data.title }}
+          </ng-template>
+        </app-entity-card>
+      </ng-template>
+
+      <ng-template #noData>
+        {{ t('no-data') }}
+        @if (accountService.hasAdminRole()) {
+          {{ t('create-one-part-1') }}
+          <a [href]="WikiLink.Collections" rel="noopener noreferrer" target="_blank">
+            {{ t('create-one-part-2') }}
+            <i class="fa fa-external-link-alt ms-1" aria-hidden="true"></i>
+          </a>
+        }
+      </ng-template>
+    </app-card-detail-layout>
+
+  </ng-container>
+</div>

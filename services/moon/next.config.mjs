@@ -1,14 +1,18 @@
-import mdx from "@next/mdx";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
 
-const withMDX = mdx({
-  extension: /\.mdx?$/,
-  options: {},
-});
+const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  pageExtensions: ["ts", "tsx", "md", "mdx"],
-  transpilePackages: ["next-mdx-remote"],
+  transpilePackages: ["noona-utilities"],
+  outputFileTracingRoot: configDir,
+  turbopack: {
+    root: configDir,
+  },
+  experimental: {
+    externalDir: true,
+  },
   images: {
     remotePatterns: [
       {
@@ -24,4 +28,4 @@ const nextConfig = {
   },
 };
 
-export default withMDX(nextConfig);
+export default nextConfig;

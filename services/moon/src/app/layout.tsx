@@ -4,25 +4,18 @@ import "@/resources/custom.css";
 
 import classNames from "classnames";
 
-import {
-    Background,
-    Column,
-    Flex,
-    Meta,
-    opacity,
-    RevealFx,
-    SpacingToken,
-} from "@once-ui-system/core";
-import {Footer, Header, RouteGuard, Providers} from "@/components";
-import {baseURL, effects, fonts, style, dataStyle, home} from "@/resources";
+import {Background, Column, Flex, Meta, opacity, RevealFx, SpacingToken,} from "@once-ui-system/core";
+import {Footer, Header, Providers, RouteGuard} from "@/components";
+import {moonDataStyle, moonEffects, moonFonts, moonSite, moonTheme} from "@/resources";
+import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export async function generateMetadata() {
     return Meta.generate({
-        title: home.title,
-        description: home.description,
-        baseURL: baseURL,
-        path: home.path,
-        image: home.image,
+        title: moonSite.title,
+        description: moonSite.description,
+        baseURL: resolveMoonBaseUrl(),
+        path: "/",
+        image: moonSite.image,
     });
 }
 
@@ -38,10 +31,10 @@ export default async function RootLayout({
             lang="en"
             fillWidth
             className={classNames(
-                fonts.heading.variable,
-                fonts.body.variable,
-                fonts.label.variable,
-                fonts.code.variable,
+                moonFonts.heading.variable,
+                moonFonts.body.variable,
+                moonFonts.label.variable,
+                moonFonts.code.variable,
             )}
         >
             <head>
@@ -56,16 +49,16 @@ export default async function RootLayout({
                   
                   // Set defaults from config
                   const config = ${JSON.stringify({
-                            brand: style.brand,
-                            accent: style.accent,
-                            neutral: style.neutral,
-                            solid: style.solid,
-                            "solid-style": style.solidStyle,
-                            border: style.border,
-                            surface: style.surface,
-                            transition: style.transition,
-                            scaling: style.scaling,
-                            "viz-style": dataStyle.variant,
+                            brand: moonTheme.brand,
+                            accent: moonTheme.accent,
+                            neutral: moonTheme.neutral,
+                            solid: moonTheme.solid,
+                            "solid-style": moonTheme.solidStyle,
+                            border: moonTheme.border,
+                            surface: moonTheme.surface,
+                            transition: moonTheme.transition,
+                            scaling: moonTheme.scaling,
+                            "viz-style": moonDataStyle.variant,
                         })};
                   
                   // Apply default values
@@ -116,42 +109,42 @@ export default async function RootLayout({
                     <RevealFx fill position="absolute">
                         <Background
                             mask={{
-                                x: effects.mask.x,
-                                y: effects.mask.y,
-                                radius: effects.mask.radius,
-                                cursor: effects.mask.cursor,
+                                x: moonEffects.mask.x,
+                                y: moonEffects.mask.y,
+                                radius: moonEffects.mask.radius,
+                                cursor: moonEffects.mask.cursor,
                             }}
                             gradient={{
-                                display: effects.gradient.display,
-                                opacity: effects.gradient.opacity as opacity,
-                                x: effects.gradient.x,
-                                y: effects.gradient.y,
-                                width: effects.gradient.width,
-                                height: effects.gradient.height,
-                                tilt: effects.gradient.tilt,
-                                colorStart: effects.gradient.colorStart,
-                                colorEnd: effects.gradient.colorEnd,
+                                display: moonEffects.gradient.display,
+                                opacity: moonEffects.gradient.opacity as opacity,
+                                x: moonEffects.gradient.x,
+                                y: moonEffects.gradient.y,
+                                width: moonEffects.gradient.width,
+                                height: moonEffects.gradient.height,
+                                tilt: moonEffects.gradient.tilt,
+                                colorStart: moonEffects.gradient.colorStart,
+                                colorEnd: moonEffects.gradient.colorEnd,
                             }}
                             dots={{
-                                display: effects.dots.display,
-                                opacity: effects.dots.opacity as opacity,
-                                size: effects.dots.size as SpacingToken,
-                                color: effects.dots.color,
+                                display: moonEffects.dots.display,
+                                opacity: moonEffects.dots.opacity as opacity,
+                                size: moonEffects.dots.size as SpacingToken,
+                                color: moonEffects.dots.color,
                             }}
                             grid={{
-                                display: effects.grid.display,
-                                opacity: effects.grid.opacity as opacity,
-                                color: effects.grid.color,
-                                width: effects.grid.width,
-                                height: effects.grid.height,
+                                display: moonEffects.grid.display,
+                                opacity: moonEffects.grid.opacity as opacity,
+                                color: moonEffects.grid.color,
+                                width: moonEffects.grid.width,
+                                height: moonEffects.grid.height,
                             }}
                             lines={{
-                                display: effects.lines.display,
-                                opacity: effects.lines.opacity as opacity,
-                                size: effects.lines.size as SpacingToken,
-                                thickness: effects.lines.thickness,
-                                angle: effects.lines.angle,
-                                color: effects.lines.color,
+                                display: moonEffects.lines.display,
+                                opacity: moonEffects.lines.opacity as opacity,
+                                size: moonEffects.lines.size as SpacingToken,
+                                thickness: moonEffects.lines.thickness,
+                                angle: moonEffects.lines.angle,
+                                color: moonEffects.lines.color,
                             }}
                         />
                     </RevealFx>

@@ -1,0 +1,50 @@
+/* Works for Chrome, Safari, Edge, Opera */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Works for Firefox */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.filter-animate-wrapper {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.filter-enter {
+  animation: filterIn 500ms ease-out;
+}
+
+.filter-leave {
+  animation: filterOut 500ms ease-in;
+}
+
+.filter-animate-inner {
+  overflow: hidden;
+}
+
+@keyframes filterIn {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+@keyframes filterOut {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}

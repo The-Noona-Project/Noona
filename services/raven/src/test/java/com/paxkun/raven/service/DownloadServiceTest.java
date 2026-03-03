@@ -6,6 +6,9 @@ import com.paxkun.raven.service.download.SourceFinder;
 import com.paxkun.raven.service.download.TitleScraper;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
+import com.paxkun.raven.service.settings.DownloadNamingSettings;
+import com.paxkun.raven.service.settings.SettingsService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -44,11 +47,27 @@ class DownloadServiceTest {
     @Mock
     private LibraryService libraryService;
 
+    @Mock
+    private SettingsService settingsService;
+
     @InjectMocks
     private TestableDownloadService downloadService;
 
     @TempDir
     Path downloadsRoot;
+
+    @BeforeEach
+    void setupDefaults() {
+        DownloadNamingSettings naming = new DownloadNamingSettings(
+                "downloads.naming",
+                "{title}",
+                "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz",
+                "{page_padded}{ext}",
+                3,
+                4
+        );
+        lenient().when(settingsService.getDownloadNamingSettings()).thenReturn(naming);
+    }
 
     @Test
     void queueDownloadAllChaptersReturnsErrorWhenSessionMissing() {
@@ -57,40 +76,53 @@ class DownloadServiceTest {
         assertThat(response).isEqualTo("⚠️ Search session expired or not found. Please search again.");
     }
 
-    /**
-     * Verifies session clearing after successful download queuing
-     */
     @Test
-    void queueDownloadAllChaptersClearsSessionAfterUse() throws InterruptedException {
-        Map<String, String> title = new HashMap<>();
-        title.put("title", "Solo Leveling");
-        title.put("href", "http://example.com/solo");
+    void queueDownloadAllChaptersAllowsMultipleSelectionsFromSameSession() throws InterruptedException {
+        Map<String, String> soloLeveling = new HashMap<>();
+        soloLeveling.put("title", "Solo Leveling");
+        soloLeveling.put("href", "http://example.com/solo");
+
+        Map<String, String> trigun = new HashMap<>();
+        trigun.put("title", "Trigun");
+        trigun.put("href", "http://example.com/trigun");
 
         when(titleScraper.searchManga("solo"))
-                .thenReturn(new ArrayList<>(List.of(title)));
+                .thenReturn(new ArrayList<>(List.of(soloLeveling, trigun)));
         when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
         when(titleScraper.getChapters("http://example.com/solo"))
                 .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(titleScraper.getChapters("http://example.com/trigun"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/trigun/1")));
         when(sourceFinder.findSource(anyString())).thenReturn(Collections.emptyList());
-        NewTitle stubTitle = new NewTitle();
-        stubTitle.setTitleName("Solo Leveling");
-        stubTitle.setUuid("uuid");
-        stubTitle.setSourceUrl("http://example.com/solo");
-        stubTitle.setLastDownloaded("0");
+
+        NewTitle soloStubTitle = new NewTitle();
+        soloStubTitle.setTitleName("Solo Leveling");
+        soloStubTitle.setUuid("solo-uuid");
+        soloStubTitle.setSourceUrl("http://example.com/solo");
+        soloStubTitle.setLastDownloaded("0");
         lenient().when(libraryService.resolveOrCreateTitle(eq("Solo Leveling"), eq("http://example.com/solo")))
-                .thenReturn(stubTitle);
+                .thenReturn(soloStubTitle);
+
+        NewTitle trigunStubTitle = new NewTitle();
+        trigunStubTitle.setTitleName("Trigun");
+        trigunStubTitle.setUuid("trigun-uuid");
+        trigunStubTitle.setSourceUrl("http://example.com/trigun");
+        trigunStubTitle.setLastDownloaded("0");
+        lenient().when(libraryService.resolveOrCreateTitle(eq("Trigun"), eq("http://example.com/trigun")))
+                .thenReturn(trigunStubTitle);
 
         SearchTitle searchTitle = downloadService.searchTitle("solo");
         String searchId = searchTitle.getSearchId();
 
-        String response = downloadService.queueDownloadAllChapters(searchId, 1);
-        assertThat(response).isEqualTo("✅ Download queued for: Solo Leveling");
+        String firstResponse = downloadService.queueDownloadAllChapters(searchId, 1);
+        assertThat(firstResponse).isEqualTo("✅ Download queued for: Solo Leveling");
 
-        String secondResponse = downloadService.queueDownloadAllChapters(searchId, 1);
-        assertThat(secondResponse).isEqualTo("⚠️ Search session expired or not found. Please search again.");
+        String secondResponse = downloadService.queueDownloadAllChapters(searchId, 2);
+        assertThat(secondResponse).isEqualTo("✅ Download queued for: Trigun");
 
-        // Ensure the async download completes before the @TempDir cleanup runs.
+        // Ensure async downloads complete before @TempDir cleanup runs.
         waitForStatus("Solo Leveling", "completed");
+        waitForStatus("Trigun", "completed");
     }
 
     /**
@@ -157,7 +189,7 @@ class DownloadServiceTest {
 
         ArgumentCaptor<NewTitle> titleCaptor = ArgumentCaptor.forClass(NewTitle.class);
         ArgumentCaptor<NewChapter> chapterCaptor = ArgumentCaptor.forClass(NewChapter.class);
-        verify(libraryService, timeout(2000).times(3))
+        verify(libraryService, timeout(2000).times(4))
                 .addOrUpdateTitle(titleCaptor.capture(), chapterCaptor.capture());
         assertThat(chapterCaptor.getAllValues())
                 .extracting(NewChapter::getChapter)
@@ -165,6 +197,76 @@ class DownloadServiceTest {
         assertThat(titleCaptor.getAllValues())
                 .allSatisfy(capturedTitle -> assertThat(capturedTitle.getTitleName()).isEqualTo("Solo Leveling"));
         assertThat(resolvedTitle.getLastDownloaded()).isEqualTo("2");
+    }
+
+    @Test
+    void completedDownloadsMoveFromDownloadingToDownloadedFolder() throws Exception {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+        title.put("type", "Manhwa");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        resolvedTitle.setType("Manhwa");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForStatus("Solo Leveling", "completed");
+
+        Path downloadedTitleFolder = downloadsRoot.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Path downloadingTitleFolder = downloadsRoot.resolve("downloading").resolve("manhwa").resolve("Solo Leveling");
+
+        assertThat(downloadedTitleFolder).isDirectory();
+        try (var stream = Files.list(downloadedTitleFolder)) {
+            assertThat(stream.toList())
+                    .hasSize(1)
+                    .allSatisfy(path -> assertThat(path.getFileName().toString()).endsWith(".cbz"));
+        }
+        assertThat(Files.exists(downloadingTitleFolder)).isFalse();
+        assertThat(resolvedTitle.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
+        verify(libraryService).scanKavitaLibraryForType("Manhwa");
+    }
+
+    @Test
+    void singleChapterDownloadsPromoteIntoDownloadedFolder() throws Exception {
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 2", "href", "http://example.com/solo/2")));
+        when(sourceFinder.findSource("http://example.com/solo/2"))
+                .thenReturn(List.of("http://example.com/solo/page1.jpg"));
+
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setSourceUrl("http://example.com/solo");
+        title.setType("Manhwa");
+
+        boolean downloaded = downloadService.downloadSingleChapter(title, "2");
+
+        Path downloadedTitleFolder = downloadsRoot.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Path downloadingTitleFolder = downloadsRoot.resolve("downloading").resolve("manhwa").resolve("Solo Leveling");
+
+        assertThat(downloaded).isTrue();
+        assertThat(downloadedTitleFolder).isDirectory();
+        try (var stream = Files.list(downloadedTitleFolder)) {
+            assertThat(stream.toList())
+                    .hasSize(1)
+                    .allSatisfy(path -> assertThat(path.getFileName().toString()).endsWith(".cbz"));
+        }
+        assertThat(Files.exists(downloadingTitleFolder)).isFalse();
+        assertThat(title.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
     }
 
     private void waitForStatus(String titleName, String expectedStatus) throws InterruptedException {
@@ -183,7 +285,7 @@ class DownloadServiceTest {
 
     static class TestableDownloadService extends DownloadService {
         @Override
-        protected int saveImagesToFolder(List<String> urls, Path folder) {
+        protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
             try {
                 Files.createDirectories(folder);
             } catch (IOException ignored) {
@@ -206,7 +308,15 @@ class DownloadServiceTest {
 
         @Override
         protected void deleteFolder(Path folderPath) {
-            // Skip deletion to simplify testing
+            try (var stream = Files.walk(folderPath)) {
+                stream.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException ignored) {
+                    }
+                });
+            } catch (IOException ignored) {
+            }
         }
     }
 }

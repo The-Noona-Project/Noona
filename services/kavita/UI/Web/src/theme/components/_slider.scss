@@ -1,0 +1,52 @@
+.ngx-slider .ngx-slider-bubble {
+  color: var(--slider-text-color) !important;
+}
+
+// This is going to be removed soon
+.custom-slider .ngx-slider .ngx-slider-bar {
+  background: #545a52;
+  height: 0.125rem;
+}
+
+.custom-slider .ngx-slider .ngx-slider-selection {
+  background: var(--primary-color);
+}
+
+.custom-slider .ngx-slider .ngx-slider-pointer {
+  width: 0.5rem;
+  height: 1rem;
+  top: auto; /* to remove the default positioning */
+  bottom: 0;
+  background-color: var(--primary-color);
+  border-top-left-radius: 0.1875rem;
+  border-top-right-radius: 0.1875rem;
+}
+
+.custom-slider .ngx-slider .ngx-slider-pointer:after {
+  display: none;
+}
+
+.custom-slider .ngx-slider .ngx-slider-bubble {
+  bottom: 0.875rem;
+  font-weight: bold;
+}
+
+.custom-slider .ngx-slider .ngx-slider-limit {
+  font-weight: bold;
+  color: white !important;
+
+}
+
+
+.custom-slider .ngx-slider .ngx-slider-tick {
+  width: 0.0625rem;
+  height: 0.625rem;
+  margin-left: 0.25rem;
+  border-radius: 0;
+  background: #ffe4d1;
+  top: -0.0625rem;
+}
+
+.custom-slider .ngx-slider .ngx-slider-tick.ngx-slider-selected {
+  background: var(--primary-color);
+}

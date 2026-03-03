@@ -1,0 +1,15 @@
+<ng-container *transloco="let t; prefix: 'view-toc-drawer'">
+  <div class="offcanvas-header">
+    <h5 class="offcanvas-title">
+      {{ t('title') }}
+    </h5>
+    <button type="button" class="btn-unstyled ms-auto" [attr.aria-label]="t('close')" (click)="close()">
+      <i class="fas fa-times"></i>
+    </button>
+  </div>
+
+  <div class="offcanvas-body">
+    <app-table-of-contents [chapters]="chapters()" [chapterId]="chapterId()!" [pageNum]="pageNum()"
+                           (loadChapter)="loadChapterPage($event)" [loading]="loading()"/>
+  </div>
+</ng-container>

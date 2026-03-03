@@ -1,0 +1,22 @@
+<ng-container *transloco="let t; prefix: 'epub-setting-drawer'">
+  <div class="offcanvas-header">
+    <h5 class="offcanvas-title drawer-text">
+      {{ t('title') }}
+    </h5>
+    <button type="button" class="btn-unstyled ms-auto" [attr.aria-label]="t('close')" (click)="close()">
+      <i class="fas fa-times"></i>
+    </button>
+  </div>
+
+  <div class="offcanvas-body">
+    @let lId = libraryId();
+    @let sId = seriesId();
+    @let rp = readingProfile();
+    @if (sId && rp && lId) {
+      <app-reader-settings [libraryId]="lId" [seriesId]="sId"
+                           [readingProfile]="rp"
+                           [readerSettingsService]="readerSettingsService()"
+      />
+    }
+  </div>
+</ng-container>

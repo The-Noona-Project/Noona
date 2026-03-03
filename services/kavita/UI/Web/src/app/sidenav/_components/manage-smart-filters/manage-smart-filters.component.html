@@ -1,0 +1,44 @@
+<ng-container *transloco="let t; prefix:'manage-smart-filters'">
+  <form [formGroup]="listForm">
+    @if (hasFilterControl()) {
+      <div class="mb-3">
+        <label for="filter" class="form-label">{{ t('filter') }}</label>
+        <div class="input-group">
+          <input id="filter" autocomplete="off" class="form-control" formControlName="filterQuery" type="text"
+                 aria-describedby="reset-input">
+          <button class="btn btn-outline-secondary" type="button" id="reset-input"
+                  (click)="resetFilter()">{{ t('clear') }}
+          </button>
+        </div>
+      </div>
+    }
+  </form>
+
+  <ul>
+    @for (stream of filters() | filter: filterList; track stream.name) {
+
+      @if (isErrored(stream)) {
+        <li class="list-group-item d-block mb-3">
+          <i class="fa-solid fa-triangle-exclamation red me-2">
+            <span class="visually-hidden">{{ t('errored') }}</span>
+          </i>
+          {{ stream.name }} - {{ t('errored') }}
+        </li>
+      } @else {
+        @if (filterApiMap[stream.name] | async; as data) {
+          <app-carousel-reel [items]="data" [title]="stream.name" [titleLink]="baseUrl + 'all-series?' + stream.filter"
+                             [actionables]="actions()" [actionableEntity]="stream"
+                             (actionHandler)="handleActionCallback($event)">
+            <ng-template #carouselItem let-item>
+              <app-series-card [series]="item"/>
+            </ng-template>
+          </app-carousel-reel>
+        }
+      }
+    } @empty {
+      <li class="list-group-item">
+        {{ t('no-data') }}
+      </li>
+    }
+  </ul>
+</ng-container>

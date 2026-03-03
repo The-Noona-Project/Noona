@@ -1,0 +1,53 @@
+.tagbadge {
+  transition: all .3s ease-out;
+  margin: 0.1875rem 0.3125rem 0.1875rem 0;
+  padding: 0.125rem 0.625rem;
+  border-radius: 0.375rem;
+  font-size: 0.9rem;
+  display: inline-block;
+  cursor: default;
+  width: auto;
+
+  i {
+    font-size: 0.9rem;
+    font-weight: bold;
+    margin-right: 0;
+    cursor: pointer;
+  }
+}
+
+.selectable-cursor {
+  cursor: text !important;
+
+  i {
+    cursor: text !important;
+  }
+}
+
+.not-allowed-cursor {
+  cursor: not-allowed !important;
+
+  i {
+    cursor: not-allowed !important;
+  }
+}
+
+.clickable-cursor {
+  cursor: pointer !important;
+
+  i {
+    cursor: pointer !important;
+  }
+}
+
+.filled {
+  border: 1px solid var(--tagbadge-filled-border-color);
+  color: var(--tagbadge-filled-text-color);
+  background-color: var(--tagbadge-filled-bg-color);
+}
+
+.outline {
+  border: 1px solid var(--tagbadge-border-color);
+  color: var(--tagbadge-text-color);
+  background-color: var(--tagbadge-bg-color);
+}

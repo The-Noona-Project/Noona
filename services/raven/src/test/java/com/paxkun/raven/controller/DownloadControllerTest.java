@@ -1,6 +1,7 @@
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
+import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
 import com.paxkun.raven.service.download.DownloadProgress;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,11 +30,14 @@ class DownloadControllerTest {
     @Mock
     private LoggerService loggerService;
 
+    @Mock
+    private LibraryService libraryService;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new DownloadController(downloadService, loggerService)).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(new DownloadController(downloadService, libraryService, loggerService)).build();
     }
 
     @Test
@@ -60,5 +64,47 @@ class DownloadControllerTest {
                 .andExpect(status().isNoContent());
 
         verify(downloadService).clearDownloadStatus("Solo Leveling");
+    }
+
+    @Test
+    void summaryEndpointPrefersActiveDownloadState() throws Exception {
+        DownloadProgress progress = new DownloadProgress("Solo Leveling");
+        progress.markStarted(22);
+        progress.chapterStarted("Chapter 21");
+        progress.chapterCompleted();
+
+        when(downloadService.getPrimaryActiveDownloadStatus()).thenReturn(progress);
+        when(downloadService.getActiveDownloadCount()).thenReturn(1);
+        when(downloadService.getConfiguredDownloadThreads()).thenReturn(3);
+        when(downloadService.getThreadRateLimitsKbps()).thenReturn(List.of(0, 256, 0));
+        when(libraryService.getCurrentCheckActivity()).thenReturn(null);
+
+        mockMvc.perform(get("/v1/download/status/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("downloading"))
+                .andExpect(jsonPath("$.statusText").value("Downloading Solo Leveling"))
+                .andExpect(jsonPath("$.activeDownloads").value(1))
+                .andExpect(jsonPath("$.threadRateLimitsKbps[1]").value(256))
+                .andExpect(jsonPath("$.currentDownload.title").value("Solo Leveling"))
+                .andExpect(jsonPath("$.currentDownload.currentChapter").value("Chapter 21"));
+    }
+
+    @Test
+    void summaryEndpointReportsCheckStateWhenNoDownloadsAreActive() throws Exception {
+        when(downloadService.getPrimaryActiveDownloadStatus()).thenReturn(null);
+        when(downloadService.getActiveDownloadCount()).thenReturn(0);
+        when(downloadService.getConfiguredDownloadThreads()).thenReturn(2);
+        when(downloadService.getThreadRateLimitsKbps()).thenReturn(List.of(0, 0));
+        when(libraryService.getCurrentCheckActivity())
+                .thenReturn(new LibraryService.CheckActivity("library", "Omniscient Reader", 2, 14, 123L));
+
+        mockMvc.perform(get("/v1/download/status/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("checking"))
+                .andExpect(jsonPath("$.statusText").value("Checking Omniscient Reader"))
+                .andExpect(jsonPath("$.currentCheck.mode").value("library"))
+                .andExpect(jsonPath("$.currentCheck.title").value("Omniscient Reader"))
+                .andExpect(jsonPath("$.currentCheck.checkedTitles").value(2))
+                .andExpect(jsonPath("$.currentCheck.totalTitles").value(14));
     }
 }

@@ -51,7 +51,7 @@ class LoggerServiceTest {
         service.afterPropertiesSet();
 
         assertThat(service.getDownloadsRoot()).isEqualTo(containerFallback);
-        assertThat(output).contains("⚠️ Failed to create APPDATA downloads directory");
+        assertThat(output).contains("Failed to create APPDATA downloads directory");
     }
 
     @Test
@@ -73,10 +73,44 @@ class LoggerServiceTest {
             service.afterPropertiesSet();
 
             assertThat(output).contains("[SYSTEM] [KAVITA_DATA_MOUNT] /data/kavita");
-            assertThat(output)
-                    .contains("[SYSTEM] [DOWNLOADS_ROOT] " + tempRoot.toAbsolutePath());
+            assertThat(output).contains("[SYSTEM] [DOWNLOADS_ROOT] " + tempRoot.toAbsolutePath());
         } finally {
             deleteRecursively(tempRoot);
+        }
+    }
+
+    @Test
+    void usesContainerAppDataMountAsDownloadsRoot(CapturedOutput output) throws IOException {
+        Path tempLogs = Files.createTempDirectory("logger-service-managed-logs");
+        Path managedRoot = Path.of("/managed-downloads");
+        try {
+            LoggerService service = new LoggerService() {
+                @Override
+                protected String resolveAppDataEnv() {
+                    return managedRoot.toString();
+                }
+
+                @Override
+                protected Path createDirectories(Path path) throws IOException {
+                    if (managedRoot.equals(path)) {
+                        return path;
+                    }
+
+                    return super.createDirectories(path);
+                }
+
+                @Override
+                protected String resolveNoonaLogDirEnv() {
+                    return tempLogs.toString();
+                }
+            };
+
+            service.afterPropertiesSet();
+
+            assertThat(service.getDownloadsRoot()).isEqualTo(managedRoot);
+            assertThat(output).contains("[SYSTEM] [DOWNLOADS_ROOT] " + managedRoot.toAbsolutePath());
+        } finally {
+            deleteRecursively(tempLogs);
         }
     }
 
@@ -104,6 +138,34 @@ class LoggerServiceTest {
         }
     }
 
+    @Test
+    void writesLogsToExplicitNoonaLogDir(CapturedOutput output) throws IOException {
+        Path tempRoot = Files.createTempDirectory("logger-service-downloads");
+        Path tempLogs = Files.createTempDirectory("logger-service-logs");
+        try {
+            LoggerService service = new LoggerService() {
+                @Override
+                protected Path resolveAppDataDownloadsPath() {
+                    return tempRoot;
+                }
+
+                @Override
+                protected String resolveNoonaLogDirEnv() {
+                    return tempLogs.toString();
+                }
+            };
+
+            service.afterPropertiesSet();
+
+            assertThat(Files.exists(tempLogs.resolve("latest.log"))).isTrue();
+            assertThat(output).contains("[SYSTEM] [NOONA_LOG_DIR] " + tempLogs.toAbsolutePath());
+            assertThat(output).contains("[SYSTEM] [LOGS_ROOT] " + tempLogs.toAbsolutePath());
+        } finally {
+            deleteRecursively(tempRoot);
+            deleteRecursively(tempLogs);
+        }
+    }
+
     private static void deleteRecursively(Path root) {
         try (var paths = Files.walk(root)) {
             paths.sorted(Comparator.reverseOrder())
@@ -117,4 +179,3 @@ class LoggerServiceTest {
         }
     }
 }
-

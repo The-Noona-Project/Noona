@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NETWORK_NAME="${NOONA_NETWORK:-noona-network}"
-CONTAINER_NAME="${WARDEN_CONTAINER_NAME:-noona-warden}"
-WARDEN_IMAGE="${WARDEN_IMAGE:-captainpax/noona-warden:latest}"
-WARDEN_PORT="${WARDEN_PORT:-4001}"
-DEBUG_MODE="${DEBUG:-false}"
-DOCKER_SOCK_PATH="${DOCKER_SOCK_PATH:-/var/run/docker.sock}"
+NETWORK_NAME="${1:-${NOONA_NETWORK:-noona-network}}"
+CONTAINER_NAME="${2:-${WARDEN_CONTAINER_NAME:-noona-warden}}"
+WARDEN_IMAGE="${3:-${WARDEN_IMAGE:-captainpax/noona-warden:latest}}"
+DEBUG_MODE="${4:-${DEBUG:-true}}"
+DOCKER_SOCK_PATH="${5:-${DOCKER_SOCK_PATH:-}}"
+WARDEN_PORT="${6:-${WARDEN_PORT:-4001}}"
+
+if [[ -n "${DOCKER_SOCK_PATH}" ]]; then
+  DOCKER_SOCK_PATH="${DOCKER_SOCK_PATH}"
+else
+  case "$(uname -s)" in
+    CYGWIN*|MINGW*|MSYS*)
+      DOCKER_SOCK_PATH='//./pipe/docker_engine'
+      ;;
+    *)
+      DOCKER_SOCK_PATH='/var/run/docker.sock'
+      ;;
+  esac
+fi
 
 if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
   echo "Creating Docker network '$NETWORK_NAME'..."

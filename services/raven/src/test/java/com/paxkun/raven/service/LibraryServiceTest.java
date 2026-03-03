@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.lang.reflect.Type;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -33,6 +34,9 @@ class LibraryServiceTest {
 
     @Mock
     private LoggerService loggerService;
+
+    @Mock
+    private KavitaSyncService kavitaSyncService;
 
     @InjectMocks
     private LibraryService libraryService;
@@ -64,7 +68,29 @@ class LibraryServiceTest {
                 .containsEntry("sourceUrl", title.getSourceUrl())
                 .containsEntry("lastDownloaded", chapter.getChapter())
                 .containsKey("lastDownloadedAt");
-        verify(loggerService).info("LIBRARY", "📚 Updated title [" + title.getTitleName() + "] to chapter " + chapter.getChapter());
+        verify(loggerService).info(eq("LIBRARY"), argThat(message -> message.contains("Updated title [" + title.getTitleName() + "]") && message.contains("chapter " + chapter.getChapter())));
+        verifyNoInteractions(kavitaSyncService);
+    }
+
+    @Test
+    void addOrUpdateTitleStoresDownloadedFolderPathAndEnsuresKavitaLibrary() {
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setUuid("uuid-123");
+        title.setSourceUrl("http://source");
+        title.setType("Manhwa");
+        when(loggerService.getDownloadsRoot()).thenReturn(Path.of("/downloads"));
+
+        libraryService.addOrUpdateTitle(title, new NewChapter("100"));
+
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), mapCaptor.capture(), eq(true));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) mapCaptor.getValue().get("$set");
+        assertThat(set).containsEntry(
+                "downloadPath",
+                Path.of("/downloads").resolve("downloaded").resolve("manhwa").resolve("Solo Leveling").toString()
+        );
+        verify(kavitaSyncService).ensureLibraryForType("Manhwa", "manhwa");
     }
 
     @Test
@@ -72,10 +98,13 @@ class LibraryServiceTest {
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of());
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(Collections.emptyList());
 
-        String result = libraryService.checkForNewChapters();
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
-        assertEquals("No titles in Vault.", result);
-        verify(loggerService).warn("LIBRARY", "⚠️ No titles in Vault to check.");
+        assertEquals(0, result.checkedTitles());
+        assertEquals(0, result.updatedTitles());
+        assertEquals(0, result.queuedChapters());
+        assertEquals("No titles in library.", result.message());
+        verify(loggerService).warn("LIBRARY", "No titles in Vault to check.");
         verifyNoInteractions(downloadService);
     }
 
@@ -86,13 +115,22 @@ class LibraryServiceTest {
         title.setUuid("uuid-456");
         title.setSourceUrl("http://omniscient");
         title.setLastDownloaded("1");
+        title.setType("Manhwa");
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
-        when(vaultService.fetchLatestChapterFromSource(title.getSourceUrl())).thenReturn("2");
+        when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
+                Map.of("chapter_number", "2", "chapter_title", "Chapter 2", "href", "http://omniscient/2")
+        ));
+        when(downloadService.downloadSingleChapter(title, "2")).thenReturn(true);
 
-        String result = libraryService.checkForNewChapters();
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
-        assertEquals("⬇️ Downloaded 1 new chapters.", result);
+        assertEquals(1, result.checkedTitles());
+        assertEquals(1, result.updatedTitles());
+        assertEquals(1, result.queuedChapters());
+        assertEquals(1, result.newChaptersQueued());
+        assertEquals(0, result.missingChaptersQueued());
+        assertEquals("Queued 1 chapter(s) across 1 title(s).", result.message());
         verify(downloadService).downloadSingleChapter(title, "2");
 
         verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), mapCaptor.capture(), eq(true));
@@ -102,6 +140,8 @@ class LibraryServiceTest {
         Map<String, Object> set = (Map<String, Object>) update.get("$set");
         assertThat(set).containsEntry("lastDownloaded", "2");
         assertEquals("2", title.getLastDownloaded());
+        verify(kavitaSyncService).ensureLibraryForType("Manhwa", "manhwa");
+        verify(kavitaSyncService).scanLibraryForType("Manhwa", "manhwa");
     }
 
     @Test
@@ -113,13 +153,18 @@ class LibraryServiceTest {
         title.setLastDownloaded("105");
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
-        when(vaultService.fetchLatestChapterFromSource(title.getSourceUrl())).thenReturn("105");
+        when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
+                Map.of("chapter_number", "105", "chapter_title", "Chapter 105", "href", "http://tower/105")
+        ));
 
-        String result = libraryService.checkForNewChapters();
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
-        assertEquals("✅ All titles up-to-date.", result);
+        assertEquals(1, result.checkedTitles());
+        assertEquals(0, result.updatedTitles());
+        assertEquals(0, result.queuedChapters());
+        assertEquals("All titles are up-to-date.", result.message());
         verify(downloadService, never()).downloadSingleChapter(any(), anyString());
-        verify(vaultService, never()).update(anyString(), anyMap(), anyMap(), anyBoolean());
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), anyMap(), eq(true));
     }
 
     @Test
@@ -182,17 +227,22 @@ class LibraryServiceTest {
         doAnswer(invocation -> {
             NewTitle passedTitle = invocation.getArgument(0);
             assertThat(passedTitle.getTitleName()).isEqualTo("The Beginning After The End");
-            return null;
+            return true;
         }).when(downloadService).downloadSingleChapter(any(NewTitle.class), anyString());
-        when(vaultService.fetchLatestChapterFromSource("http://tbate")).thenReturn("24");
+        when(downloadService.fetchChapters("http://tbate")).thenReturn(List.of(
+                Map.of("chapter_number", "24", "chapter_title", "Chapter 24", "href", "http://tbate/24")
+        ));
 
         List<NewTitle> titles = libraryService.getAllTitleObjects();
         assertThat(titles).hasSize(1);
         NewTitle title = titles.get(0);
         assertThat(title.getTitleName()).isEqualTo("The Beginning After The End");
 
-        String result = assertDoesNotThrow(() -> libraryService.checkForNewChapters());
-        assertEquals("⬇️ Downloaded 1 new chapters.", result);
+        LibraryService.LibrarySyncSummary result = assertDoesNotThrow(() -> libraryService.checkForNewChapters());
+        assertEquals(1, result.checkedTitles());
+        assertEquals(1, result.updatedTitles());
+        assertEquals(1, result.queuedChapters());
+        assertEquals("Queued 1 chapter(s) across 1 title(s).", result.message());
 
         verify(downloadService).downloadSingleChapter(argThat(t -> "The Beginning After The End".equals(t.getTitleName())), eq("24"));
     }

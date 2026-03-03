@@ -1,0 +1,75 @@
+$image-height: 7.8125rem;
+$clamp-lines: 3;
+
+.reading-list-item {
+  max-height: 8.75rem;
+  height: 8.75rem;
+}
+
+.progress-banner {
+  height: 0.3125rem;
+
+  .progress {
+    color: var(--card-progress-bar-color);
+    background-color: transparent;
+  }
+}
+
+.badge-container {
+  border-radius: 0.25rem;
+  display: block;
+  height: $image-height;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  width: 6.625rem;
+}
+
+.not-read-badge {
+  position: relative;
+  top: -7.8125rem;
+  left: 4.875rem;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 var(--card-progress-triangle-size) var(--card-progress-triangle-size) 0;
+  border-color: transparent var(--primary-color) transparent transparent;
+}
+
+::ng-deep .read-more-cont div {
+  -webkit-line-clamp: $clamp-lines;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  display: -webkit-box;;
+}
+
+@media (max-width: 576px) {
+  ::ng-deep .read-more-cont div {
+    -webkit-line-clamp: $clamp-lines;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    display: -webkit-box;;
+  }
+}
+
+@media (max-width: 800px) {
+  ::ng-deep .read-more-cont div {
+    -webkit-line-clamp: $clamp-lines;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    display: -webkit-box;;
+  }
+}
+
+@media (max-width: 768px) {
+  .actions {
+    display: flex;
+    flex-direction: column-reverse;
+    margin-left: 0.625rem;
+
+    .btn-primary {
+      margin-bottom: 0.625rem;
+      margin-left: 0 !important;
+    }
+  }
+}

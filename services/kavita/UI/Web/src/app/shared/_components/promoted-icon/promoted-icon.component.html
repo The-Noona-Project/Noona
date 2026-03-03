@@ -1,0 +1,8 @@
+<ng-container *transloco="let t; prefix: 'promoted-icon'">
+  @if (promoted()) {
+    <span>
+      <i class="fa fa-angle-double-up ms-1" aria-hidden="true" [attr.title]="t('promoted')"></i>
+      <span class="visually-hidden">{{ t('promoted') }}</span>
+    </span>
+  }
+</ng-container>

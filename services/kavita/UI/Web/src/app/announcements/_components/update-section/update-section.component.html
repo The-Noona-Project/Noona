@@ -1,0 +1,12 @@
+@let totalItems = items().length;
+
+@if (totalItems > 0) {
+  <h5>{{ title() }}
+    <span class="badge bg-primary ms-2">{{ totalItems }}</span>
+  </h5>
+  <ul>
+    @for (item of items(); track item; ) {
+      <li class="code">{{ item }}</li>
+    }
+  </ul>
+}

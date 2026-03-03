@@ -3,10 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    __testables__,
     buildVaultTokenRegistry,
     generateVaultToken,
     stringifyTokenMap,
-    __testables__,
 } from '../docker/vaultTokens.mjs';
 
 test('generateVaultToken produces deterministic prefix with entropy', () => {
@@ -120,6 +120,8 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
     assert.ok(portal, 'Portal service descriptor should be defined.');
 
     const expectations = [
+        ['PORTAL_JOIN_DEFAULT_ROLES', '*,-admin'],
+        ['PORTAL_JOIN_DEFAULT_LIBRARIES', '*'],
         ['PORTAL_REDIS_NAMESPACE', 'portal:onboarding'],
         ['PORTAL_TOKEN_TTL', '900'],
         ['PORTAL_HTTP_TIMEOUT', '10000'],
@@ -170,6 +172,17 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         assert.ok(field, `Portal envConfig should include ${key}.`);
         assert.equal(field.required, false, `${key} should be optional in setup UI.`);
     }
+
+    assert.equal(
+        portal.env.some((entry) => entry.startsWith('VAULT_ACCESS_TOKEN=')),
+        false,
+        'Portal should rely on the generated VAULT_API_TOKEN field instead of a manual VAULT_ACCESS_TOKEN prompt.',
+    );
+    assert.equal(
+        portal.envConfig.some((entry) => entry.key === 'VAULT_ACCESS_TOKEN'),
+        false,
+        'Portal envConfig should not expose a separate editable VAULT_ACCESS_TOKEN field.',
+    );
 });
 
 test('noona-portal health check points to /health endpoint', async () => {
@@ -184,6 +197,91 @@ test('noona-portal health check points to /health endpoint', async () => {
         'http://noona-portal:3003/health',
         'Portal health check should target the /health endpoint.',
     );
+    assert.equal(
+        portal.healthTries,
+        90,
+        'Portal health check should allow enough time for Discord login and slash-command sync before startup completes.',
+    );
+    assert.equal(
+        portal.healthDelayMs,
+        1000,
+        'Portal health checks should continue probing once per second during startup.',
+    );
+});
+
+test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health defaults', async () => {
+    const previousWebGuiPort = process.env.WEBGUI_PORT;
+    process.env.WEBGUI_PORT = '3010';
+
+    try {
+        const module = await import('../docker/noonaDockers.mjs?test=moon-webgui-port');
+        const {default: noonaDockers} = module;
+
+        const moon = noonaDockers['noona-moon'];
+        assert.ok(moon, 'Moon service descriptor should be defined.');
+        assert.equal(moon.port, 3010);
+        assert.equal(moon.internalPort, 3010);
+        assert.equal(moon.hostServiceUrl, 'http://localhost:3010');
+        assert.equal(moon.health, 'http://noona-moon:3010/');
+        assert.ok(
+            moon.env.includes('WEBGUI_PORT=3010'),
+            'Moon env array should include WEBGUI_PORT with the configured default.',
+        );
+
+        const field = moon.envConfig.find((entry) => entry.key === 'WEBGUI_PORT');
+        assert.ok(field, 'Moon envConfig should include WEBGUI_PORT.');
+        assert.equal(field.defaultValue, '3010');
+        assert.equal(field.required, false);
+    } finally {
+        if (previousWebGuiPort === undefined) {
+            delete process.env.WEBGUI_PORT;
+        } else {
+            process.env.WEBGUI_PORT = previousWebGuiPort;
+        }
+    }
+});
+
+test('service descriptors use SERVER_IP for host URLs and pass it through to managed containers', async () => {
+    const previousServerIp = process.env.SERVER_IP;
+    const previousHostServiceUrl = process.env.HOST_SERVICE_URL;
+    delete process.env.HOST_SERVICE_URL;
+    process.env.SERVER_IP = '192.168.1.25';
+
+    try {
+        const [coreModule, addonModule] = await Promise.all([
+            import('../docker/noonaDockers.mjs?test=server-ip-core'),
+            import('../docker/addonDockers.mjs?test=server-ip-addon'),
+        ]);
+        const {default: noonaDockers} = coreModule;
+        const {default: addonDockers} = addonModule;
+
+        const moon = noonaDockers['noona-moon'];
+        const redis = addonDockers['noona-redis'];
+        const mongo = addonDockers['noona-mongo'];
+        const kavita = addonDockers['noona-kavita'];
+
+        assert.ok(moon.env.includes('SERVER_IP=192.168.1.25'));
+        assert.ok(redis.env.includes('SERVER_IP=192.168.1.25'));
+        assert.ok(mongo.env.includes('SERVER_IP=192.168.1.25'));
+        assert.ok(kavita.env.includes('SERVER_IP=192.168.1.25'));
+
+        assert.equal(moon.hostServiceUrl, 'http://192.168.1.25:3000');
+        assert.equal(redis.hostServiceUrl, 'http://192.168.1.25:8001');
+        assert.equal(mongo.hostServiceUrl, 'mongodb://192.168.1.25:27017');
+        assert.equal(kavita.hostServiceUrl, 'http://192.168.1.25:5000');
+    } finally {
+        if (previousServerIp === undefined) {
+            delete process.env.SERVER_IP;
+        } else {
+            process.env.SERVER_IP = previousServerIp;
+        }
+
+        if (previousHostServiceUrl === undefined) {
+            delete process.env.HOST_SERVICE_URL;
+        } else {
+            process.env.HOST_SERVICE_URL = previousHostServiceUrl;
+        }
+    }
 });
 
 test('noona-raven descriptor provides default Vault URL configuration', async () => {
@@ -217,6 +315,9 @@ test('noona-vault descriptor exposes storage connection environment fields', asy
     assert.ok(vault, 'Vault service descriptor should be defined.');
 
     const expectedEnv = new Set([
+        'VAULT_DATA_FOLDER=vault',
+        'VAULT_REDIS_HOST_MOUNT_PATH=',
+        'VAULT_MONGO_HOST_MOUNT_PATH=',
         'MONGO_URI=mongodb://root:example@noona-mongo:27017/admin?authSource=admin',
         'REDIS_HOST=noona-redis',
         'REDIS_PORT=6379',
@@ -232,6 +333,9 @@ test('noona-vault descriptor exposes storage connection environment fields', asy
     const configByKey = new Map(vault.envConfig.map((field) => [field.key, field]));
 
     for (const [key, value] of [
+        ['VAULT_DATA_FOLDER', 'vault'],
+        ['VAULT_REDIS_HOST_MOUNT_PATH', ''],
+        ['VAULT_MONGO_HOST_MOUNT_PATH', ''],
         ['MONGO_URI', 'mongodb://root:example@noona-mongo:27017/admin?authSource=admin'],
         ['REDIS_HOST', 'noona-redis'],
         ['REDIS_PORT', '6379'],

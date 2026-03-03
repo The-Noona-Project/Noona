@@ -1,0 +1,56 @@
+<div class="main-container  container-fluid">
+  <ng-container *transloco="let t; prefix:'want-to-read'">
+    <div #companionBar>
+      <app-side-nav-companion-bar [hasFilter]="true" (filterOpen)="filterOpen.emit($event)"
+                                  [filterActive]="filterActive">
+        <ng-container title>
+          <h4>
+            {{ t('title') }}
+          </h4>
+        </ng-container>
+        <h5 subtitle>{{ t('series-count', {num: (pagination.totalItems | number)}) }}</h5>
+      </app-side-nav-companion-bar>
+    </div>
+
+    <div [ngStyle]="{'height': ScrollingBlockHeight}" class="main-container container-fluid ps-0" #scrollingBlock>
+      @if (filter) {
+        <app-card-detail-layout [isLoading]="isLoading"
+                                [items]="series"
+                                [pagination]="pagination"
+                                [filterSettings]="filterSettings"
+                                [filterOpen]="filterOpen"
+                                [jumpBarKeys]="jumpbarKeys"
+                                [trackByIdentity]="trackByIdentity"
+                                [refresh]="refresh"
+                                (applyFilter)="updateFilter($event)">
+
+          <ng-template #topBar>
+            <app-bulk-operations/>
+          </ng-template>
+
+          <ng-template #cardItem let-item let-position="idx">
+            <app-series-card [series]="item" (reload)="removeSeries($event)"
+                             [index]="position" [maxIndex]="series.length" [allowSelection]="true"
+            />
+          </ng-template>
+
+          @if (!filterActive && series.length === 0) {
+            <div>
+              <ng-template #noData>
+                {{ t('no-items') }}
+              </ng-template>
+            </div>
+          } @else if (filterActive && series.length === 0) {
+            <div>
+              <ng-template #noData>
+                {{ t('no-items-filtered') }}
+              </ng-template>
+            </div>
+          }
+
+        </app-card-detail-layout>
+      }
+
+    </div>
+  </ng-container>
+</div>
