@@ -4,6 +4,7 @@ import {type ChangeEvent, useEffect, useMemo, useRef, useState} from "react";
 import {useRouter} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
 import styles from "./SetupWizard.module.scss";
+import editorStyles from "./ConfigEditor.module.scss";
 
 type EnvConfigField = {
     key: string;
@@ -236,6 +237,7 @@ const DERIVED_KEYS = new Set([
     "KOMF_KAVITA_API_KEY",
     "KOMF_CONFIG_HOST_MOUNT_PATH",
 ]);
+const KOMF_APPLICATION_YML_KEY = "KOMF_APPLICATION_YML";
 
 const LOG_POLL_INTERVAL_MS = 1200;
 const LOG_LIMIT = 140;
@@ -954,6 +956,19 @@ export function SetupWizard() {
 
     const services = catalog ?? [];
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
+    const komfManagedFields = useMemo(() => {
+        const komf = servicesByName.get("noona-komf");
+        const envConfig = Array.isArray(komf?.envConfig) ? komf.envConfig : [];
+        return envConfig.filter((field) => Boolean(field?.key) && field.key !== "SERVICE_NAME" && field.key !== "KOMF_KAVITA_API_KEY");
+    }, [servicesByName]);
+    const komfManagedConfigField = useMemo(
+        () => komfManagedFields.find((field) => field.key === KOMF_APPLICATION_YML_KEY) ?? null,
+        [komfManagedFields],
+    );
+    const komfManagedRuntimeFields = useMemo(
+        () => komfManagedFields.filter((field) => field.key !== KOMF_APPLICATION_YML_KEY),
+        [komfManagedFields],
+    );
     const discordRoleOptions = useMemo(() => {
         const roles = Array.isArray(discordValidation?.roles) ? discordValidation.roles : [];
         return roles
@@ -1818,6 +1833,9 @@ export function SetupWizard() {
             ) {
                 return false;
             }
+            if (serviceName === "noona-komf" && field.key === KOMF_APPLICATION_YML_KEY) {
+                return false;
+            }
             if (showAdvanced) return true;
             if (DERIVED_KEYS.has(field.key)) return false;
             return !ADVANCED_KEYS.has(field.key);
@@ -2277,9 +2295,74 @@ export function SetupWizard() {
                                         </Row>
                                     </Row>
                                     {komfMode === "managed" ? (
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">Warden will install
-                                            `sndxr/komf:latest`, mount a config folder under the Noona root, and point
-                                            Komf at the Kavita mode you selected above.</Text>
+                                        <Column gap="12">
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                Warden will install `sndxr/komf:latest`, mount a config folder under the
+                                                Noona root, and point Komf at the Kavita mode you selected above.
+                                            </Text>
+                                            {komfManagedConfigField && (
+                                                <Column gap="8">
+                                                    <Text onBackground="neutral-strong" variant="label-default-s">
+                                                        {normalizeString(komfManagedConfigField.label).trim() || "Managed application.yml"}
+                                                    </Text>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Moon writes this YAML into `/config/application.yml` before
+                                                        managed Komf starts.
+                                                    </Text>
+                                                    <textarea
+                                                        id="managed-komf-application-yml"
+                                                        name="managed-komf-application-yml"
+                                                        className={editorStyles.configTextarea}
+                                                        value={effectiveValues["noona-komf"]?.[KOMF_APPLICATION_YML_KEY]
+                                                            ?? normalizeString(komfManagedConfigField.defaultValue)}
+                                                        aria-label={normalizeString(komfManagedConfigField.label).trim() || "Managed Komf application.yml"}
+                                                        spellCheck={false}
+                                                        onChange={(event) =>
+                                                            updateEnv("noona-komf", KOMF_APPLICATION_YML_KEY, event.target.value)}
+                                                    />
+                                                    {komfManagedConfigField.description && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            {komfManagedConfigField.description}
+                                                        </Text>
+                                                    )}
+                                                    {komfManagedConfigField.warning && (
+                                                        <Text onBackground="danger-strong" variant="body-default-xs">
+                                                            {komfManagedConfigField.warning}
+                                                        </Text>
+                                                    )}
+                                                </Column>
+                                            )}
+                                            {komfManagedRuntimeFields.map((field) => (
+                                                <Column key={`managed-komf-${field.key}`} gap="8">
+                                                    <Input
+                                                        id={`managed-komf-${field.key}`}
+                                                        name={`managed-komf-${field.key}`}
+                                                        label={normalizeString(field.label).trim() || field.key}
+                                                        type={isUrlKey(field.key) ? "url" : "text"}
+                                                        value={effectiveValues["noona-komf"]?.[field.key] ?? ""}
+                                                        placeholder={normalizeString(field.defaultValue)}
+                                                        disabled={field.readOnly === true}
+                                                        onChange={(event) => updateEnv("noona-komf", field.key, event.target.value)}
+                                                    />
+                                                    {(field.description || field.warning) && (
+                                                        <Column gap="4">
+                                                            {field.description && (
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs">
+                                                                    {field.description}
+                                                                </Text>
+                                                            )}
+                                                            {field.warning && (
+                                                                <Text onBackground="danger-strong"
+                                                                      variant="body-default-xs">
+                                                                    {field.warning}
+                                                                </Text>
+                                                            )}
+                                                        </Column>
+                                                    )}
+                                                </Column>
+                                            ))}
+                                        </Column>
                                     ) : (
                                         <Column gap="12">
                                             <Input id="external-komf-base-url" name="external-komf-base-url" type="url"

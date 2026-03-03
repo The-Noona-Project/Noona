@@ -29,6 +29,11 @@ import {
 } from '../docker/storageLayout.mjs';
 import {resolveHostServiceBase, resolveHostServiceHost, resolveServerIp,} from '../docker/hostServiceUrl.mjs';
 import {
+    DEFAULT_MANAGED_KOMF_APPLICATION_YML,
+    MANAGED_KOMF_CONFIG_FILE_NAME,
+    normalizeManagedKomfConfigContent,
+} from '../docker/komfConfigTemplate.mjs';
+import {
     isDebugEnabled as isLoggerDebugEnabled,
     log,
     setDebug as setLoggerDebug,
@@ -71,6 +76,8 @@ const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
+const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
+const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
 const LEGACY_SERVICE_NAME_ALIASES = new Map([
     ['kavita', 'noona-kavita'],
 ]);
@@ -252,6 +259,12 @@ function upsertEnvEntry(entries, key, value) {
     const filtered = list.filter((entry) => !(typeof entry === 'string' && entry.startsWith(prefix)));
     filtered.push(`${key}=${value ?? ''}`);
     return filtered;
+}
+
+function removeEnvEntry(entries, key) {
+    const list = Array.isArray(entries) ? [...entries] : [];
+    const prefix = `${key}=`;
+    return list.filter((entry) => !(typeof entry === 'string' && entry.startsWith(prefix)));
 }
 
 function upsertBindMount(entries, destination, mountEntry) {
@@ -989,6 +1002,79 @@ export function createWarden(options = {}) {
         return path.normalize(fallbackHostPath);
     };
 
+    const resolveManagedKomfConfigDirectory = (installOverridesByName = null) => {
+        const storageLayout = buildStorageLayoutForSelection(installOverridesByName);
+        ensureStorageLayoutDirectories(storageLayout);
+        const defaultLayout = storageLayout.services?.[MANAGED_KOMF_SERVICE_NAME];
+        if (!defaultLayout?.config?.hostPath) {
+            return null;
+        }
+
+        const explicitConfigHostMount = resolveExplicitServiceHostMountPath({
+            serviceName: MANAGED_KOMF_SERVICE_NAME,
+            envKey: 'KOMF_CONFIG_HOST_MOUNT_PATH',
+            installOverridesByName,
+        });
+
+        return path.normalize(explicitConfigHostMount || defaultLayout.config.hostPath);
+    };
+
+    const resolveManagedKomfConfigFilePath = (installOverridesByName = null) => {
+        const directory = resolveManagedKomfConfigDirectory(installOverridesByName);
+        return directory ? path.join(directory, MANAGED_KOMF_CONFIG_FILE_NAME) : null;
+    };
+
+    const readManagedKomfConfigFile = (installOverridesByName = null) => {
+        const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
+        if (!filePath || typeof fsModule?.readFileSync !== 'function') {
+            return null;
+        }
+
+        try {
+            return normalizeManagedKomfConfigContent(fsModule.readFileSync(filePath, 'utf8'));
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return null;
+            }
+
+            throw error;
+        }
+    };
+
+    const writeManagedKomfConfigFile = (content, installOverridesByName = null) => {
+        const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
+        if (!filePath || typeof fsModule?.writeFileSync !== 'function') {
+            return null;
+        }
+
+        const normalizedContent = normalizeManagedKomfConfigContent(content);
+        const directory = path.dirname(filePath);
+        if (typeof fsModule?.mkdirSync === 'function') {
+            fsModule.mkdirSync(directory, {recursive: true});
+        }
+
+        let existingContent = null;
+        try {
+            existingContent = typeof fsModule?.readFileSync === 'function'
+                ? normalizeManagedKomfConfigContent(fsModule.readFileSync(filePath, 'utf8'))
+                : null;
+        } catch (error) {
+            if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
+                throw error;
+            }
+        }
+
+        if (existingContent !== normalizedContent) {
+            fsModule.writeFileSync(filePath, normalizedContent, 'utf8');
+        }
+
+        return {
+            path: filePath,
+            content: normalizedContent,
+            changed: existingContent !== normalizedContent,
+        };
+    };
+
     const applyStorageMountsForService = async (service, {dockerClient, installOverridesByName} = {}) => {
         if (!service?.name) {
             return service;
@@ -1083,13 +1169,19 @@ export function createWarden(options = {}) {
                 envKey: 'KOMF_CONFIG_HOST_MOUNT_PATH',
                 installOverridesByName,
             }) || defaultLayout.config.hostPath;
+            const requestedConfigContent =
+                typeof currentEnv[MANAGED_KOMF_CONFIG_ENV_KEY] === 'string'
+                    ? currentEnv[MANAGED_KOMF_CONFIG_ENV_KEY]
+                    : readManagedKomfConfigFile(installOverridesByName) ?? DEFAULT_MANAGED_KOMF_APPLICATION_YML;
+            writeManagedKomfConfigFile(requestedConfigContent, installOverridesByName);
             const envWithDefaults = currentEnv.KOMF_KAVITA_BASE_URI
                 ? service.env
                 : upsertEnvEntry(service.env, 'KOMF_KAVITA_BASE_URI', 'http://noona-kavita:5000');
+            const envWithoutManagedConfig = removeEnvEntry(envWithDefaults, MANAGED_KOMF_CONFIG_ENV_KEY);
 
             return {
                 ...service,
-                env: envWithDefaults,
+                env: envWithoutManagedConfig,
                 volumes: upsertBindMount(
                     service.volumes,
                     defaultLayout.config.containerPath,
@@ -2758,6 +2850,7 @@ export function createWarden(options = {}) {
         removeNoonaDockerArtifacts,
         requiredServiceSet,
         requiredServices,
+        readManagedKomfConfigFile,
         resetInstallationTracking,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,

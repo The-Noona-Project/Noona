@@ -6,6 +6,7 @@ import {useEffect, useRef, useState} from "react";
 import {Fade, Flex, Line, Row, ToggleButton} from "@once-ui-system/core";
 
 import {moonRoutes, moonShell} from "@/resources";
+import {hasMoonPermission} from "@/utils/moonPermissions";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./Header.module.scss";
 
@@ -14,6 +15,7 @@ type HeaderAuthUser = {
     discordUsername?: string | null;
     discordGlobalName?: string | null;
     avatarUrl?: string | null;
+    permissions?: string[] | null;
 };
 
 type HeaderAuthStatus = {
@@ -156,10 +158,13 @@ export const Header = () => {
         }
     };
 
-    const setupLocked = setupCompleted !== true;
-    const showSetup = setupLocked && !isAuthRoute;
-    const showMainNav = !setupLocked && !isAuthRoute;
-    const showHeaderNav = showMainNav || showSetup;
+    const setupStatusLoading = setupCompleted == null;
+    const setupLocked = setupCompleted === false;
+    const showSetup = !setupStatusLoading && setupLocked && !isAuthRoute;
+    const showMainNav = setupCompleted === true && !isAuthRoute;
+    const showHeaderNav = !setupStatusLoading && (showMainNav || showSetup);
+    const canAccessLibrary = hasMoonPermission(accountUser?.permissions, "library_management");
+    const canAccessDownloads = hasMoonPermission(accountUser?.permissions, "download_management");
     const displayName =
         normalizeString(accountUser?.discordGlobalName).trim()
         || normalizeString(accountUser?.username).trim()
@@ -221,7 +226,7 @@ export const Header = () => {
                                 {showMainNav && moonRoutes["/"] && (
                                     <ToggleButton prefixIcon="home" href="/" selected={pathname === "/"}/>
                                 )}
-                                {showMainNav && moonRoutes["/libraries"] && (
+                                {showMainNav && moonRoutes["/libraries"] && canAccessLibrary && (
                                     <>
                                         <Row s={{hide: true}}>
                                             <ToggleButton
@@ -240,7 +245,7 @@ export const Header = () => {
                                         </Row>
                                     </>
                                 )}
-                                {showMainNav && moonRoutes["/downloads"] && (
+                                {showMainNav && moonRoutes["/downloads"] && canAccessDownloads && (
                                     <>
                                         <Row s={{hide: true}}>
                                             <ToggleButton

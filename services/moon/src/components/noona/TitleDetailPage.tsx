@@ -528,7 +528,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     if (!normalizedUuid) {
         return (
             <SetupModeGate>
-                <AuthGate>
+                <AuthGate requiredPermission="library_management"
+                          deniedMessage="Library access requires Library management permission.">
                     <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
                         <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
                             <Column gap="8">
@@ -549,7 +550,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
     return (
         <SetupModeGate>
-            <AuthGate>
+            <AuthGate requiredPermission="library_management"
+                      deniedMessage="Library access requires Library management permission.">
                 <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
                         m={{style: {paddingInline: "24px"}}}>
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>

@@ -17,12 +17,15 @@ import java.util.regex.Pattern;
 
 /**
  * TitleScraper handles searching for manga titles and scraping chapter lists
- * from weebcentral.com using Selenium and Jsoup.
+ * from weebcentral.com using direct Jsoup HTTP requests.
+ * All HTTP fetching in this class goes through Jsoup.connect().
  *
  * Author: Pax
  */
 @Component
 public class TitleScraper {
+
+    // Selenium support was removed from TitleScraper; older "--headless=new" guidance is stale for this class.
 
     @Autowired
     private LoggerService logger;

@@ -2,18 +2,23 @@
 
 import {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Row, Spinner, Text} from "@once-ui-system/core";
+import {Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
+import {hasMoonPermission, MOON_PERMISSION_LABELS, type MoonPermission} from "@/utils/moonPermissions";
 
 type AuthStatus = {
-    user?: unknown;
+    user?: {
+        permissions?: string[] | null;
+    } | null;
     error?: string;
 };
 
 type AuthGateProps = {
     children: React.ReactNode;
+    requiredPermission?: MoonPermission;
+    deniedMessage?: string;
 };
 
-export function AuthGate({children}: AuthGateProps) {
+export function AuthGate({children, requiredPermission, deniedMessage}: AuthGateProps) {
     const router = useRouter();
     const [status, setStatus] = useState<AuthStatus | null>(null);
 
@@ -69,6 +74,23 @@ export function AuthGate({children}: AuthGateProps) {
         );
     }
 
+    if (requiredPermission && !hasMoonPermission(status.user?.permissions, requiredPermission)) {
+        const permissionLabel = MOON_PERMISSION_LABELS[requiredPermission];
+        return (
+            <Column maxWidth="m" horizontal="center" gap="16" paddingY="24">
+                <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
+                    <Column gap="8">
+                        <Heading as="h2" variant="heading-strong-l">
+                            Access denied
+                        </Heading>
+                        <Text>
+                            {deniedMessage || `This page requires ${permissionLabel}.`}
+                        </Text>
+                    </Column>
+                </Card>
+            </Column>
+        );
+    }
+
     return <>{children}</>;
 }
-

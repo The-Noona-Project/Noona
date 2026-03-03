@@ -33,6 +33,7 @@ type BadgeBackground =
     | "success-alpha-weak"
     | "danger-alpha-weak";
 type ProgressBackground = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium";
+type SectionTone = "neutral" | "success" | "warning";
 
 type HealthSnapshot = {
     success: boolean | null;
@@ -59,6 +60,8 @@ const REBOOT_TIMEOUT_MS = 12 * 60 * 1000;
 const STABILITY_POLLS_REQUIRED = 2;
 const RETURN_TO_DEFAULT = "/settings?tab=warden";
 const CORE_SERVICES = ["noona-warden", "noona-vault", "noona-moon", "noona-sage"] as const;
+const CORE_SERVICE_SET = new Set<string>(CORE_SERVICES);
+const DETAIL_PREVIEW_LIMIT = 180;
 const UPDATE_PRIORITY = [
     "noona-portal",
     "noona-raven",
@@ -103,6 +106,39 @@ const normalizeString = (value: unknown): string => (typeof value === "string" ?
 const clampPercent = (value: number): number => {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(100, Math.round(value)));
+};
+
+const collapseWhitespace = (value: string): string => value.replace(/\s+/g, " ").trim();
+
+const looksLikeHtml = (value: string): boolean => {
+    const normalized = value.trim().toLowerCase();
+    return normalized.startsWith("<!doctype html")
+        || normalized.includes("<html")
+        || normalized.includes("<head")
+        || normalized.includes("<body")
+        || normalized.includes("<script");
+};
+
+const summarizeDetail = (
+    value: unknown,
+    options: { success?: boolean | null; supported?: boolean | null } = {},
+): string => {
+    const normalized = collapseWhitespace(normalizeString(value));
+    if (!normalized) {
+        if (options.supported === false) {
+            return "No health endpoint is defined for this service.";
+        }
+        return options.success === true ? "Healthy." : "Waiting for a healthy response.";
+    }
+    if (looksLikeHtml(normalized)) {
+        return options.success === true
+            ? "Service responded, but the probe returned an HTML page instead of a compact health payload."
+            : "Health probe returned an HTML page instead of a compact error response.";
+    }
+    if (normalized.length <= DETAIL_PREVIEW_LIMIT) {
+        return normalized;
+    }
+    return `${normalized.slice(0, DETAIL_PREVIEW_LIMIT - 3).trimEnd()}...`;
 };
 
 const parseServicesParam = (raw: string | null): string[] => {
@@ -200,25 +236,68 @@ const normalizeHealthStatus = (value: unknown): string => {
 
 const extractHealthDetail = (payload: ServiceHealthResponse | null | undefined): string => {
     if (typeof payload?.detail === "string" && payload.detail.trim()) {
-        return payload.detail.trim();
+        return summarizeDetail(payload.detail, {
+            success: payload.success,
+            supported: payload.supported,
+        });
     }
     if (typeof payload?.error === "string" && payload.error.trim()) {
-        return payload.error.trim();
+        return summarizeDetail(payload.error, {
+            success: payload.success,
+            supported: payload.supported,
+        });
     }
     if (payload?.body && typeof payload.body === "object") {
         const record = payload.body as Record<string, unknown>;
         const detail = normalizeString(record.message).trim() || normalizeString(record.detail).trim();
         if (detail) {
-            return detail;
+            return summarizeDetail(detail, {
+                success: payload.success,
+                supported: payload.supported,
+            });
         }
     }
+    if (typeof payload?.body === "string" && payload.body.trim()) {
+        return summarizeDetail(payload.body, {
+            success: payload.success,
+            supported: payload.supported,
+        });
+    }
     if (payload?.success === true) {
-        return "Healthy.";
+        return summarizeDetail("Healthy.", {success: true, supported: payload.supported});
     }
     if (payload?.supported === false) {
-        return "No health endpoint is defined for this service.";
+        return summarizeDetail("No health endpoint is defined for this service.", {
+            success: payload.success,
+            supported: false,
+        });
     }
-    return "Waiting for a healthy response.";
+    return summarizeDetail("Waiting for a healthy response.", {
+        success: payload?.success,
+        supported: payload?.supported,
+    });
+};
+
+const sectionBadge = (tone: SectionTone): BadgeBackground => {
+    switch (tone) {
+        case "success":
+            return "success-alpha-weak";
+        case "warning":
+            return "warning-alpha-weak";
+        default:
+            return "neutral-alpha-weak";
+    }
+};
+
+const sectionBorder = (tone: SectionTone): BadgeBackground => {
+    switch (tone) {
+        case "success":
+            return "success-alpha-weak";
+        case "warning":
+            return "warning-alpha-weak";
+        default:
+            return "neutral-alpha-weak";
+    }
 };
 
 const isControlPlaneReady = (states: Record<string, ServiceMonitorEntry>): boolean =>
@@ -307,6 +386,14 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
     const targetSet = useMemo(() => new Set(targetServices), [targetServices]);
     const monitoredServices = useMemo(
         () => [...new Set<string>([...CORE_SERVICES, ...targetServices])],
+        [targetServices],
+    );
+    const queueServices = useMemo(
+        () => targetServices.filter((service) => !CORE_SERVICE_SET.has(service)),
+        [targetServices],
+    );
+    const hasCoreTargets = useMemo(
+        () => targetServices.some((service) => CORE_SERVICE_SET.has(service)),
         [targetServices],
     );
     const returnTo = useMemo(
@@ -434,7 +521,7 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                             service,
                             success: null,
                             supported: null,
-                            detail: message,
+                            detail: summarizeDetail(message),
                             status: "",
                         };
                     }
@@ -696,6 +783,41 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
         : phase === "complete"
             ? "success-alpha-medium"
             : "brand-alpha-medium";
+    const controlPlaneHealthy = isControlPlaneReady(serviceStates);
+    const heroTone: SectionTone = phase === "complete"
+        ? "success"
+        : phase === "waiting" || failedTargets > 0
+            ? "warning"
+            : "neutral";
+    const queueTone: SectionTone = failedTargets > 0
+        ? "warning"
+        : currentIndex >= targetServices.length && targetServices.length > 0
+            ? "success"
+            : "neutral";
+
+    const renderMetricTile = (
+        label: string,
+        value: string,
+        detail: string,
+        tone: SectionTone = "neutral",
+    ) => (
+        <Card
+            key={label}
+            background="surface"
+            border={sectionBorder(tone)}
+            padding="m"
+            radius="l"
+            className={styles.metricTile}
+        >
+            <Column gap="4">
+                <Text onBackground="neutral-weak" variant="label-default-xs">{label}</Text>
+                <Heading as="h3" variant="heading-strong-m">{value}</Heading>
+                <Text onBackground="neutral-weak" variant="body-default-xs" className={styles.secondaryDetail}>
+                    {detail}
+                </Text>
+            </Column>
+        </Card>
+    );
 
     const renderServiceCard = (serviceName: string) => {
         const entry = serviceStates[serviceName] ?? buildMonitorEntry(serviceName, targetSet.has(serviceName));
@@ -714,24 +836,26 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                     : entry.health?.success === true
                         ? "success-alpha-weak"
                         : "neutral-alpha-weak"}
-                padding="m"
+                padding="l"
                 radius="l"
+                className={styles.serviceCard}
             >
-                <Column gap="8">
-                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                        <Column gap="4">
+                <Column gap="12">
+                    <Row horizontal="between" gap="12" className={styles.serviceHeader}>
+                        <Column gap="4" className={styles.serviceTitleBlock}>
                             <Heading as="h3" variant="heading-strong-m">{serviceLabel(serviceName)}</Heading>
-                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                            <Text onBackground="neutral-weak" variant="body-default-s"
+                                  className={styles.secondaryDetail}>
                                 {serviceDescription(serviceName, catalogByName)}
                             </Text>
                         </Column>
-                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                        <Row gap="8" className={styles.badgeRow}>
                             <Badge background={step.background} onBackground="neutral-strong">{step.label}</Badge>
                             <Badge background={health.background} onBackground="neutral-strong">{health.label}</Badge>
                         </Row>
                     </Row>
-                    <Text variant="body-default-s">{entry.detail}</Text>
-                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                    <Text variant="body-default-s" className={styles.primaryDetail}>{entry.detail}</Text>
+                    <Text onBackground="neutral-weak" variant="body-default-xs" className={styles.secondaryDetail}>
                         {healthDetail}
                         {healthStatus}
                         {entry.health?.checkedAt ? ` Last checked at ${formatTimestamp(entry.health.checkedAt)}.` : ""}
@@ -742,7 +866,7 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
     };
 
     return (
-        <Column maxWidth="l" horizontal="center" gap="20" paddingY="24">
+        <Column fillWidth horizontal="center" gap="20" paddingY="24" className={styles.pageShell}>
             <Card
                 fillWidth
                 background="surface"
@@ -753,118 +877,185 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                         : "neutral-alpha-weak"}
                 padding="l"
                 radius="l"
+                className={styles.heroCard}
             >
-                <Column gap="20">
-                    <Row fillWidth horizontal="center" className={styles.loaderStage}>
-                        <Row className={styles.orbitShell} aria-hidden="true">
-                            <Row className={styles.ringOuter}/>
-                            <Row className={styles.ringMiddle}/>
-                            <Row className={styles.ringInner}/>
-                            <Row className={styles.core}/>
-                            <Row className={`${styles.orb} ${styles.orbOne}`}/>
-                            <Row className={`${styles.orb} ${styles.orbTwo}`}/>
-                            <Row className={`${styles.orb} ${styles.orbThree}`}/>
+                <Row fillWidth gap="24" className={styles.heroLayout}>
+                    <Column horizontal="center" gap="12" className={styles.heroVisual}>
+                        <Row fillWidth horizontal="center" className={styles.loaderStage}>
+                            <Row className={styles.orbitShell} aria-hidden="true">
+                                <Row className={styles.ringOuter}/>
+                                <Row className={styles.ringMiddle}/>
+                                <Row className={styles.ringInner}/>
+                                <Row className={styles.core}/>
+                                <Row className={`${styles.orb} ${styles.orbOne}`}/>
+                                <Row className={`${styles.orb} ${styles.orbTwo}`}/>
+                                <Row className={`${styles.orb} ${styles.orbThree}`}/>
+                            </Row>
                         </Row>
-                    </Row>
-
-                    <Column gap="8" horizontal="center" align="center">
                         <Badge background={phaseBadgeBackground(phase)} onBackground="neutral-strong">
                             {phase === "complete" ? "Stable" : phase === "failed" ? "Needs attention" : "Rebooting"}
                         </Badge>
-                        <Heading variant="display-strong-s">Rebooting</Heading>
-                        <Text variant="body-default-l" onBackground="neutral-weak" wrap="balance">
-                            {phaseDetail}
-                        </Text>
                     </Column>
 
-                    <Column gap="8">
-                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                            <Text variant="body-default-s">Progress</Text>
-                            <Text variant="body-default-xs" onBackground="neutral-weak">{progressPercent}%</Text>
-                        </Row>
-                        <Row
-                            fillWidth
-                            background="neutral-alpha-weak"
-                            radius="m"
-                            style={{height: "0.75rem", overflow: "hidden"}}
-                        >
+                    <Column fillWidth gap="20" className={styles.heroCopy}>
+                        <Column gap="8">
+                            <Heading variant="display-strong-s">Rebooting</Heading>
+                            <Text variant="body-default-l" onBackground="neutral-weak" wrap="balance">
+                                {phaseDetail}
+                            </Text>
+                        </Column>
+
+                        <Column gap="8">
+                            <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                <Text variant="body-default-s">Progress</Text>
+                                <Text variant="body-default-xs" onBackground="neutral-weak">{progressPercent}%</Text>
+                            </Row>
                             <Row
-                                background={progressBackground}
-                                style={{
-                                    height: "100%",
-                                    width: `${progressPercent}%`,
-                                    transition: "width 320ms ease",
+                                fillWidth
+                                background="neutral-alpha-weak"
+                                radius="m"
+                                style={{height: "0.85rem", overflow: "hidden"}}
+                            >
+                                <Row
+                                    background={progressBackground}
+                                    style={{
+                                        height: "100%",
+                                        width: `${progressPercent}%`,
+                                        transition: "width 320ms ease",
+                                    }}
+                                />
+                            </Row>
+                        </Column>
+
+                        <Row fillWidth gap="12" className={styles.metricsGrid}>
+                            {renderMetricTile(
+                                "Updated",
+                                `${Math.min(currentIndex, targetServices.length)}/${targetServices.length}`,
+                                currentIndex >= targetServices.length
+                                    ? "Queue finished."
+                                    : "Image updates still in flight.",
+                                queueTone,
+                            )}
+                            {renderMetricTile(
+                                "Healthy",
+                                `${healthyTargets}/${targetServices.length}`,
+                                controlPlaneHealthy ? "Control plane is reachable." : "Waiting for stable health probes.",
+                                controlPlaneHealthy ? "success" : "neutral",
+                            )}
+                            {renderMetricTile(
+                                "Failures",
+                                String(failedTargets),
+                                failedTargets > 0 ? "At least one target needs review." : "No failed targets yet.",
+                                failedTargets > 0 ? "warning" : "neutral",
+                            )}
+                            {renderMetricTile(
+                                "Last contact",
+                                formatTimestamp(lastReachableAt),
+                                lastReachableAt ? "Last successful stack probe." : "No successful probe yet.",
+                                lastReachableAt ? "success" : heroTone,
+                            )}
+                            {renderMetricTile(
+                                "Stability",
+                                `${stableSuccessCount}/${STABILITY_POLLS_REQUIRED}`,
+                                "Consecutive healthy polls required before exit.",
+                                stableSuccessCount > 0 ? "success" : "neutral",
+                            )}
+                        </Row>
+
+                        {pageError && (
+                            <Text onBackground="danger-strong" variant="body-default-s">{pageError}</Text>
+                        )}
+
+                        <Row gap="12" className={styles.actionRow}>
+                            <Button variant="secondary" onClick={() => window.location.assign(returnTo)}>
+                                Back to settings
+                            </Button>
+                            <Button variant="secondary" onClick={() => window.location.reload()}>
+                                Reload page
+                            </Button>
+                            <Button
+                                variant="primary"
+                                disabled={phase !== "waiting" && phase !== "verifying"}
+                                onClick={() => {
+                                    void probeNowRef.current();
                                 }}
-                            />
+                            >
+                                Probe now
+                            </Button>
                         </Row>
                     </Column>
-
-                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            Updated {Math.min(currentIndex, targetServices.length)}/{targetServices.length}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            Healthy {healthyTargets}/{targetServices.length}
-                        </Badge>
-                        <Badge background={failedTargets > 0 ? "warning-alpha-weak" : "neutral-alpha-weak"}
-                               onBackground="neutral-strong">
-                            Failures {failedTargets}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            Last contact {formatTimestamp(lastReachableAt)}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            Stability checks {stableSuccessCount}/{STABILITY_POLLS_REQUIRED}
-                        </Badge>
-                    </Row>
-
-                    {pageError && (
-                        <Text onBackground="danger-strong" variant="body-default-s">{pageError}</Text>
-                    )}
-
-                    <Row gap="8" style={{flexWrap: "wrap"}}>
-                        <Button variant="secondary" onClick={() => window.location.assign(returnTo)}>
-                            Back to settings
-                        </Button>
-                        <Button variant="secondary" onClick={() => window.location.reload()}>
-                            Reload page
-                        </Button>
-                        <Button
-                            variant="primary"
-                            disabled={phase !== "waiting" && phase !== "verifying"}
-                            onClick={() => {
-                                void probeNowRef.current();
-                            }}
-                        >
-                            Probe now
-                        </Button>
-                    </Row>
-                </Column>
+                </Row>
             </Card>
 
-            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
-                <Column gap="12">
-                    <Heading as="h2" variant="heading-strong-l">Control Plane</Heading>
-                    <Text onBackground="neutral-weak" variant="body-default-s">
-                        These services need to come back cleanly before the reboot monitor can resume or finish.
-                    </Text>
+            <Row fillWidth gap="20" className={styles.sectionGrid}>
+                <Card
+                    fillWidth
+                    background="surface"
+                    border={sectionBorder(controlPlaneHealthy ? "success" : "neutral")}
+                    padding="l"
+                    radius="l"
+                    className={styles.sectionCard}
+                >
                     <Column gap="12">
-                        {CORE_SERVICES.map((serviceName) => renderServiceCard(serviceName))}
+                        <Row horizontal="between" vertical="center" gap="12" className={styles.sectionHeader}>
+                            <Heading as="h2" variant="heading-strong-l">Control Plane</Heading>
+                            <Badge
+                                background={sectionBadge(controlPlaneHealthy ? "success" : "neutral")}
+                                onBackground="neutral-strong"
+                            >
+                                {CORE_SERVICES.length} services
+                            </Badge>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-s">
+                            These services need to come back cleanly before the reboot monitor can resume or finish.
+                        </Text>
+                        <Column gap="12" className={styles.serviceStack}>
+                            {CORE_SERVICES.map((serviceName) => renderServiceCard(serviceName))}
+                        </Column>
                     </Column>
-                </Column>
-            </Card>
+                </Card>
 
-            <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
-                <Column gap="12">
-                    <Heading as="h2" variant="heading-strong-l">Update Queue</Heading>
-                    <Text onBackground="neutral-weak" variant="body-default-s">
-                        Targeted services are updated one at a time, then health probes wait for a stable stack.
-                    </Text>
+                <Card
+                    fillWidth
+                    background="surface"
+                    border={sectionBorder(queueTone)}
+                    padding="l"
+                    radius="l"
+                    className={styles.sectionCard}
+                >
                     <Column gap="12">
-                        {targetServices.map((serviceName) => renderServiceCard(serviceName))}
+                        <Row horizontal="between" vertical="center" gap="12" className={styles.sectionHeader}>
+                            <Heading as="h2" variant="heading-strong-l">Update Queue</Heading>
+                            <Badge background={sectionBadge(queueTone)} onBackground="neutral-strong">
+                                {queueServices.length} queued
+                            </Badge>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-s">
+                            Targeted services are updated one at a time, then health probes wait for a stable stack.
+                        </Text>
+                        {hasCoreTargets && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs"
+                                  className={styles.secondaryDetail}>
+                                Core targets such as Moon, Sage, and Vault are tracked in the Control Plane panel to
+                                avoid
+                                duplicate cards.
+                            </Text>
+                        )}
+                        {queueServices.length > 0 ? (
+                            <Column gap="12" className={styles.serviceStack}>
+                                {queueServices.map((serviceName) => renderServiceCard(serviceName))}
+                            </Column>
+                        ) : (
+                            <Column gap="8" vertical="center" className={styles.queueEmpty}>
+                                <Text variant="body-default-s">No non-core services are waiting in the queue.</Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    The remaining monitored targets are already represented in the Control Plane panel.
+                                </Text>
+                            </Column>
+                        )}
                     </Column>
-                </Column>
-            </Card>
+                </Card>
+            </Row>
         </Column>
     );
 }

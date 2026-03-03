@@ -13,7 +13,7 @@ export function registerRavenRoutes(context = {}) {
     app.use('/api/raven', requireSessionIfSetupCompleted)
 
     app.get('/api/raven/library', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         try {
@@ -26,7 +26,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.post('/api/raven/library/checkForNew', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'check_download_missing_titles', 'Missing-title check permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
         }
         try {
@@ -39,7 +39,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.get('/api/raven/title/:uuid', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
@@ -64,7 +64,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.post('/api/raven/title/:uuid/checkForNew', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'check_download_missing_titles', 'Missing-title check permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
@@ -89,7 +89,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.post('/api/raven/title', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
@@ -110,7 +110,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.patch('/api/raven/title/:uuid', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
@@ -142,7 +142,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.delete('/api/raven/title/:uuid', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
@@ -167,7 +167,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.get('/api/raven/title/:uuid/files', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
@@ -193,7 +193,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.delete('/api/raven/title/:uuid/files', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
         }
         const uuid = typeof req.params?.uuid === 'string' ? req.params.uuid.trim() : ''
@@ -229,7 +229,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.post('/api/raven/search', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'lookup_new_title', 'Lookup permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
         }
         const query = typeof req.body?.query === 'string' ? req.body.query.trim() : ''
@@ -249,7 +249,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.post('/api/raven/download', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'download_new_title', 'Download permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
         }
         const searchId = typeof req.body?.searchId === 'string' ? req.body.searchId.trim() : ''
@@ -283,7 +283,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.get('/api/raven/downloads/status', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
         }
         try {
@@ -296,7 +296,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.get('/api/raven/downloads/history', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
         }
         try {
@@ -309,7 +309,7 @@ export function registerRavenRoutes(context = {}) {
     })
 
     app.get('/api/raven/downloads/summary', async (req, res) => {
-        if (!ensureMoonPermission(req, res, 'moon_login', 'Moon login permission is required.')) {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
         }
         try {

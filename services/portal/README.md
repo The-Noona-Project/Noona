@@ -41,8 +41,11 @@ default Discord roles.
   folders and merge in any missing Raven folder roots on existing libraries.
 - `POST /api/portal/kavita/libraries/scan` - resolve a Kavita library by name and trigger a scan for Raven-managed
   imports.
-- `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id.
-- `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series.
+- `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id. Managed Komf /
+  Kavita server failures return a compact operator-facing `500` that points at Komf `application.yml` instead of
+  echoing the raw upstream payload.
+- `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series. Managed Komf
+  / Kavita server failures return the same compact operator-facing `500` guidance.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
   picker.
 - `POST /api/portal/onboard` - create a Kavita user, store an onboarding token, and optionally persist the credential.

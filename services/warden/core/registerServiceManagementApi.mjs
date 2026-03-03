@@ -1,10 +1,15 @@
 // services/warden/core/registerServiceManagementApi.mjs
 
 import {createManagedKavitaSetupClient} from '../../sage/clients/managedKavitaSetupClient.mjs';
+import {
+    DEFAULT_MANAGED_KOMF_APPLICATION_YML,
+    normalizeManagedKomfConfigContent,
+} from '../docker/komfConfigTemplate.mjs';
 
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
 const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
 const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
+const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -108,6 +113,7 @@ export function registerServiceManagementApi(context = {}) {
         removeNoonaDockerArtifacts,
         requiredServiceSet,
         requiredServices,
+        readManagedKomfConfigFile,
         resetInstallationTracking,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
@@ -1362,6 +1368,12 @@ export function registerServiceManagementApi(context = {}) {
 
         const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
         const runtime = resolveRuntimeConfig(trimmedName);
+        const env = parseEnvEntries(descriptor.env);
+        if (trimmedName === MANAGED_KAVITA_KOMF_SERVICE_NAME) {
+            env[MANAGED_KOMF_CONFIG_ENV_KEY] =
+                readManagedKomfConfigFile?.() ??
+                normalizeManagedKomfConfigContent(env[MANAGED_KOMF_CONFIG_ENV_KEY] ?? DEFAULT_MANAGED_KOMF_APPLICATION_YML);
+        }
 
         return {
             name: descriptor.name,
@@ -1371,7 +1383,7 @@ export function registerServiceManagementApi(context = {}) {
             hostServiceUrl: api.resolveHostServiceUrl(descriptor),
             description: descriptor.description ?? null,
             health: descriptor.health ?? null,
-            env: parseEnvEntries(descriptor.env),
+            env,
             envConfig: cloneEnvConfig(descriptor.envConfig),
             runtimeConfig: {
                 hostPort: runtime.hostPort,

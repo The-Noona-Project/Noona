@@ -56,13 +56,19 @@ download/library routes for Moon and other clients.
       auto-creates first-time Discord users from the configured default permission template, and signs in
       Discord-linked Moon users.
   - `/api/auth/users/*` now verifies Vault persistence on user edits and infers legacy Discord-linked records from
-    stored Discord ids or `discord.<id>` lookup keys so Moon permission saves cannot report false success.
+    stored Discord ids or `discord.<id>` lookup keys so Moon permission saves cannot report false success. Sage now
+    emits the canonical `library_management` and `download_management` permissions while still accepting the legacy
+    `lookup_new_title`, `download_new_title`, and `check_download_missing_titles` names on write.
   - `/api/auth/users/default-permissions` reads and updates the default permission set used for new Discord-linked
     Moon accounts.
 - Download settings: `/api/settings/downloads/*`
     - `/api/settings/downloads/naming` stores Raven naming templates in Vault.
     - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
+      It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write, and normalizes unlimited entries to `-1`.
 - Raven proxy: `/api/raven/*`
+    - Library listing/title/file routes require `library_management` after setup completes.
+    - Search, queue, download-status/history, and library-wide sync routes require `download_management` after setup
+      completes.
 
 ## Key Environment Variables
 

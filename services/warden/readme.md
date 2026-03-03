@@ -15,6 +15,7 @@ log streaming, and lifecycle APIs.
 - [HTTP API server](api/startWardenServer.mjs)
 - [Core descriptors](docker/noonaDockers.mjs)
 - [Addon descriptors](docker/addonDockers.mjs)
+- [Managed Komf template](docker/komfConfigTemplate.mjs)
 - [Storage layout helpers](docker/storageLayout.mjs)
 - [Docker helpers](docker/dockerUtilties.mjs)
 - [Setup wizard helpers](setup/)
@@ -77,6 +78,9 @@ instead of blindly starting every registered service.
 
 - Warden tracks service histories and buffered logs for diagnostics.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
+- Managed `noona-komf` now materializes `/config/application.yml` from the stored `KOMF_APPLICATION_YML` service
+  setting before container start. Moon's setup wizard and Portal settings page edit that managed file through Warden's
+  normal service-config flow.
 - Warden now resolves a shared Noona host root and pre-creates the expected tree before service launch. Redis and
   Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
   managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed `noona-komf` uses

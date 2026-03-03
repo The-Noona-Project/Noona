@@ -41,7 +41,14 @@ export async function POST(request: Request) {
             return NextResponse.json(finalize.payload, {status: finalize.status});
         }
 
-        const {payload: current} = await sageJson("/api/setup/wizard/state");
+        const currentState = await sageJson("/api/setup/wizard/state", {
+            headers: await withNoonaAuthHeaders(),
+        });
+        if (currentState.status >= 400) {
+            return NextResponse.json(currentState.payload, {status: currentState.status});
+        }
+
+        const current = currentState.payload;
         const normalized = current && typeof current === "object" ? {...(current as Record<string, unknown>)} : {};
 
         const now = new Date().toISOString();
@@ -72,7 +79,7 @@ export async function POST(request: Request) {
 
         const {status, payload} = await sageJson("/api/setup/wizard/state", {
             method: "PUT",
-            headers: {"Content-Type": "application/json"},
+            headers: await withNoonaAuthHeaders({"Content-Type": "application/json"}),
             body: JSON.stringify({state: normalized}),
         });
 

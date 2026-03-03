@@ -1,6 +1,7 @@
 ﻿// services/warden/docker/addonDockers.mjs
 
 import {resolveHostServiceBase, resolveHostServiceHost, resolveSharedHostEnvEntries,} from './hostServiceUrl.mjs';
+import {DEFAULT_MANAGED_KOMF_APPLICATION_YML} from './komfConfigTemplate.mjs';
 
 const HOST_SERVICE_URL = resolveHostServiceBase();
 const HOST_SERVICE_HOST = resolveHostServiceHost();
@@ -192,6 +193,12 @@ const rawList = [
                 label: 'Komf Config Folder',
                 description: 'Optional host folder mounted into Komf at /config.',
                 warning: 'Leave empty to use the default Noona storage root under komf/config.',
+                required: false,
+            }),
+            createEnvField('KOMF_APPLICATION_YML', DEFAULT_MANAGED_KOMF_APPLICATION_YML, {
+                label: 'Komf application.yml',
+                description: 'Moon writes this YAML into /config/application.yml before managed Komf starts.',
+                warning: 'Set valid metadataProviders and kavita.metadataUpdate blocks here, or Kavita metadata matching can fail.',
                 required: false,
             }),
         ],

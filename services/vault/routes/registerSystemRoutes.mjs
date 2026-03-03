@@ -32,17 +32,23 @@ export function registerSystemRoutes(context = {}) {
     });
 
     app.post('/v1/vault/handle', requireAuth, async (req, res) => {
-        const packet = req.body;
+        try {
+            const packet = req.body;
 
-        logger.debug(`[Vault] Handling packet from ${req.serviceName}`);
-        const handler = await resolvePacketHandler();
-        const result = await handler(packet);
+            logger.debug(`[Vault] Handling packet from ${req.serviceName}`);
+            const handler = await resolvePacketHandler();
+            const result = await handler(packet);
 
-        if (result?.error) {
-            return res.status(400).json({error: result.error});
+            if (result?.error) {
+                return res.status(400).json({error: result.error});
+            }
+
+            res.json(result ?? {});
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`[Vault] Packet handler failed for ${req.serviceName}: ${message}`);
+            res.status(500).json({error: message || 'Unable to handle packet.'});
         }
-
-        res.json(result ?? {});
     });
 }
 

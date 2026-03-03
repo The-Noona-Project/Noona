@@ -1,7 +1,8 @@
 "use client";
 
-import {useEffect, useMemo, useState} from "react";
-import {Badge, Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {useEffect, useEffectEvent, useMemo, useState} from "react";
+import {Badge, Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
+import {DownloadsAddModal} from "./DownloadsAddModal";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 
@@ -113,6 +114,9 @@ export function DownloadsPage() {
     }, [searchResult]);
 
     const selectedOptionSet = useMemo(() => new Set<number>(selectedOptions), [selectedOptions]);
+    const searchResultCount = resolvedSearchOptions.length;
+    const selectedCount = selectedOptions.length;
+    const hasSearchResult = searchResult != null;
 
     const pollDownloads = async () => {
         try {
@@ -173,19 +177,26 @@ export function DownloadsPage() {
         await Promise.all([pollDownloads(), loadSummary(), loadHistory()]);
     };
 
+    const refreshAllOnMount = useEffectEvent(() => {
+        void refreshAll();
+    });
+
     useEffect(() => {
         const interval = window.setInterval(() => {
             void pollDownloads();
         }, 1500);
 
-        void refreshAll();
+        refreshAllOnMount();
 
         return () => {
             window.clearInterval(interval);
         };
     }, []);
 
-    const closeAdd = () => {
+    const closeAdd = ({force = false}: { force?: boolean } = {}) => {
+        if (queueing && !force) {
+            return;
+        }
         setAddOpen(false);
         setAddQuery("");
         setSearching(false);
@@ -214,23 +225,25 @@ export function DownloadsPage() {
             return;
         }
 
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                closeAdd();
-                return;
-            }
+        const previousBodyOverflow = document.body.style.overflow;
+        const previousHtmlOverflow = document.documentElement.style.overflow;
+        document.body.style.overflow = "hidden";
+        document.documentElement.style.overflow = "hidden";
 
-            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-                event.preventDefault();
-                if (!queueing && selectedOptions.length > 0) {
-                    void queueSelectedDownloads();
-                }
+        const focusTimer = window.setTimeout(() => {
+            const input = document.getElementById("add-title-query");
+            if (input instanceof HTMLInputElement) {
+                input.focus();
+                input.select();
             }
+        }, 40);
+
+        return () => {
+            window.clearTimeout(focusTimer);
+            document.body.style.overflow = previousBodyOverflow;
+            document.documentElement.style.overflow = previousHtmlOverflow;
         };
-
-        window.addEventListener("keydown", onKeyDown);
-        return () => window.removeEventListener("keydown", onKeyDown);
-    }, [addOpen, queueing, selectedOptions, searchResult]);
+    }, [addOpen]);
 
     const performSearch = async () => {
         const needle = addQuery.trim();
@@ -354,6 +367,33 @@ export function DownloadsPage() {
         }
     };
 
+    const handleAddModalKeyDown = useEffectEvent((event: KeyboardEvent) => {
+        if (event.key === "Escape") {
+            closeAdd();
+            return;
+        }
+
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+            event.preventDefault();
+            if (!queueing && selectedOptions.length > 0) {
+                void queueSelectedDownloads();
+            }
+        }
+    });
+
+    useEffect(() => {
+        if (!addOpen) {
+            return;
+        }
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            handleAddModalKeyDown(event);
+        };
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [addOpen]);
+
     const checkLibraryForNewChapters = async () => {
         setSyncingLibrary(true);
         setSyncLibraryMessage(null);
@@ -403,7 +443,8 @@ export function DownloadsPage() {
 
     return (
         <SetupModeGate>
-            <AuthGate>
+            <AuthGate requiredPermission="download_management"
+                      deniedMessage="Downloads access requires Download management permission.">
                 <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
                         m={{style: {paddingInline: "24px"}}}>
                     <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
@@ -675,250 +716,25 @@ export function DownloadsPage() {
                     </Card>
 
                     {addOpen && (
-                        <Column
-                            role="presentation"
-                            onClick={(event) => {
-                                if (event.target === event.currentTarget) {
-                                    closeAdd();
-                                }
-                            }}
-                            style={{
-                                position: "fixed",
-                                inset: 0,
-                                width: "100vw",
-                                height: "100vh",
-                                background: "rgba(3, 8, 18, 0.76)",
-                                backdropFilter: "blur(6px)",
-                                zIndex: 120,
-                                display: "grid",
-                                placeItems: "center",
-                                padding: "clamp(12px, 2vw, 28px)",
-                                overflowY: "auto",
-                            }}
-                        >
-                            <Card
-                                background="surface"
-                                border="neutral-alpha-weak"
-                                padding="0"
-                                radius="l"
-                                style={{
-                                    width: "min(960px, calc(100vw - 24px))",
-                                    maxHeight: "min(90vh, 920px)",
-                                    overflow: "hidden",
-                                }}
-                            >
-                                <Column fillHeight gap="0" style={{minHeight: 0}}>
-                                    <Row
-                                        horizontal="between"
-                                        vertical="center"
-                                        gap="12"
-                                        paddingX="l"
-                                        paddingY="m"
-                                        style={{flexWrap: "wrap", borderBottom: "1px solid rgba(255,255,255,0.1)"}}
-                                    >
-                                        <Column gap="4" style={{minWidth: 0}}>
-                                            <Heading as="h2" variant="heading-strong-l">
-                                                Add download
-                                            </Heading>
-                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                                Search a title, select one or more results, then queue in one action.
-                                            </Text>
-                                        </Column>
-                                        <Button variant="secondary" onClick={() => closeAdd()} disabled={queueing}>
-                                            Close
-                                        </Button>
-                                    </Row>
-
-                                    <Column
-                                        gap="16"
-                                        paddingX="l"
-                                        paddingY="m"
-                                        style={{overflowY: "auto", minHeight: 0}}
-                                    >
-                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            <Input
-                                                id="add-title-query"
-                                                name="add-title-query"
-                                                type="text"
-                                                placeholder="Search titles (ex: Absolute Duo)"
-                                                value={addQuery}
-                                                onChange={(e) => setAddQuery(e.target.value)}
-                                                onKeyDown={(event) => {
-                                                    if (event.key === "Enter") {
-                                                        event.preventDefault();
-                                                        void performSearch();
-                                                    }
-                                                }}
-                                            />
-                                            <Button
-                                                variant="primary"
-                                                disabled={searching || !addQuery.trim()}
-                                                onClick={() => void performSearch()}
-                                            >
-                                                {searching ? "Searching..." : "Search"}
-                                            </Button>
-                                        </Row>
-
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            Press `Enter` to search and `Ctrl+Enter` to queue selected results.
-                                        </Text>
-
-                                        {searchError && (
-                                            <Text onBackground="danger-strong" variant="body-default-xs">
-                                                {searchError}
-                                            </Text>
-                                        )}
-
-                                        {searching && (
-                                            <Row fillWidth horizontal="center" paddingY="24">
-                                                <Spinner/>
-                                            </Row>
-                                        )}
-
-                                        {searchResult && (
-                                            <Column gap="12">
-                                                <Row horizontal="between" vertical="center" gap="12"
-                                                     style={{flexWrap: "wrap"}}>
-                                                    <Heading as="h3" variant="heading-strong-m">
-                                                        Results
-                                                    </Heading>
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        {resolvedSearchOptions.length} found, {selectedOptions.length} selected
-                                                    </Text>
-                                                </Row>
-
-                                                {resolvedSearchOptions.length === 0 && (
-                                                    <Text onBackground="neutral-weak">No results found.</Text>
-                                                )}
-
-                                                {resolvedSearchOptions.length > 0 && (
-                                                    <Column gap="8">
-                                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                                            <Button
-                                                                variant="secondary"
-                                                                disabled={queueing || resolvedSearchOptions.length === 0}
-                                                                onClick={() => selectAllOptions()}
-                                                            >
-                                                                Select all
-                                                            </Button>
-                                                            <Button
-                                                                variant="secondary"
-                                                                disabled={queueing || selectedOptions.length === 0}
-                                                                onClick={() => clearSelectedOptions()}
-                                                            >
-                                                                Clear selection
-                                                            </Button>
-                                                        </Row>
-
-                                                        <Column gap="8" style={{maxHeight: "45vh", overflowY: "auto"}}>
-                                                            {resolvedSearchOptions.map((option) => {
-                                                                const checked = selectedOptionSet.has(option.optionIndex);
-
-                                                                return (
-                                                                    <Card
-                                                                        key={`${option.optionIndex}-${option.title || option.href}`}
-                                                                        background="surface"
-                                                                        border={checked ? "brand-alpha-weak" : "neutral-alpha-weak"}
-                                                                        padding="m"
-                                                                        radius="l"
-                                                                        fillWidth
-                                                                        style={{cursor: "pointer"}}
-                                                                        onClick={() => toggleSelectedOption(option.optionIndex)}
-                                                                    >
-                                                                        <Column gap="8">
-                                                                            <Row horizontal="between" vertical="center"
-                                                                                 gap="12">
-                                                                                <Row gap="12" vertical="center"
-                                                                                     style={{minWidth: 0}}>
-                                                                                    {option.coverUrl && (
-                                                                                        <img
-                                                                                            src={option.coverUrl}
-                                                                                            alt={`${option.title || `Option ${option.optionIndex}`} cover`}
-                                                                                            style={{
-                                                                                                width: 44,
-                                                                                                height: 66,
-                                                                                                objectFit: "cover",
-                                                                                                borderRadius: 10,
-                                                                                                border: "1px solid rgba(255,255,255,0.12)",
-                                                                                                flex: "0 0 auto",
-                                                                                            }}
-                                                                                            loading="lazy"
-                                                                                        />
-                                                                                    )}
-                                                                                    <Column gap="8"
-                                                                                            style={{minWidth: 0}}>
-                                                                                        <Text
-                                                                                            variant="heading-default-s"
-                                                                                            wrap="balance">
-                                                                                            {option.title || `Option ${option.optionIndex}`}
-                                                                                        </Text>
-                                                                                        {option.type && (
-                                                                                            <Row>
-                                                                                                <Badge
-                                                                                                    background="neutral-alpha-weak"
-                                                                                                    onBackground="neutral-strong">
-                                                                                                    {option.type}
-                                                                                                </Badge>
-                                                                                            </Row>
-                                                                                        )}
-                                                                                    </Column>
-                                                                                </Row>
-                                                                                <input
-                                                                                    type="checkbox"
-                                                                                    name="download-source"
-                                                                                    checked={checked}
-                                                                                    onClick={(event) => event.stopPropagation()}
-                                                                                    onChange={() => toggleSelectedOption(option.optionIndex)}
-                                                                                    aria-label={`Select option ${option.optionIndex}`}
-                                                                                />
-                                                                            </Row>
-                                                                            {option.href && (
-                                                                                <Text onBackground="neutral-weak"
-                                                                                      variant="body-default-xs">
-                                                                                    Source:{" "}
-                                                                                    <SmartLink
-                                                                                        href={option.href}
-                                                                                        onClick={(event) => event.stopPropagation()}
-                                                                                    >
-                                                                                        {option.href}
-                                                                                    </SmartLink>
-                                                                                </Text>
-                                                                            )}
-                                                                        </Column>
-                                                                    </Card>
-                                                                );
-                                                            })}
-                                                        </Column>
-
-                                                        <Row gap="12" style={{flexWrap: "wrap"}}>
-                                                            <Button
-                                                                variant="primary"
-                                                                disabled={queueing || selectedOptions.length === 0}
-                                                                onClick={() => void queueSelectedDownloads()}
-                                                            >
-                                                                {queueing ? "Queueing..." : `Queue selected (${selectedOptions.length})`}
-                                                            </Button>
-                                                            {queueMessage && (
-                                                                <Text onBackground="neutral-weak"
-                                                                      variant="body-default-xs">
-                                                                    {queueMessage}
-                                                                </Text>
-                                                            )}
-                                                            {queueError && (
-                                                                <Text onBackground="danger-strong"
-                                                                      variant="body-default-xs">
-                                                                    {queueError}
-                                                                </Text>
-                                                            )}
-                                                        </Row>
-                                                    </Column>
-                                                )}
-                                            </Column>
-                                        )}
-                                    </Column>
-                                </Column>
-                            </Card>
-                        </Column>
+                        <DownloadsAddModal
+                            addQuery={addQuery}
+                            searching={searching}
+                            searchError={searchError}
+                            hasSearchResult={hasSearchResult}
+                            resolvedSearchOptions={resolvedSearchOptions}
+                            selectedCount={selectedCount}
+                            selectedOptionSet={selectedOptionSet}
+                            queueing={queueing}
+                            queueError={queueError}
+                            queueMessage={queueMessage}
+                            onClose={() => closeAdd()}
+                            onQueryChange={setAddQuery}
+                            onSearch={() => void performSearch()}
+                            onToggleSelected={toggleSelectedOption}
+                            onSelectAll={selectAllOptions}
+                            onClearSelection={clearSelectedOptions}
+                            onQueueSelected={() => void queueSelectedDownloads()}
+                        />
                     )}
                 </Column>
             </AuthGate>

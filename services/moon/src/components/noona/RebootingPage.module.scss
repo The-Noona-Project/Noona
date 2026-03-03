@@ -1,5 +1,28 @@
+.pageShell {
+  width: min(100%, 82rem);
+  padding-bottom: 2rem;
+}
+
+.heroCard {
+  overflow: hidden;
+}
+
+.heroLayout {
+  align-items: center;
+}
+
+.heroVisual {
+  flex: 0 0 20rem;
+  min-width: 0;
+}
+
+.heroCopy {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .loaderStage {
-  min-height: 20rem;
+  min-height: 14rem;
 }
 
 .orbitShell {
@@ -77,6 +100,57 @@
   animation: reboot-orbit-three 3.2s linear infinite;
 }
 
+.metricsGrid {
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.metricTile {
+  flex: 1 1 11rem;
+  min-width: 11rem;
+}
+
+.actionRow {
+  flex-wrap: wrap;
+}
+
+.sectionGrid {
+  align-items: stretch;
+}
+
+.sectionCard {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.sectionHeader {
+  flex-wrap: wrap;
+}
+
+.serviceStack,
+.serviceCard,
+.serviceTitleBlock {
+  min-width: 0;
+}
+
+.serviceHeader {
+  align-items: flex-start;
+}
+
+.badgeRow {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.primaryDetail,
+.secondaryDetail {
+  overflow-wrap: anywhere;
+}
+
+.queueEmpty {
+  min-height: 10rem;
+}
+
 @keyframes reboot-spin {
   from {
     transform: rotate(0deg);
@@ -137,5 +211,54 @@
 
   to {
     transform: rotate(600deg) translateX(7rem) rotate(-600deg);
+  }
+}
+
+@media (max-width: 1024px) {
+  .pageShell {
+    width: min(100%, 70rem);
+  }
+
+  .heroLayout,
+  .sectionGrid {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .heroVisual,
+  .sectionCard {
+    flex-basis: auto;
+  }
+
+  .badgeRow {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .pageShell {
+    width: 100%;
+  }
+
+  .loaderStage {
+    min-height: 10rem;
+  }
+
+  .orbitShell {
+    width: 12rem;
+    height: 12rem;
+  }
+
+  .ringMiddle {
+    inset: 1.15rem;
+  }
+
+  .ringInner {
+    inset: 2.35rem;
+  }
+
+  .metricTile {
+    flex-basis: calc(50% - 0.5rem);
+    min-width: calc(50% - 0.5rem);
   }
 }

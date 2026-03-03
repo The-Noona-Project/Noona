@@ -149,4 +149,10 @@
   .accountButton {
     padding-right: 0.375rem;
   }
+
+  .accountMenu {
+    top: auto;
+    bottom: calc(100% + 0.5rem);
+    transform-origin: bottom right;
+  }
 }
