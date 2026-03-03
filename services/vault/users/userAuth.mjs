@@ -42,21 +42,32 @@ export const normalizeRole = (value, fallback = 'member') => {
     return fallback;
 };
 
+const LEGACY_MOON_PERMISSION_ALIASES = Object.freeze({
+    lookup_new_title: 'library_management',
+    download_new_title: 'download_management',
+    check_download_missing_titles: 'download_management',
+});
+const SUPPORTED_MOON_PERMISSION_KEYS = Object.freeze([
+    'moon_login',
+    'library_management',
+    'download_management',
+    'user_management',
+    'admin',
+    ...Object.keys(LEGACY_MOON_PERMISSION_ALIASES),
+]);
 export const MOON_OP_PERMISSION_KEYS = Object.freeze([
     'moon_login',
-    'lookup_new_title',
-    'download_new_title',
-    'check_download_missing_titles',
+    'library_management',
+    'download_management',
     'user_management',
     'admin',
 ]);
 
-const MOON_OP_PERMISSION_SET = new Set(MOON_OP_PERMISSION_KEYS);
+const MOON_OP_PERMISSION_SET = new Set(SUPPORTED_MOON_PERMISSION_KEYS);
 const DEFAULT_MEMBER_PERMISSION_KEYS = Object.freeze([
     'moon_login',
-    'lookup_new_title',
-    'download_new_title',
-    'check_download_missing_titles',
+    'library_management',
+    'download_management',
 ]);
 
 export const sortMoonPermissions = (permissions = []) => {
@@ -65,6 +76,14 @@ export const sortMoonPermissions = (permissions = []) => {
 };
 
 const normalizePermissionEntry = (value) => normalizeString(value).toLowerCase();
+const normalizePermissionKey = (value) => {
+    const key = normalizePermissionEntry(value);
+    if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+        return '';
+    }
+
+    return LEGACY_MOON_PERMISSION_ALIASES[key] ?? key;
+};
 
 export const normalizePermissionList = (value) => {
     if (!Array.isArray(value)) {
@@ -73,8 +92,8 @@ export const normalizePermissionList = (value) => {
 
     const normalized = [];
     for (const entry of value) {
-        const key = normalizePermissionEntry(entry);
-        if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+        const key = normalizePermissionKey(entry);
+        if (!key) {
             continue;
         }
         normalized.push(key);
@@ -90,14 +109,14 @@ export const validatePermissionListInput = (value) => {
 
     const normalized = [];
     for (const entry of value) {
-        const key = normalizePermissionEntry(entry);
-        if (!key) {
+        const rawKey = normalizePermissionEntry(entry);
+        if (!rawKey) {
             continue;
         }
-        if (!MOON_OP_PERMISSION_SET.has(key)) {
-            return {ok: false, error: `Unsupported permission: ${key}`};
+        if (!MOON_OP_PERMISSION_SET.has(rawKey)) {
+            return {ok: false, error: `Unsupported permission: ${rawKey}`};
         }
-        normalized.push(key);
+        normalized.push(LEGACY_MOON_PERMISSION_ALIASES[rawKey] ?? rawKey);
     }
 
     return {

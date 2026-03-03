@@ -403,7 +403,8 @@ export function DownloadsPage() {
 
     return (
         <SetupModeGate>
-            <AuthGate>
+            <AuthGate requiredPermission="download_management"
+                      deniedMessage="Downloads access requires Download management permission.">
                 <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
                         m={{style: {paddingInline: "24px"}}}>
                     <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>

@@ -3,19 +3,20 @@
 import {useEffect, useMemo, useState} from "react";
 import {useSearchParams} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Row, Spinner, Text} from "@once-ui-system/core";
+import {
+    hasMoonPermission as hasPermission,
+    MOON_PERMISSION_DESCRIPTIONS,
+    MOON_PERMISSION_LABELS,
+    MOON_PERMISSION_ORDER,
+    type MoonPermission,
+    normalizeMoonPermissions as normalizePermissions,
+} from "@/utils/moonPermissions";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 import {emitNoonaSiteNotification} from "./SiteNotifications";
 
 type TabId = "general" | "moon" | "raven" | "vault" | "sage" | "warden" | "portal";
 type MainSectionId = "ecosystem" | "users";
-type MoonPermission =
-    | "moon_login"
-    | "lookup_new_title"
-    | "download_new_title"
-    | "check_download_missing_titles"
-    | "user_management"
-    | "admin";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -221,43 +222,6 @@ const TOKENS = [
     "{ext}",
 ];
 
-const MOON_PERMISSION_LABELS: Record<MoonPermission, string> = {
-    moon_login: "Moon login",
-    lookup_new_title: "Lookup new title",
-    download_new_title: "Download new title",
-    check_download_missing_titles: "Check/download for missing titles",
-    user_management: "User management",
-    admin: "Admin",
-};
-const MOON_PERMISSION_DESCRIPTIONS: Record<MoonPermission, string> = {
-    moon_login: "Allows the Discord-linked account to sign in to Moon.",
-    lookup_new_title: "Lets the user search Raven for new titles from the library view.",
-    download_new_title: "Lets the user queue new title downloads from Moon.",
-    check_download_missing_titles: "Lets the user run missing-title checks and recovery downloads.",
-    user_management: "Lets the user create, edit, and delete Discord-linked Moon accounts.",
-    admin: "Grants full Moon settings and service-management access.",
-};
-const MOON_PERMISSION_ORDER: MoonPermission[] = [
-    "moon_login",
-    "lookup_new_title",
-    "download_new_title",
-    "check_download_missing_titles",
-    "user_management",
-    "admin",
-];
-const isMoonPermission = (value: unknown): value is MoonPermission =>
-    typeof value === "string" && MOON_PERMISSION_ORDER.includes(value as MoonPermission);
-const normalizePermissions = (value: unknown): MoonPermission[] => {
-    if (!Array.isArray(value)) return [];
-    const unique = new Set<MoonPermission>();
-    for (const entry of value) {
-        if (isMoonPermission(entry)) unique.add(entry);
-    }
-    return MOON_PERMISSION_ORDER.filter((entry) => unique.has(entry));
-};
-const hasPermission = (permissions: MoonPermission[], permission: MoonPermission): boolean =>
-    permissions.includes("admin") || permissions.includes(permission);
-
 const PORTAL_JOIN_DEFAULT_KEYS = new Set([
     "PORTAL_JOIN_DEFAULT_ROLES",
     "PORTAL_JOIN_DEFAULT_LIBRARIES",
@@ -314,13 +278,46 @@ const parseCsvSelections = (value: unknown): string[] => {
 };
 const serializeCsvSelections = (values: string[]): string => values.join(", ");
 const isSecretKey = (key: string) => /TOKEN|PASSWORD|API_KEY|SECRET/i.test(key);
+const THREAD_RATE_LIMIT_UNLIMITED = "-1";
+const THREAD_RATE_LIMIT_MB_MULTIPLIER = 1024;
+const THREAD_RATE_LIMIT_GB_MULTIPLIER = 1024 * THREAD_RATE_LIMIT_MB_MULTIPLIER;
+const formatThreadRateLimitDraft = (value: unknown): string => {
+    if (typeof value === "string") {
+        const raw = value.trim().toLowerCase();
+        if (!raw || raw === "0" || raw === "-1") {
+            return THREAD_RATE_LIMIT_UNLIMITED;
+        }
+
+        const normalizedUnitMatch = raw.match(/^([0-9]+(?:\.[0-9]+)?)\s*(kb|mb|gb)(?:\/s)?$/i);
+        if (normalizedUnitMatch) {
+            return `${normalizedUnitMatch[1]}${normalizedUnitMatch[2].toLowerCase()}`;
+        }
+
+        const parsedRaw = Number(raw);
+        if (!Number.isFinite(parsedRaw) || parsedRaw <= 0) {
+            return raw;
+        }
+    }
+
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return THREAD_RATE_LIMIT_UNLIMITED;
+    }
+
+    const normalized = Math.floor(parsed);
+    if (normalized % THREAD_RATE_LIMIT_GB_MULTIPLIER === 0) {
+        return `${normalized / THREAD_RATE_LIMIT_GB_MULTIPLIER}gb`;
+    }
+    if (normalized % THREAD_RATE_LIMIT_MB_MULTIPLIER === 0) {
+        return `${normalized / THREAD_RATE_LIMIT_MB_MULTIPLIER}mb`;
+    }
+    return String(normalized);
+};
 const normalizeThreadRateLimitDrafts = (value: unknown, threadCount: number): string[] => {
     const normalizedThreadCount = Math.max(1, Math.floor(threadCount || 1));
     const source = Array.isArray(value) ? value : [];
     return Array.from({length: normalizedThreadCount}, (_, index) => {
-        const current = source[index];
-        const parsed = Number(current);
-        return Number.isFinite(parsed) && parsed > 0 ? String(Math.floor(parsed)) : "0";
+        return formatThreadRateLimitDraft(source[index]);
     });
 };
 const defaultEditor = (): ServiceEditorState => ({
@@ -426,7 +423,7 @@ export function SettingsPage() {
     const [downloadWorkerSettingsError, setDownloadWorkerSettingsError] = useState<string | null>(null);
     const [downloadWorkerSettingsMessage, setDownloadWorkerSettingsMessage] = useState<string | null>(null);
     const [downloadWorkerSettingsUpdatedAt, setDownloadWorkerSettingsUpdatedAt] = useState<string | null>(null);
-    const [downloadWorkerRateLimits, setDownloadWorkerRateLimits] = useState<string[]>(["0"]);
+    const [downloadWorkerRateLimits, setDownloadWorkerRateLimits] = useState<string[]>([THREAD_RATE_LIMIT_UNLIMITED]);
 
     const [collectionsLoading, setCollectionsLoading] = useState(false);
     const [collectionsError, setCollectionsError] = useState<string | null>(null);
@@ -820,11 +817,7 @@ export function SettingsPage() {
         setDownloadWorkerSettingsError(null);
         setDownloadWorkerSettingsMessage(null);
         try {
-            const normalizedRateLimits = normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount)
-                .map((entry) => {
-                    const parsed = Number(entry);
-                    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-                });
+            const normalizedRateLimits = normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount);
             const res = await fetch("/api/noona/settings/downloads/workers", {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
@@ -2624,7 +2617,8 @@ export function SettingsPage() {
                                         <Column gap="4">
                                             <Heading as="h3" variant="heading-strong-l">Thread speed limits</Heading>
                                             <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                                Set a per-thread download cap in KB/s. Use 0 for unlimited speed.
+                                                Set a per-thread download cap in KB/s, or type values like 10mb or 1gb.
+                                                Use -1 for unlimited speed.
                                             </Text>
                                             <Text onBackground="neutral-weak" variant="body-default-xs">
                                                 Raven is currently configured
@@ -2669,8 +2663,9 @@ export function SettingsPage() {
                                                 key={`raven-thread-rate-limit-${index + 1}`}
                                                 id={`raven-thread-rate-limit-${index + 1}`}
                                                 name={`raven-thread-rate-limit-${index + 1}`}
-                                                label={`Thread ${index + 1} speed rate limit (KB/s)`}
-                                                type="number"
+                                                label={`Thread ${index + 1} speed limit`}
+                                                type="text"
+                                                placeholder="512, 10mb, 1gb, or -1"
                                                 value={value}
                                                 onChange={(event) => setDownloadWorkerRateLimits((prev) => {
                                                     const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);

@@ -599,20 +599,31 @@ export const createSageApp = ({
 
         return null
     }
+    const LEGACY_MOON_PERMISSION_ALIASES = Object.freeze({
+        lookup_new_title: 'library_management',
+        download_new_title: 'download_management',
+        check_download_missing_titles: 'download_management',
+    })
+    const SUPPORTED_MOON_PERMISSION_KEYS = Object.freeze([
+        'moon_login',
+        'library_management',
+        'download_management',
+        'user_management',
+        'admin',
+        ...Object.keys(LEGACY_MOON_PERMISSION_ALIASES),
+    ])
     const MOON_OP_PERMISSION_KEYS = Object.freeze([
         'moon_login',
-        'lookup_new_title',
-        'download_new_title',
-        'check_download_missing_titles',
+        'library_management',
+        'download_management',
         'user_management',
         'admin',
     ])
-    const MOON_OP_PERMISSION_SET = new Set(MOON_OP_PERMISSION_KEYS)
+    const MOON_OP_PERMISSION_SET = new Set(SUPPORTED_MOON_PERMISSION_KEYS)
     const DEFAULT_MEMBER_PERMISSION_KEYS = Object.freeze([
         'moon_login',
-        'lookup_new_title',
-        'download_new_title',
-        'check_download_missing_titles',
+        'library_management',
+        'download_management',
     ])
     const DEFAULT_MEMBER_PERMISSIONS_SETTINGS = Object.freeze({
         key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY,
@@ -622,11 +633,30 @@ export const createSageApp = ({
         key: DOWNLOAD_WORKER_SETTINGS_KEY,
         threadRateLimitsKbps: [],
     })
+    const UNLIMITED_THREAD_RATE_LIMIT_KBPS = -1
+    const MAX_THREAD_RATE_LIMIT_KBPS = 2_147_483_647
+    const THREAD_RATE_LIMIT_SUFFIX_MULTIPLIERS = Object.freeze({
+        '': 1,
+        k: 1,
+        kb: 1,
+        m: 1024,
+        mb: 1024,
+        g: 1024 * 1024,
+        gb: 1024 * 1024,
+    })
     const sortMoonPermissions = (permissions = []) => {
         const present = new Set(Array.isArray(permissions) ? permissions : [])
         return MOON_OP_PERMISSION_KEYS.filter((entry) => present.has(entry))
     }
     const normalizePermissionEntry = (value) => normalizeString(value).toLowerCase()
+    const normalizePermissionKey = (value) => {
+        const key = normalizePermissionEntry(value)
+        if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+            return ''
+        }
+
+        return LEGACY_MOON_PERMISSION_ALIASES[key] ?? key
+    }
     const normalizePermissionList = (value) => {
         if (!Array.isArray(value)) {
             return []
@@ -634,8 +664,8 @@ export const createSageApp = ({
 
         const normalized = []
         for (const entry of value) {
-            const key = normalizePermissionEntry(entry)
-            if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+            const key = normalizePermissionKey(entry)
+            if (!key) {
                 continue
             }
             normalized.push(key)
@@ -650,14 +680,14 @@ export const createSageApp = ({
 
         const normalized = []
         for (const entry of value) {
-            const key = normalizePermissionEntry(entry)
-            if (!key) {
+            const rawKey = normalizePermissionEntry(entry)
+            if (!rawKey) {
                 continue
             }
-            if (!MOON_OP_PERMISSION_SET.has(key)) {
-                return {ok: false, error: `Unsupported permission: ${key}`}
+            if (!MOON_OP_PERMISSION_SET.has(rawKey)) {
+                return {ok: false, error: `Unsupported permission: ${rawKey}`}
             }
-            normalized.push(key)
+            normalized.push(LEGACY_MOON_PERMISSION_ALIASES[rawKey] ?? rawKey)
         }
 
         return {
@@ -671,18 +701,85 @@ export const createSageApp = ({
         next.add('moon_login')
         return sortMoonPermissions(Array.from(next))
     }
+    const parseThreadRateLimitEntry = (value, {strict = false} = {}) => {
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) {
+                return strict
+                    ? {ok: false, error: 'must be a finite number, `mb`/`gb` value, or `-1` for unlimited.'}
+                    : {ok: true, value: UNLIMITED_THREAD_RATE_LIMIT_KBPS}
+            }
+
+            if (value <= 0) {
+                return {ok: true, value: UNLIMITED_THREAD_RATE_LIMIT_KBPS}
+            }
+
+            const normalized = Math.floor(value)
+            if (normalized > MAX_THREAD_RATE_LIMIT_KBPS) {
+                return strict
+                    ? {ok: false, error: 'is too large.'}
+                    : {ok: true, value: MAX_THREAD_RATE_LIMIT_KBPS}
+            }
+
+            return {ok: true, value: normalized}
+        }
+
+        const raw = normalizeString(value).trim().toLowerCase()
+        if (!raw) {
+            return strict
+                ? {ok: false, error: 'must not be empty. Use KB/s numbers, `mb`/`gb`, or `-1` for unlimited.'}
+                : {ok: true, value: UNLIMITED_THREAD_RATE_LIMIT_KBPS}
+        }
+
+        if (raw === '-1' || raw === '0') {
+            return {ok: true, value: UNLIMITED_THREAD_RATE_LIMIT_KBPS}
+        }
+
+        const match = raw.match(/^([0-9]+(?:\.[0-9]+)?)\s*(k|kb|m|mb|g|gb)?(?:\/s)?$/i)
+        if (!match) {
+            return strict
+                ? {ok: false, error: 'must be a number in KB/s, may use `mb`/`gb`, or `-1` for unlimited.'}
+                : {ok: true, value: UNLIMITED_THREAD_RATE_LIMIT_KBPS}
+        }
+
+        const amount = Number(match[1])
+        const suffix = normalizeString(match[2]).toLowerCase()
+        const multiplier = THREAD_RATE_LIMIT_SUFFIX_MULTIPLIERS[suffix] ?? 1
+        const normalized = Math.floor(amount * multiplier)
+        if (!Number.isFinite(normalized) || normalized <= 0) {
+            return strict
+                ? {ok: false, error: 'must resolve to a positive KB/s value or `-1`.'}
+                : {ok: true, value: UNLIMITED_THREAD_RATE_LIMIT_KBPS}
+        }
+        if (normalized > MAX_THREAD_RATE_LIMIT_KBPS) {
+            return strict
+                ? {ok: false, error: 'is too large.'}
+                : {ok: true, value: MAX_THREAD_RATE_LIMIT_KBPS}
+        }
+
+        return {ok: true, value: normalized}
+    }
     const normalizeThreadRateLimits = (value) => {
         if (!Array.isArray(value)) {
             return []
         }
 
-        return value.map((entry) => {
-            const parsed = Number(entry)
-            if (!Number.isFinite(parsed) || parsed <= 0) {
-                return 0
+        return value.map((entry) => parseThreadRateLimitEntry(entry).value)
+    }
+    const validateThreadRateLimitsInput = (value) => {
+        if (!Array.isArray(value)) {
+            return {ok: false, error: 'threadRateLimitsKbps must be provided as an array.'}
+        }
+
+        const normalized = []
+        for (let index = 0; index < value.length; index += 1) {
+            const parsed = parseThreadRateLimitEntry(value[index], {strict: true})
+            if (!parsed.ok) {
+                return {ok: false, error: `Thread ${index + 1} rate limit ${parsed.error}`}
             }
-            return Math.max(0, Math.floor(parsed))
-        })
+            normalized.push(parsed.value)
+        }
+
+        return {ok: true, threadRateLimitsKbps: normalized}
     }
     const defaultPermissionsForRole = (role) =>
         normalizeRole(role, 'member') === 'admin'
@@ -750,8 +847,8 @@ export const createSageApp = ({
             && leftSnapshot.isBootstrapUser === rightSnapshot.isBootstrapUser
     }
     const hasMoonPermission = (user, permission) => {
-        const key = normalizePermissionEntry(permission)
-        if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
+        const key = normalizePermissionKey(permission)
+        if (!key) {
             return false
         }
 
@@ -2506,6 +2603,7 @@ export const createSageApp = ({
         toSessionUser,
         updateAuthUser,
         validatePermissionListInput,
+        validateThreadRateLimitsInput,
         vaultClient,
         vaultErrorMessage,
         vaultErrorStatus,

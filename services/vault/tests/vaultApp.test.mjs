@@ -282,6 +282,43 @@ test('POST /v1/vault/handle returns 400 when handler reports error', async () =>
     );
 });
 
+test('POST /v1/vault/handle returns 500 when handler throws', async () => {
+    const warnings = [];
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'moon:secret'},
+        warn: message => warnings.push(message),
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async () => {
+            throw new Error('packet exploded');
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/handle`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret',
+        },
+        body: JSON.stringify({action: 'ping'}),
+    });
+
+    assert.equal(response.status, 500);
+    const body = await response.json();
+    assert.deepEqual(body, {error: 'packet exploded'});
+    assert.ok(warnings.some(message => message.includes('Packet handler failed for moon: packet exploded')));
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('POST /v1/vault/handle rejects requests without valid token', async () => {
     const { app } = createVaultApp({
         env: { VAULT_TOKEN_MAP: 'moon:secret' },

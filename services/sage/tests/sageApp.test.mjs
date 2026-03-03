@@ -113,19 +113,30 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
         }
         return fallback
     }
+    const LEGACY_MOON_PERMISSION_ALIASES = {
+        lookup_new_title: 'library_management',
+        download_new_title: 'download_management',
+        check_download_missing_titles: 'download_management',
+    }
+    const SUPPORTED_MOON_PERMISSION_KEYS = [
+        'moon_login',
+        'library_management',
+        'download_management',
+        'user_management',
+        'admin',
+        ...Object.keys(LEGACY_MOON_PERMISSION_ALIASES),
+    ]
     const MOON_OP_PERMISSION_KEYS = [
         'moon_login',
-        'lookup_new_title',
-        'download_new_title',
-        'check_download_missing_titles',
+        'library_management',
+        'download_management',
         'user_management',
         'admin',
     ]
     const DEFAULT_MEMBER_PERMISSION_KEYS = [
         'moon_login',
-        'lookup_new_title',
-        'download_new_title',
-        'check_download_missing_titles',
+        'library_management',
+        'download_management',
     ]
     const sortPermissions = (permissions = []) => {
         const set = new Set(Array.isArray(permissions) ? permissions : [])
@@ -139,11 +150,11 @@ const createVaultAuthStub = ({users = [], settings = []} = {}) => {
 
         const next = []
         for (const entry of value) {
-            const key = normalizePermissionKey(entry)
-            if (!key || !MOON_OP_PERMISSION_KEYS.includes(key)) {
+            const rawKey = normalizePermissionKey(entry)
+            if (!rawKey || !SUPPORTED_MOON_PERMISSION_KEYS.includes(rawKey)) {
                 continue
             }
-            next.push(key)
+            next.push(LEGACY_MOON_PERMISSION_ALIASES[rawKey] ?? rawKey)
         }
         return sortPermissions(Array.from(new Set(next)))
     }
@@ -2112,6 +2123,105 @@ test('GET /api/raven/downloads/status surfaces Raven failures', async (t) => {
     assert.ok(payload.error.includes('Unable to retrieve Raven download status'))
 })
 
+test('Raven routes split library and download management permissions after setup completes', async (t) => {
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'LibraryUser',
+        password: 'Password123',
+        permissions: ['moon_login', 'lookup_new_title'],
+    })
+    await vault.client.users.create({
+        username: 'DownloadUser',
+        password: 'Password123',
+        permissions: ['moon_login', 'download_new_title'],
+    })
+
+    const searchQueries = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async getLibrary() {
+                return [{title: 'One Piece'}]
+            },
+            async getDownloadStatus() {
+                return [{title: 'One Piece', status: 'queued'}]
+            },
+            async searchTitle(query) {
+                searchQueries.push(query)
+                return {results: [{title: 'One Piece'}]}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginWithPassword = async (username) => {
+        const response = await fetch(`${baseUrl}/api/auth/login`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password: 'Password123'}),
+        })
+        assert.equal(response.status, 200)
+        const payload = await response.json()
+        assert.ok(typeof payload.token === 'string' && payload.token.length > 10)
+        return payload.token
+    }
+
+    const libraryToken = await loginWithPassword('LibraryUser')
+    const downloadToken = await loginWithPassword('DownloadUser')
+
+    const libraryResponse = await fetch(`${baseUrl}/api/raven/library`, {
+        headers: {Authorization: `Bearer ${libraryToken}`},
+    })
+    assert.equal(libraryResponse.status, 200)
+    assert.deepEqual(await libraryResponse.json(), [{title: 'One Piece'}])
+
+    const forbiddenDownloadsResponse = await fetch(`${baseUrl}/api/raven/downloads/status`, {
+        headers: {Authorization: `Bearer ${libraryToken}`},
+    })
+    assert.equal(forbiddenDownloadsResponse.status, 403)
+
+    const forbiddenSearchResponse = await fetch(`${baseUrl}/api/raven/search`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${libraryToken}`,
+        },
+        body: JSON.stringify({query: 'one piece'}),
+    })
+    assert.equal(forbiddenSearchResponse.status, 403)
+
+    const forbiddenLibraryResponse = await fetch(`${baseUrl}/api/raven/library`, {
+        headers: {Authorization: `Bearer ${downloadToken}`},
+    })
+    assert.equal(forbiddenLibraryResponse.status, 403)
+
+    const downloadStatusResponse = await fetch(`${baseUrl}/api/raven/downloads/status`, {
+        headers: {Authorization: `Bearer ${downloadToken}`},
+    })
+    assert.equal(downloadStatusResponse.status, 200)
+    assert.deepEqual(await downloadStatusResponse.json(), [{title: 'One Piece', status: 'queued'}])
+
+    const searchResponse = await fetch(`${baseUrl}/api/raven/search`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${downloadToken}`,
+        },
+        body: JSON.stringify({query: '  one piece  '}),
+    })
+    assert.equal(searchResponse.status, 200)
+    assert.deepEqual(await searchResponse.json(), {results: [{title: 'One Piece'}]})
+    assert.deepEqual(searchQueries, ['one piece'])
+})
+
 test('POST /api/setup/services/:name/test proxies to setup client', async (t) => {
     const calls = []
     const app = createSageApp({
@@ -3105,6 +3215,7 @@ test('auth user management creates Discord-linked users and Discord login uses O
     const createPayload = await createResponse.json()
     assert.equal(createPayload.user.authProvider, 'discord')
     assert.equal(createPayload.user.discordUserId, '999888777666555444')
+    assert.deepEqual(createPayload.user.permissions, ['moon_login', 'library_management'])
 
     const resetPasswordResponse = await fetch(`${baseUrl}/api/auth/users/discord.999888777666555444/reset-password`, {
         method: 'POST',
@@ -3249,14 +3360,14 @@ test('auth user management updates legacy Discord users missing authProvider met
     assert.equal(updatePayload.user.authProvider, 'discord')
     assert.equal(updatePayload.user.discordUserId, '222333444555666777')
     assert.equal(updatePayload.user.username, 'Reader Legacy Prime')
-    assert.deepEqual(updatePayload.user.permissions, ['moon_login', 'lookup_new_title', 'download_new_title'])
+    assert.deepEqual(updatePayload.user.permissions, ['moon_login', 'library_management', 'download_management'])
 
     const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'discord.222333444555666777')
     assert.ok(storedUser)
     assert.equal(storedUser.authProvider, 'discord')
     assert.equal(storedUser.authProviderId, '222333444555666777')
     assert.equal(storedUser.username, 'Reader Legacy Prime')
-    assert.deepEqual(storedUser.permissions, ['moon_login', 'lookup_new_title', 'download_new_title'])
+    assert.deepEqual(storedUser.permissions, ['moon_login', 'library_management', 'download_management'])
 })
 
 test('auth user management surfaces Vault write failures instead of reporting false success', async (t) => {
@@ -3307,9 +3418,8 @@ test('auth user management surfaces Vault write failures instead of reporting fa
     assert.ok(storedUser)
     assert.deepEqual(storedUser.permissions, [
         'moon_login',
-        'lookup_new_title',
-        'download_new_title',
-        'check_download_missing_titles',
+        'library_management',
+        'download_management',
     ])
 })
 
@@ -3572,8 +3682,8 @@ test('auth default permissions routes persist defaults and apply them to new mem
     assert.equal(getDefaultsResponse.status, 200)
     assert.deepEqual(await getDefaultsResponse.json(), {
         key: 'auth.default_member_permissions',
-        defaultPermissions: ['moon_login', 'download_new_title'],
-        permissions: ['moon_login', 'lookup_new_title', 'download_new_title', 'check_download_missing_titles', 'user_management', 'admin'],
+        defaultPermissions: ['moon_login', 'download_management'],
+        permissions: ['moon_login', 'library_management', 'download_management', 'user_management', 'admin'],
         updatedAt: '2026-01-01T00:00:00.000Z',
     })
 
@@ -3590,7 +3700,7 @@ test('auth default permissions routes persist defaults and apply them to new mem
     assert.equal(putDefaultsResponse.status, 200)
     const putDefaultsPayload = await putDefaultsResponse.json()
     assert.equal(putDefaultsPayload.ok, true)
-    assert.deepEqual(putDefaultsPayload.defaultPermissions, ['moon_login', 'lookup_new_title', 'user_management'])
+    assert.deepEqual(putDefaultsPayload.defaultPermissions, ['moon_login', 'library_management', 'user_management'])
 
     const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
         method: 'POST',
@@ -3602,14 +3712,14 @@ test('auth default permissions routes persist defaults and apply them to new mem
     })
     assert.equal(createResponse.status, 201)
     const createPayload = await createResponse.json()
-    assert.deepEqual(createPayload.user.permissions, ['moon_login', 'lookup_new_title', 'user_management'])
+    assert.deepEqual(createPayload.user.permissions, ['moon_login', 'library_management', 'user_management'])
 
     const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
         headers: {Authorization: `Bearer ${token}`},
     })
     assert.equal(listResponse.status, 200)
     const listPayload = await listResponse.json()
-    assert.deepEqual(listPayload.defaultPermissions, ['moon_login', 'lookup_new_title', 'user_management'])
+    assert.deepEqual(listPayload.defaultPermissions, ['moon_login', 'library_management', 'user_management'])
 })
 
 test('Discord OAuth login auto-creates a Discord user with configured default permissions', async (t) => {
@@ -3689,19 +3799,19 @@ test('Discord OAuth login auto-creates a Discord user with configured default pe
     assert.equal(callbackLoginPayload.user.authProvider, 'discord')
     assert.equal(callbackLoginPayload.user.discordUserId, '222333444555666777')
     assert.equal(callbackLoginPayload.user.username, 'Brand New Reader')
-    assert.deepEqual(callbackLoginPayload.user.permissions, ['moon_login', 'download_new_title'])
+    assert.deepEqual(callbackLoginPayload.user.permissions, ['moon_login', 'download_management'])
 
     const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'discord.222333444555666777')
     assert.ok(storedUser)
     assert.equal(storedUser.authProvider, 'discord')
-    assert.deepEqual(storedUser.permissions, ['moon_login', 'download_new_title'])
+    assert.deepEqual(storedUser.permissions, ['moon_login', 'download_management'])
 })
 
 test('settings download worker routes read and update per-thread rate limits', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
             key: 'downloads.workers',
-            threadRateLimitsKbps: [128, 0, 256],
+            threadRateLimitsKbps: [128, 0, 1024 * 1024],
             updatedAt: '2026-01-01T00:00:00.000Z',
         }],
     })
@@ -3722,7 +3832,7 @@ test('settings download worker routes read and update per-thread rate limits', a
     assert.equal(getResponse.status, 200)
     assert.deepEqual(await getResponse.json(), {
         key: 'downloads.workers',
-        threadRateLimitsKbps: [128, 0, 256],
+        threadRateLimitsKbps: [128, -1, 1024 * 1024],
         updatedAt: '2026-01-01T00:00:00.000Z',
     })
 
@@ -3733,18 +3843,47 @@ test('settings download worker routes read and update per-thread rate limits', a
             Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-            threadRateLimitsKbps: [512, -1, '1000'],
+            threadRateLimitsKbps: [512, -1, '10mb', '1gb', '0'],
         }),
     })
     assert.equal(putResponse.status, 200)
     const putPayload = await putResponse.json()
     assert.equal(putPayload.key, 'downloads.workers')
-    assert.deepEqual(putPayload.threadRateLimitsKbps, [512, 0, 1000])
+    assert.deepEqual(putPayload.threadRateLimitsKbps, [512, -1, 10 * 1024, 1024 * 1024, -1])
     assert.ok(typeof putPayload.updatedAt === 'string')
 
     const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.workers')
     assert.ok(stored)
-    assert.deepEqual(stored.threadRateLimitsKbps, [512, 0, 1000])
+    assert.deepEqual(stored.threadRateLimitsKbps, [512, -1, 10 * 1024, 1024 * 1024, -1])
+})
+
+test('settings download worker routes reject invalid unit strings', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            threadRateLimitsKbps: ['fast'],
+        }),
+    })
+
+    assert.equal(putResponse.status, 400)
+    const payload = await putResponse.json()
+    assert.equal(payload.error, 'Thread 1 rate limit must be a number in KB/s, may use `mb`/`gb`, or `-1` for unlimited.')
 })
 
 test('settings debug routes read and update live debug mode', async (t) => {

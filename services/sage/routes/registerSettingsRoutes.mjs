@@ -20,6 +20,7 @@ export function registerSettingsRoutes(context = {}) {
         serviceName,
         settingsCollection,
         setupClient,
+        validateThreadRateLimitsInput,
         vaultClient,
         vaultErrorMessage,
         vaultErrorStatus,
@@ -201,13 +202,14 @@ export function registerSettingsRoutes(context = {}) {
             return
         }
 
-        if (!Array.isArray(req.body?.threadRateLimitsKbps)) {
-            res.status(400).json({error: 'threadRateLimitsKbps must be provided as an array.'})
+        const parsedThreadRateLimits = validateThreadRateLimitsInput(req.body?.threadRateLimitsKbps)
+        if (!parsedThreadRateLimits.ok) {
+            res.status(400).json({error: parsedThreadRateLimits.error})
             return
         }
 
         try {
-            const settings = await writeDownloadWorkerSettings(req.body.threadRateLimitsKbps)
+            const settings = await writeDownloadWorkerSettings(parsedThreadRateLimits.threadRateLimitsKbps)
             res.json({
                 key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                 threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],

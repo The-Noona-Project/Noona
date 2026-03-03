@@ -34,13 +34,16 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Discord auth callback proxy](src/app/api/noona/auth/discord/callback/route.ts)
 - [Managed Kavita key proxy](src/app/api/noona/setup/kavita/service-key/route.ts)
 - [Web GUI helpers](src/utils/webGui.ts)
+- [Permission helpers](src/utils/moonPermissions.ts)
 - [Moon UI configuration](src/resources/moon.config.ts)
 
 ## Primary UI Areas
 
 - `/` - Home summary and shortcuts into library/download workflows.
-- `/libraries` - Library browsing, filtering, and title drill-down.
-- `/downloads` - Download queueing, active status, workers summary, and history.
+- `/libraries` - Library browsing, filtering, and title drill-down. The tab and direct page now require the
+  `library_management` permission.
+- `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
+  the `download_management` permission.
 - `/rebooting` - Internal transition screen used by Warden `Update all`. It keeps a dedicated reboot monitor open,
   retries interrupted service-image updates after Moon comes back, and shows live service health while the stack
   settles.
@@ -50,7 +53,10 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
   tools, a direct Redis Stack Web UI link from the Vault tab using Warden's host-facing service URL metadata, default
   permissions for first-time Discord sign-ins, per-thread Raven speed limits, and diagnostics.
   Successful self-permission edits now update the local user-management state first so Moon does not report a false
-  save failure when the change intentionally removes that account's `user_management` access.
+  save failure when the change intentionally removes that account's `user_management` access. The Moon permission
+  editor now exposes the canonical `library_management` and `download_management` roles while still normalizing the
+  legacy Raven permission names returned by older records. Raven worker speed-limit inputs now accept raw KB/s values
+  or `mb` / `gb` suffixes, and `-1` means unlimited speed.
 - `/setupwizard` - First-run stack configuration flow with storage, integrations, services, and install tabs. It
   previews the shared Noona folder tree, defaults to managed `noona-kavita` and Komf, allows switching either one to
   external URLs, includes a Discord bot login test with client/guild auto-fill for Portal setup, upgrades Portal
@@ -79,7 +85,8 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - Title detail pages now surface Kavita series links plus metadata match actions, and the footer prefers Warden's
   host-facing managed Kavita URL before falling back to Portal's configured external Kavita base URL.
 - The header now keeps `Settings` inside the top-right account bubble with the user's Discord avatar and a `Logout`
-  action instead of showing `Settings` in the main tab strip.
+  action instead of showing `Settings` in the main tab strip. Moon also suppresses the setup/main navigation pill until
+  setup status resolves so completed stacks do not briefly flash the Setup tab on first load.
 
 ## API Proxy Surface (Moon -> Backend Services)
 
@@ -87,10 +94,12 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - `src/app/api/noona/portal/kavita/*` - Portal-backed Kavita info, title search, and metadata-match proxies.
 - `src/app/api/noona/settings/*` - service settings, Portal join option helpers, vault, ecosystem, and debug operations.
 - `src/app/api/noona/settings/downloads/workers` - proxy for Raven per-thread speed-limit settings stored by Sage.
+  Moon accepts plain KB/s numbers plus `mb` / `gb` suffixes here, and uses `-1` for unlimited workers.
 - `src/app/api/noona/services/*` - service listing and logs.
 - `src/app/api/noona/services/[name]/health` - Warden-backed per-service health proxy used by the reboot monitor.
 - `src/app/api/noona/install/*` and `src/app/api/noona/setup/*` - install/setup state, installation history, and
-  completion APIs.
+  completion APIs. The setup-complete proxy now preserves upstream wizard-state failures and forwards the active Noona
+  auth headers when it persists the final selected-service list.
 - `src/app/api/noona/setup/layout` - setup-wizard proxy for Warden's resolved storage layout tree.
 - `src/app/api/noona/setup/discord/validate` - setup-wizard Discord validation proxy for Portal bot credentials.
 - `src/app/api/noona/setup/kavita/service-key` - setup-wizard proxy that provisions or reuses the managed Kavita auth

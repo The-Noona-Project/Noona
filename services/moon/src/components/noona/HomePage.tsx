@@ -3,8 +3,15 @@
 import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
 import {Button, Card, Column, Heading, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {hasMoonPermission} from "@/utils/moonPermissions";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
+
+type AuthStatusResponse = {
+    user?: {
+        permissions?: string[] | null;
+    } | null;
+};
 
 export function HomePage() {
     const router = useRouter();
@@ -12,9 +19,13 @@ export function HomePage() {
     const [titles, setTitles] = useState<
         Array<{ title?: string; titleName?: string; uuid?: string; lastDownloaded?: string }> | null
     >(null);
+    const [authPermissions, setAuthPermissions] = useState<string[] | null>(null);
+    const [authReady, setAuthReady] = useState(false);
     const [libraryError, setLibraryError] = useState<string | null>(null);
 
     const titleCards = useMemo(() => (Array.isArray(titles) ? titles.slice(0, 6) : []), [titles]);
+    const canAccessLibrary = hasMoonPermission(authPermissions, "library_management");
+    const canAccessDownloads = hasMoonPermission(authPermissions, "download_management");
 
     const loadLibrary = async () => {
         setLibraryError(null);
@@ -46,8 +57,45 @@ export function HomePage() {
     };
 
     useEffect(() => {
-        void loadLibrary();
+        let cancelled = false;
+
+        const loadAuth = async () => {
+            try {
+                const res = await fetch("/api/noona/auth/status", {cache: "no-store"});
+                const json = (await res.json().catch(() => null)) as AuthStatusResponse | null;
+                if (cancelled) return;
+
+                setAuthPermissions(res.ok ? (json?.user?.permissions ?? null) : []);
+            } catch {
+                if (!cancelled) {
+                    setAuthPermissions([]);
+                }
+            } finally {
+                if (!cancelled) {
+                    setAuthReady(true);
+                }
+            }
+        };
+
+        void loadAuth();
+        return () => {
+            cancelled = true;
+        };
     }, []);
+
+    useEffect(() => {
+        if (!authReady) {
+            return;
+        }
+
+        if (!canAccessLibrary) {
+            setTitles([]);
+            setLibraryError(null);
+            return;
+        }
+
+        void loadLibrary();
+    }, [authReady, canAccessLibrary]);
 
     return (
         <SetupModeGate>
@@ -62,19 +110,41 @@ export function HomePage() {
                         </Text>
                     </Column>
 
-                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                        <Button variant="primary" onClick={() => router.push("/libraries")}>
-                            Open libraries
-                        </Button>
-                        <Button variant="secondary" onClick={() => router.push("/downloads")}>
-                            Open downloads
-                        </Button>
-                        <Button variant="secondary" onClick={() => void loadLibrary()}>
-                            Refresh
-                        </Button>
-                    </Row>
+                    {(canAccessLibrary || canAccessDownloads) && (
+                        <Row gap="12" style={{flexWrap: "wrap"}}>
+                            {canAccessLibrary && (
+                                <Button variant="primary" onClick={() => router.push("/libraries")}>
+                                    Open libraries
+                                </Button>
+                            )}
+                            {canAccessDownloads && (
+                                <Button variant="secondary" onClick={() => router.push("/downloads")}>
+                                    Open downloads
+                                </Button>
+                            )}
+                            {canAccessLibrary && (
+                                <Button variant="secondary" onClick={() => void loadLibrary()}>
+                                    Refresh
+                                </Button>
+                            )}
+                        </Row>
+                    )}
 
-                    {libraryError && (
+                    {authReady && !canAccessLibrary && (
+                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Column gap="8">
+                                <Heading as="h2" variant="heading-strong-l">
+                                    Library hidden
+                                </Heading>
+                                <Text>
+                                    This account does not have Library management permission, so recent titles are
+                                    hidden.
+                                </Text>
+                            </Column>
+                        </Card>
+                    )}
+
+                    {canAccessLibrary && libraryError && (
                         <Card fillWidth background="surface" border="danger-alpha-weak" padding="l" radius="l">
                             <Column gap="8">
                                 <Heading as="h2" variant="heading-strong-l">
@@ -88,13 +158,13 @@ export function HomePage() {
                         </Card>
                     )}
 
-                    {!titles && !libraryError && (
+                    {canAccessLibrary && !titles && !libraryError && (
                         <Row fillWidth horizontal="center" paddingY="64">
                             <Spinner/>
                         </Row>
                     )}
 
-                    {titles && (
+                    {canAccessLibrary && titles && (
                         <Column fillWidth gap="16">
                             <Heading as="h2" variant="heading-strong-l">
                                 Recent titles

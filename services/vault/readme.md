@@ -21,7 +21,8 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 
 - `GET /v1/vault/health` - service health string.
 - `GET /v1/vault/debug` and `POST /v1/vault/debug` - read/update debug mode (token protected).
-- `POST /v1/vault/handle` - generic packet dispatch to storage handlers (token protected).
+- `POST /v1/vault/handle` - generic packet dispatch to storage handlers (token protected). Thrown packet-handler
+  failures are converted into JSON `500` responses instead of bubbling out as opaque Express errors.
 - `GET /api/users`, `GET /api/users/:username`, `POST /api/users`, `PUT /api/users/:username`,
   `DELETE /api/users/:username` - user management APIs (token protected).
 - `POST /api/users/authenticate` - username/password auth check (token protected).
@@ -34,6 +35,13 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 - Tokens are loaded from `VAULT_TOKEN_MAP` (`service:token,service:token` format).
 - `app/createVaultApp.mjs` wires the token registry, and `auth/tokenAuth.mjs` attaches `req.serviceName` for authorized
   callers.
+
+## Permission Model
+
+- Vault user records now normalize Moon's legacy Raven permissions into the canonical `library_management` and
+  `download_management` keys.
+- The user APIs still accept legacy inputs (`lookup_new_title`, `download_new_title`,
+  `check_download_missing_titles`) so older callers can write users/defaults without breaking.
 
 ## Environment Variables
 
