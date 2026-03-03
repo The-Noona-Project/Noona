@@ -4,6 +4,7 @@ import {SetupValidationError} from '../lib/errors.mjs'
 
 export const DEFAULT_MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000'
 export const DEFAULT_MANAGED_KAVITA_AUTH_KEY_NAME = 'Noona Managed Services'
+export const DEFAULT_MANAGED_KAVITA_SYSTEM_AUTH_KEY_NAME = 'opds'
 export const DEFAULT_MANAGED_KAVITA_SERVICE_ACCOUNT = Object.freeze({
     username: 'noona-system',
     email: 'noona-system@noona.local',
@@ -43,6 +44,72 @@ const buildHttpError = (message, status, details = null) => {
 
 const createManagedServicePassword = (randomBytes = crypto.randomBytes) =>
     randomBytes(24).toString('base64url')
+
+const sleep = (durationMs) => new Promise((resolve) => setTimeout(resolve, durationMs))
+const isRetryableServerStatus = (status) => Number.isInteger(status) && status >= 500 && status < 600
+const isRetryableRegisterStatus = (status) => status === 400 || status === 409 || isRetryableServerStatus(status)
+const isRetryableLoginStatus = (status) => status === 400 || status === 401 || isRetryableServerStatus(status)
+
+const normalizeAuthKeys = (authKeys) => {
+    if (!Array.isArray(authKeys)) {
+        return []
+    }
+
+    return authKeys
+        .map((entry) => {
+            const key = normalizeString(entry?.key)
+            if (!key) {
+                return null
+            }
+
+            return {
+                ...entry,
+                key,
+                name: normalizeString(entry?.name),
+            }
+        })
+        .filter(Boolean)
+}
+
+const selectReusableAuthKey = (
+    authKeys,
+    preferredName = DEFAULT_MANAGED_KAVITA_AUTH_KEY_NAME,
+) => {
+    const normalized = normalizeAuthKeys(authKeys)
+    if (normalized.length === 0) {
+        return null
+    }
+
+    const preferred = normalizeString(preferredName).toLowerCase()
+    if (preferred) {
+        const exactMatch = normalized.find((entry) => entry.name.toLowerCase() === preferred)
+        if (exactMatch) {
+            return exactMatch
+        }
+    }
+
+    const systemKey = normalized.find(
+        (entry) => entry.name.toLowerCase() === DEFAULT_MANAGED_KAVITA_SYSTEM_AUTH_KEY_NAME,
+    )
+    if (systemKey) {
+        return systemKey
+    }
+
+    const nonImageOnly = normalized.find((entry) => entry.name.toLowerCase() !== 'image-only')
+    return nonImageOnly || normalized[0]
+}
+
+const extractApiKeyFromUserPayload = (
+    payload,
+    preferredName = DEFAULT_MANAGED_KAVITA_AUTH_KEY_NAME,
+) => {
+    const direct = normalizeString(payload?.apiKey)
+    if (direct) {
+        return direct
+    }
+
+    return normalizeString(selectReusableAuthKey(payload?.authKeys, preferredName)?.key) || null
+}
 
 export const createManagedKavitaServiceAccount = (options = {}) => ({
     username: DEFAULT_MANAGED_KAVITA_SERVICE_ACCOUNT.username,
@@ -141,6 +208,90 @@ export const createManagedKavitaSetupClient = ({
         })
     }
 
+    const loginWithRetry = async (
+        account,
+        {
+            attempts = 1,
+            delayMs = 0,
+        } = {},
+    ) => {
+        let lastError = null
+
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            try {
+                return await login(account)
+            } catch (error) {
+                lastError = error
+
+                if (attempt >= attempts) {
+                    throw error
+                }
+
+                if (delayMs > 0) {
+                    await sleep(delayMs)
+                }
+            }
+        }
+
+        throw lastError ?? new Error('Managed Kavita login retry failed.')
+    }
+
+    const acquireFirstAdminSession = async (
+        account,
+        {
+            attempts = 20,
+            delayMs = 1500,
+        } = {},
+    ) => {
+        let lastError = null
+
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            try {
+                const user = await login(account)
+                return {user, mode: 'login'}
+            } catch (loginError) {
+                lastError = loginError
+                const loginStatus = Number(loginError?.status)
+                if (!isRetryableLoginStatus(loginStatus)) {
+                    throw loginError
+                }
+            }
+
+            try {
+                const user = await registerFirstAdmin(account)
+                return {user, mode: 'register'}
+            } catch (registerError) {
+                lastError = registerError
+                const registerStatus = Number(registerError?.status)
+                if (!isRetryableRegisterStatus(registerStatus)) {
+                    throw registerError
+                }
+
+                logger?.warn?.(
+                    `[${serviceName}] Managed Kavita first-user registration is still settling for ${account.username}; retrying login/register (${attempt}/${attempts}).`,
+                )
+            }
+
+            if (attempt < attempts && delayMs > 0) {
+                await sleep(delayMs)
+            }
+        }
+
+        throw lastError ?? new Error('Managed Kavita first-user session acquisition failed.')
+    }
+
+    const getAuthKeys = async ({token} = {}) => {
+        const normalizedToken = normalizeString(token)
+        if (!normalizedToken) {
+            throw new SetupValidationError('Kavita auth key lookup requires a JWT token.')
+        }
+
+        return request('/api/Account/auth-keys', {
+            method: 'GET',
+            bearerToken: normalizedToken,
+        })
+    }
+
     const createAuthKey = async ({
                                      token,
                                      name = DEFAULT_MANAGED_KAVITA_AUTH_KEY_NAME,
@@ -182,30 +333,52 @@ export const createManagedKavitaSetupClient = ({
 
         let user = null
         let mode = 'login'
+        let authKeys = []
 
         if (allowRegister && generatedAccount) {
-            mode = 'register'
-            user = await registerFirstAdmin(normalizedAccount)
+            const acquired = await acquireFirstAdminSession(normalizedAccount)
+            user = acquired.user
+            mode = acquired.mode
         } else if (allowRegister) {
             try {
                 user = await login(normalizedAccount)
             } catch (error) {
-                mode = 'register'
-                user = await registerFirstAdmin(normalizedAccount)
+                try {
+                    mode = 'register'
+                    user = await registerFirstAdmin(normalizedAccount)
+                } catch (registerError) {
+                    const status = Number(registerError?.status)
+                    if (!isRetryableRegisterStatus(status)) {
+                        throw registerError
+                    }
+
+                    logger?.warn?.(
+                        `[${serviceName}] Managed Kavita registration did not settle cleanly for ${normalizedAccount.username}; retrying first-user login/register flow.`,
+                    )
+
+                    const acquired = await acquireFirstAdminSession(normalizedAccount, {
+                        attempts: 20,
+                        delayMs: 1500,
+                    })
+                    user = acquired.user
+                    mode = acquired.mode
+                }
             }
         } else {
             user = await login(normalizedAccount)
         }
 
-        let apiKey = normalizeString(user?.apiKey) || null
+        let apiKey = extractApiKeyFromUserPayload(user, authKeyName)
         let authKey = null
         let token = normalizeString(user?.token) || null
+        authKeys = normalizeAuthKeys(user?.authKeys)
 
         if (!apiKey && mode === 'register') {
             try {
                 user = await login(normalizedAccount)
-                apiKey = normalizeString(user?.apiKey) || null
+                apiKey = extractApiKeyFromUserPayload(user, authKeyName)
                 token = normalizeString(user?.token) || token
+                authKeys = normalizeAuthKeys(user?.authKeys)
                 mode = 'login'
             } catch (error) {
                 logger?.warn?.(
@@ -215,12 +388,42 @@ export const createManagedKavitaSetupClient = ({
         }
 
         if (!apiKey && token) {
-            authKey = await createAuthKey({
-                token,
-                name: authKeyName,
-                keyLength,
-            })
-            apiKey = normalizeString(authKey?.key) || null
+            try {
+                authKeys = normalizeAuthKeys(await getAuthKeys({token}))
+                apiKey = normalizeString(selectReusableAuthKey(authKeys, authKeyName)?.key) || null
+            } catch (error) {
+                logger?.warn?.(
+                    `[${serviceName}] Managed Kavita auth key lookup failed after login: ${error instanceof Error ? error.message : error}`,
+                )
+            }
+        }
+
+        if (!apiKey && token) {
+            try {
+                authKey = await createAuthKey({
+                    token,
+                    name: authKeyName,
+                    keyLength,
+                })
+                apiKey = normalizeString(authKey?.key) || null
+            } catch (error) {
+                logger?.warn?.(
+                    `[${serviceName}] Managed Kavita auth key creation failed; rechecking existing keys: ${error instanceof Error ? error.message : error}`,
+                )
+
+                try {
+                    authKeys = normalizeAuthKeys(await getAuthKeys({token}))
+                    apiKey = normalizeString(selectReusableAuthKey(authKeys, authKeyName)?.key) || null
+                } catch (lookupError) {
+                    logger?.warn?.(
+                        `[${serviceName}] Managed Kavita auth key recheck failed: ${lookupError instanceof Error ? lookupError.message : lookupError}`,
+                    )
+                }
+
+                if (!apiKey) {
+                    throw error
+                }
+            }
         }
 
         if (!apiKey) {
@@ -231,6 +434,7 @@ export const createManagedKavitaSetupClient = ({
             apiKey,
             account: normalizedAccount,
             authKey,
+            authKeys,
             mode,
             user,
         }
@@ -240,6 +444,7 @@ export const createManagedKavitaSetupClient = ({
         getBaseUrl: () => normalizedBaseUrl,
         registerFirstAdmin,
         login,
+        getAuthKeys,
         createAuthKey,
         ensureServiceApiKey,
     }

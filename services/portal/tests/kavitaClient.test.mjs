@@ -221,6 +221,85 @@ test('fetchLibraries uses Kavita libraries endpoint', async () => {
     assert.equal(calls[0].options.method, 'GET');
 });
 
+test('ensureLibrary updates existing Kavita library folders when new Raven roots are missing', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url);
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                body: options.body ? JSON.parse(options.body) : null,
+            });
+
+            if (requestUrl.pathname === '/api/Library/libraries') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 7, name: 'Manhwa', folders: ['/manga/manhwa']},
+                    ]),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Library/update') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({
+                        id: 7,
+                        name: 'Manhwa',
+                        folders: [
+                            '/manga/downloaded/manhwa',
+                            '/manga/manhwa',
+                            '/manga/Noona/raven/downloads/downloaded/manhwa',
+                            '/manga/Noona/raven/downloads/manhwa',
+                        ],
+                    }),
+                };
+            }
+
+            throw new Error(`Unexpected request to ${requestUrl.pathname}`);
+        },
+    });
+
+    const result = await kavita.ensureLibrary({
+        name: 'Manhwa',
+        payload: {
+            folders: [
+                '/manga/downloaded/manhwa',
+                '/manga/manhwa',
+                '/manga/Noona/raven/downloads/downloaded/manhwa',
+                '/manga/Noona/raven/downloads/manhwa',
+            ],
+        },
+    });
+
+    assert.equal(result.created, false);
+    assert.deepEqual(result.library?.folders, [
+        '/manga/downloaded/manhwa',
+        '/manga/manhwa',
+        '/manga/Noona/raven/downloads/downloaded/manhwa',
+        '/manga/Noona/raven/downloads/manhwa',
+    ]);
+    assert.deepEqual(calls.map(call => call.pathname), [
+        '/api/Library/libraries',
+        '/api/Library/update',
+    ]);
+    assert.deepEqual(calls[1].body, {
+        id: 7,
+        name: 'Manhwa',
+        folders: [
+            '/manga/downloaded/manhwa',
+            '/manga/manhwa',
+            '/manga/Noona/raven/downloads/downloaded/manhwa',
+            '/manga/Noona/raven/downloads/manhwa',
+        ],
+    });
+});
+
 test('searchTitles queries Kavita search endpoint with a trimmed title', async () => {
     const calls = [];
     const kavita = createKavitaClient({
@@ -251,6 +330,60 @@ test('searchTitles queries Kavita search endpoint with a trimmed title', async (
     assert.equal(requestUrl.searchParams.get('includeChapterAndFiles'), 'false');
     assert.equal(calls[0].options.method, 'GET');
     assert.equal(calls[0].options.headers['X-Api-Key'], 'portal-api-key');
+});
+
+test('searchTitles retries alternate Kavita search payloads after a 400 response', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url);
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                queryString: requestUrl.searchParams.get('queryString'),
+                includeChapterAndFiles: requestUrl.searchParams.get('includeChapterAndFiles'),
+                body: options.body ? JSON.parse(options.body) : null,
+            });
+
+            if (calls.length === 1) {
+                return {
+                    ok: false,
+                    status: 400,
+                    text: async () => JSON.stringify({error: 'Bad request'}),
+                };
+            }
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify({
+                    results: [{seriesId: 9, name: 'Absolute Duo'}],
+                }),
+            };
+        },
+    });
+
+    const response = await kavita.searchTitles('Absolute Duo');
+
+    assert.equal(response.series.length, 1);
+    assert.equal(response.series[0].seriesId, 9);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], {
+        pathname: '/api/Search/search',
+        method: 'GET',
+        queryString: 'Absolute Duo',
+        includeChapterAndFiles: 'false',
+        body: null,
+    });
+    assert.deepEqual(calls[1], {
+        pathname: '/api/Search/search',
+        method: 'GET',
+        queryString: 'Absolute Duo',
+        includeChapterAndFiles: null,
+        body: null,
+    });
 });
 
 test('searchTitles rejects empty title queries', async () => {

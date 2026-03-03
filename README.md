@@ -13,6 +13,7 @@ Noona is a multi-service platform for orchestration, onboarding, library automat
 - [Raven downloader](services/raven/readme.md)
 - [Vault data and auth broker](services/vault/readme.md)
 - [Kavita integration](services/kavita/README.md)
+- [Kavita service guide](services/kavita/AGENTS.md)
 - [Project docs](docs/)
 
 ## Services
@@ -53,6 +54,8 @@ DEBUG=super node initWarden.mjs
 ```
 
 3. Open Moon when healthy: `http://localhost:3000`.
+
+Set `SERVER_IP` on Warden when Moon should advertise LAN URLs like `http://192.168.x.x:<port>` for managed services.
 
 ## Root Scripts
 

@@ -114,12 +114,12 @@ export function LoginPage() {
                                 Noona
                             </Badge>
                             <Heading as="h1" variant="heading-strong-l">
-                                Sign in with Discord
+                                Sign in or create account with Discord
                             </Heading>
                         </Row>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
-                            Moon now uses Discord OAuth for web login. Username/password sign-in is no longer part of
-                            the web flow.
+                            Moon uses Discord OAuth for web login. If this is your first sign-in, Noona will create
+                            your account automatically with the default permissions chosen by an admin.
                         </Text>
                     </Column>
 
@@ -133,7 +133,8 @@ export function LoginPage() {
                         <Column gap="12">
                             {!configured && !error && (
                                 <Text onBackground="warning-strong" variant="body-default-xs">
-                                    Discord OAuth is not configured yet. Finish the setup wizard summary first.
+                                    Discord OAuth is not configured yet. Finish the setup wizard summary first before
+                                    sign-in or account creation can work.
                                 </Text>
                             )}
 

@@ -27,6 +27,7 @@ import {
     resolveNoonaDataRoot,
     toAbsoluteHostPath,
 } from '../docker/storageLayout.mjs';
+import {resolveHostServiceBase, resolveHostServiceHost, resolveServerIp,} from '../docker/hostServiceUrl.mjs';
 import {
     isDebugEnabled as isLoggerDebugEnabled,
     log,
@@ -442,23 +443,24 @@ export function createWarden(options = {}) {
     const SUPER_MODE = BOOT_MODE === 'super' || DEBUG === 'super';
     let runtimeDebug = DEBUG;
     setLoggerDebug(isDebugFlagEnabled(runtimeDebug));
-    const hostServiceBase = env.HOST_SERVICE_URL ?? 'http://localhost';
+    const hostServiceBase = resolveHostServiceBase(env);
+    const hostServiceHost = resolveHostServiceHost(env);
+    const serverIp = resolveServerIp(env);
     const bootOrder = superBootOrderOption || [
-        'noona-redis',
         'noona-mongo',
+        'noona-redis',
         'noona-vault',
         'noona-sage',
         'noona-moon',
-        'noona-raven',
         'noona-kavita',
-        'noona-portal',
+        'noona-raven',
         'noona-komf',
+        'noona-portal',
         'noona-oracle',
     ];
     const minimalServiceNames = ['noona-sage', 'noona-moon'];
     const dependencyGraph = new Map([
         ['noona-vault', ['noona-mongo', 'noona-redis']],
-        ['noona-kavita', ['noona-raven']],
         ['noona-komf', ['noona-kavita']],
     ]);
     const requiredServices = ['noona-mongo', 'noona-redis', 'noona-vault'];
@@ -2396,6 +2398,50 @@ export function createWarden(options = {}) {
         return snapshot;
     };
 
+    const buildHostServiceUrl = (descriptor, port = descriptor?.port) => {
+        const normalizedPort = normalizeHostPort(port);
+        if (normalizedPort == null) {
+            return null;
+        }
+
+        const currentUrl = typeof descriptor?.hostServiceUrl === 'string' ? descriptor.hostServiceUrl.trim() : '';
+        const protocolMatch = currentUrl.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+        const protocol = protocolMatch?.[1]?.toLowerCase() ?? null;
+
+        if (protocol && protocol !== 'http' && protocol !== 'https') {
+            return `${protocol}://${hostServiceHost}:${normalizedPort}`;
+        }
+
+        return `${hostServiceBase}:${normalizedPort}`;
+    };
+
+    const applyServerIpEnv = (descriptor) => {
+        if (!descriptor || !serverIp) {
+            return descriptor;
+        }
+
+        return {
+            ...descriptor,
+            env: upsertEnvEntry(descriptor.env, 'SERVER_IP', serverIp),
+        };
+    };
+
+    const applyHostServiceBase = (descriptor) => {
+        if (!descriptor) {
+            return descriptor;
+        }
+
+        const nextHostServiceUrl = buildHostServiceUrl(descriptor);
+        if (!nextHostServiceUrl) {
+            return descriptor;
+        }
+
+        return {
+            ...descriptor,
+            hostServiceUrl: nextHostServiceUrl,
+        };
+    };
+
     const applyMoonWebGuiPort = (descriptor) => {
         if (!descriptor || descriptor.name !== 'noona-moon') {
             return descriptor;
@@ -2433,7 +2479,9 @@ export function createWarden(options = {}) {
         };
 
         let descriptor = applyEnvOverrides(baseDescriptor, mergedOverrides);
+        descriptor = applyServerIpEnv(descriptor);
         descriptor = applyMoonWebGuiPort(descriptor);
+        descriptor = applyHostServiceBase(descriptor);
         const internalPort = descriptor.internalPort || descriptor.port || null;
         const hostPort = normalizeHostPort(runtime.hostPort);
 
@@ -2441,7 +2489,7 @@ export function createWarden(options = {}) {
             descriptor = {
                 ...descriptor,
                 port: hostPort,
-                hostServiceUrl: `${hostServiceBase}:${hostPort}`,
+                hostServiceUrl: buildHostServiceUrl(descriptor, hostPort),
                 exposed: internalPort ? {[`${internalPort}/tcp`]: {}} : {},
                 ports:
                     internalPort && hostPort
@@ -2677,6 +2725,7 @@ export function createWarden(options = {}) {
         cloneMeta,
         cloneServiceDescriptor,
         collectRavenDownloadMounts,
+        buildHostServiceUrl,
         deleteRavenDownloads,
         dependencyGraph,
         detectKavitaDataMount,
@@ -2700,6 +2749,7 @@ export function createWarden(options = {}) {
         networkName,
         normalizeEnvOverrideMap,
         normalizeHostPort,
+        orderServicesForLifecycle,
         parseEnvEntries,
         parsePositiveLimit,
         persistServiceRuntimeConfig,

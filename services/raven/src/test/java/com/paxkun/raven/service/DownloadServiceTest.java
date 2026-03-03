@@ -199,6 +199,76 @@ class DownloadServiceTest {
         assertThat(resolvedTitle.getLastDownloaded()).isEqualTo("2");
     }
 
+    @Test
+    void completedDownloadsMoveFromDownloadingToDownloadedFolder() throws Exception {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+        title.put("type", "Manhwa");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        resolvedTitle.setType("Manhwa");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForStatus("Solo Leveling", "completed");
+
+        Path downloadedTitleFolder = downloadsRoot.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Path downloadingTitleFolder = downloadsRoot.resolve("downloading").resolve("manhwa").resolve("Solo Leveling");
+
+        assertThat(downloadedTitleFolder).isDirectory();
+        try (var stream = Files.list(downloadedTitleFolder)) {
+            assertThat(stream.toList())
+                    .hasSize(1)
+                    .allSatisfy(path -> assertThat(path.getFileName().toString()).endsWith(".cbz"));
+        }
+        assertThat(Files.exists(downloadingTitleFolder)).isFalse();
+        assertThat(resolvedTitle.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
+        verify(libraryService).scanKavitaLibraryForType("Manhwa");
+    }
+
+    @Test
+    void singleChapterDownloadsPromoteIntoDownloadedFolder() throws Exception {
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 2", "href", "http://example.com/solo/2")));
+        when(sourceFinder.findSource("http://example.com/solo/2"))
+                .thenReturn(List.of("http://example.com/solo/page1.jpg"));
+
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setSourceUrl("http://example.com/solo");
+        title.setType("Manhwa");
+
+        boolean downloaded = downloadService.downloadSingleChapter(title, "2");
+
+        Path downloadedTitleFolder = downloadsRoot.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Path downloadingTitleFolder = downloadsRoot.resolve("downloading").resolve("manhwa").resolve("Solo Leveling");
+
+        assertThat(downloaded).isTrue();
+        assertThat(downloadedTitleFolder).isDirectory();
+        try (var stream = Files.list(downloadedTitleFolder)) {
+            assertThat(stream.toList())
+                    .hasSize(1)
+                    .allSatisfy(path -> assertThat(path.getFileName().toString()).endsWith(".cbz"));
+        }
+        assertThat(Files.exists(downloadingTitleFolder)).isFalse();
+        assertThat(title.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
+    }
+
     private void waitForStatus(String titleName, String expectedStatus) throws InterruptedException {
         for (int attempt = 0; attempt < 50; attempt++) {
             List<DownloadProgress> statuses = downloadService.getDownloadStatuses();
@@ -238,7 +308,15 @@ class DownloadServiceTest {
 
         @Override
         protected void deleteFolder(Path folderPath) {
-            // Skip deletion to simplify testing
+            try (var stream = Files.walk(folderPath)) {
+                stream.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException ignored) {
+                    }
+                });
+            } catch (IOException ignored) {
+            }
         }
     }
 }

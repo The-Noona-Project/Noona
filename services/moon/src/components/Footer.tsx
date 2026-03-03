@@ -1,9 +1,17 @@
+"use client";
+
+import {usePathname} from "next/navigation";
 import {IconButton, Row, SmartLink, Text} from "@once-ui-system/core";
 import {moonSite} from "@/resources";
 import {FooterKavitaButton} from "./FooterKavitaButton";
 import styles from "./Footer.module.scss";
 
 export const Footer = () => {
+    const pathname = usePathname() ?? "";
+    if (pathname === "/rebooting") {
+        return null;
+    }
+
     const currentYear = new Date().getFullYear();
     const links = [
         {

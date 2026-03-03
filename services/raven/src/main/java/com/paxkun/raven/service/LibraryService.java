@@ -27,6 +27,7 @@ import java.util.stream.Stream;
 @Service
 @RequiredArgsConstructor
 public class LibraryService {
+    private static final String DOWNLOADED_FOLDER_NAME = "downloaded";
 
     private final VaultService vaultService;
     private final @Lazy DownloadService downloadService;
@@ -35,6 +36,7 @@ public class LibraryService {
 
     private static final String COLLECTION = "manga_library";
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_INSTANT;
+    private volatile CheckActivity currentCheckActivity;
 
     public void addOrUpdateTitle(NewTitle title, NewChapter chapter) {
         Map<String, Object> query = Map.of("uuid", title.getUuid());
@@ -76,11 +78,7 @@ public class LibraryService {
             set.put("type", title.getType());
         }
 
-        String normalizedType = normalizeMediaType(title.getType());
-        String normalizedFolder = normalizeMediaTypeFolder(title.getType());
-        if (normalizedType != null && normalizedFolder != null) {
-            kavitaSyncService.ensureLibraryForType(normalizedType, normalizedFolder);
-        }
+        ensureKavitaLibraryForType(title.getType());
 
         title.setLastDownloadedAt(now);
 
@@ -303,10 +301,27 @@ public class LibraryService {
             return null;
         }
 
+        Path downloadedRoot = root.resolve(DOWNLOADED_FOLDER_NAME);
         String normalizedFolder = normalizeMediaTypeFolder(type);
-        Path base = normalizedFolder != null ? root.resolve(normalizedFolder) : root;
+        Path base = normalizedFolder != null ? downloadedRoot.resolve(normalizedFolder) : downloadedRoot;
 
         return base.resolve(cleanTitle).toString();
+    }
+
+    private void ensureKavitaLibraryForType(String rawType) {
+        String normalizedType = normalizeMediaType(rawType);
+        String normalizedFolder = normalizeMediaTypeFolder(rawType);
+        if (normalizedType != null && normalizedFolder != null) {
+            kavitaSyncService.ensureLibraryForType(normalizedType, normalizedFolder);
+        }
+    }
+
+    public void scanKavitaLibraryForType(String rawType) {
+        String normalizedType = normalizeMediaType(rawType);
+        String normalizedFolder = normalizeMediaTypeFolder(rawType);
+        if (normalizedType != null) {
+            kavitaSyncService.scanLibraryForType(normalizedType, normalizedFolder);
+        }
     }
 
     private String normalizeMediaTypeFolder(String raw) {
@@ -649,12 +664,23 @@ public class LibraryService {
             String nextLastDownloaded = plan.previousLastDownloaded();
 
             if (!plan.queuedChapters().isEmpty()) {
+                String latestSuccessfulChapter = null;
                 for (String chapter : plan.queuedChapters()) {
-                    downloadService.downloadSingleChapter(title, chapter);
+                    if (!downloadService.downloadSingleChapter(title, chapter)) {
+                        continue;
+                    }
+
+                    if (latestSuccessfulChapter == null || compareChapterNumbers(chapter, latestSuccessfulChapter) > 0) {
+                        latestSuccessfulChapter = chapter;
+                    }
                 }
 
-                if (plan.newQueuedCount() > 0 && plan.latestChapter() != null) {
-                    nextLastDownloaded = plan.latestChapter();
+                if (latestSuccessfulChapter != null && compareChapterNumbers(latestSuccessfulChapter, nextLastDownloaded) > 0) {
+                    nextLastDownloaded = latestSuccessfulChapter;
+                }
+
+                if (latestSuccessfulChapter != null) {
+                    scanKavitaLibraryForType(title.getType());
                 }
             }
 
@@ -709,7 +735,12 @@ public class LibraryService {
             return null;
         }
 
-        return syncTitleChapters(title);
+        updateCurrentCheckActivity("single", title.getTitleName(), 0, 1);
+        try {
+            return syncTitleChapters(title);
+        } finally {
+            clearCurrentCheckActivity();
+        }
     }
 
     public LibrarySyncSummary checkForNewChapters() {
@@ -725,17 +756,24 @@ public class LibraryService {
         int newChaptersQueued = 0;
         int missingChaptersQueued = 0;
 
-        for (NewTitle title : titles) {
-            TitleSyncResult result = syncTitleChapters(title);
-            results.add(result);
+        try {
+            for (int index = 0; index < titles.size(); index++) {
+                NewTitle title = titles.get(index);
+                updateCurrentCheckActivity("library", title.getTitleName(), index, titles.size());
 
-            if ("updated".equals(result.status())) {
-                updatedTitles++;
+                TitleSyncResult result = syncTitleChapters(title);
+                results.add(result);
+
+                if ("updated".equals(result.status())) {
+                    updatedTitles++;
+                }
+
+                queuedChapters += result.totalQueued();
+                newChaptersQueued += result.newChaptersQueued();
+                missingChaptersQueued += result.missingChaptersQueued();
             }
-
-            queuedChapters += result.totalQueued();
-            newChaptersQueued += result.newChaptersQueued();
-            missingChaptersQueued += result.missingChaptersQueued();
+        } finally {
+            clearCurrentCheckActivity();
         }
 
         String message = queuedChapters == 0
@@ -755,6 +793,24 @@ public class LibraryService {
 
     private boolean isNewer(String latest, String current) {
         return compareChapterNumbers(latest, current) > 0;
+    }
+
+    public CheckActivity getCurrentCheckActivity() {
+        return currentCheckActivity;
+    }
+
+    private void updateCurrentCheckActivity(String mode, String title, int checkedTitles, int totalTitles) {
+        currentCheckActivity = new CheckActivity(
+                mode,
+                Optional.ofNullable(title).orElse("Untitled"),
+                Math.max(0, checkedTitles),
+                Math.max(1, totalTitles),
+                System.currentTimeMillis()
+        );
+    }
+
+    private void clearCurrentCheckActivity() {
+        currentCheckActivity = null;
     }
 
     private record TitleSyncComputation(
@@ -791,6 +847,15 @@ public class LibraryService {
             int missingChaptersQueued,
             List<TitleSyncResult> results,
             String message
+    ) {
+    }
+
+    public record CheckActivity(
+            String mode,
+            String title,
+            int checkedTitles,
+            int totalTitles,
+            long updatedAt
     ) {
     }
 }

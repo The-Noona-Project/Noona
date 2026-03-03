@@ -6,11 +6,13 @@ export function registerSettingsRoutes(context = {}) {
     const {
         app,
         applyDebugSetting,
+        DEFAULT_DOWNLOAD_WORKER_SETTINGS,
         DEFAULT_NAMING_SETTINGS,
         logger,
         normalizeString,
         parseBooleanInput,
         queueEcosystemRestart,
+        readDownloadWorkerSettings,
         readDebugSetting,
         requireAdminSession,
         requireAdminSessionIfSetupCompleted,
@@ -23,6 +25,7 @@ export function registerSettingsRoutes(context = {}) {
         vaultErrorStatus,
         verifyFactoryResetSelections,
         verifySessionPassword,
+        writeDownloadWorkerSettings,
     } = context
 
     app.use('/api/settings', requireAdminSessionIfSetupCompleted)
@@ -170,6 +173,49 @@ export function registerSettingsRoutes(context = {}) {
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to update naming settings: ${error.message}`)
             res.status(502).json({error: 'Unable to update naming settings.'})
+        }
+    })
+
+    app.get('/api/settings/downloads/workers', async (_req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const settings = await readDownloadWorkerSettings()
+            res.json({
+                key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+                threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],
+                updatedAt: settings?.updatedAt || null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load download worker settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to load download worker settings.'})
+        }
+    })
+
+    app.put('/api/settings/downloads/workers', async (req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        if (!Array.isArray(req.body?.threadRateLimitsKbps)) {
+            res.status(400).json({error: 'threadRateLimitsKbps must be provided as an array.'})
+            return
+        }
+
+        try {
+            const settings = await writeDownloadWorkerSettings(req.body.threadRateLimitsKbps)
+            res.json({
+                key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+                threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],
+                updatedAt: settings?.updatedAt || null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to update download worker settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to update download worker settings.'})
         }
     })
 

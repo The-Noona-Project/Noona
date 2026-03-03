@@ -85,6 +85,22 @@ type DownloadNamingSettings = {
     pageTemplate?: string | null;
     pagePad?: number | null;
     chapterPad?: number | null;
+    updatedAt?: string | null;
+    error?: string;
+};
+
+type DownloadWorkerSettings = {
+    key?: string | null;
+    threadRateLimitsKbps?: number[] | null;
+    updatedAt?: string | null;
+    error?: string;
+};
+
+type DefaultUserPermissionsResponse = {
+    key?: string | null;
+    defaultPermissions?: string[] | null;
+    permissions?: string[] | null;
+    updatedAt?: string | null;
     error?: string;
 };
 
@@ -98,6 +114,8 @@ type DebugSettings = {
 type AuthStatusResponse = {
     user?: {
         username?: string | null;
+        usernameNormalized?: string | null;
+        lookupKey?: string | null;
         role?: string | null;
         permissions?: string[] | null;
         isBootstrapUser?: boolean | null;
@@ -131,6 +149,14 @@ type ManagedUser = {
 type UsersListResponse = {
     users?: ManagedUser[] | null;
     permissions?: string[] | null;
+    defaultPermissions?: string[] | null;
+    error?: string;
+};
+
+type UserMutationResponse = {
+    ok?: boolean;
+    user?: ManagedUser | null;
+    deleted?: boolean;
     error?: string;
 };
 
@@ -288,6 +314,15 @@ const parseCsvSelections = (value: unknown): string[] => {
 };
 const serializeCsvSelections = (values: string[]): string => values.join(", ");
 const isSecretKey = (key: string) => /TOKEN|PASSWORD|API_KEY|SECRET/i.test(key);
+const normalizeThreadRateLimitDrafts = (value: unknown, threadCount: number): string[] => {
+    const normalizedThreadCount = Math.max(1, Math.floor(threadCount || 1));
+    const source = Array.isArray(value) ? value : [];
+    return Array.from({length: normalizedThreadCount}, (_, index) => {
+        const current = source[index];
+        const parsed = Number(current);
+        return Number.isFinite(parsed) && parsed > 0 ? String(Math.floor(parsed)) : "0";
+    });
+};
 const defaultEditor = (): ServiceEditorState => ({
     loading: false,
     saving: false,
@@ -386,6 +421,12 @@ export function SettingsPage() {
     const [pageTemplate, setPageTemplate] = useState("{page_padded}{ext}");
     const [pagePad, setPagePad] = useState("3");
     const [chapterPad, setChapterPad] = useState("4");
+    const [downloadWorkerSettingsLoading, setDownloadWorkerSettingsLoading] = useState(false);
+    const [downloadWorkerSettingsSaving, setDownloadWorkerSettingsSaving] = useState(false);
+    const [downloadWorkerSettingsError, setDownloadWorkerSettingsError] = useState<string | null>(null);
+    const [downloadWorkerSettingsMessage, setDownloadWorkerSettingsMessage] = useState<string | null>(null);
+    const [downloadWorkerSettingsUpdatedAt, setDownloadWorkerSettingsUpdatedAt] = useState<string | null>(null);
+    const [downloadWorkerRateLimits, setDownloadWorkerRateLimits] = useState<string[]>(["0"]);
 
     const [collectionsLoading, setCollectionsLoading] = useState(false);
     const [collectionsError, setCollectionsError] = useState<string | null>(null);
@@ -407,6 +448,10 @@ export function SettingsPage() {
     const [usersSaving, setUsersSaving] = useState(false);
     const [usersError, setUsersError] = useState<string | null>(null);
     const [usersMessage, setUsersMessage] = useState<string | null>(null);
+    const [defaultUserPermissions, setDefaultUserPermissions] = useState<MoonPermission[]>(["moon_login"]);
+    const [defaultUserPermissionsSaving, setDefaultUserPermissionsSaving] = useState(false);
+    const [defaultUserPermissionsMessage, setDefaultUserPermissionsMessage] = useState<string | null>(null);
+    const [defaultUserPermissionsUpdatedAt, setDefaultUserPermissionsUpdatedAt] = useState<string | null>(null);
     const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
     const [newUserDiscordId, setNewUserDiscordId] = useState("");
     const [newUserDisplayName, setNewUserDisplayName] = useState("");
@@ -460,6 +505,14 @@ export function SettingsPage() {
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
     const redisServiceMeta = catalogByName.get("noona-redis") ?? null;
     const redisStackUrl = normalizeString(redisServiceMeta?.hostServiceUrl).trim();
+    const ravenThreadCount = useMemo(() => {
+        const configured = editors["noona-raven"]?.config?.env?.RAVEN_DOWNLOAD_THREADS;
+        const parsed = Number(configured);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return Math.max(1, Math.floor(parsed));
+        }
+        return 3;
+    }, [editors]);
     const canAccessEcosystem = hasPermission(currentPermissions, "admin");
     const canManageUsers = hasPermission(currentPermissions, "user_management");
     const canShowNav = canAccessEcosystem || canManageUsers;
@@ -740,6 +793,62 @@ export function SettingsPage() {
         }
     };
 
+    const loadDownloadWorkerSettings = async () => {
+        setDownloadWorkerSettingsLoading(true);
+        setDownloadWorkerSettingsError(null);
+        setDownloadWorkerSettingsMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/downloads/workers", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as DownloadWorkerSettings | null;
+            if (!res.ok) {
+                setDownloadWorkerSettingsError(parseError(json, `Failed to load worker settings (HTTP ${res.status}).`));
+                return;
+            }
+
+            setDownloadWorkerRateLimits(normalizeThreadRateLimitDrafts(json?.threadRateLimitsKbps, ravenThreadCount));
+            setDownloadWorkerSettingsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDownloadWorkerSettingsError(msg);
+        } finally {
+            setDownloadWorkerSettingsLoading(false);
+        }
+    };
+
+    const saveDownloadWorkerSettings = async () => {
+        setDownloadWorkerSettingsSaving(true);
+        setDownloadWorkerSettingsError(null);
+        setDownloadWorkerSettingsMessage(null);
+        try {
+            const normalizedRateLimits = normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount)
+                .map((entry) => {
+                    const parsed = Number(entry);
+                    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+                });
+            const res = await fetch("/api/noona/settings/downloads/workers", {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    threadRateLimitsKbps: normalizedRateLimits,
+                }),
+            });
+            const json = (await res.json().catch(() => null)) as DownloadWorkerSettings | null;
+            if (!res.ok) {
+                setDownloadWorkerSettingsError(parseError(json, `Failed to save worker settings (HTTP ${res.status}).`));
+                return;
+            }
+
+            setDownloadWorkerRateLimits(normalizeThreadRateLimitDrafts(json?.threadRateLimitsKbps, ravenThreadCount));
+            setDownloadWorkerSettingsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+            setDownloadWorkerSettingsMessage("Thread speed limits saved.");
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDownloadWorkerSettingsError(msg);
+        } finally {
+            setDownloadWorkerSettingsSaving(false);
+        }
+    };
+
     const loadDebugSetting = async () => {
         setDebugLoading(true);
         setDebugError(null);
@@ -914,10 +1023,22 @@ export function SettingsPage() {
         }
     };
 
-    const userLookupKey = (user: ManagedUser): string =>
-        normalizeString(user.lookupKey).trim().toLowerCase() ||
-        normalizeString(user.usernameNormalized).trim().toLowerCase() ||
-        normalizeString(user.username).trim().toLowerCase();
+    const userLookupKey = (user?: {
+        lookupKey?: string | null;
+        usernameNormalized?: string | null;
+        username?: string | null;
+        authProvider?: string | null;
+        discordUserId?: string | null;
+    } | null): string => {
+        const authProvider = normalizeString(user?.authProvider).trim().toLowerCase();
+        const discordUserId = normalizeString(user?.discordUserId).trim();
+        if (authProvider === "discord" && discordUserId) {
+            return `discord.${discordUserId.toLowerCase()}`;
+        }
+        return normalizeString(user?.lookupKey).trim().toLowerCase() ||
+            normalizeString(user?.usernameNormalized).trim().toLowerCase() ||
+            normalizeString(user?.username).trim().toLowerCase();
+    };
 
     const loadManagedUsers = async () => {
         setUsersLoading(true);
@@ -931,7 +1052,12 @@ export function SettingsPage() {
             }
 
             const list = Array.isArray(json?.users) ? json.users : [];
+            const loadedDefaultPermissions = normalizePermissions(json?.defaultPermissions);
             setManagedUsers(list);
+            setDefaultUserPermissions(loadedDefaultPermissions.length ? loadedDefaultPermissions : ["moon_login"]);
+            if (!newUserDiscordId.trim() && !newUserDisplayName.trim()) {
+                setNewUserPermissions(loadedDefaultPermissions.length ? loadedDefaultPermissions : ["moon_login"]);
+            }
             setEditingUser(() => {
                 const next: Record<string, { username: string; permissions: MoonPermission[] }> = {};
                 for (const entry of list) {
@@ -950,6 +1076,49 @@ export function SettingsPage() {
         } finally {
             setUsersLoading(false);
         }
+    };
+
+    const syncManagedUser = (user: ManagedUser, previousLookup = "") => {
+        const nextLookup = userLookupKey(user);
+        const targetLookup = previousLookup || nextLookup;
+
+        setManagedUsers((prev) => {
+            let replaced = false;
+            const nextUsers = prev.map((entry) => {
+                if (userLookupKey(entry) !== targetLookup) return entry;
+                replaced = true;
+                return user;
+            });
+            return replaced ? nextUsers : [user, ...nextUsers];
+        });
+
+        setEditingUser((prev) => {
+            const next = {...prev};
+            if (previousLookup && previousLookup !== nextLookup) {
+                delete next[previousLookup];
+            }
+            if (nextLookup) {
+                next[nextLookup] = {
+                    username: normalizeString(user.username).trim(),
+                    permissions: normalizePermissions(user.permissions),
+                };
+            }
+            return next;
+        });
+    };
+
+    const toggleDefaultUserPermission = (permission: MoonPermission) => {
+        if (permission === "moon_login") return;
+        setDefaultUserPermissions((prev) => {
+            const has = prev.includes(permission);
+            const next = has
+                ? prev.filter((entry) => entry !== permission)
+                : MOON_PERMISSION_ORDER.filter((entry) => entry === permission || prev.includes(entry));
+            if (!next.includes("moon_login")) {
+                return MOON_PERMISSION_ORDER.filter((entry) => entry === "moon_login" || next.includes(entry));
+            }
+            return next;
+        });
     };
 
     const toggleNewUserPermission = (permission: MoonPermission) => {
@@ -990,6 +1159,40 @@ export function SettingsPage() {
         }));
     };
 
+    const saveDefaultUserPermissions = async () => {
+        setDefaultUserPermissionsSaving(true);
+        setDefaultUserPermissionsMessage(null);
+        setUsersError(null);
+        try {
+            const res = await fetch("/api/noona/auth/users/default-permissions", {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    permissions: defaultUserPermissions,
+                }),
+            });
+            const json = (await res.json().catch(() => null)) as DefaultUserPermissionsResponse | null;
+            if (!res.ok) {
+                setUsersError(parseError(json, `Failed to save default permissions (HTTP ${res.status}).`));
+                return;
+            }
+
+            const nextDefaults = normalizePermissions(json?.defaultPermissions);
+            const safeDefaults: MoonPermission[] = nextDefaults.length ? nextDefaults : ["moon_login"];
+            setDefaultUserPermissions(safeDefaults);
+            setDefaultUserPermissionsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+            setDefaultUserPermissionsMessage("Default permissions for new Discord users saved.");
+            setNewUserPermissions((prev) =>
+                newUserDiscordId.trim() || newUserDisplayName.trim() ? prev : safeDefaults,
+            );
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUsersError(msg);
+        } finally {
+            setDefaultUserPermissionsSaving(false);
+        }
+    };
+
     const createManagedUser = async () => {
         const discordUserId = newUserDiscordId.trim();
         const displayName = newUserDisplayName.trim();
@@ -1019,7 +1222,7 @@ export function SettingsPage() {
 
             setNewUserDiscordId("");
             setNewUserDisplayName("");
-            setNewUserPermissions(["moon_login"]);
+            setNewUserPermissions(defaultUserPermissions.length ? defaultUserPermissions : ["moon_login"]);
             setUsersMessage(`Created Discord user ${discordUserId}.`);
             await loadManagedUsers();
         } catch (error_) {
@@ -1068,15 +1271,24 @@ export function SettingsPage() {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify(payload),
             });
-            const json = await res.json().catch(() => null);
+            const json = (await res.json().catch(() => null)) as UserMutationResponse | null;
             if (!res.ok) {
                 setUsersError(parseError(json, `Failed to update user (HTTP ${res.status}).`));
                 return;
             }
 
+            const updatedUser = json?.user ?? null;
+            if (updatedUser) {
+                syncManagedUser(updatedUser, key);
+            }
             setUsersMessage(`Updated ${lookup}.`);
-            await loadManagedUsers();
             await loadAuthStatus();
+            const resultingPermissions = normalizePermissions(updatedUser?.permissions ?? nextPermissions);
+            const updatedCurrentUser = userLookupKey(accountUser) === lookup;
+            if (updatedCurrentUser && !hasPermission(resultingPermissions, "user_management")) {
+                return;
+            }
+            await loadManagedUsers();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setUsersError(msg);
@@ -1300,56 +1512,18 @@ export function SettingsPage() {
 
         setUpdatesApplyingAll(true);
         setUpdatesError(null);
-        setUpdatesMessage(null);
+        setUpdatesMessage("Opening reboot monitor...");
 
-        const failures: Array<{ service: string; message: string }> = [];
-        let updatedCount = 0;
-        let restartedCount = 0;
-
-        try {
-            for (const serviceName of services) {
-                try {
-                    const {didUpdate, restarted} = await runServiceImageUpdate(serviceName, {refreshAfter: false});
-                    if (didUpdate) updatedCount += 1;
-                    if (restarted) restartedCount += 1;
-                } catch (error_) {
-                    const msg = error_ instanceof Error ? error_.message : String(error_);
-                    failures.push({service: serviceName, message: msg});
-                }
-            }
-
-            await loadUpdates();
-
-            const processedCount = services.length - failures.length;
-            const summary = failures.length === 0
-                ? `Processed ${processedCount} service update${processedCount === 1 ? "" : "s"}.`
-                : `Processed ${processedCount} service update${processedCount === 1 ? "" : "s"} with ${failures.length} failure${failures.length === 1 ? "" : "s"}.`;
-            const detail = updatedCount > 0
-                ? ` Downloaded ${updatedCount} new image${updatedCount === 1 ? "" : "s"}${restartedCount > 0 ? ` and restarted ${restartedCount} service${restartedCount === 1 ? "" : "s"}` : ""}.`
-                : "";
-
-            setUpdatesMessage(`${summary}${detail}`);
-            if (failures.length > 0) {
-                setUpdatesError(
-                    failures
-                        .map((entry) => `${entry.service}: ${entry.message}`)
-                        .join(" | "),
-                );
-            }
-
-            emitNoonaSiteNotification({
-                variant: failures.length > 0 ? "warning" : updatedCount > 0 ? "success" : "info",
-                title: failures.length > 0 ? "Update all finished with issues" : "Update all complete",
-                message: failures.length > 0
-                    ? `${updatedCount} services updated, ${failures.length} failed.`
-                    : updatedCount > 0
-                        ? `${updatedCount} services updated successfully.`
-                        : "No new images were required.",
-                dedupeKey: `update-all:${services.join(",")}:${updatedCount}:${failures.length}`,
+        if (typeof window !== "undefined") {
+            const params = new URLSearchParams({
+                services: services.join(","),
+                returnTo: "/settings?tab=warden",
             });
-        } finally {
-            setUpdatesApplyingAll(false);
+            window.location.assign(`/rebooting?${params.toString()}`);
+            return;
         }
+
+        setUpdatesApplyingAll(false);
     };
 
     const restartEcosystem = async () => {
@@ -1404,6 +1578,7 @@ export function SettingsPage() {
         }
         if (activeTab === "raven") {
             void loadNaming();
+            void loadDownloadWorkerSettings();
         }
         if (activeTab === "vault") {
             void loadCollections();
@@ -1432,6 +1607,10 @@ export function SettingsPage() {
             setActiveSection("ecosystem");
         }
     }, [activeSection, authStateLoading, canAccessEcosystem, canManageUsers]);
+
+    useEffect(() => {
+        setDownloadWorkerRateLimits((prev) => normalizeThreadRateLimitDrafts(prev, ravenThreadCount));
+    }, [ravenThreadCount]);
 
     useEffect(() => {
         if (activeSection !== "users" || !canManageUsers) return;
@@ -1915,6 +2094,53 @@ export function SettingsPage() {
             <Column fillWidth gap="16">
                 <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Column gap="12">
+                        <Heading as="h2" variant="heading-strong-l">Default permissions for new Discord users</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            First-time Discord sign-in now creates the user automatically. These permissions become the
+                            starting access profile for that new account.
+                        </Text>
+                        {defaultUserPermissionsUpdatedAt && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Updated {formatIso(defaultUserPermissionsUpdatedAt)}
+                            </Text>
+                        )}
+                        {defaultUserPermissionsMessage && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                {defaultUserPermissionsMessage}
+                            </Text>
+                        )}
+                        <Column gap="8">
+                            <Text onBackground="neutral-weak" variant="body-default-xs">Permissions</Text>
+                            <Row gap="12" style={{flexWrap: "wrap"}}>
+                                {MOON_PERMISSION_ORDER.map((permission) => (
+                                    <label key={`default-user-permission-${permission}`}
+                                           style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
+                                        <input
+                                            type="checkbox"
+                                            checked={defaultUserPermissions.includes(permission)}
+                                            disabled={permission === "moon_login" || defaultUserPermissionsSaving}
+                                            onChange={() => toggleDefaultUserPermission(permission)}
+                                        />
+                                        <Text variant="body-default-xs">{MOON_PERMISSION_LABELS[permission]}</Text>
+                                    </label>
+                                ))}
+                            </Row>
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Moon login stays enabled so the newly created account can complete sign-in.
+                            </Text>
+                        </Column>
+                        <Button
+                            variant="primary"
+                            disabled={defaultUserPermissionsSaving}
+                            onClick={() => void saveDefaultUserPermissions()}
+                        >
+                            {defaultUserPermissionsSaving ? "Saving..." : "Save default permissions"}
+                        </Button>
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
                         <Heading as="h2" variant="heading-strong-l">Create Discord user</Heading>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
                             Moon access is assigned to Discord-linked accounts. Add the user&apos;s Discord ID, then
@@ -2394,6 +2620,71 @@ export function SettingsPage() {
 
                             <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                                 <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Column gap="4">
+                                            <Heading as="h3" variant="heading-strong-l">Thread speed limits</Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                Set a per-thread download cap in KB/s. Use 0 for unlimited speed.
+                                            </Text>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                Raven is currently configured
+                                                for {ravenThreadCount} thread{ravenThreadCount === 1 ? "" : "s"}.
+                                            </Text>
+                                            {downloadWorkerSettingsUpdatedAt && (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Updated {formatIso(downloadWorkerSettingsUpdatedAt)}
+                                                </Text>
+                                            )}
+                                        </Column>
+                                        <Row gap="8">
+                                            <Button
+                                                variant="secondary"
+                                                disabled={downloadWorkerSettingsLoading}
+                                                onClick={() => void loadDownloadWorkerSettings()}
+                                            >
+                                                Reload
+                                            </Button>
+                                            <Button
+                                                variant="primary"
+                                                disabled={downloadWorkerSettingsLoading || downloadWorkerSettingsSaving}
+                                                onClick={() => void saveDownloadWorkerSettings()}
+                                            >
+                                                {downloadWorkerSettingsSaving ? "Saving..." : "Save speed limits"}
+                                            </Button>
+                                        </Row>
+                                    </Row>
+                                    {downloadWorkerSettingsError && (
+                                        <Text onBackground="danger-strong" variant="body-default-xs">
+                                            {downloadWorkerSettingsError}
+                                        </Text>
+                                    )}
+                                    {downloadWorkerSettingsMessage && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            {downloadWorkerSettingsMessage}
+                                        </Text>
+                                    )}
+                                    <Column gap="12">
+                                        {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => (
+                                            <Input
+                                                key={`raven-thread-rate-limit-${index + 1}`}
+                                                id={`raven-thread-rate-limit-${index + 1}`}
+                                                name={`raven-thread-rate-limit-${index + 1}`}
+                                                label={`Thread ${index + 1} speed rate limit (KB/s)`}
+                                                type="number"
+                                                value={value}
+                                                onChange={(event) => setDownloadWorkerRateLimits((prev) => {
+                                                    const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
+                                                    next[index] = event.target.value;
+                                                    return next;
+                                                })}
+                                            />
+                                        ))}
+                                    </Column>
+                                </Column>
+                            </Card>
+
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
                                     <Heading as="h3" variant="heading-strong-l">Downloads moved</Heading>
                                     <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
                                         Queue controls, worker status, and Raven download history now live in the
@@ -2583,7 +2874,7 @@ export function SettingsPage() {
                                 <Column gap="8">
                                     <Heading as="h3" variant="heading-strong-l">Warden controls</Heading>
                                     <Text onBackground="neutral-weak" variant="body-default-s">
-                                        Warden is the orchestrator for the stack and is not managed through Moon's
+                                        Warden is the orchestrator for the stack and is not managed through Moon&apos;s
                                         generic save/restart service editor.
                                     </Text>
                                     <Text onBackground="neutral-weak" variant="body-default-xs">

@@ -40,11 +40,13 @@ export function registerAuthRoutes(context = {}) {
         pendingAdminPublicUser,
         pendingAdminState,
         publicUser,
+        readDefaultMemberPermissions,
         readDiscordAuthConfig,
         requireAdminSession,
         requirePermissionSession,
         requireSession,
         resolveProtectedBootstrapLookupKey,
+        resolveStoredAuthProvider,
         resolveSetupCompleted,
         saveDiscordAuthConfig,
         selectPrimaryAdmin,
@@ -58,6 +60,7 @@ export function registerAuthRoutes(context = {}) {
         vaultClient,
         vaultErrorMessage,
         vaultErrorStatus,
+        writeDefaultMemberPermissions,
         writeDiscordAdminToVault,
         writeOauthState,
         writeSession,
@@ -394,9 +397,26 @@ export function registerAuthRoutes(context = {}) {
             }
 
             const users = await listAuthUsers()
-            const matchedUser = findUserByDiscordId(users, identity.id)
+            let matchedUser = findUserByDiscordId(users, identity.id)
             if (!matchedUser) {
-                res.status(404).json({error: 'No Noona user is linked to this Discord account yet.'})
+                const defaults = await readDefaultMemberPermissions()
+                const createdRole = inferRoleFromPermissions(defaults.permissions, 'member')
+                const created = await createAuthUser({
+                    username: identity.globalName || identity.username || `Discord ${identity.id}`,
+                    role: createdRole,
+                    permissions: defaults.permissions,
+                    authProvider: DISCORD_AUTH_PROVIDER,
+                    discordUserId: identity.id,
+                    discordUsername: identity.username || null,
+                    discordGlobalName: identity.globalName || null,
+                    avatarUrl: identity.avatarUrl || null,
+                    email: identity.email || null,
+                })
+                matchedUser = created?.user || null
+            }
+
+            if (!matchedUser) {
+                res.status(502).json({error: 'Unable to create or load the Discord-linked Noona account.'})
                 return
             }
 
@@ -513,6 +533,67 @@ export function registerAuthRoutes(context = {}) {
         }
     })
 
+    app.get('/api/auth/users/default-permissions', async (req, res) => {
+        if (!hasVaultUserApi()) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
+        if (!session) return
+
+        try {
+            const defaults = await readDefaultMemberPermissions()
+            res.json({
+                key: defaults.key,
+                defaultPermissions: defaults.permissions,
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+                updatedAt: defaults.updatedAt || null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load default user permissions: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to load default user permissions.')
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.put('/api/auth/users/default-permissions', async (req, res) => {
+        if (!hasVaultUserApi()) {
+            res.status(503).json({error: 'Vault user storage is not configured.'})
+            return
+        }
+
+        const session = await requirePermissionSession(req, res, 'user_management', {
+            message: 'User management permission is required.',
+        })
+        if (!session) return
+
+        const parsedPermissions = validatePermissionListInput(req.body?.permissions)
+        if (!parsedPermissions.ok) {
+            res.status(400).json({error: parsedPermissions.error})
+            return
+        }
+
+        try {
+            const defaults = await writeDefaultMemberPermissions(parsedPermissions.permissions)
+            res.json({
+                ok: true,
+                key: defaults.key,
+                defaultPermissions: defaults.permissions,
+                permissions: [...MOON_OP_PERMISSION_KEYS],
+                updatedAt: defaults.updatedAt || null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to update default user permissions: ${error.message}`)
+            const status = vaultErrorStatus(error, 502)
+            const message = vaultErrorMessage(error, 'Unable to update default user permissions.')
+            res.status(status).json({error: message})
+        }
+    })
+
     app.get('/api/auth/users', async (req, res) => {
         if (!hasVaultUserApi()) {
             res.status(503).json({error: 'Vault user storage is not configured.'})
@@ -526,6 +607,7 @@ export function registerAuthRoutes(context = {}) {
 
         try {
             const users = await listAuthUsers()
+            const defaults = await readDefaultMemberPermissions()
             const protectedLookupKey = resolveProtectedBootstrapLookupKey(users)
             const mappedUsers = users
                 .map((entry) => applyProtectedBootstrapUserFlag(publicUser(entry), protectedLookupKey))
@@ -533,6 +615,7 @@ export function registerAuthRoutes(context = {}) {
             res.json({
                 users: mappedUsers,
                 permissions: [...MOON_OP_PERMISSION_KEYS],
+                defaultPermissions: defaults.permissions,
             })
         } catch (error) {
             logger.error(`[${serviceName}] Failed to list auth users: ${error.message}`)
@@ -560,7 +643,7 @@ export function registerAuthRoutes(context = {}) {
         const hasRoleInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role')
         let role = hasRoleInput ? normalizeRole(req.body?.role, 'member') : 'member'
         const hasPermissionsInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'permissions')
-        let permissions = hasPermissionsInput ? [] : defaultPermissionsForRole(role)
+        let permissions = hasPermissionsInput ? [] : null
 
         if (hasPermissionsInput) {
             const parsedPermissions = validatePermissionListInput(req.body?.permissions)
@@ -569,16 +652,6 @@ export function registerAuthRoutes(context = {}) {
                 return
             }
             permissions = parsedPermissions.permissions
-        }
-
-        if (role === 'admin' && !permissions.includes('admin')) {
-            permissions = sortMoonPermissions([...permissions, 'admin'])
-        }
-        if (role !== 'admin' && permissions.includes('admin')) {
-            role = 'admin'
-        }
-        if (role !== 'admin') {
-            permissions = sortMoonPermissions(permissions.filter((entry) => entry !== 'admin'))
         }
 
         if (isDiscordUser) {
@@ -599,6 +672,23 @@ export function registerAuthRoutes(context = {}) {
         }
 
         try {
+            if (!Array.isArray(permissions)) {
+                permissions =
+                    role === 'admin'
+                        ? defaultPermissionsForRole(role)
+                        : (await readDefaultMemberPermissions()).permissions
+            }
+
+            if (role === 'admin' && !permissions.includes('admin')) {
+                permissions = sortMoonPermissions([...permissions, 'admin'])
+            }
+            if (role !== 'admin' && permissions.includes('admin')) {
+                role = 'admin'
+            }
+            if (role !== 'admin') {
+                permissions = sortMoonPermissions(permissions.filter((entry) => entry !== 'admin'))
+            }
+
             const payload = await createAuthUser({
                 username: username || `Discord ${discordUserId}`,
                 ...(isDiscordUser ? {} : {password}),
@@ -662,7 +752,7 @@ export function registerAuthRoutes(context = {}) {
                 return
             }
 
-            const targetIsDiscord = normalizeString(targetUser?.authProvider) === DISCORD_AUTH_PROVIDER
+            const targetIsDiscord = resolveStoredAuthProvider(targetUser, LOCAL_AUTH_PROVIDER) === DISCORD_AUTH_PROVIDER
             const updates = {}
             if (hasUsernameUpdate) {
                 const nextUsername = targetIsDiscord ? normalizeString(req.body?.username) : normalizeUsername(req.body?.username)
@@ -700,7 +790,10 @@ export function registerAuthRoutes(context = {}) {
                 updates.role = inferRoleFromPermissions(parsedPermissions.permissions, normalizeRole(targetUser?.role, 'member'))
             } else if (hasRoleUpdate) {
                 updates.role = normalizeRole(req.body?.role, normalizeRole(targetUser?.role, 'member'))
-                updates.permissions = defaultPermissionsForRole(updates.role)
+                updates.permissions =
+                    updates.role === 'admin'
+                        ? defaultPermissionsForRole(updates.role)
+                        : (await readDefaultMemberPermissions()).permissions
             }
 
             if (updates.role === 'admin' && Array.isArray(updates.permissions) && !updates.permissions.includes('admin')) {
@@ -757,7 +850,7 @@ export function registerAuthRoutes(context = {}) {
                 return
             }
 
-            if (normalizeString(targetUser?.authProvider) === DISCORD_AUTH_PROVIDER) {
+            if (resolveStoredAuthProvider(targetUser, LOCAL_AUTH_PROVIDER) === DISCORD_AUTH_PROVIDER) {
                 res.status(400).json({error: 'Discord-auth users do not use password resets.'})
                 return
             }

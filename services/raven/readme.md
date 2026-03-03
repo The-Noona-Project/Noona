@@ -18,9 +18,10 @@ Raven is Noona's downloader and library worker service. It searches supported so
 
 1. Search titles.
 2. Select a source option.
-3. Queue chapter downloads.
-4. Track progress/status.
-5. Update local library metadata.
+3. Queue chapter downloads into the `downloading/` workspace under Raven's downloads root.
+4. Zip finished chapters there, then move completed title folders into `downloaded/`.
+5. Track progress/status and update local library metadata.
+6. Ask Portal/Kavita to scan the matching library after successful imports so new titles appear in Kavita.
 
 ## API Surface (Direct Raven)
 
@@ -28,6 +29,7 @@ Raven is Noona's downloader and library worker service. It searches supported so
 - `GET /v1/download/search/{titleName}`
 - `GET /v1/download/select/{searchId}/{optionIndex}`
 - `GET /v1/download/status`
+- `GET /v1/download/status/summary`
 - `DELETE /v1/download/status/{title}`
 - `GET /v1/library/health`
 - `GET /v1/library/getall`
@@ -51,10 +53,23 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
 - Java toolchain targets Java 21.
 - Selenium + headless Chrome are required for scraping flows.
 - Persist downloads by mounting a host directory to `/app/downloads`.
+- Raven now uses `/app/downloads/downloading` for active work and `/app/downloads/downloaded` for completed title
+  folders.
 - Raven writes `latest.log` under `NOONA_LOG_DIR` when that environment variable is set. Warden-managed installs mount
   Raven logs at `/app/logs`.
-- When `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` are configured, Raven now auto-creates matching
-  Kavita libraries for new media-type folders it writes into the shared downloads tree.
+- Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming plus per-thread
+  speed limits without editing container env.
+- When `KAVITA_LIBRARY_ROOT` is configured, Raven now auto-creates matching Kavita libraries for new media-type
+  folders it writes into the shared downloads tree. It prefers Portal's
+  `POST /api/portal/kavita/libraries/ensure` flow when `PORTAL_BASE_URL` is available, then falls back to direct
+  `KAVITA_BASE_URL` / `KAVITA_API_KEY` access. Managed-library sync now also adds Raven's current
+  `downloaded/<type>` folders plus legacy roots so existing Kavita libraries can recover from older Noona path bugs
+  without manual folder edits.
+- After Raven finishes moving a title into `downloaded/`, it asks Portal to run
+  `POST /api/portal/kavita/libraries/scan` for that media-type library so Kavita picks up the new files. If Portal is
+  unavailable, Raven falls back to a direct Kavita library scan when `KAVITA_BASE_URL` and `KAVITA_API_KEY` are set.
+- `GET /v1/download/status/summary` exposes the active download title, current library-check title, idle state, and
+  the effective worker rate-limit array so Portal and Moon can surface live activity.
 
 ## Documentation Rule
 

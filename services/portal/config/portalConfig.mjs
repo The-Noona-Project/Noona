@@ -6,6 +6,8 @@ import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 const DEFAULT_ENV_PATH = process.env.PORTAL_ENV_FILE || process.env.ENV_FILE || undefined;
 let envLoaded = false;
 const DEFAULT_MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000';
+const DEFAULT_RAVEN_BASE_URL = 'http://noona-raven:8080';
+const DEFAULT_WARDEN_BASE_URL = 'http://noona-warden:4001';
 
 const REQUIRED_STRINGS = [
     'DISCORD_BOT_TOKEN',
@@ -132,15 +134,24 @@ export const loadPortalConfig = (overrides = {}) => {
             baseUrl: normalizeUrl(env.KAVITA_BASE_URL || DEFAULT_MANAGED_KAVITA_BASE_URL),
             apiKey: env.KAVITA_API_KEY,
         },
+        raven: {
+            baseUrl: normalizeUrl(env.RAVEN_BASE_URL || DEFAULT_RAVEN_BASE_URL),
+        },
         vault: {
             baseUrl: normalizeUrl(env.VAULT_BASE_URL),
             token:
                 normalizeString(env.VAULT_API_TOKEN) ||
                 normalizeString(env.VAULT_ACCESS_TOKEN),
         },
+        warden: {
+            baseUrl: normalizeUrl(env.WARDEN_BASE_URL || DEFAULT_WARDEN_BASE_URL),
+        },
         join: {
             defaultRoles: splitCsv(env.PORTAL_JOIN_DEFAULT_ROLES ?? '*,-admin'),
             defaultLibraries: splitCsv(env.PORTAL_JOIN_DEFAULT_LIBRARIES ?? '*'),
+        },
+        activity: {
+            pollMs: numberOrDefault(env.PORTAL_ACTIVITY_POLL_MS, 15000),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',
@@ -157,6 +168,14 @@ export const loadPortalConfig = (overrides = {}) => {
 
     if (!config.vault.baseUrl) {
         throw new Error('VAULT_BASE_URL must be a valid absolute URL.');
+    }
+
+    if (!config.raven.baseUrl) {
+        throw new Error('RAVEN_BASE_URL must be a valid absolute URL.');
+    }
+
+    if (!config.warden.baseUrl) {
+        throw new Error('WARDEN_BASE_URL must be a valid absolute URL.');
     }
 
     log(`[${config.serviceName}] Loaded configuration for Discord guild ${config.discord.guildId}`);

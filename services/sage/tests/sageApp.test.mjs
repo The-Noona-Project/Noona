@@ -3202,6 +3202,117 @@ test('auth user management routes create, update, list, and delete users through
     assert.deepEqual(await deleteResponse.json(), {deleted: true})
 })
 
+test('auth user management updates legacy Discord users missing authProvider metadata', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const now = new Date().toISOString()
+    vault.userDocs.push({
+        username: 'Reader Legacy',
+        usernameNormalized: 'discord.222333444555666777',
+        discordUserId: '222333444555666777',
+        role: 'member',
+        permissions: ['moon_login'],
+        createdAt: now,
+        updatedAt: now,
+    })
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/discord.222333444555666777`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            username: 'Reader Legacy Prime',
+            permissions: ['moon_login', 'lookup_new_title', 'download_new_title'],
+        }),
+    })
+    assert.equal(updateResponse.status, 200)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.user.authProvider, 'discord')
+    assert.equal(updatePayload.user.discordUserId, '222333444555666777')
+    assert.equal(updatePayload.user.username, 'Reader Legacy Prime')
+    assert.deepEqual(updatePayload.user.permissions, ['moon_login', 'lookup_new_title', 'download_new_title'])
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'discord.222333444555666777')
+    assert.ok(storedUser)
+    assert.equal(storedUser.authProvider, 'discord')
+    assert.equal(storedUser.authProviderId, '222333444555666777')
+    assert.equal(storedUser.username, 'Reader Legacy Prime')
+    assert.deepEqual(storedUser.permissions, ['moon_login', 'lookup_new_title', 'download_new_title'])
+})
+
+test('auth user management surfaces Vault write failures instead of reporting false success', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+
+    vault.client.mongo.update = async () => ({status: 'ok', matched: 0, modified: 0})
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({permissions: ['moon_login']}),
+    })
+    assert.equal(updateResponse.status, 502)
+    const updatePayload = await updateResponse.json()
+    assert.equal(updatePayload.error, 'Vault did not persist auth user update.')
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'readerone')
+    assert.ok(storedUser)
+    assert.deepEqual(storedUser.permissions, [
+        'moon_login',
+        'lookup_new_title',
+        'download_new_title',
+        'check_download_missing_titles',
+    ])
+})
+
 test('auth user management keeps bootstrap protection on legacy setup user records', async (t) => {
     const vault = createVaultAuthStub()
 
@@ -3429,6 +3540,213 @@ test('login requires moon_login permission', async (t) => {
     assert.equal(payload.error, 'Moon login permission is required for this account.')
 })
 
+test('auth default permissions routes persist defaults and apply them to new member accounts', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'auth.default_member_permissions',
+            permissions: ['moon_login', 'download_new_title'],
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const getDefaultsResponse = await fetch(`${baseUrl}/api/auth/users/default-permissions`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getDefaultsResponse.status, 200)
+    assert.deepEqual(await getDefaultsResponse.json(), {
+        key: 'auth.default_member_permissions',
+        defaultPermissions: ['moon_login', 'download_new_title'],
+        permissions: ['moon_login', 'lookup_new_title', 'download_new_title', 'check_download_missing_titles', 'user_management', 'admin'],
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const putDefaultsResponse = await fetch(`${baseUrl}/api/auth/users/default-permissions`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            permissions: ['moon_login', 'lookup_new_title', 'user_management'],
+        }),
+    })
+    assert.equal(putDefaultsResponse.status, 200)
+    const putDefaultsPayload = await putDefaultsResponse.json()
+    assert.equal(putDefaultsPayload.ok, true)
+    assert.deepEqual(putDefaultsPayload.defaultPermissions, ['moon_login', 'lookup_new_title', 'user_management'])
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'DefaultedUser', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+    const createPayload = await createResponse.json()
+    assert.deepEqual(createPayload.user.permissions, ['moon_login', 'lookup_new_title', 'user_management'])
+
+    const listResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(listResponse.status, 200)
+    const listPayload = await listResponse.json()
+    assert.deepEqual(listPayload.defaultPermissions, ['moon_login', 'lookup_new_title', 'user_management'])
+})
+
+test('Discord OAuth login auto-creates a Discord user with configured default permissions', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'auth.default_member_permissions',
+            permissions: ['moon_login', 'download_new_title'],
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'new-reader-login': {
+                        id: '222333444555666777',
+                        username: 'BrandNewReader',
+                        globalName: 'Brand New Reader',
+                        email: 'brand-new@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const startLoginResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'login',
+            redirectUri: 'http://moon.local/discord/callback/',
+            returnTo: '/',
+        }),
+    })
+    assert.equal(startLoginResponse.status, 200)
+    const startLoginPayload = await startLoginResponse.json()
+
+    const callbackLoginResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'new-reader-login',
+            state: startLoginPayload.state,
+        }),
+    })
+    assert.equal(callbackLoginResponse.status, 200)
+    const callbackLoginPayload = await callbackLoginResponse.json()
+    assert.equal(callbackLoginPayload.stage, 'authenticated')
+    assert.equal(callbackLoginPayload.user.authProvider, 'discord')
+    assert.equal(callbackLoginPayload.user.discordUserId, '222333444555666777')
+    assert.equal(callbackLoginPayload.user.username, 'Brand New Reader')
+    assert.deepEqual(callbackLoginPayload.user.permissions, ['moon_login', 'download_new_title'])
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'discord.222333444555666777')
+    assert.ok(storedUser)
+    assert.equal(storedUser.authProvider, 'discord')
+    assert.deepEqual(storedUser.permissions, ['moon_login', 'download_new_title'])
+})
+
+test('settings download worker routes read and update per-thread rate limits', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.workers',
+            threadRateLimitsKbps: [128, 0, 256],
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const getResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getResponse.status, 200)
+    assert.deepEqual(await getResponse.json(), {
+        key: 'downloads.workers',
+        threadRateLimitsKbps: [128, 0, 256],
+        updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            threadRateLimitsKbps: [512, -1, '1000'],
+        }),
+    })
+    assert.equal(putResponse.status, 200)
+    const putPayload = await putResponse.json()
+    assert.equal(putPayload.key, 'downloads.workers')
+    assert.deepEqual(putPayload.threadRateLimitsKbps, [512, 0, 1000])
+    assert.ok(typeof putPayload.updatedAt === 'string')
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.workers')
+    assert.ok(stored)
+    assert.deepEqual(stored.threadRateLimitsKbps, [512, 0, 1000])
+})
+
 test('settings debug routes read and update live debug mode', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{key: 'noona.debug', enabled: false, updatedAt: '2026-01-01T00:00:00.000Z'}],
@@ -3634,6 +3952,68 @@ test('settings factory reset route fails when selected cleanup targets are not f
     const payload = await response.json()
     assert.match(payload.error, /cleanup errors/i)
     assert.match(payload.error, /permission denied/i)
+})
+
+test('settings factory reset route falls back to SERVER_IP for redirect URLs', async (t) => {
+    const previousServerIp = process.env.SERVER_IP
+    process.env.SERVER_IP = '192.168.1.25'
+
+    try {
+        const vault = createVaultAuthStub()
+        vault.client.mongo.wipe = async () => ({status: 'ok'})
+        vault.client.redis.wipe = async () => ({status: 'ok'})
+
+        const app = createSageApp({
+            serviceName: 'test-sage',
+            vaultClient: vault.client,
+            setupClient: {
+                async factoryResetEcosystem() {
+                    return {
+                        ok: true,
+                        ravenDownloads: {
+                            requested: false,
+                            mountCount: 0,
+                            entries: [],
+                            deleted: true,
+                        },
+                        dockerCleanup: {
+                            requested: false,
+                            containersRemoved: [],
+                            imagesRemoved: [],
+                            containerErrors: [],
+                            imageErrors: [],
+                        },
+                    }
+                },
+            },
+        })
+
+        const {server, baseUrl} = await listen(app)
+        t.after(() => closeServer(server))
+
+        const {token, password} = await bootstrapAdminAndLogin({baseUrl})
+        const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+        assert.equal(finalized.response.status, 200)
+
+        const response = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({password}),
+        })
+        assert.equal(response.status, 202)
+
+        const payload = await response.json()
+        assert.equal(payload.redirectTo, 'http://192.168.1.25')
+    } finally {
+        if (previousServerIp === undefined) {
+            delete process.env.SERVER_IP
+        } else {
+            process.env.SERVER_IP = previousServerIp
+        }
+    }
 })
 
 test('createChannel normalizes channel type when provided as string', async () => {

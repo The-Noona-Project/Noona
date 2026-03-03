@@ -71,6 +71,7 @@ export function registerServiceManagementApi(context = {}) {
         applyEnvOverrides,
         applyStorageMountsForService,
         buildEffectiveServiceDescriptor,
+        buildHostServiceUrl,
         cloneEnvConfig,
         cloneMeta,
         cloneServiceDescriptor,
@@ -98,6 +99,7 @@ export function registerServiceManagementApi(context = {}) {
         networkName,
         normalizeEnvOverrideMap,
         normalizeHostPort,
+        orderServicesForLifecycle,
         parseEnvEntries,
         parsePositiveLimit,
         persistServiceRuntimeConfig,
@@ -157,11 +159,24 @@ export function registerServiceManagementApi(context = {}) {
             return null;
         }
 
+        const resolveByPort = (candidatePort) => {
+            const port = normalizeHostPort(candidatePort);
+            if (port == null) {
+                return null;
+            }
+
+            if (typeof buildHostServiceUrl === 'function') {
+                return buildHostServiceUrl(service, port);
+            }
+
+            return `${hostServiceBase}:${port}`;
+        };
+
         const runtimeHostPort = normalizeHostPort(
             service?.name ? resolveRuntimeConfig(service.name).hostPort : null,
         );
         if (runtimeHostPort != null) {
-            return `${hostServiceBase}:${runtimeHostPort}`;
+            return resolveByPort(runtimeHostPort);
         }
 
         if (service.hostServiceUrl) {
@@ -169,7 +184,7 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         if (service.port) {
-            return `${hostServiceBase}:${service.port}`;
+            return resolveByPort(service.port);
         }
 
         return null;
@@ -769,6 +784,14 @@ export function registerServiceManagementApi(context = {}) {
         const visited = new Set();
         const visiting = new Set();
         const requestedNames = new Set(names);
+        const orderedKnownNames =
+            typeof orderServicesForLifecycle === 'function'
+                ? orderServicesForLifecycle(names.filter((name) => serviceCatalog.has(name)))
+                : names.filter((name) => serviceCatalog.has(name));
+        const orderedNames = [
+            ...orderedKnownNames,
+            ...names.filter((name) => !serviceCatalog.has(name)),
+        ];
 
         const visit = (name) => {
             if (visited.has(name)) {
@@ -800,7 +823,7 @@ export function registerServiceManagementApi(context = {}) {
             order.push(name);
         };
 
-        for (const name of names) {
+        for (const name of orderedNames) {
             visit(name);
         }
 

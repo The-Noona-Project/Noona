@@ -8,6 +8,128 @@
   mask-size: 100% 100%;
 }
 
+.accountShell {
+  position: relative;
+}
+
+.accountButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 2.75rem;
+  padding: 0.375rem 0.5rem 0.375rem 0.375rem;
+  border: 1px solid var(--neutral-alpha-medium);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-background) 88%, transparent);
+  color: inherit;
+  cursor: pointer;
+  box-shadow: 0 0.75rem 2rem color-mix(in srgb, var(--neutral-on-background-strong) 8%, transparent);
+}
+
+.accountButton:hover {
+  border-color: var(--neutral-alpha-strong);
+}
+
+.accountAvatar {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  object-fit: cover;
+  display: block;
+  background: color-mix(in srgb, var(--brand-background-strong) 30%, var(--surface-background));
+}
+
+.accountAvatarFallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--brand-background-strong), color-mix(in srgb, var(--brand-background-strong) 55%, white));
+  color: var(--brand-on-background-strong);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.accountMeta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+}
+
+.accountName {
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.accountHandle {
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--neutral-on-background-weak);
+  font-size: 0.75rem;
+}
+
+.accountChevron {
+  color: var(--neutral-on-background-weak);
+  font-size: 0.8rem;
+}
+
+.accountMenu {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  min-width: 13.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--neutral-alpha-medium);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--surface-background) 94%, transparent);
+  box-shadow: 0 1.25rem 3rem color-mix(in srgb, var(--neutral-on-background-strong) 16%, transparent);
+  backdrop-filter: blur(1rem);
+}
+
+.accountMenuHeader {
+  padding: 0.375rem 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--neutral-alpha-weak);
+  margin-bottom: 0.375rem;
+}
+
+.accountMenuName {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.accountMenuHandle {
+  color: var(--neutral-on-background-weak);
+  font-size: 0.75rem;
+}
+
+.accountMenuAction {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.625rem 0.75rem;
+  border: none;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.accountMenuAction:hover {
+  background: var(--neutral-alpha-weak);
+}
+
 @media (max-width: breakpoints.$s) {
   .position {
     top: auto;
@@ -17,5 +139,14 @@
   .mask {
     transform: rotate(180deg);
     bottom: 0;
+  }
+
+  .accountMeta,
+  .accountChevron {
+    display: none;
+  }
+
+  .accountButton {
+    padding-right: 0.375rem;
   }
 }

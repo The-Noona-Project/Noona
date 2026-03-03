@@ -55,16 +55,17 @@ instead of blindly starting every registered service.
 
 ## Key Environment Variables
 
-| Variable           | Purpose                                                                               | Default                                                   |
-|--------------------|---------------------------------------------------------------------------------------|-----------------------------------------------------------|
-| `DEBUG`            | Boot profile + log verbosity                                                          | `false`                                                   |
-| `WARDEN_API_PORT`  | Warden API listen port                                                                | `4001`                                                    |
-| `HOST_SERVICE_URL` | Host-facing URL prefix used in generated links                                        | `http://localhost`                                        |
-| `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
-| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                          | `3000`                                                    |
-| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                                 | `http://noona-vault:3005`                                 |
-| `KAVITA_ADMIN_*`   | Optional managed `noona-kavita` first-admin defaults passed through on install/start  | unset                                                     |
-| `*_VAULT_TOKEN`    | Optional per-service token override                                                   | generated in descriptors                                  |
+| Variable           | Purpose                                                                                              | Default                                                   |
+|--------------------|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|
+| `DEBUG`            | Boot profile + log verbosity                                                                         | `false`                                                   |
+| `WARDEN_API_PORT`  | Warden API listen port                                                                               | `4001`                                                    |
+| `SERVER_IP`        | Optional LAN IP/hostname Warden uses for host-facing service URLs and shared runtime env             | unset                                                     |
+| `HOST_SERVICE_URL` | Explicit host-facing URL prefix override used in generated links (takes precedence over `SERVER_IP`) | `http://localhost`                                        |
+| `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders                | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
+| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                                         | `3000`                                                    |
+| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                                                | `http://noona-vault:3005`                                 |
+| `KAVITA_ADMIN_*`   | Optional managed `noona-kavita` first-admin defaults passed through on install/start                 | unset                                                     |
+| `*_VAULT_TOKEN`    | Optional per-service token override                                                                  | generated in descriptors                                  |
 
 ## Development Commands
 
@@ -82,18 +83,29 @@ instead of blindly starting every registered service.
   `komf/config`.
 - Managed Moon, Portal, Raven, Sage, and Vault installs now also mount dedicated log folders from the shared Noona
   root and inject `NOONA_LOG_DIR` so each service writes a persistent `latest.log` file outside the container.
+- Set `SERVER_IP` on the Warden process when Moon and setup summaries should advertise a real LAN address such as
+  `http://192.168.1.25:<port>` instead of `localhost`, and Warden will also pass that value into managed service env.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
-- Managed Kavita now depends on Raven so the shared library mount is always present when Kavita is installed by Warden.
-- Full-stack lifecycle order now starts Raven before managed Kavita, then Portal, then Komf so the managed content
-  stack comes up in dependency order.
+- Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
+  remain the always-on platform services around that managed stack.
 - Managed Kavita now uses `captainpax/noona-kavita:latest`, and Warden can inject `KAVITA_ADMIN_USERNAME`,
-  `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` so the container can bootstrap the first admin account on its own
-  before Warden provisions and persists the reusable managed API key into Portal and Komf startup env.
+  `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` so Warden can provision the first admin account and persist the
+  reusable managed API key into Portal and Komf startup env without the Kavita web UI wizard. The Kavita image keeps
+  its local bootstrap helper available for standalone runs, but that helper is now disabled by default during managed
+  Warden installs to avoid first-user registration races.
 - Managed Kavita now probes Kavita's API health endpoint (`/api/Health`) and uses a longer first-boot wait window so
   setup can reach the initial admin/API-key provisioning flow without requiring a manual UI visit mid-install.
+- Managed Kavita API key provisioning now retries transient first-user login/register failures during Kavita startup,
+  including temporary 5xx registration responses before the admin account exists, reuses existing Kavita auth keys
+  when available, and only creates a named key when no reusable key exists yet.
+- Managed Portal now also uses an extended health-check window because Discord login and slash-command synchronization
+  complete before the HTTP `/health` endpoint starts listening.
 - Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create
-  matching Kavita libraries for new Raven media-type folders when Kavita sync is configured.
+  matching Kavita libraries for new Raven media-type folders when Kavita sync is configured, plus `PORTAL_BASE_URL`
+  so Raven can ask Portal to ensure those libraries through the managed Kavita API path.
+- Portal descriptors now receive `RAVEN_BASE_URL`, `WARDEN_BASE_URL`, and `PORTAL_ACTIVITY_POLL_MS` so the Discord bot
+  can publish live Noona activity from Raven downloads/checks and Warden service updates.
 - The managed Komf descriptor is now Kavita-only in setup flows. Warden no longer publishes optional Komga credentials
   in `komf` env metadata, so Moon setup only prompts for the Kavita-linked Komf fields that Noona actually uses.
 - The Portal descriptor in [docker/noonaDockers.mjs](docker/noonaDockers.mjs) now includes `PORTAL_JOIN_DEFAULT_ROLES`

@@ -202,3 +202,98 @@ test('POST /api/portal/kavita/title-match and apply proxy Kavita metadata matchi
         await stopServer(server);
     }
 });
+
+test('POST /api/portal/kavita/libraries/ensure proxies Kavita library creation requests', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            ensureLibrary: async ({name, payload}) => {
+                calls.push({name, payload});
+                return {
+                    created: true,
+                    library: {name, id: 12},
+                };
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/libraries/ensure`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                name: 'Manhwa',
+                payload: {
+                    folders: ['/manga/manhwa'],
+                },
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 201);
+        assert.deepEqual(calls, [{
+            name: 'Manhwa',
+            payload: {
+                folders: ['/manga/manhwa'],
+            },
+        }]);
+        assert.equal(payload.success, true);
+        assert.equal(payload.created, true);
+        assert.equal(payload.library.name, 'Manhwa');
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('POST /api/portal/kavita/libraries/scan resolves a library by name and scans it', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            fetchLibraries: async () => [
+                {id: 7, name: 'Manhwa'},
+                {id: 8, name: 'Manga'},
+            ],
+            scanLibrary: async (libraryId, {force} = {}) => {
+                calls.push({libraryId, force});
+                return {queued: true};
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/libraries/scan`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                name: 'Manhwa',
+                force: true,
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.deepEqual(calls, [{
+            libraryId: 7,
+            force: true,
+        }]);
+        assert.equal(payload.success, true);
+        assert.equal(payload.library.name, 'Manhwa');
+        assert.equal(payload.force, true);
+    } finally {
+        await stopServer(server);
+    }
+});

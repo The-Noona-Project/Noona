@@ -124,6 +124,70 @@ export const registerPortalRoutes = ({
         });
     });
 
+    app.post('/api/portal/kavita/libraries/ensure', async (req, res) => {
+        const name = normalizeString(req.body?.name);
+        const payload = req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : null;
+        if (!name) {
+            res.status(400).json({error: 'name is required.'});
+            return;
+        }
+
+        if (!payload) {
+            res.status(400).json({error: 'payload is required.'});
+            return;
+        }
+
+        try {
+            const result = await kavita?.ensureLibrary?.({name, payload});
+            res.status(result?.created === true ? 201 : 200).json({
+                success: true,
+                name,
+                created: result?.created === true,
+                library: result?.library ?? null,
+                result: result?.result ?? null,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to ensure Kavita library ${name}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/libraries/scan', async (req, res) => {
+        const name = normalizeString(req.body?.name);
+        if (!name) {
+            res.status(400).json({error: 'name is required.'});
+            return;
+        }
+
+        const force = req.body?.force === true;
+
+        try {
+            const libraries = await kavita?.fetchLibraries?.() ?? [];
+            const library = libraries.find((entry) =>
+                normalizeString(entry?.name).toLowerCase() === name.toLowerCase(),
+            ) ?? null;
+
+            if (!library?.id) {
+                res.status(404).json({error: `Library ${name} was not found.`});
+                return;
+            }
+
+            const result = await kavita?.scanLibrary?.(library.id, {force});
+            res.json({
+                success: true,
+                name,
+                force,
+                library,
+                result: result ?? null,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to scan Kavita library ${name}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
     app.get('/api/portal/kavita/title-search', async (req, res) => {
         const query = normalizeString(req.query?.query);
         if (!query) {

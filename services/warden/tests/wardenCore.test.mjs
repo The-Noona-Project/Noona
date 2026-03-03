@@ -49,6 +49,53 @@ test('resolveHostServiceUrl falls back to HOST_SERVICE_URL and port', () => {
     assert.equal(warden.resolveHostServiceUrl(service), 'http://host.example:8080');
 });
 
+test('resolveHostServiceUrl falls back to SERVER_IP and port', () => {
+    const warden = buildWarden({
+        services: {addon: {}, core: {}},
+        env: {SERVER_IP: '192.168.1.25'},
+        hostDockerSockets: [],
+    });
+    const service = {port: 8080};
+
+    assert.equal(warden.resolveHostServiceUrl(service), 'http://192.168.1.25:8080');
+});
+
+test('getServiceConfig injects SERVER_IP and rewrites managed host URLs', () => {
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-mongo': {
+                    name: 'noona-mongo',
+                    image: 'mongo',
+                    port: 27017,
+                    hostServiceUrl: 'mongodb://localhost:27017',
+                    env: ['SERVICE_NAME=noona-mongo'],
+                },
+            },
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    hostServiceUrl: 'http://localhost:3000',
+                    env: ['SERVICE_NAME=noona-moon'],
+                },
+            },
+        },
+        env: {SERVER_IP: '192.168.1.25'},
+        hostDockerSockets: [],
+    });
+
+    const moonConfig = warden.getServiceConfig('noona-moon');
+    const mongoConfig = warden.getServiceConfig('noona-mongo');
+
+    assert.equal(moonConfig.hostServiceUrl, 'http://192.168.1.25:3000');
+    assert.equal(moonConfig.env.SERVER_IP, '192.168.1.25');
+    assert.equal(mongoConfig.hostServiceUrl, 'mongodb://192.168.1.25:27017');
+    assert.equal(mongoConfig.env.SERVER_IP, '192.168.1.25');
+});
+
 test('startService pulls, runs, waits, and captures history when container is absent', async () => {
     const pullCalls = [];
     const runCalls = [];
@@ -958,11 +1005,9 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
 
     const kavitaStart = started.find((entry) => entry.name === 'noona-kavita');
     const komfStart = started.find((entry) => entry.name === 'noona-komf');
-    const ravenStart = started.find((entry) => entry.name === 'noona-raven');
 
     assert.ok(kavitaStart, 'Kavita should be started');
     assert.ok(komfStart, 'Komf should be started');
-    assert.ok(ravenStart, 'Raven should be started as part of the selected install set');
 
     assert.ok(kavitaStart.volumes.includes(`${path.join('/srv/noona', 'kavita', 'config')}:/kavita/config`));
     assert.ok(kavitaStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/manga`));
@@ -970,9 +1015,6 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
     assert.ok(kavitaStart.env.includes('KAVITA_ADMIN_EMAIL=reader-admin@example.com'));
     assert.ok(kavitaStart.env.includes('KAVITA_ADMIN_PASSWORD=Password123!'));
     assert.ok(komfStart.volumes.includes(`${path.join('/srv/noona', 'komf', 'config')}:/config`));
-    assert.ok(ravenStart.volumes.includes(`${path.join('/srv/noona', 'raven', 'downloads')}:/downloads`));
-    assert.ok(ravenStart.env.includes('APPDATA=/downloads'));
-    assert.ok(ravenStart.env.includes('KAVITA_DATA_MOUNT=/downloads'));
     assert.ok(komfStart.env.includes('KOMF_KAVITA_BASE_URI=http://noona-kavita:5000'));
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=api-key'));
     assert.equal(komfStart.user, '1000:1000');
@@ -1087,11 +1129,13 @@ test('installServices provisions managed Kavita API keys before starting portal 
                 };
             }
 
-            if (requestUrl.pathname === '/api/Account/create-auth-key') {
+            if (requestUrl.pathname === '/api/Account/auth-keys') {
                 return {
                     ok: true,
                     status: 200,
-                    text: async () => JSON.stringify({id: 9, key: 'managed-api-key'}),
+                    text: async () => JSON.stringify([
+                        {id: 9, key: 'managed-api-key', name: 'Noona Managed Services'},
+                    ]),
                 };
             }
 
@@ -1108,7 +1152,7 @@ test('installServices provisions managed Kavita API keys before starting portal 
 
     assert.deepEqual(
         started.map((entry) => entry.name),
-        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-raven', 'noona-kavita', 'noona-portal', 'noona-komf'],
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-kavita', 'noona-komf', 'noona-portal'],
     );
 
     const portalStart = started.find((entry) => entry.name === 'noona-portal');
@@ -1120,7 +1164,7 @@ test('installServices provisions managed Kavita API keys before starting portal 
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
     assert.deepEqual(
         fetchCalls.map((entry) => entry.pathname),
-        ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/create-auth-key'],
+        ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/auth-keys'],
     );
 });
 
@@ -2079,15 +2123,15 @@ test('bootFull launches services in super boot order with correct health URLs', 
     await warden.bootFull();
 
     assert.deepEqual(order, [
-        ['noona-redis', 'http://noona-redis:8001/'],
         ['noona-mongo', 'http://mongo/health'],
+        ['noona-redis', 'http://noona-redis:8001/'],
         ['noona-vault', 'http://vault/health'],
         ['noona-sage', 'http://noona-sage:3004/health'],
         ['noona-moon', 'http://moon/health'],
-        ['noona-raven', null],
         ['noona-kavita', 'http://kavita/health'],
-        ['noona-portal', 'http://portal/health'],
+        ['noona-raven', null],
         ['noona-komf', null],
+        ['noona-portal', 'http://portal/health'],
     ]);
     assert.equal(warnings.length, 0);
 });
@@ -2163,11 +2207,13 @@ test('bootFull provisions managed Kavita API keys before starting dependent serv
                 };
             }
 
-            if (requestUrl.pathname === '/api/Account/create-auth-key') {
+            if (requestUrl.pathname === '/api/Account/auth-keys') {
                 return {
                     ok: true,
                     status: 200,
-                    text: async () => JSON.stringify({id: 2, key: 'managed-api-key'}),
+                    text: async () => JSON.stringify([
+                        {id: 2, key: 'managed-api-key', name: 'Noona Managed Services'},
+                    ]),
                 };
             }
 
@@ -2204,7 +2250,7 @@ test('bootFull provisions managed Kavita API keys before starting dependent serv
 
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=managed-api-key'));
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
-    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/create-auth-key']);
+    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/auth-keys']);
 });
 
 test('bootFull reloads persisted service configs from noona_settings before starting managed services', async () => {
@@ -2273,8 +2319,8 @@ test('bootFull reloads persisted service configs from noona_settings before star
     ]);
     assert.deepEqual(restarts, ['noona-vault']);
     assert.deepEqual(starts, [
-        {name: 'noona-redis', port: null, healthUrl: 'http://noona-redis:8001/'},
         {name: 'noona-mongo', port: null, healthUrl: 'http://mongo/health'},
+        {name: 'noona-redis', port: null, healthUrl: 'http://noona-redis:8001/'},
         {name: 'noona-vault', port: null, healthUrl: 'http://vault/health'},
         {name: 'noona-sage', port: null, healthUrl: 'http://noona-sage:3004/health'},
         {name: 'noona-moon', port: 3010, healthUrl: 'http://noona-moon:3010/'},
@@ -2572,8 +2618,8 @@ test('init boots only the persisted setup selection in lifecycle order', async (
 
     assert.equal(result.mode, 'full');
     assert.deepEqual(started, [
-        'noona-redis',
         'noona-mongo',
+        'noona-redis',
         'noona-vault',
         'noona-sage',
         'noona-moon',
@@ -2638,8 +2684,8 @@ test('stopEcosystem uses the persisted setup selection in reverse lifecycle orde
         {name: 'noona-moon', options: {remove: false}},
         {name: 'noona-sage', options: {remove: false}},
         {name: 'noona-vault', options: {remove: false}},
-        {name: 'noona-mongo', options: {remove: false}},
         {name: 'noona-redis', options: {remove: false}},
+        {name: 'noona-mongo', options: {remove: false}},
     ]);
 });
 

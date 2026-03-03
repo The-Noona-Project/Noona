@@ -197,6 +197,16 @@ test('noona-portal health check points to /health endpoint', async () => {
         'http://noona-portal:3003/health',
         'Portal health check should target the /health endpoint.',
     );
+    assert.equal(
+        portal.healthTries,
+        90,
+        'Portal health check should allow enough time for Discord login and slash-command sync before startup completes.',
+    );
+    assert.equal(
+        portal.healthDelayMs,
+        1000,
+        'Portal health checks should continue probing once per second during startup.',
+    );
 });
 
 test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health defaults', async () => {
@@ -227,6 +237,49 @@ test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health 
             delete process.env.WEBGUI_PORT;
         } else {
             process.env.WEBGUI_PORT = previousWebGuiPort;
+        }
+    }
+});
+
+test('service descriptors use SERVER_IP for host URLs and pass it through to managed containers', async () => {
+    const previousServerIp = process.env.SERVER_IP;
+    const previousHostServiceUrl = process.env.HOST_SERVICE_URL;
+    delete process.env.HOST_SERVICE_URL;
+    process.env.SERVER_IP = '192.168.1.25';
+
+    try {
+        const [coreModule, addonModule] = await Promise.all([
+            import('../docker/noonaDockers.mjs?test=server-ip-core'),
+            import('../docker/addonDockers.mjs?test=server-ip-addon'),
+        ]);
+        const {default: noonaDockers} = coreModule;
+        const {default: addonDockers} = addonModule;
+
+        const moon = noonaDockers['noona-moon'];
+        const redis = addonDockers['noona-redis'];
+        const mongo = addonDockers['noona-mongo'];
+        const kavita = addonDockers['noona-kavita'];
+
+        assert.ok(moon.env.includes('SERVER_IP=192.168.1.25'));
+        assert.ok(redis.env.includes('SERVER_IP=192.168.1.25'));
+        assert.ok(mongo.env.includes('SERVER_IP=192.168.1.25'));
+        assert.ok(kavita.env.includes('SERVER_IP=192.168.1.25'));
+
+        assert.equal(moon.hostServiceUrl, 'http://192.168.1.25:3000');
+        assert.equal(redis.hostServiceUrl, 'http://192.168.1.25:8001');
+        assert.equal(mongo.hostServiceUrl, 'mongodb://192.168.1.25:27017');
+        assert.equal(kavita.hostServiceUrl, 'http://192.168.1.25:5000');
+    } finally {
+        if (previousServerIp === undefined) {
+            delete process.env.SERVER_IP;
+        } else {
+            process.env.SERVER_IP = previousServerIp;
+        }
+
+        if (previousHostServiceUrl === undefined) {
+            delete process.env.HOST_SERVICE_URL;
+        } else {
+            process.env.HOST_SERVICE_URL = previousHostServiceUrl;
         }
     }
 });

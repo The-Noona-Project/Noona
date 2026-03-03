@@ -1,0 +1,141 @@
+.loaderStage {
+  min-height: 20rem;
+}
+
+.orbitShell {
+  position: relative;
+  width: 15rem;
+  height: 15rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+}
+
+.ringOuter,
+.ringMiddle,
+.ringInner {
+  position: absolute;
+  border-radius: 999px;
+  border: 1px solid var(--neutral-alpha-medium);
+}
+
+.ringOuter {
+  inset: 0;
+  animation: reboot-spin 9s linear infinite;
+  box-shadow: 0 0 3rem var(--brand-alpha-weak);
+}
+
+.ringMiddle {
+  inset: 1.5rem;
+  border-color: var(--neutral-alpha-strong);
+  animation: reboot-spin-reverse 6.5s linear infinite;
+}
+
+.ringInner {
+  inset: 3rem;
+  border-color: var(--warning-alpha-weak);
+  animation: reboot-pulse 2.8s ease-in-out infinite;
+}
+
+.core {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 999px;
+  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0) 32%),
+  linear-gradient(145deg, var(--brand-background-strong), var(--warning-background-strong));
+  box-shadow: 0 0 0 0.5rem var(--neutral-alpha-weak),
+  0 0 3rem var(--brand-alpha-medium);
+}
+
+.orb {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: -0.75rem;
+  margin-left: -0.75rem;
+  border-radius: 999px;
+  box-shadow: 0 0 1.5rem currentColor;
+}
+
+.orbOne {
+  color: var(--brand-background-strong);
+  background: linear-gradient(145deg, var(--brand-background-strong), var(--brand-background-medium));
+  animation: reboot-orbit-one 2.8s linear infinite;
+}
+
+.orbTwo {
+  color: var(--warning-background-strong);
+  background: linear-gradient(145deg, var(--warning-background-strong), var(--warning-background-medium));
+  animation: reboot-orbit-two 4s linear infinite;
+}
+
+.orbThree {
+  color: var(--danger-background-strong);
+  background: linear-gradient(145deg, var(--danger-background-strong), var(--danger-background-medium));
+  animation: reboot-orbit-three 3.2s linear infinite;
+}
+
+@keyframes reboot-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes reboot-spin-reverse {
+  from {
+    transform: rotate(360deg);
+  }
+
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes reboot-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes reboot-orbit-one {
+  from {
+    transform: rotate(0deg) translateX(6rem) rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg) translateX(6rem) rotate(-360deg);
+  }
+}
+
+@keyframes reboot-orbit-two {
+  from {
+    transform: rotate(120deg) translateX(4.5rem) rotate(-120deg);
+  }
+
+  to {
+    transform: rotate(480deg) translateX(4.5rem) rotate(-480deg);
+  }
+}
+
+@keyframes reboot-orbit-three {
+  from {
+    transform: rotate(240deg) translateX(7rem) rotate(-240deg);
+  }
+
+  to {
+    transform: rotate(600deg) translateX(7rem) rotate(-600deg);
+  }
+}

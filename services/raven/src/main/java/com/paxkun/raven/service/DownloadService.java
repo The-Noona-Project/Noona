@@ -15,13 +15,16 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,6 +33,9 @@ import java.util.zip.ZipOutputStream;
 
 @Service
 public class DownloadService {
+    private static final String DOWNLOAD_WORKER_NAME_PREFIX = "raven-download-";
+    private static final String DOWNLOADING_FOLDER_NAME = "downloading";
+    private static final String DOWNLOADED_FOLDER_NAME = "downloaded";
 
     @Autowired private TitleScraper titleScraper;
     @Autowired private SourceFinder sourceFinder;
@@ -60,7 +66,13 @@ public class DownloadService {
 
         int normalizedThreads = Math.max(1, configuredDownloadThreads);
         configuredDownloadThreads = normalizedThreads;
-        executor = Executors.newFixedThreadPool(normalizedThreads);
+        AtomicInteger workerCounter = new AtomicInteger(1);
+        executor = Executors.newFixedThreadPool(normalizedThreads, runnable -> {
+            Thread thread = new Thread(runnable);
+            thread.setName(DOWNLOAD_WORKER_NAME_PREFIX + workerCounter.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        });
         return executor;
     }
 
@@ -246,23 +258,11 @@ public class DownloadService {
                             " | count=" + chapters.size());
 
             DownloadNamingSettings naming = settingsService.getDownloadNamingSettings();
-            Path titleFolder = resolveTitleFolder(titleName, titleRecord.getType(), naming);
-            String existingDownloadPath = titleRecord.getDownloadPath();
-            if (existingDownloadPath != null && !existingDownloadPath.isBlank()) {
-                try {
-                    Path existingPath = Path.of(existingDownloadPath);
-                    if (!existingPath.normalize().equals(titleFolder.normalize()) && Files.exists(existingPath) && Files.isDirectory(existingPath) && !Files.exists(titleFolder)) {
-                        Files.createDirectories(titleFolder.getParent());
-                        Files.move(existingPath, titleFolder);
-                    }
-                } catch (Exception e) {
-                    logger.warn(
-                            "DOWNLOAD",
-                            "Failed to migrate title folder for [" + sanitizeForLog(titleName) + "]: " + e.getMessage());
-                }
-            }
-            Files.createDirectories(titleFolder);
-            titleRecord.setDownloadPath(titleFolder.toString());
+            Path workingTitleFolder = resolveWorkingTitleFolder(titleName, titleRecord.getType(), naming);
+            Path finalTitleFolder = resolveFinalTitleFolder(titleName, titleRecord.getType(), naming);
+            migrateExistingTitleFolder(titleName, titleRecord.getDownloadPath(), finalTitleFolder);
+            Files.createDirectories(workingTitleFolder);
+            titleRecord.setDownloadPath(finalTitleFolder.toString());
             // Process oldest -> newest so lastDownloaded ends at the latest chapter number.
             List<Map<String, String>> chaptersToDownload = new ArrayList<>(chapters);
             chaptersToDownload.sort(Comparator.comparingDouble(chapter -> {
@@ -280,6 +280,7 @@ public class DownloadService {
 
             titleRecord.setChapterCount(chaptersToDownload.size());
             progress.markStarted(chaptersToDownload.size());
+            boolean downloadedAnyChapters = false;
 
             titleRecord.setChaptersDownloaded(0);
             libraryService.addOrUpdateTitle(
@@ -311,14 +312,15 @@ public class DownloadService {
                 }
 
                 String sourceDomain = extractDomain(pageUrls.get(0));
-                Path chapterFolder = titleFolder.resolve("temp_" + chapterNumber);
+                Path chapterFolder = workingTitleFolder.resolve("temp_" + chapterNumber);
                 int pageCount = saveImagesToFolder(pageUrls, chapterFolder, naming, titleName, titleRecord.getType(), chapterNumber);
 
                 String cbzName = formatChapterCbzName(naming, titleName, titleRecord.getType(), chapterNumber, pageCount, sourceDomain);
-                Path cbzPath = titleFolder.resolve(cbzName);
+                Path cbzPath = workingTitleFolder.resolve(cbzName);
 
                 zipFolderAsCbz(chapterFolder, cbzPath);
                 deleteFolder(chapterFolder);
+                downloadedAnyChapters = true;
 
                 logger.info("DOWNLOAD", "📦 Saved [" + cbzName + "] with " + pageCount + " pages at " + cbzPath);
 
@@ -329,10 +331,15 @@ public class DownloadService {
             }
 
             titleRecord.setChaptersDownloaded(progress.getCompletedChapters());
+            promoteTitleFolder(workingTitleFolder, finalTitleFolder);
+            titleRecord.setDownloadPath(finalTitleFolder.toString());
             libraryService.addOrUpdateTitle(
                     titleRecord,
                     new NewChapter(Optional.ofNullable(titleRecord.getLastDownloaded()).orElse("0"))
             );
+            if (downloadedAnyChapters) {
+                libraryService.scanKavitaLibraryForType(titleRecord.getType());
+            }
 
             result.setChapterName(titleName);
             result.setStatus("✅ Download completed.");
@@ -610,6 +617,7 @@ public class DownloadService {
 
     protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
         int count = 0;
+        int workerRateLimitKbps = getCurrentWorkerRateLimitKbps();
 
         try {
             Files.createDirectories(folder);
@@ -632,7 +640,7 @@ public class DownloadService {
                     connection.connect();
 
                     try (InputStream in = connection.getInputStream()) {
-                        Files.copy(in, path, StandardCopyOption.REPLACE_EXISTING);
+                        copyInputStreamToFileWithRateLimit(in, path, workerRateLimitKbps);
                         logger.info("DOWNLOAD", "➕ Saved image: " + path);
                         count++;
                     }
@@ -646,6 +654,70 @@ public class DownloadService {
         }
 
         return count;
+    }
+
+    private int getCurrentWorkerRateLimitKbps() {
+        String threadName = Thread.currentThread().getName();
+        if (threadName == null || !threadName.startsWith(DOWNLOAD_WORKER_NAME_PREFIX)) {
+            return 0;
+        }
+
+        String suffix = threadName.substring(DOWNLOAD_WORKER_NAME_PREFIX.length()).trim();
+        int workerIndex;
+        try {
+            workerIndex = Integer.parseInt(suffix) - 1;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+
+        List<Integer> rateLimits = settingsService.getDownloadWorkerSettings(getConfiguredDownloadThreads()).getThreadRateLimitsKbps();
+        if (workerIndex < 0 || workerIndex >= rateLimits.size()) {
+            return 0;
+        }
+
+        Integer rateLimitKbps = rateLimits.get(workerIndex);
+        return rateLimitKbps != null && rateLimitKbps > 0 ? rateLimitKbps : 0;
+    }
+
+    private void copyInputStreamToFileWithRateLimit(InputStream inputStream, Path outputPath, int rateLimitKbps) throws IOException {
+        try (OutputStream outputStream = Files.newOutputStream(
+                outputPath,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE)) {
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            long windowStartNs = System.nanoTime();
+            long bytesWritten = 0L;
+
+            while ((bytesRead = inputStream.read(buffer)) >= 0) {
+                outputStream.write(buffer, 0, bytesRead);
+                if (rateLimitKbps <= 0) {
+                    continue;
+                }
+
+                bytesWritten += bytesRead;
+                long expectedElapsedNs = (bytesWritten * 1_000_000_000L) / (rateLimitKbps * 1024L);
+                long actualElapsedNs = System.nanoTime() - windowStartNs;
+
+                if (expectedElapsedNs > actualElapsedNs) {
+                    long sleepMs = TimeUnit.NANOSECONDS.toMillis(expectedElapsedNs - actualElapsedNs);
+                    if (sleepMs > 0) {
+                        try {
+                            Thread.sleep(sleepMs);
+                        } catch (InterruptedException interruptedException) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("Interrupted while applying Raven download rate limit.", interruptedException);
+                        }
+                    }
+                }
+
+                if (actualElapsedNs >= TimeUnit.SECONDS.toNanos(1)) {
+                    windowStartNs = System.nanoTime();
+                    bytesWritten = 0L;
+                }
+            }
+        }
     }
 
     protected void zipFolderAsCbz(Path folder, Path cbzPath) {
@@ -712,23 +784,38 @@ public class DownloadService {
         return activeDownloads.size();
     }
 
+    public DownloadProgress getPrimaryActiveDownloadStatus() {
+        return downloadProgress.values().stream()
+                .map(DownloadProgress::copy)
+                .sorted(Comparator.comparingLong(DownloadProgress::getQueuedAt))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public List<Integer> getThreadRateLimitsKbps() {
+        return new ArrayList<>(settingsService.getDownloadWorkerSettings(getConfiguredDownloadThreads()).getThreadRateLimitsKbps());
+    }
+
     public void clearDownloadStatus(String titleName) {
         downloadProgress.remove(titleName);
         progressHistory.removeIf(progress -> progress.getTitle().equals(titleName));
         logger.debug("DOWNLOAD_SERVICE", "Cleared progress entry for title=" + sanitizeForLog(titleName));
     }
 
-    public void downloadSingleChapter(NewTitle title, String chapterNumber) {
+    public boolean downloadSingleChapter(NewTitle title, String chapterNumber) {
 
         String titleUrl = title.getSourceUrl();
         DownloadNamingSettings naming = settingsService.getDownloadNamingSettings();
-        Path titleFolder = resolveTitleFolder(title, naming);
+        Path workingTitleFolder = resolveWorkingTitleFolder(title, naming);
+        Path finalTitleFolder = resolveFinalTitleFolder(title, naming);
+        boolean completed = false;
         try {
             String sanitizedTitle = sanitizeForLog(title.getTitleName());
             logger.debug(
                     "DOWNLOAD",
                     "Single chapter download requested | title=" + sanitizedTitle +
                             " | chapterNumber=" + sanitizeForLog(chapterNumber));
+            migrateExistingTitleFolder(title.getTitleName(), title.getDownloadPath(), finalTitleFolder);
             List<Map<String, String>> chapters = titleScraper.getChapters(titleUrl);
             logger.debug(
                     "DOWNLOAD",
@@ -740,7 +827,7 @@ public class DownloadService {
 
             if (match.isEmpty()) {
                 logger.warn("DOWNLOAD", "⚠️ Chapter " + chapterNumber + " not found for " + title.getTitleName());
-                return;
+                return false;
             }
 
             Map<String, String> chapter = match.get();
@@ -753,24 +840,28 @@ public class DownloadService {
 
             if (pages.isEmpty()) {
                 logger.warn("DOWNLOAD", "⚠️ No pages found for chapter " + chapterNumber);
-                return;
+                return false;
             }
 
             String domain = extractDomain(pages.get(0));
-            Path chapterFolder = titleFolder.resolve("temp_" + chapterNumber);
-            Files.createDirectories(titleFolder);
+            Path chapterFolder = workingTitleFolder.resolve("temp_" + chapterNumber);
+            Files.createDirectories(workingTitleFolder);
             int count = saveImagesToFolder(pages, chapterFolder, naming, title.getTitleName(), title.getType(), chapterNumber);
 
             String cbzName = formatChapterCbzName(naming, title.getTitleName(), title.getType(), chapterNumber, count, domain);
-            Path cbzPath = titleFolder.resolve(cbzName);
+            Path cbzPath = workingTitleFolder.resolve(cbzName);
             zipFolderAsCbz(chapterFolder, cbzPath);
             deleteFolder(chapterFolder);
+            promoteTitleFolder(workingTitleFolder, finalTitleFolder);
+            title.setDownloadPath(finalTitleFolder.toString());
+            completed = true;
 
             logger.info("DOWNLOAD", "📦 Saved " + cbzName + " at " + cbzPath);
 
         } catch (Exception e) {
             logger.error("DOWNLOAD", "❌ Failed single chapter download: " + e.getMessage(), e);
         }
+        return completed;
     }
 
     private Path getDownloadRoot() {
@@ -781,38 +872,214 @@ public class DownloadService {
         return root;
     }
 
+    private Path getDownloadingRoot() {
+        return getDownloadRoot().resolve(DOWNLOADING_FOLDER_NAME);
+    }
+
+    private Path getDownloadedRoot() {
+        return getDownloadRoot().resolve(DOWNLOADED_FOLDER_NAME);
+    }
+
 
     private Path resolveTitleFolder(NewTitle title) {
-        return resolveTitleFolder(title, settingsService.getDownloadNamingSettings());
+        return resolveFinalTitleFolder(title, settingsService.getDownloadNamingSettings());
     }
 
     private Path resolveTitleFolder(NewTitle title, DownloadNamingSettings naming) {
+        return resolveFinalTitleFolder(title, naming);
+    }
+
+    private Path resolveWorkingTitleFolder(NewTitle title, DownloadNamingSettings naming) {
         if (title == null) {
-            return getDownloadRoot();
+            return getDownloadingRoot();
         }
 
-        String downloadPath = title.getDownloadPath();
-        if (downloadPath != null && !downloadPath.isBlank()) {
-            return Path.of(downloadPath);
+        Path managedPath = resolveManagedTitleFolder(title.getDownloadPath(), getDownloadingRoot());
+        if (managedPath != null) {
+            return managedPath;
         }
 
-        return resolveTitleFolder(title.getTitleName(), title.getType(), naming);
+        return resolveWorkingTitleFolder(title.getTitleName(), title.getType(), naming);
+    }
+
+    private Path resolveFinalTitleFolder(NewTitle title, DownloadNamingSettings naming) {
+        if (title == null) {
+            return getDownloadedRoot();
+        }
+
+        Path managedPath = resolveManagedTitleFolder(title.getDownloadPath(), getDownloadedRoot());
+        if (managedPath != null) {
+            return managedPath;
+        }
+
+        return resolveFinalTitleFolder(title.getTitleName(), title.getType(), naming);
     }
 
     private Path resolveTitleFolder(String titleName, String type) {
-        return resolveTitleFolder(titleName, type, settingsService.getDownloadNamingSettings());
+        return resolveFinalTitleFolder(titleName, type, settingsService.getDownloadNamingSettings());
     }
 
     private Path resolveTitleFolder(String titleName, String type, DownloadNamingSettings naming) {
+        return resolveFinalTitleFolder(titleName, type, naming);
+    }
+
+    private Path resolveWorkingTitleFolder(String titleName, String type, DownloadNamingSettings naming) {
+        return resolveTitleFolder(getDownloadingRoot(), titleName, type, naming);
+    }
+
+    private Path resolveFinalTitleFolder(String titleName, String type, DownloadNamingSettings naming) {
+        return resolveTitleFolder(getDownloadedRoot(), titleName, type, naming);
+    }
+
+    private Path resolveTitleFolder(Path root, String titleName, String type, DownloadNamingSettings naming) {
         String cleanTitle = formatTitleFolderName(naming, titleName, type);
         if (cleanTitle == null || cleanTitle.isBlank()) {
             throw new IllegalArgumentException("titleName is required");
         }
 
-        Path root = getDownloadRoot();
         String typeFolder = resolveMediaTypeFolder(type);
         Path base = typeFolder != null ? root.resolve(typeFolder) : root;
         return base.resolve(cleanTitle);
+    }
+
+    private Path resolveManagedTitleFolder(String downloadPath, Path targetRoot) {
+        Path existingPath = parsePath(downloadPath);
+        if (existingPath == null) {
+            return null;
+        }
+
+        Path normalizedTargetRoot = targetRoot.normalize();
+        if (existingPath.startsWith(normalizedTargetRoot)) {
+            return existingPath;
+        }
+
+        Path downloadRoot = getDownloadRoot().normalize();
+        if (!existingPath.startsWith(downloadRoot)) {
+            return null;
+        }
+
+        Path relativePath = downloadRoot.relativize(existingPath);
+        Path strippedRelativePath = stripManagedFolderPrefix(relativePath);
+        if (strippedRelativePath == null) {
+            return normalizedTargetRoot;
+        }
+
+        return normalizedTargetRoot.resolve(strippedRelativePath);
+    }
+
+    private Path stripManagedFolderPrefix(Path relativePath) {
+        if (relativePath == null || relativePath.getNameCount() == 0) {
+            return null;
+        }
+
+        String firstSegment = relativePath.getName(0).toString();
+        if (!DOWNLOADING_FOLDER_NAME.equalsIgnoreCase(firstSegment) && !DOWNLOADED_FOLDER_NAME.equalsIgnoreCase(firstSegment)) {
+            return relativePath;
+        }
+
+        if (relativePath.getNameCount() == 1) {
+            return null;
+        }
+
+        return relativePath.subpath(1, relativePath.getNameCount());
+    }
+
+    private Path parsePath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) {
+            return null;
+        }
+
+        try {
+            return Path.of(rawPath).normalize();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void migrateExistingTitleFolder(String titleName, String existingDownloadPath, Path finalTitleFolder) {
+        Path existingPath = parsePath(existingDownloadPath);
+        if (existingPath == null || existingPath.equals(finalTitleFolder.normalize())) {
+            return;
+        }
+
+        try {
+            if (!Files.exists(existingPath) || !Files.isDirectory(existingPath)) {
+                return;
+            }
+
+            promoteTitleFolder(existingPath, finalTitleFolder);
+        } catch (Exception e) {
+            logger.warn(
+                    "DOWNLOAD",
+                    "Failed to migrate title folder for [" + sanitizeForLog(titleName) + "]: " + e.getMessage());
+        }
+    }
+
+    protected void promoteTitleFolder(Path sourceFolder, Path targetFolder) throws IOException {
+        if (sourceFolder == null || targetFolder == null) {
+            return;
+        }
+
+        Path normalizedSource = sourceFolder.normalize();
+        Path normalizedTarget = targetFolder.normalize();
+        if (normalizedSource.equals(normalizedTarget) || !Files.exists(normalizedSource) || !Files.isDirectory(normalizedSource)) {
+            return;
+        }
+
+        Path targetParent = normalizedTarget.getParent();
+        if (targetParent != null) {
+            Files.createDirectories(targetParent);
+        }
+
+        if (!Files.exists(normalizedTarget)) {
+            Files.move(normalizedSource, normalizedTarget, StandardCopyOption.REPLACE_EXISTING);
+        } else {
+            moveDirectoryContents(normalizedSource, normalizedTarget);
+            Files.deleteIfExists(normalizedSource);
+        }
+
+        pruneEmptyManagedParents(normalizedSource.getParent());
+    }
+
+    private void moveDirectoryContents(Path sourceFolder, Path targetFolder) throws IOException {
+        Files.createDirectories(targetFolder);
+
+        List<Path> children;
+        try (var stream = Files.list(sourceFolder)) {
+            children = stream.toList();
+        }
+
+        for (Path child : children) {
+            Path targetChild = targetFolder.resolve(child.getFileName().toString());
+            if (Files.isDirectory(child)) {
+                moveDirectoryContents(child, targetChild);
+                Files.deleteIfExists(child);
+                continue;
+            }
+
+            Files.move(child, targetChild, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void pruneEmptyManagedParents(Path folder) {
+        Path stopRoot = getDownloadingRoot().normalize();
+        Path current = folder;
+        while (current != null && current.startsWith(stopRoot) && !current.equals(stopRoot)) {
+            try (var stream = Files.list(current)) {
+                if (stream.findAny().isPresent()) {
+                    break;
+                }
+            } catch (Exception ignored) {
+                break;
+            }
+
+            try {
+                Files.deleteIfExists(current);
+            } catch (IOException ignored) {
+                break;
+            }
+            current = current.getParent();
+        }
     }
 
     private String resolveMediaTypeFolder(String rawType) {

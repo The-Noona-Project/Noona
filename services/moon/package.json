@@ -8,7 +8,7 @@
     "build": "next build",
     "biome-write": "npx @biomejs/biome format --write .",
     "start": "node scripts/runNext.mjs start",
-    "lint": "next lint"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@once-ui-system/core": "^1.6.3",
@@ -21,11 +21,12 @@
     "sass": "^1.97.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "@types/node": "^20.19.35",
+    "@biomejs/biome": "^2.4.5",
+    "@types/node": "^25.3.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.3",
+    "eslint-config-next": "^16.1.6",
     "lint-staged": "^16.3.0",
     "typescript": "^5.9.3",
     "tzdata": "^1.0.47"

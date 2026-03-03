@@ -6,6 +6,14 @@ const DEFAULT_TIMEOUT = 10000;
 
 const serializeBody = body => (body == null ? undefined : JSON.stringify(body));
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+const normalizeFolderPath = value => {
+    const normalized = normalizeString(value).replace(/\\/g, '/');
+    if (!normalized) {
+        return '';
+    }
+
+    return normalized.replace(/\/+$/, '') || '/';
+};
 
 const normalizeStringList = values => {
     const seen = new Set();
@@ -27,6 +35,56 @@ const normalizeStringList = values => {
     }
 
     return out;
+};
+
+const normalizeLibraryFolders = values => {
+    const seen = new Set();
+    const out = [];
+
+    for (const value of Array.isArray(values) ? values : []) {
+        const normalized = normalizeFolderPath(value);
+        if (!normalized || seen.has(normalized)) {
+            continue;
+        }
+
+        seen.add(normalized);
+        out.push(normalized);
+    }
+
+    return out;
+};
+
+const mergeLibraryFolders = (expected = [], existing = []) => {
+    const seen = new Set();
+    const out = [];
+
+    for (const value of [...expected, ...existing]) {
+        const normalized = normalizeFolderPath(value);
+        if (!normalized || seen.has(normalized)) {
+            continue;
+        }
+
+        seen.add(normalized);
+        out.push(normalized);
+    }
+
+    return out;
+};
+
+const sameStringSet = (left = [], right = []) => {
+    const leftSet = new Set(left);
+    const rightSet = new Set(right);
+    if (leftSet.size !== rightSet.size) {
+        return false;
+    }
+
+    for (const value of leftSet) {
+        if (!rightSet.has(value)) {
+            return false;
+        }
+    }
+
+    return true;
 };
 
 const normalizePositiveInteger = value => {
@@ -99,6 +157,24 @@ const buildValidationError = (message, status = 400) => {
     return error;
 };
 
+const normalizeSeriesSearchPayload = (payload) => {
+    if (Array.isArray(payload)) {
+        return {series: payload};
+    }
+
+    if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.series)) {
+            return payload;
+        }
+
+        if (Array.isArray(payload.results)) {
+            return {series: payload.results};
+        }
+    }
+
+    return {series: []};
+};
+
 const parseResponseBody = async response => {
     if (response.status === 204) {
         return null;
@@ -153,14 +229,18 @@ export const createKavitaClient = ({
         const {controller, cleanup} = createAbortController(timeoutMs);
 
         try {
+            const nextHeaders = {
+                Accept: 'application/json',
+                'X-Api-Key': apiKey,
+                ...headers,
+            };
+            if (body != null && !Object.prototype.hasOwnProperty.call(nextHeaders, 'Content-Type')) {
+                nextHeaders['Content-Type'] = 'application/json';
+            }
+
             const response = await fetchImpl(url.toString(), {
                 method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-Api-Key': apiKey,
-                    ...headers,
-                },
+                headers: nextHeaders,
                 body: serializeBody(body),
                 signal: controller.signal,
             });
@@ -223,12 +303,42 @@ export const createKavitaClient = ({
             throw new Error('Title query is required when searching Kavita.');
         }
 
-        return request('/api/Search/search', {
-            query: {
-                queryString: normalizedQuery,
-                includeChapterAndFiles: String(Boolean(includeChapterAndFiles)),
-            },
-        });
+        const includeChapters = String(Boolean(includeChapterAndFiles));
+        const attempts = [
+            () => request('/api/Search/search', {
+                query: {
+                    queryString: normalizedQuery,
+                    includeChapterAndFiles: includeChapters,
+                },
+            }),
+            () => request('/api/Search/search', {
+                query: {
+                    queryString: normalizedQuery,
+                },
+            }),
+            () => request('/api/Search/search', {
+                method: 'POST',
+                body: {
+                    queryString: normalizedQuery,
+                    includeChapterAndFiles: Boolean(includeChapterAndFiles),
+                },
+            }),
+        ];
+
+        let lastError = null;
+        for (let index = 0; index < attempts.length; index += 1) {
+            try {
+                const payload = await attempts[index]();
+                return normalizeSeriesSearchPayload(payload);
+            } catch (error) {
+                lastError = error;
+                if (Number(error?.status) !== 400 || index === attempts.length - 1) {
+                    throw error;
+                }
+            }
+        }
+
+        throw lastError ?? new Error('Unable to search Kavita titles.');
     };
 
     const fetchSeriesMetadataMatches = async (seriesId) => {
@@ -290,6 +400,83 @@ export const createKavitaClient = ({
                 force: String(Boolean(force)),
             },
         });
+    };
+
+    const updateLibrary = async ({id, name, folders} = {}) => {
+        const parsedLibraryId = Number.parseInt(String(id), 10);
+        if (!Number.isInteger(parsedLibraryId) || parsedLibraryId < 1) {
+            throw buildValidationError('A valid Kavita library id is required to update a library.');
+        }
+
+        const normalizedName = normalizeString(name);
+        if (!normalizedName) {
+            throw buildValidationError('Library name is required to update a Kavita library.');
+        }
+
+        const normalizedFolders = normalizeLibraryFolders(folders);
+        if (!normalizedFolders.length) {
+            throw buildValidationError('At least one library folder is required to update a Kavita library.');
+        }
+
+        return request('/api/Library/update', {
+            method: 'POST',
+            body: {
+                id: parsedLibraryId,
+                name: normalizedName,
+                folders: normalizedFolders,
+            },
+        });
+    };
+
+    const ensureLibrary = async ({name, payload} = {}) => {
+        const normalizedName = normalizeString(name);
+        if (!normalizedName) {
+            throw buildValidationError('Library name is required to ensure a Kavita library.');
+        }
+
+        const existingLibraries = await fetchLibraries();
+        const existingLibrary = existingLibraries.find((library) =>
+            normalizeString(library?.name).toLowerCase() === normalizedName.toLowerCase(),
+        ) ?? null;
+        if (existingLibrary) {
+            const expectedFolders = normalizeLibraryFolders(payload?.folders);
+            const currentFolders = normalizeLibraryFolders(existingLibrary?.folders);
+            const mergedFolders = mergeLibraryFolders(expectedFolders, currentFolders);
+
+            if (expectedFolders.length && !sameStringSet(currentFolders, mergedFolders) && existingLibrary?.id != null) {
+                const result = await updateLibrary({
+                    id: existingLibrary.id,
+                    name: existingLibrary.name ?? normalizedName,
+                    folders: mergedFolders,
+                });
+
+                return {
+                    created: false,
+                    library: result ?? {...existingLibrary, folders: mergedFolders},
+                    result: result ?? null,
+                };
+            }
+
+            return {
+                created: false,
+                library: existingLibrary,
+            };
+        }
+
+        if (!payload || typeof payload !== 'object') {
+            throw buildValidationError('Library payload is required to create a Kavita library.');
+        }
+
+        const result = await request('/api/Library/create', {
+            method: 'POST',
+            body: payload,
+        });
+
+        return {
+            created: true,
+            library: null,
+            result: result ?? null,
+        };
     };
 
     const inviteUser = async ({email, roles = [], libraries = []} = {}) => {
@@ -565,6 +752,8 @@ export const createKavitaClient = ({
         searchTitles,
         fetchSeriesMetadataMatches,
         applySeriesMetadataMatch,
+        ensureLibrary,
+        updateLibrary,
         scanLibrary,
         inviteUser,
         updateUser,

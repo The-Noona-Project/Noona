@@ -1,6 +1,10 @@
 ﻿// services/warden/docker/addonDockers.mjs
 
-const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
+import {resolveHostServiceBase, resolveHostServiceHost, resolveSharedHostEnvEntries,} from './hostServiceUrl.mjs';
+
+const HOST_SERVICE_URL = resolveHostServiceBase();
+const HOST_SERVICE_HOST = resolveHostServiceHost();
+const SHARED_HOST_ENV = resolveSharedHostEnvEntries();
 const DEFAULT_TIMEZONE = process.env.TZ || 'UTC';
 const DEFAULT_KAVITA_ADMIN_USERNAME = process.env.KAVITA_ADMIN_USERNAME || '';
 const DEFAULT_KAVITA_ADMIN_EMAIL = process.env.KAVITA_ADMIN_EMAIL || '';
@@ -37,7 +41,7 @@ const rawList = [
             '6379/tcp': {},
             '8001/tcp': {},
         },
-        env: ['SERVICE_NAME=noona-redis'],
+        env: [...SHARED_HOST_ENV, 'SERVICE_NAME=noona-redis'],
         envConfig: [
             createEnvField('SERVICE_NAME', 'noona-redis', {
                 label: 'Service Name',
@@ -62,6 +66,7 @@ const rawList = [
             '27017/tcp': {},
         },
         env: [
+            ...SHARED_HOST_ENV,
             'MONGO_INITDB_ROOT_USERNAME=root',
             'MONGO_INITDB_ROOT_PASSWORD=example',
             'SERVICE_NAME=noona-mongo',
@@ -83,7 +88,7 @@ const rawList = [
         ],
         volumes: ['/noona-mongo-data:/data/db'],
         health: null, // Mongo doesn't expose an HTTP endpoint
-        hostServiceUrl: `mongodb://localhost:27017`,
+        hostServiceUrl: `mongodb://${HOST_SERVICE_HOST}:27017`,
     },
     {
         name: 'noona-kavita',
@@ -92,6 +97,7 @@ const rawList = [
         port: 5000,
         internalPort: 5000,
         env: [
+            ...SHARED_HOST_ENV,
             'SERVICE_NAME=noona-kavita',
             `TZ=${DEFAULT_TIMEZONE}`,
             'KAVITA_CONFIG_HOST_MOUNT_PATH=',
@@ -156,6 +162,7 @@ const rawList = [
         port: 8085,
         internalPort: 8085,
         env: [
+            ...SHARED_HOST_ENV,
             'SERVICE_NAME=noona-komf',
             'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
             'KOMF_KAVITA_API_KEY=',

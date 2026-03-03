@@ -442,6 +442,8 @@ export const createSageApp = ({
         key: 'noona.debug',
         enabled: isDebugEnabled(),
     })
+    const DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY = 'auth.default_member_permissions'
+    const DOWNLOAD_WORKER_SETTINGS_KEY = 'downloads.workers'
     const DISCORD_AUTH_SETTINGS_KEY = 'auth.discord'
     const DISCORD_CALLBACK_PATH = '/discord/callback/'
     const LOCAL_AUTH_PROVIDER = 'local'
@@ -482,6 +484,26 @@ export const createSageApp = ({
     const buildDiscordLookupKey = (discordUserId) => {
         const normalized = normalizeDiscordUserId(discordUserId)
         return normalized ? `discord.${normalized}` : ''
+    }
+    const discordUserIdFromLookupKey = (value) => {
+        const normalized = normalizeUsernameKey(value)
+        const match = /^discord\.(\d{5,32})$/.exec(normalized)
+        return match ? match[1] : ''
+    }
+    const resolveStoredAuthProvider = (user, fallback = LOCAL_AUTH_PROVIDER) => {
+        const explicitProvider = normalizeAuthProvider(user?.authProvider, '')
+        if (explicitProvider) {
+            return explicitProvider
+        }
+
+        const discordUserId =
+            normalizeDiscordUserId(user?.discordUserId || user?.authProviderId)
+            || discordUserIdFromLookupKey(user?.usernameNormalized)
+        if (discordUserId) {
+            return DISCORD_AUTH_PROVIDER
+        }
+
+        return fallback
     }
     const resolveDiscordDisplayName = (user, fallback = '') =>
         normalizeDisplayName(
@@ -592,6 +614,14 @@ export const createSageApp = ({
         'download_new_title',
         'check_download_missing_titles',
     ])
+    const DEFAULT_MEMBER_PERMISSIONS_SETTINGS = Object.freeze({
+        key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY,
+        permissions: [...DEFAULT_MEMBER_PERMISSION_KEYS],
+    })
+    const DEFAULT_DOWNLOAD_WORKER_SETTINGS = Object.freeze({
+        key: DOWNLOAD_WORKER_SETTINGS_KEY,
+        threadRateLimitsKbps: [],
+    })
     const sortMoonPermissions = (permissions = []) => {
         const present = new Set(Array.isArray(permissions) ? permissions : [])
         return MOON_OP_PERMISSION_KEYS.filter((entry) => present.has(entry))
@@ -635,6 +665,25 @@ export const createSageApp = ({
             permissions: sortMoonPermissions(Array.from(new Set(normalized))),
         }
     }
+    const normalizeDefaultMemberPermissions = (value) => {
+        const normalized = normalizePermissionList(value)
+        const next = new Set(normalized)
+        next.add('moon_login')
+        return sortMoonPermissions(Array.from(next))
+    }
+    const normalizeThreadRateLimits = (value) => {
+        if (!Array.isArray(value)) {
+            return []
+        }
+
+        return value.map((entry) => {
+            const parsed = Number(entry)
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+                return 0
+            }
+            return Math.max(0, Math.floor(parsed))
+        })
+    }
     const defaultPermissionsForRole = (role) =>
         normalizeRole(role, 'member') === 'admin'
             ? [...MOON_OP_PERMISSION_KEYS]
@@ -662,6 +711,44 @@ export const createSageApp = ({
 
         return defaultPermissionsForRole(normalizedRole)
     }
+    const snapshotAuthUser = (user) => ({
+        lookupKey: normalizeUserLookupKey(user),
+        username: normalizeUsername(user?.username),
+        passwordHash: normalizeString(user?.passwordHash) || null,
+        authProvider: resolveStoredAuthProvider(user, LOCAL_AUTH_PROVIDER),
+        authProviderId:
+            normalizeDiscordUserId(user?.authProviderId || user?.discordUserId)
+            || discordUserIdFromLookupKey(user?.usernameNormalized)
+            || null,
+        discordUserId:
+            normalizeDiscordUserId(user?.discordUserId || user?.authProviderId)
+            || discordUserIdFromLookupKey(user?.usernameNormalized)
+            || null,
+        discordUsername: normalizeString(user?.discordUsername) || null,
+        discordGlobalName: normalizeString(user?.discordGlobalName) || null,
+        avatarUrl: normalizeString(user?.avatarUrl) || null,
+        email: normalizeString(user?.email) || null,
+        role: normalizeRole(user?.role, 'member'),
+        permissions: resolveUserPermissions(user, normalizeRole(user?.role, 'member')),
+        isBootstrapUser: parseBooleanInput(user?.isBootstrapUser) === true,
+    })
+    const authUserSnapshotsMatch = (left, right) => {
+        const leftSnapshot = snapshotAuthUser(left)
+        const rightSnapshot = snapshotAuthUser(right)
+        return leftSnapshot.lookupKey === rightSnapshot.lookupKey
+            && leftSnapshot.username === rightSnapshot.username
+            && leftSnapshot.passwordHash === rightSnapshot.passwordHash
+            && leftSnapshot.authProvider === rightSnapshot.authProvider
+            && leftSnapshot.authProviderId === rightSnapshot.authProviderId
+            && leftSnapshot.discordUserId === rightSnapshot.discordUserId
+            && leftSnapshot.discordUsername === rightSnapshot.discordUsername
+            && leftSnapshot.discordGlobalName === rightSnapshot.discordGlobalName
+            && leftSnapshot.avatarUrl === rightSnapshot.avatarUrl
+            && leftSnapshot.email === rightSnapshot.email
+            && leftSnapshot.role === rightSnapshot.role
+            && JSON.stringify(leftSnapshot.permissions) === JSON.stringify(rightSnapshot.permissions)
+            && leftSnapshot.isBootstrapUser === rightSnapshot.isBootstrapUser
+    }
     const hasMoonPermission = (user, permission) => {
         const key = normalizePermissionEntry(permission)
         if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
@@ -676,9 +763,11 @@ export const createSageApp = ({
     }
     const isAdminUser = (user) => hasMoonPermission(user, 'admin')
     const normalizeUserLookupKey = (user) => {
-        const authProvider = normalizeAuthProvider(user?.authProvider, '')
+        const authProvider = resolveStoredAuthProvider(user, '')
         if (authProvider === DISCORD_AUTH_PROVIDER) {
-            const discordLookup = buildDiscordLookupKey(user?.discordUserId || user?.authProviderId)
+            const discordLookup = buildDiscordLookupKey(
+                user?.discordUserId || user?.authProviderId || discordUserIdFromLookupKey(user?.usernameNormalized),
+            )
             if (discordLookup) {
                 return discordLookup
             }
@@ -718,14 +807,14 @@ export const createSageApp = ({
                                   role = 'member',
                                   permissions = undefined,
                                   isBootstrapUser = false,
-                                  authProvider = LOCAL_AUTH_PROVIDER,
+                                  authProvider = undefined,
                                   discordUserId = '',
                                   discordUsername = '',
                                   discordGlobalName = '',
                                   avatarUrl = '',
                                   email = '',
                               } = {}) => {
-        const provider = normalizeAuthProvider(authProvider, LOCAL_AUTH_PROVIDER)
+        const provider = normalizeAuthProvider(authProvider, resolveStoredAuthProvider(existingUser, LOCAL_AUTH_PROVIDER))
         const now = new Date().toISOString()
         const currentRole = normalizeRole(existingUser?.role, 'member')
         const nextRole = normalizeRole(role, currentRole)
@@ -746,7 +835,12 @@ export const createSageApp = ({
         }
 
         if (provider === DISCORD_AUTH_PROVIDER) {
-            const normalizedDiscordId = normalizeDiscordUserId(discordUserId || existingUser?.discordUserId || existingUser?.authProviderId)
+            const normalizedDiscordId = normalizeDiscordUserId(
+                discordUserId
+                || existingUser?.discordUserId
+                || existingUser?.authProviderId
+                || discordUserIdFromLookupKey(existingUser?.usernameNormalized),
+            )
             if (!normalizedDiscordId) {
                 throw new Error('discordUserId is required for Discord-auth users.')
             }
@@ -943,7 +1037,16 @@ export const createSageApp = ({
             }
 
             await vaultClient.mongo.update('noona_users', query, {$set: nextDoc})
-            return {ok: true, user: nextDoc}
+
+            const refreshedUsers = await listAuthUsers()
+            const persistedUser = findUserByLookupKey(refreshedUsers, nextLookupKey)
+            if (!persistedUser || !authUserSnapshotsMatch(persistedUser, nextDoc)) {
+                const error = new Error('Vault did not persist auth user update.')
+                error.status = 502
+                throw error
+            }
+
+            return {ok: true, user: persistedUser}
         }
 
         if (!vaultClient?.users?.update) {
@@ -1010,7 +1113,7 @@ export const createSageApp = ({
                 }
             }
 
-            if (normalizeAuthProvider(existing?.authProvider, LOCAL_AUTH_PROVIDER) === DISCORD_AUTH_PROVIDER) {
+            if (resolveStoredAuthProvider(existing, LOCAL_AUTH_PROVIDER) === DISCORD_AUTH_PROVIDER) {
                 return {
                     authenticated: false,
                     user: publicUser(existing, existing?.username || username),
@@ -1042,7 +1145,9 @@ export const createSageApp = ({
             return null
         }
 
-        return users.find((entry) => normalizeDiscordUserId(entry?.discordUserId || entry?.authProviderId) === lookup) ?? null
+        return users.find((entry) =>
+            normalizeDiscordUserId(entry?.discordUserId || entry?.authProviderId || discordUserIdFromLookupKey(entry?.usernameNormalized)) === lookup,
+        ) ?? null
     }
     const parseUserTimestamp = (value) => {
         const normalized = normalizeString(value)
@@ -1141,8 +1246,10 @@ export const createSageApp = ({
     const isValidUsername = (username) => /^[A-Za-z0-9._-]{3,64}$/.test(username)
     const isValidPassword = (password) => typeof password === 'string' && password.length >= 8
     const publicUser = (user, fallbackUsername = '') => {
-        const authProvider = normalizeAuthProvider(user?.authProvider, LOCAL_AUTH_PROVIDER)
-        const discordUserId = normalizeDiscordUserId(user?.discordUserId || user?.authProviderId)
+        const authProvider = resolveStoredAuthProvider(user, LOCAL_AUTH_PROVIDER)
+        const discordUserId =
+            normalizeDiscordUserId(user?.discordUserId || user?.authProviderId)
+            || discordUserIdFromLookupKey(user?.usernameNormalized)
         const username =
             authProvider === DISCORD_AUTH_PROVIDER
                 ? resolveDiscordDisplayName(user, fallbackUsername || `Discord ${discordUserId}`)
@@ -1645,6 +1752,132 @@ export const createSageApp = ({
                 setDebug(existingDebug.enabled)
             }
         }
+
+        const existingDefaultMemberPermissions = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key,
+        })
+        if (!existingDefaultMemberPermissions) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key},
+                {
+                    $set: {
+                        ...DEFAULT_MEMBER_PERMISSIONS_SETTINGS,
+                        permissions: normalizeDefaultMemberPermissions(DEFAULT_MEMBER_PERMISSIONS_SETTINGS.permissions),
+                        updatedAt: timestamp,
+                    },
+                },
+                {upsert: true},
+            )
+        }
+
+        const existingDownloadWorkerSettings = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+        })
+        if (!existingDownloadWorkerSettings) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key},
+                {
+                    $set: {
+                        ...DEFAULT_DOWNLOAD_WORKER_SETTINGS,
+                        threadRateLimitsKbps: normalizeThreadRateLimits(DEFAULT_DOWNLOAD_WORKER_SETTINGS.threadRateLimitsKbps),
+                        updatedAt: timestamp,
+                    },
+                },
+                {upsert: true},
+            )
+        }
+    }
+    const readDefaultMemberPermissions = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key,
+                permissions: normalizeDefaultMemberPermissions(DEFAULT_MEMBER_PERMISSIONS_SETTINGS.permissions),
+                updatedAt: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key,
+        })
+
+        return {
+            key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key,
+            permissions: normalizeDefaultMemberPermissions(doc?.permissions ?? DEFAULT_MEMBER_PERMISSIONS_SETTINGS.permissions),
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+        }
+    }
+    const writeDefaultMemberPermissions = async (permissions) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        const nextPermissions = normalizeDefaultMemberPermissions(permissions)
+        const updatedAt = new Date().toISOString()
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key},
+            {
+                $set: {
+                    key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key,
+                    permissions: nextPermissions,
+                    updatedAt,
+                },
+            },
+            {upsert: true},
+        )
+
+        return {
+            key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS.key,
+            permissions: nextPermissions,
+            updatedAt,
+        }
+    }
+    const readDownloadWorkerSettings = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+                threadRateLimitsKbps: normalizeThreadRateLimits(DEFAULT_DOWNLOAD_WORKER_SETTINGS.threadRateLimitsKbps),
+                updatedAt: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+        })
+
+        return {
+            key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+            threadRateLimitsKbps: normalizeThreadRateLimits(doc?.threadRateLimitsKbps),
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+        }
+    }
+    const writeDownloadWorkerSettings = async (threadRateLimitsKbps) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        const nextThreadRateLimitsKbps = normalizeThreadRateLimits(threadRateLimitsKbps)
+        const updatedAt = new Date().toISOString()
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key},
+            {
+                $set: {
+                    key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+                    threadRateLimitsKbps: nextThreadRateLimitsKbps,
+                    updatedAt,
+                },
+            },
+            {upsert: true},
+        )
+
+        return {
+            key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
+            threadRateLimitsKbps: nextThreadRateLimitsKbps,
+            updatedAt,
+        }
     }
     const readDebugSetting = async () => {
         if (!vaultClient?.mongo?.findOne) {
@@ -1730,7 +1963,8 @@ export const createSageApp = ({
         const direct =
             normalizeString(settingsOptions.baseUrl) ||
             normalizeString(process.env.BASE_URL) ||
-            normalizeString(process.env.HOST_SERVICE_URL)
+            normalizeString(process.env.HOST_SERVICE_URL) ||
+            normalizeString(process.env.SERVER_IP)
 
         if (!direct) {
             return '/'
@@ -2207,6 +2441,8 @@ export const createSageApp = ({
         createEmptyVerificationSummary,
         createSessionToken,
         defaultPermissionsForRole,
+        DEFAULT_DOWNLOAD_WORKER_SETTINGS,
+        DEFAULT_MEMBER_PERMISSIONS_SETTINGS,
         DEFAULT_NAMING_SETTINGS,
         deleteAuthUser,
         DISCORD_AUTH_PROVIDER,
@@ -2244,7 +2480,9 @@ export const createSageApp = ({
         publicUser,
         queueEcosystemRestart,
         ravenClient,
+        readDefaultMemberPermissions,
         readDebugSetting,
+        readDownloadWorkerSettings,
         readDiscordAuthConfig,
         readVerificationSummary,
         requireAdminSession,
@@ -2254,6 +2492,7 @@ export const createSageApp = ({
         requireSessionIfSetupCompleted,
         resolveBaseRedirectUrl,
         resolveProtectedBootstrapLookupKey,
+        resolveStoredAuthProvider,
         resolveSetupCompleted,
         resolveWizardStepKey,
         saveDiscordAuthConfig,
@@ -2275,6 +2514,8 @@ export const createSageApp = ({
         verifySessionPassword,
         wizardMetadata,
         wizardStateClient,
+        writeDefaultMemberPermissions,
+        writeDownloadWorkerSettings,
         writeDiscordAdminToVault,
         writeOauthState,
         writeSession,

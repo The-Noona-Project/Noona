@@ -23,6 +23,7 @@ your reading collection with your friends and family!
 
 ## Quick Navigation
 
+- [Service guide](AGENTS.md)
 - [Noona stack overview](../../README.md)
 - [Noona Dockerfile](../../dockerfiles/kavita.Dockerfile)
 - [Container entrypoint](entrypoint.sh)
@@ -32,10 +33,13 @@ your reading collection with your friends and family!
 
 ## Noona Integration
 
-This checkout is used to build `captainpax/noona-kavita` inside Noona. When `KAVITA_ADMIN_USERNAME`,
-`KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` are provided, the container waits for Kavita to become healthy and
-then registers or logs into that first admin account automatically so Warden and Sage can finish managed setup without
-the web UI wizard.
+This checkout is used to build `captainpax/noona-kavita` inside Noona. Warden passes `KAVITA_ADMIN_USERNAME`,
+`KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` through to the managed service and reuses them during managed
+Kavita admin/API-key provisioning, so the web UI wizard is not required for the first admin account.
+
+The image still ships the `noona-bootstrap-admin.sh` helper for standalone troubleshooting, but it is now disabled by
+default to avoid racing Warden during managed installs. Set `NOONA_BOOTSTRAP_ADMIN_ON_START=true` only when you
+explicitly want the container to attempt first-admin registration on its own.
 
 ## What Kavita Provides
 

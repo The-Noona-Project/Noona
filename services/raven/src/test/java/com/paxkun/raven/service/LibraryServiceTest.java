@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.lang.reflect.Type;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -72,6 +73,27 @@ class LibraryServiceTest {
     }
 
     @Test
+    void addOrUpdateTitleStoresDownloadedFolderPathAndEnsuresKavitaLibrary() {
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setUuid("uuid-123");
+        title.setSourceUrl("http://source");
+        title.setType("Manhwa");
+        when(loggerService.getDownloadsRoot()).thenReturn(Path.of("/downloads"));
+
+        libraryService.addOrUpdateTitle(title, new NewChapter("100"));
+
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), mapCaptor.capture(), eq(true));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) mapCaptor.getValue().get("$set");
+        assertThat(set).containsEntry(
+                "downloadPath",
+                Path.of("/downloads").resolve("downloaded").resolve("manhwa").resolve("Solo Leveling").toString()
+        );
+        verify(kavitaSyncService).ensureLibraryForType("Manhwa", "manhwa");
+    }
+
+    @Test
     void checkForNewChaptersReturnsWarningWhenNoTitles() {
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of());
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(Collections.emptyList());
@@ -99,6 +121,7 @@ class LibraryServiceTest {
         when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
                 Map.of("chapter_number", "2", "chapter_title", "Chapter 2", "href", "http://omniscient/2")
         ));
+        when(downloadService.downloadSingleChapter(title, "2")).thenReturn(true);
 
         LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
 
@@ -118,6 +141,7 @@ class LibraryServiceTest {
         assertThat(set).containsEntry("lastDownloaded", "2");
         assertEquals("2", title.getLastDownloaded());
         verify(kavitaSyncService).ensureLibraryForType("Manhwa", "manhwa");
+        verify(kavitaSyncService).scanLibraryForType("Manhwa", "manhwa");
     }
 
     @Test
@@ -203,7 +227,7 @@ class LibraryServiceTest {
         doAnswer(invocation -> {
             NewTitle passedTitle = invocation.getArgument(0);
             assertThat(passedTitle.getTitleName()).isEqualTo("The Beginning After The End");
-            return null;
+            return true;
         }).when(downloadService).downloadSingleChapter(any(NewTitle.class), anyString());
         when(downloadService.fetchChapters("http://tbate")).thenReturn(List.of(
                 Map.of("chapter_number", "24", "chapter_title", "Chapter 24", "href", "http://tbate/24")

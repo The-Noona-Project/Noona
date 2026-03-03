@@ -134,10 +134,18 @@ public class LoggerService implements InitializingBean {
         return Files.createDirectories(path);
     }
 
+    protected String resolveAppDataEnv() {
+        return System.getenv("APPDATA");
+    }
+
     protected Path resolveAppDataDownloadsPath() {
-        String appData = System.getenv("APPDATA");
+        String appData = resolveAppDataEnv();
         if (appData != null && !appData.isBlank()) {
-            return Path.of(appData, "Noona", "raven", "downloads");
+            String trimmed = appData.trim();
+            if (trimmed.startsWith("/") || trimmed.startsWith("\\")) {
+                return Path.of(trimmed);
+            }
+            return Path.of(trimmed, "Noona", "raven", "downloads");
         }
         return null;
     }

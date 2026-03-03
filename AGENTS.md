@@ -28,6 +28,7 @@ This repository contains Noona Stack 2.2. Follow these rules when editing.
 | Sage    | [services/sage/AGENTS.md](services/sage/AGENTS.md)     | [services/sage/README.md](services/sage/README.md)     |
 | Raven   | [services/raven/AGENTS.md](services/raven/AGENTS.md)   | [services/raven/readme.md](services/raven/readme.md)   |
 | Vault   | [services/vault/AGENTS.md](services/vault/AGENTS.md)   | [services/vault/readme.md](services/vault/readme.md)   |
+| Kavita  | [services/kavita/AGENTS.md](services/kavita/AGENTS.md) | [services/kavita/README.md](services/kavita/README.md) |
 
 ## Documentation Rules
 
@@ -45,6 +46,12 @@ This repository contains Noona Stack 2.2. Follow these rules when editing.
 3. Add or update tests for changed behavior.
 4. Update README links/notes for touched workflows.
 5. Run relevant tests before finalizing.
+
+## Tooling & Shell Usage
+
+- Prefer the bundled bash helpers (`bash -lc`) when invoking shell commands; always set the `workdir` parameter.
+- Use `rg`/`rg --files` for searches; fall back only if unavailable.
+- Avoid PowerShell-specific commands.
 
 ## Testing Expectations
 

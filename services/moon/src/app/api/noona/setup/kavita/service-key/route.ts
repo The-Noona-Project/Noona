@@ -2,6 +2,7 @@ import {NextRequest, NextResponse} from "next/server";
 import {jsonError, sageJson} from "../../../_backend";
 
 export const dynamic = "force-dynamic";
+const MANAGED_KAVITA_SERVICE_KEY_TIMEOUT_MS = 300_000;
 
 export async function POST(request: NextRequest) {
     let body: unknown = null;
@@ -17,7 +18,7 @@ export async function POST(request: NextRequest) {
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(body ?? {}),
         }, {
-            timeoutMs: 45_000,
+            timeoutMs: MANAGED_KAVITA_SERVICE_KEY_TIMEOUT_MS,
         });
         return NextResponse.json(payload, {status});
     } catch (error) {

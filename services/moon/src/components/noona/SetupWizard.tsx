@@ -203,6 +203,18 @@ type MissingRequiredField = {
 };
 
 type ProgressTone = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium" | "neutral-alpha-medium";
+type ServicePlanGroupId = "storage" | "library" | "external" | "platform" | "automation" | "other";
+type ServicePlanGroupDefinition = {
+    id: Exclude<ServicePlanGroupId, "other">;
+    label: string;
+    services: string[];
+};
+type ServicePlanGroup = {
+    id: ServicePlanGroupId;
+    label: string;
+    services: string[];
+    items: ServiceCatalogEntry[];
+};
 
 const ALWAYS_RUNNING = new Set(["noona-moon", "noona-sage"]);
 const MANAGED_INTEGRATIONS = new Set(["noona-kavita", "noona-komf"]);
@@ -404,6 +416,33 @@ const buildInitialEnvState = (services: ServiceCatalogEntry[]) => {
             envConfig
                 .filter((field) => field?.key)
                 .map((field) => [field.key, normalizeString(field.defaultValue ?? "")]),
+        );
+    }
+
+    return state;
+};
+
+const buildPersistedWizardEnvState = (
+    services: ServiceCatalogEntry[],
+    values: Record<string, Record<string, string>>,
+) => {
+    const state: Record<string, Record<string, string>> = {};
+
+    for (const service of services) {
+        const envConfig = Array.isArray(service.envConfig) ? service.envConfig : [];
+        const persistedKeys = Array.from(new Set(
+            envConfig
+                .filter((field) =>
+                    field?.key
+                    && field.readOnly !== true
+                    && !DERIVED_KEYS.has(field.key)
+                    && field.key !== "NOONA_DATA_ROOT",
+                )
+                .map((field) => field.key),
+        ));
+        const current = values[service.name] ?? {};
+        state[service.name] = Object.fromEntries(
+            persistedKeys.map((key) => [key, normalizeString(current[key])]),
         );
     }
 
@@ -612,18 +651,48 @@ const sortServices = (left: ServiceCatalogEntry, right: ServiceCatalogEntry) => 
 };
 
 const INSTALL_ORDER = [
-    "noona-moon",
-    "noona-sage",
-    "noona-vault",
-    "noona-redis",
     "noona-mongo",
-    "noona-raven",
+    "noona-redis",
+    "noona-vault",
     "noona-kavita",
-    "noona-portal",
+    "noona-raven",
     "noona-komf",
+    "noona-portal",
+    "noona-sage",
+    "noona-moon",
     "noona-oracle",
 ] as const;
 const INSTALL_ORDER_INDEX = new Map<string, number>(INSTALL_ORDER.map((name, idx) => [name, idx]));
+const SERVICE_PLAN_GROUPS: ServicePlanGroupDefinition[] = [
+    {
+        id: "storage",
+        label: "Storage",
+        services: ["noona-mongo", "noona-redis", "noona-vault"],
+    },
+    {
+        id: "library",
+        label: "Library Management",
+        services: ["noona-kavita", "noona-raven"],
+    },
+    {
+        id: "external",
+        label: "External APIs",
+        services: ["noona-komf", "noona-portal"],
+    },
+    {
+        id: "platform",
+        label: "Platform",
+        services: ["noona-sage", "noona-moon"],
+    },
+    {
+        id: "automation",
+        label: "Automation",
+        services: ["noona-oracle"],
+    },
+] as const;
+const SERVICE_PLAN_GROUP_BY_NAME = new Map<string, string>(
+    SERVICE_PLAN_GROUPS.flatMap((group) => group.services.map((name) => [name, group.id] as const)),
+);
 
 const sortServiceNamesForInstall = (left: string, right: string) => {
     const leftIndex = INSTALL_ORDER_INDEX.get(left) ?? -1;
@@ -706,6 +775,7 @@ const validateSelection = ({
                                komfMode,
                                kavitaApiKey,
                                kavitaAccount,
+                               kavitaAdminPasswordConfirm,
                                managedKavitaTargets,
                            }: {
     selected: Set<string>;
@@ -716,6 +786,7 @@ const validateSelection = ({
     komfMode: IntegrationMode;
     kavitaApiKey: string;
     kavitaAccount: ManagedKavitaAccount;
+    kavitaAdminPasswordConfirm: string;
     managedKavitaTargets: string[];
 }): { ok: true } | { ok: false; message: string; missing: MissingRequiredField[] } => {
     const missing: MissingRequiredField[] = [];
@@ -760,6 +831,7 @@ const validateSelection = ({
         const username = normalizeString(kavitaAccount.username).trim();
         const email = normalizeString(kavitaAccount.email).trim();
         const password = normalizeString(kavitaAccount.password).trim();
+        const confirmPassword = normalizeString(kavitaAdminPasswordConfirm).trim();
 
         if (!username) {
             missing.push({service: "noona-kavita", key: "KAVITA_ADMIN_USERNAME"});
@@ -769,6 +841,16 @@ const validateSelection = ({
         }
         if (!password) {
             missing.push({service: "noona-kavita", key: "KAVITA_ADMIN_PASSWORD"});
+        }
+        if (password && !confirmPassword) {
+            missing.push({service: "noona-kavita", key: "KAVITA_ADMIN_PASSWORD_CONFIRM"});
+        }
+        if (password && confirmPassword && password !== confirmPassword) {
+            return {
+                ok: false,
+                message: "Managed Kavita admin passwords do not match.",
+                missing: [...missing, {service: "noona-kavita", key: "KAVITA_ADMIN_PASSWORD_CONFIRM"}],
+            };
         }
     }
 
@@ -838,6 +920,7 @@ export function SetupWizard() {
     const [kavitaAdminUsername, setKavitaAdminUsername] = useState("");
     const [kavitaAdminEmail, setKavitaAdminEmail] = useState("");
     const [kavitaAdminPassword, setKavitaAdminPassword] = useState("");
+    const [kavitaAdminPasswordConfirm, setKavitaAdminPasswordConfirm] = useState("");
     const [kavitaSharedLibraryPath, setKavitaSharedLibraryPath] = useState("");
     const [kavitaContainerName, setKavitaContainerName] = useState("");
 
@@ -856,6 +939,7 @@ export function SetupWizard() {
     const [configMessage, setConfigMessage] = useState<string | null>(null);
     const [configError, setConfigError] = useState<string | null>(null);
     const [installing, setInstalling] = useState(false);
+    const [openingSummary, setOpeningSummary] = useState(false);
     const [installError, setInstallError] = useState<string | null>(null);
     const [installProgress, setInstallProgress] = useState<InstallProgress | null>(null);
     const [installResult, setInstallResult] = useState<InstallResponse | null>(null);
@@ -904,6 +988,28 @@ export function SetupWizard() {
         if (komfMode === "managed" && effectiveSelected.has("noona-komf")) targets.push("noona-komf");
         return targets;
     }, [effectiveSelected, kavitaMode, komfMode]);
+    const kavitaAdminPasswordConfirmError = useMemo(() => {
+        if (
+            kavitaMode !== "managed"
+            || managedKavitaServiceTargets.length === 0
+            || normalizeString(kavitaApiKey).trim()
+        ) {
+            return undefined;
+        }
+
+        const password = normalizeString(kavitaAdminPassword).trim();
+        const confirmPassword = normalizeString(kavitaAdminPasswordConfirm).trim();
+        if (!password && !confirmPassword) {
+            return undefined;
+        }
+        if (password && !confirmPassword) {
+            return "Confirm the Kavita admin password.";
+        }
+        if (password && confirmPassword && password !== confirmPassword) {
+            return "Passwords do not match.";
+        }
+        return undefined;
+    }, [kavitaMode, managedKavitaServiceTargets, kavitaApiKey, kavitaAdminPassword, kavitaAdminPasswordConfirm]);
 
     const effectiveValues = useMemo(
         () => buildDerivedValues({
@@ -938,6 +1044,17 @@ export function SetupWizard() {
         if (!Array.isArray(installResult?.results)) return [];
         return installResult.results.filter((entry) => normalizeInstallStatus(entry?.status) === "error");
     }, [installResult]);
+    const installReadyForSummary = useMemo(() => {
+        if (installing) return false;
+
+        const progressStatus = normalizeInstallStatus(installProgress?.status);
+        if (progressStatus === "complete") {
+            return true;
+        }
+
+        const logStatus = normalizeInstallStatus(logHistory?.summary?.status);
+        return logStatus === "complete";
+    }, [installing, installProgress, logHistory]);
 
     const missingRequiredFields = useMemo(() => {
         const result = validateSelection({
@@ -953,6 +1070,7 @@ export function SetupWizard() {
                 email: kavitaAdminEmail,
                 password: kavitaAdminPassword,
             },
+            kavitaAdminPasswordConfirm,
             managedKavitaTargets: managedKavitaServiceTargets,
         });
         return result.ok ? [] : result.missing;
@@ -967,6 +1085,7 @@ export function SetupWizard() {
         kavitaAdminUsername,
         kavitaAdminEmail,
         kavitaAdminPassword,
+        kavitaAdminPasswordConfirm,
         managedKavitaServiceTargets,
     ]);
 
@@ -990,6 +1109,29 @@ export function SetupWizard() {
         list.sort(sortServices);
         return list;
     }, [services]);
+    const groupedServices = useMemo<ServicePlanGroup[]>(() => {
+        const servicesByName = new Map(sortedServices.map((service) => [service.name, service]));
+        const grouped: ServicePlanGroup[] = SERVICE_PLAN_GROUPS
+            .map((group) => ({
+                ...group,
+                items: group.services
+                    .map((name) => servicesByName.get(name))
+                    .filter((service): service is ServiceCatalogEntry => Boolean(service)),
+            }))
+            .filter((group) => group.items.length > 0);
+
+        const extras = sortedServices.filter((service) => !SERVICE_PLAN_GROUP_BY_NAME.has(service.name));
+        if (extras.length > 0) {
+            grouped.push({
+                id: "other",
+                label: "Other",
+                services: [],
+                items: extras,
+            });
+        }
+
+        return grouped;
+    }, [sortedServices]);
 
     const clearInstallProgressTimeout = () => {
         if (installProgressTimeoutRef.current != null) {
@@ -1287,13 +1429,13 @@ export function SetupWizard() {
             const payload: WizardConfigPayloadV2 = {
                 version: 2,
                 selected: Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right)),
-                values,
+                values: buildPersistedWizardEnvState(catalog, values),
                 storageRoot,
                 integrations: {
                     kavita: {
                         mode: kavitaMode,
                         baseUrl: kavitaBaseUrl,
-                        apiKey: kavitaApiKey,
+                        apiKey: kavitaMode === "external" ? kavitaApiKey : "",
                         sharedLibraryPath: kavitaSharedLibraryPath,
                         containerName: kavitaContainerName,
                         account: {
@@ -1369,10 +1511,24 @@ export function SetupWizard() {
                 for (const [rawServiceName, envMap] of Object.entries(parsed.values)) {
                     const serviceName = normalizeServiceName(rawServiceName);
                     if (!knownServiceNames.has(serviceName) || !envMap || typeof envMap !== "object") continue;
+                    const service = catalog.find((entry) => entry.name === serviceName);
+                    const envConfig = Array.isArray(service?.envConfig) ? service.envConfig : [];
+                    const persistedKeys = new Set(
+                        envConfig
+                            .filter((field) =>
+                                field?.key
+                                && field.readOnly !== true
+                                && !DERIVED_KEYS.has(field.key)
+                                && field.key !== "NOONA_DATA_ROOT",
+                            )
+                            .map((field) => field.key),
+                    );
                     nextValues[serviceName] = {
                         ...(nextValues[serviceName] ?? {}),
                         ...Object.fromEntries(
-                            Object.entries(envMap).map(([key, value]) => [key, sanitizeEnvValue(normalizeString(value))]),
+                            Object.entries(envMap)
+                                .filter(([key]) => persistedKeys.has(key))
+                                .map(([key, value]) => [key, sanitizeEnvValue(normalizeString(value))]),
                         ),
                     };
                 }
@@ -1389,12 +1545,14 @@ export function SetupWizard() {
 
                 const kavita = parsedV2?.integrations?.kavita;
                 if (kavita) {
-                    setKavitaMode(kavita.mode === "external" ? "external" : "managed");
+                    const nextKavitaMode = kavita.mode === "external" ? "external" : "managed";
+                    setKavitaMode(nextKavitaMode);
                     setKavitaBaseUrl(normalizeString(kavita.baseUrl) || "http://noona-kavita:5000");
-                    setKavitaApiKey(normalizeString(kavita.apiKey));
+                    setKavitaApiKey(nextKavitaMode === "external" ? normalizeString(kavita.apiKey) : "");
                     setKavitaAdminUsername(normalizeString(kavita.account?.username));
                     setKavitaAdminEmail(normalizeString(kavita.account?.email));
                     setKavitaAdminPassword(normalizeString(kavita.account?.password));
+                    setKavitaAdminPasswordConfirm(normalizeString(kavita.account?.password));
                     setKavitaSharedLibraryPath(normalizeString(kavita.sharedLibraryPath));
                     setKavitaContainerName(normalizeString(kavita.containerName));
                 }
@@ -1408,12 +1566,14 @@ export function SetupWizard() {
             } else {
                 const importedPortal = nextValues["noona-portal"] ?? {};
                 const importedRaven = nextValues["noona-raven"] ?? {};
-                setKavitaMode(nextSelected.has("noona-kavita") ? "managed" : "external");
+                const nextKavitaMode = nextSelected.has("noona-kavita") ? "managed" : "external";
+                setKavitaMode(nextKavitaMode);
                 setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://noona-kavita:5000");
-                setKavitaApiKey(normalizeString(importedPortal.KAVITA_API_KEY));
+                setKavitaApiKey(nextKavitaMode === "external" ? normalizeString(importedPortal.KAVITA_API_KEY) : "");
                 setKavitaAdminUsername("");
                 setKavitaAdminEmail("");
                 setKavitaAdminPassword("");
+                setKavitaAdminPasswordConfirm("");
                 setKavitaSharedLibraryPath(normalizeString(importedRaven.KAVITA_DATA_MOUNT));
                 setKomfMode(nextSelected.has("noona-komf") ? "managed" : "external");
             }
@@ -1515,6 +1675,7 @@ export function SetupWizard() {
         if (summaryNavigationRef.current) return;
 
         summaryNavigationRef.current = true;
+        setOpeningSummary(true);
         try {
             await provisionManagedKavitaServiceKey();
             await persistDiscordAuthConfig();
@@ -1525,6 +1686,7 @@ export function SetupWizard() {
             const detail = error instanceof Error ? error.message : String(error);
             setInstallError(detail);
             summaryNavigationRef.current = false;
+            setOpeningSummary(false);
         }
     };
 
@@ -1544,6 +1706,7 @@ export function SetupWizard() {
                 email: kavitaAdminEmail,
                 password: kavitaAdminPassword,
             },
+            kavitaAdminPasswordConfirm,
             managedKavitaTargets: managedKavitaServiceTargets,
         });
         if (!validation.ok) {
@@ -1559,6 +1722,7 @@ export function SetupWizard() {
         setInstallResult(null);
         setInstallProgress(null);
         setInstalling(true);
+        setOpeningSummary(false);
         summaryNavigationRef.current = false;
         installTargetsRef.current = targetNames;
         installProgressStartedRef.current = false;
@@ -2064,6 +2228,15 @@ export function SetupWizard() {
                                                     placeholder="Kavita admin password"
                                                     onChange={(event) => setKavitaAdminPassword(event.target.value)}
                                                 />
+                                                <Input
+                                                    id="managed-kavita-admin-password-confirm"
+                                                    name="managed-kavita-admin-password-confirm"
+                                                    type="password"
+                                                    value={kavitaAdminPasswordConfirm}
+                                                    placeholder="Confirm Kavita admin password"
+                                                    errorMessage={kavitaAdminPasswordConfirmError}
+                                                    onChange={(event) => setKavitaAdminPasswordConfirm(event.target.value)}
+                                                />
                                             </Column>
                                             {normalizeString(kavitaApiKey).trim() && (
                                                 <Badge background={BG_SUCCESS_ALPHA_WEAK} onBackground="neutral-strong">
@@ -2133,49 +2306,66 @@ export function SetupWizard() {
                                             <Button size="s" variant="secondary"
                                                     onClick={() => setShowAdvanced((prev) => !prev)}>{showAdvanced ? "Hide advanced" : "Show advanced"}</Button>
                                         </Row>
-                                        <Column gap="8">
-                                            {sortedServices.map((service) => {
-                                                const name = service.name;
-                                                const ravenLocked = name === "noona-raven" && kavitaMode === "managed";
-                                                const disabled =
-                                                    ALWAYS_RUNNING.has(name) ||
-                                                    service.required === true ||
-                                                    MANAGED_INTEGRATIONS.has(name) ||
-                                                    ravenLocked;
-                                                return (
-                                                    <Row key={name} fillWidth horizontal="between" vertical="center"
-                                                         gap="12" paddingY="8">
-                                                        <Column gap="4" style={{minWidth: 0}}>
-                                                            <Row gap="8" vertical="center">
-                                                                <Text
-                                                                    variant="heading-default-s">{SERVICE_LABELS[name] || name}</Text>
-                                                                {service.required &&
-                                                                    <Badge background={BG_BRAND_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">required</Badge>}
-                                                                {service.installed &&
-                                                                    <Badge background={BG_SUCCESS_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">installed</Badge>}
-                                                                {COMING_SOON_SERVICES.has(name) &&
-                                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">coming
-                                                                        soon</Badge>}
-                                                                {MANAGED_INTEGRATIONS.has(name) &&
-                                                                    <Badge background={BG_NEUTRAL_ALPHA_WEAK}
-                                                                           onBackground="neutral-strong">{name === "noona-kavita" ? kavitaMode : komfMode}</Badge>}
-                                                                {ravenLocked && <Badge background={BG_BRAND_ALPHA_WEAK}
-                                                                                       onBackground="neutral-strong">required
-                                                                    by Kavita</Badge>}
-                                                            </Row>
-                                                            {service.description && <Text onBackground="neutral-weak"
-                                                                                          variant="body-default-xs"
-                                                                                          wrap="balance">{service.description}</Text>}
-                                                        </Column>
-                                                        <input type="checkbox" checked={effectiveSelected.has(name)}
-                                                               disabled={disabled} onChange={() => toggleSelected(name)}
-                                                               aria-label={`Select ${name}`}/>
-                                                    </Row>
-                                                );
-                                            })}
+                                        <Column gap="16">
+                                            {groupedServices.map((group) => (
+                                                <Column key={group.id} gap="8">
+                                                    <Text variant="label-default-s" onBackground="neutral-weak"
+                                                          style={{letterSpacing: "0.08em", textTransform: "uppercase"}}>
+                                                        {group.label}
+                                                    </Text>
+                                                    <Column gap="8">
+                                                        {group.items.map((service) => {
+                                                            const name = service.name;
+                                                            const ravenLocked = name === "noona-raven" && kavitaMode === "managed";
+                                                            const disabled =
+                                                                ALWAYS_RUNNING.has(name) ||
+                                                                service.required === true ||
+                                                                MANAGED_INTEGRATIONS.has(name) ||
+                                                                ravenLocked;
+                                                            return (
+                                                                <Row key={name} fillWidth horizontal="between"
+                                                                     vertical="center" gap="12" paddingY="8">
+                                                                    <Column gap="4" style={{minWidth: 0}}>
+                                                                        <Row gap="8" vertical="center">
+                                                                            <Text
+                                                                                variant="heading-default-s">{SERVICE_LABELS[name] || name}</Text>
+                                                                            {service.required &&
+                                                                                <Badge background={BG_BRAND_ALPHA_WEAK}
+                                                                                       onBackground="neutral-strong">required</Badge>}
+                                                                            {service.installed &&
+                                                                                <Badge
+                                                                                    background={BG_SUCCESS_ALPHA_WEAK}
+                                                                                    onBackground="neutral-strong">installed</Badge>}
+                                                                            {COMING_SOON_SERVICES.has(name) &&
+                                                                                <Badge
+                                                                                    background={BG_NEUTRAL_ALPHA_WEAK}
+                                                                                    onBackground="neutral-strong">coming
+                                                                                    soon</Badge>}
+                                                                            {MANAGED_INTEGRATIONS.has(name) &&
+                                                                                <Badge
+                                                                                    background={BG_NEUTRAL_ALPHA_WEAK}
+                                                                                    onBackground="neutral-strong">{name === "noona-kavita" ? kavitaMode : komfMode}</Badge>}
+                                                                            {ravenLocked && <Badge
+                                                                                background={BG_BRAND_ALPHA_WEAK}
+                                                                                onBackground="neutral-strong">required
+                                                                                by Kavita</Badge>}
+                                                                        </Row>
+                                                                        {service.description && <Text
+                                                                            onBackground="neutral-weak"
+                                                                            variant="body-default-xs"
+                                                                            wrap="balance">{service.description}</Text>}
+                                                                    </Column>
+                                                                    <input type="checkbox"
+                                                                           checked={effectiveSelected.has(name)}
+                                                                           disabled={disabled}
+                                                                           onChange={() => toggleSelected(name)}
+                                                                           aria-label={`Select ${name}`}/>
+                                                                </Row>
+                                                            );
+                                                        })}
+                                                    </Column>
+                                                </Column>
+                                            ))}
                                         </Column>
                                     </Column>
                                 </Card>
@@ -2219,10 +2409,32 @@ export function SetupWizard() {
                                             ))}
                                         </Row>
                                     )}
-                                    <Button size="m" variant="primary" disabled={installing}
-                                            onClick={() => void install()}>
-                                        {installing ? "Installing..." : "Install selected services"}
-                                    </Button>
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Button size="m" variant="primary" disabled={installing || openingSummary}
+                                                onClick={() => void install()}>
+                                            {installing ? "Installing..." : "Install selected services"}
+                                        </Button>
+                                        {installReadyForSummary && (
+                                            <Button
+                                                size="m"
+                                                variant="secondary"
+                                                disabled={openingSummary}
+                                                onClick={() => void openSetupSummary()}
+                                            >
+                                                {openingSummary ? "Opening summary..." : "Continue to summary"}
+                                            </Button>
+                                        )}
+                                    </Row>
+                                    {installReadyForSummary && !openingSummary && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Install completed. Continue to the summary page when you are ready.
+                                        </Text>
+                                    )}
+                                    {openingSummary && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Saving managed service access and preparing the setup summary.
+                                        </Text>
+                                    )}
                                     {installError && <Text onBackground="danger-strong">{installError}</Text>}
                                     {installProgress && (
                                         <Column gap="8">

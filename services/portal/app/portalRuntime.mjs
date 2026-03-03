@@ -3,10 +3,13 @@
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 import {startPortalServer} from './createPortalApp.mjs';
 import createKavitaClient from '../clients/kavitaClient.mjs';
+import createPortalRavenClient from '../clients/ravenClient.mjs';
 import createVaultClient from '../clients/vaultClient.mjs';
+import createPortalWardenClient from '../clients/wardenClient.mjs';
 import createOnboardingStore from '../storage/onboardingStore.mjs';
 import {safeLoadPortalConfig} from '../config/portalConfig.mjs';
 import {createDiscordClient} from '../discord/client.mjs';
+import {createDiscordPresenceUpdater} from '../discord/presenceUpdater.mjs';
 import {createPortalSlashCommands} from '../commands/index.mjs';
 
 const runtime = {
@@ -15,8 +18,11 @@ const runtime = {
     discord: null,
     kavita: null,
     onboardingStore: null,
+    presenceUpdater: null,
+    raven: null,
     server: null,
     vault: null,
+    warden: null,
 };
 
 export const startPortal = async (overrides = {}) => {
@@ -43,6 +49,18 @@ export const startPortal = async (overrides = {}) => {
     });
     runtime.onboardingStore = onboardingStore;
 
+    const raven = createPortalRavenClient({
+        baseUrl: config.raven.baseUrl,
+        timeoutMs: config.http.timeoutMs,
+    });
+    runtime.raven = raven;
+
+    const warden = createPortalWardenClient({
+        baseUrl: config.warden.baseUrl,
+        timeoutMs: config.http.timeoutMs,
+    });
+    runtime.warden = warden;
+
     let discord;
     const slashCommands = createPortalSlashCommands({
         getDiscord: () => discord,
@@ -62,6 +80,18 @@ export const startPortal = async (overrides = {}) => {
     runtime.discord = discord;
 
     await discord.login();
+
+    const presenceUpdater = createDiscordPresenceUpdater({
+        client: discord.client,
+        ravenClient: raven,
+        wardenClient: warden,
+        pollMs: config.activity.pollMs,
+        logger: {
+            warn: errMSG,
+        },
+    });
+    presenceUpdater.start();
+    runtime.presenceUpdater = presenceUpdater;
 
     const {server, close} = await startPortalServer({
         config,
@@ -84,6 +114,10 @@ export const stopPortal = async () => {
         await runtime.closeServer();
     }
 
+    if (runtime.presenceUpdater) {
+        runtime.presenceUpdater.stop();
+    }
+
     if (runtime.discord) {
         runtime.discord.destroy();
     }
@@ -94,7 +128,10 @@ export const stopPortal = async () => {
     runtime.kavita = null;
     runtime.vault = null;
     runtime.onboardingStore = null;
+    runtime.presenceUpdater = null;
+    runtime.raven = null;
     runtime.config = null;
+    runtime.warden = null;
 
     log('[Portal] Shutdown complete.');
 };

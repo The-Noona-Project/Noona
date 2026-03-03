@@ -1,9 +1,11 @@
 // services/warden/docker/noonaDockers.mjs
 
+import {resolveHostServiceBase, resolveSharedHostEnvEntries} from './hostServiceUrl.mjs';
 import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
 
 const DEBUG = process.env.DEBUG || 'false';
-const HOST_SERVICE_URL = process.env.HOST_SERVICE_URL || 'http://localhost';
+const HOST_SERVICE_URL = resolveHostServiceBase();
+const SHARED_HOST_ENV = resolveSharedHostEnvEntries();
 const DOCKER_WARDEN_URL =
     process.env.WARDEN_DOCKER_URL || process.env.INTERNAL_WARDEN_BASE_URL || 'http://noona-warden:4001';
 
@@ -19,7 +21,14 @@ const DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH = process.env.VAULT_REDIS_HOST_MOUNT_P
 const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH = process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
+const DEFAULT_PORTAL_RAVEN_BASE_URL =
+    process.env.RAVEN_BASE_URL || process.env.PORTAL_RAVEN_BASE_URL || 'http://noona-raven:8080';
+const DEFAULT_PORTAL_WARDEN_BASE_URL =
+    process.env.WARDEN_BASE_URL || process.env.PORTAL_WARDEN_BASE_URL || DOCKER_WARDEN_URL;
+const DEFAULT_PORTAL_ACTIVITY_POLL_MS = process.env.PORTAL_ACTIVITY_POLL_MS || '15000';
 const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
+const DEFAULT_RAVEN_PORTAL_BASE_URL =
+    process.env.PORTAL_BASE_URL || process.env.RAVEN_PORTAL_BASE_URL || 'http://noona-portal:3003';
 const DEFAULT_RAVEN_DOWNLOAD_THREADS = process.env.RAVEN_DOWNLOAD_THREADS || '3';
 const DEFAULT_KAVITA_BASE_URL = process.env.KAVITA_BASE_URL || 'http://noona-kavita:5000';
 const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT = process.env.RAVEN_KAVITA_LIBRARY_ROOT || '/manga';
@@ -84,6 +93,7 @@ const serviceDefs = rawList.map(name => {
 
     const env = [
         `DEBUG=${DEBUG}`,
+        ...SHARED_HOST_ENV,
         `SERVICE_NAME=${name}`
     ];
 
@@ -123,6 +133,7 @@ const serviceDefs = rawList.map(name => {
 
     if (name === 'noona-raven') {
         env.push(`VAULT_URL=${DEFAULT_RAVEN_VAULT_URL}`);
+        env.push(`PORTAL_BASE_URL=${DEFAULT_RAVEN_PORTAL_BASE_URL}`);
         env.push(`RAVEN_DOWNLOAD_THREADS=${DEFAULT_RAVEN_DOWNLOAD_THREADS}`);
         env.push(`KAVITA_BASE_URL=${DEFAULT_KAVITA_BASE_URL}`);
         env.push('KAVITA_API_KEY=');
@@ -157,6 +168,11 @@ const serviceDefs = rawList.map(name => {
             createEnvField('KAVITA_LIBRARY_ROOT', DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT, {
                 label: 'Kavita Library Root',
                 description: 'Folder path as seen from Kavita for Raven downloads when auto-creating libraries.',
+                required: false,
+            }),
+            createEnvField('PORTAL_BASE_URL', DEFAULT_RAVEN_PORTAL_BASE_URL, {
+                label: 'Portal Base URL',
+                description: 'Optional Portal endpoint Raven can use to request Kavita library creation.',
                 required: false,
             }),
             createEnvField('VAULT_URL', DEFAULT_RAVEN_VAULT_URL, {
@@ -251,6 +267,27 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Base URL',
                 description: 'URL where the Vault service is exposed for the portal.',
                 defaultValue: DEFAULT_PORTAL_VAULT_BASE_URL,
+            },
+            {
+                key: 'RAVEN_BASE_URL',
+                label: 'Raven Base URL',
+                description: 'URL Portal should use when polling Raven download activity.',
+                defaultValue: DEFAULT_PORTAL_RAVEN_BASE_URL,
+                required: false,
+            },
+            {
+                key: 'WARDEN_BASE_URL',
+                label: 'Warden Base URL',
+                description: 'URL Portal should use when polling Warden for install/update activity.',
+                defaultValue: DEFAULT_PORTAL_WARDEN_BASE_URL,
+                required: false,
+            },
+            {
+                key: 'PORTAL_ACTIVITY_POLL_MS',
+                label: 'Activity Poll Interval',
+                description: 'Polling interval in milliseconds for Portal Discord bot activity updates.',
+                defaultValue: DEFAULT_PORTAL_ACTIVITY_POLL_MS,
+                required: false,
             },
             {
                 key: 'PORTAL_REDIS_NAMESPACE',
@@ -409,6 +446,9 @@ const serviceDefs = rawList.map(name => {
         return `http://${name}:${portMap[name]}/`;
     })();
 
+    const healthTries = name === 'noona-portal' ? 90 : undefined;
+    const healthDelayMs = name === 'noona-portal' ? 1000 : undefined;
+
     return {
         name,
         image: `captainpax/${name}:latest`,
@@ -418,7 +458,9 @@ const serviceDefs = rawList.map(name => {
         env,
         envConfig,
         hostServiceUrl,
-        health: healthChecks
+        health: healthChecks,
+        healthTries,
+        healthDelayMs,
     };
 });
 

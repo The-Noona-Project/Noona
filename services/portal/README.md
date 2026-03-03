@@ -27,7 +27,9 @@ default Discord roles.
 
 - Validate runtime config for Discord, Kavita, Vault, and Redis-backed onboarding tokens.
 - Handle onboarding and Kavita option discovery over HTTP (`/api/portal/*`).
+- Proxy Raven-triggered Kavita library scans so completed imports can surface in Kavita without direct bot access.
 - Register and execute Discord slash commands for Kavita account creation, library scans, and title search workflows.
+- Poll Raven and Warden so the Discord bot presence reflects active downloads, title checks, and service updates.
 - Persist portal credentials in Vault and assign Discord roles when configured.
 
 ## HTTP Endpoints
@@ -35,6 +37,10 @@ default Discord roles.
 - `GET /health` - process health and guild metadata.
 - `GET /api/portal/kavita/info` - return the configured Kavita base URL and managed-service hint for Moon footer links.
 - `GET /api/portal/kavita/title-search` - search Kavita series and return direct Kavita title URLs for Moon title pages.
+- `POST /api/portal/kavita/libraries/ensure` - idempotently create or reuse a Kavita library for Raven-managed media
+  folders and merge in any missing Raven folder roots on existing libraries.
+- `POST /api/portal/kavita/libraries/scan` - resolve a Kavita library by name and trigger a scan for Raven-managed
+  imports.
 - `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id.
 - `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
@@ -66,6 +72,8 @@ default Discord roles.
 | `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`)       |
 | `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` (`*,-admin` for roles and `*` for libraries by default)      |
 | `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs |
+| `RAVEN_BASE_URL` / `WARDEN_BASE_URL`                                  | Optional activity-poll targets for Discord bot presence                                        |
+| `PORTAL_ACTIVITY_POLL_MS`                                             | Poll interval for Discord presence refreshes (default `15000`)                                 |
 | `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                                |
 | `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                                 |
 | `NOONA_LOG_DIR`                                                       | Optional directory for Portal's `latest.log`; Warden-managed installs mount `/var/log/noona`   |
@@ -86,6 +94,9 @@ duplicate names across both scopes. Add `-- --json` to emit machine-readable out
 
 For Warden-managed installs that target `noona-kavita`, Warden now provisions the managed Kavita auth key before
 starting Portal and injects the resulting `KAVITA_API_KEY` automatically.
+
+Portal's Discord presence now prefers Warden install/update activity, then falls back to Raven download/check status,
+so the bot advertises `Updating <service>`, `Downloading <title>`, `Checking <title>`, or `Idle` automatically.
 
 ## Documentation Rule
 

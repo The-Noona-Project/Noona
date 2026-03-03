@@ -23,8 +23,10 @@ download/library routes for Moon and other clients.
 
 - Proxy setup/install/status requests to Warden.
 - Expose Discord setup validation helpers for Portal onboarding.
-- Own Moon auth state, Discord OAuth config, Discord callback handling, and Discord-linked user/session management.
+- Own Moon auth state, Discord OAuth config, Discord callback handling, Discord-linked user/session management, and
+  the default permission template used when a Discord user signs in for the first time.
 - Proxy Raven search/download/library/status routes.
+- Persist Vault-backed Raven naming and per-thread worker speed-limit settings for Moon.
 - Normalize downstream failures into consistent API responses.
 
 ## Common Endpoint Groups
@@ -34,8 +36,12 @@ download/library routes for Moon and other clients.
       current install-progress snapshot immediately so Moon can keep polling instead of waiting on a long request.
 - Managed Kavita setup: `/api/setup/services/noona-kavita/service-key`
     - waits for managed `noona-kavita`, accepts optional first-admin credentials from Moon or falls back to managed
-      `noona-kavita` `KAVITA_ADMIN_*` env overrides from Warden, creates or reuses a Kavita auth key through Kavita's
-      own API, stores the reusable key metadata in `noona_settings`, and patches selected managed services
+      `noona-kavita` `KAVITA_ADMIN_*` env overrides from Warden, retries the full first-user `login -> register`
+      acquisition flow when Kavita returns a transient first-user registration error before the account exists,
+      including startup-time 5xx responses from Kavita's account API, reuses an existing Kavita auth key when one is
+      already present, creates a named key only when needed, stores the reusable key
+      metadata in `noona_settings`, and patches selected
+      managed services
       (`noona-portal`, `noona-raven`, `noona-komf`) with the generated key plus the managed `http://noona-kavita:5000`
       base URL.
 - Discord setup helpers: `/api/setup/services/noona-portal/discord/*`
@@ -47,18 +53,27 @@ download/library routes for Moon and other clients.
     - `/api/auth/discord/start` creates a full Discord OAuth round-trip for callback testing, setup bootstrap, or normal
       Moon login.
     - `/api/auth/discord/callback` exchanges the code with Discord, records callback tests, bootstraps the first admin,
-      and signs in Discord-linked Moon users.
+      auto-creates first-time Discord users from the configured default permission template, and signs in
+      Discord-linked Moon users.
+  - `/api/auth/users/*` now verifies Vault persistence on user edits and infers legacy Discord-linked records from
+    stored Discord ids or `discord.<id>` lookup keys so Moon permission saves cannot report false success.
+  - `/api/auth/users/default-permissions` reads and updates the default permission set used for new Discord-linked
+    Moon accounts.
+- Download settings: `/api/settings/downloads/*`
+    - `/api/settings/downloads/naming` stores Raven naming templates in Vault.
+    - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
 - Raven proxy: `/api/raven/*`
 
 ## Key Environment Variables
 
-| Variable                                       | Purpose                                  |
-|------------------------------------------------|------------------------------------------|
-| `API_PORT`                                     | Sage listener port (defaults in runtime) |
-| `SERVICE_NAME`                                 | Service label used in logs               |
-| `WARDEN_BASE_URL`                              | Preferred Warden base URL override       |
-| `RAVEN_BASE_URL`                               | Preferred Raven base URL override        |
-| `RAVEN_INTERNAL_BASE_URL` / `RAVEN_DOCKER_URL` | Additional Raven discovery overrides     |
+| Variable                                       | Purpose                                                                                  |
+|------------------------------------------------|------------------------------------------------------------------------------------------|
+| `API_PORT`                                     | Sage listener port (defaults in runtime)                                                 |
+| `SERVICE_NAME`                                 | Service label used in logs                                                               |
+| `SERVER_IP`                                    | Optional fallback LAN host for browser redirects when no explicit base URL is configured |
+| `WARDEN_BASE_URL`                              | Preferred Warden base URL override                                                       |
+| `RAVEN_BASE_URL`                               | Preferred Raven base URL override                                                        |
+| `RAVEN_INTERNAL_BASE_URL` / `RAVEN_DOCKER_URL` | Additional Raven discovery overrides                                                     |
 
 ## Local Commands
 

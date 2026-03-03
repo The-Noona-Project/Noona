@@ -17,6 +17,17 @@
 
 mkdir -p /kavita/config
 
+should_start_noona_kavita_admin_bootstrap() {
+    case "${NOONA_BOOTSTRAP_ADMIN_ON_START:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 #Checks if the config file exists, and creates it if it does not
 if [ ! -f "/kavita/config/appsettings.json" ]; then
     echo "Kavita configuration file does not exist, copying from temp..."
@@ -29,7 +40,7 @@ if [ ! -f "/kavita/config/appsettings.json" ]; then
     fi
 fi
 
-if [ -f "/noona-bootstrap-admin.sh" ]; then
+if [ -f "/noona-bootstrap-admin.sh" ] && should_start_noona_kavita_admin_bootstrap; then
     . /noona-bootstrap-admin.sh
     start_noona_kavita_admin_bootstrap
 fi
