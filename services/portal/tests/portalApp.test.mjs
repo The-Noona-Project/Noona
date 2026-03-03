@@ -24,6 +24,13 @@ const stopServer = async server => new Promise((resolve, reject) => {
     });
 });
 
+const buildUpstreamError = (message, {status = 500, details = null} = {}) => {
+    const error = new Error(message);
+    error.status = status;
+    error.details = details;
+    return error;
+};
+
 test('GET /api/portal/join-options returns role descriptions and libraries for Moon settings', async () => {
     const app = createPortalApp({
         config: {
@@ -198,6 +205,54 @@ test('POST /api/portal/kavita/title-match and apply proxy Kavita metadata matchi
             {type: 'search', seriesId: 17},
             {type: 'apply', payload: {seriesId: 17, aniListId: 151807, malId: undefined, cbrId: undefined}},
         ]);
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('metadata match routes return compact operator guidance when Kavita fails server-side', async () => {
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            fetchSeriesMetadataMatches: async () => {
+                throw buildUpstreamError('Kavita request failed with status 500', {
+                    details: {message: 'System.NullReferenceException', stack: 'very large upstream payload'},
+                });
+            },
+            applySeriesMetadataMatch: async () => {
+                throw buildUpstreamError('Kavita request failed with status 500', {
+                    details: {message: 'System.NullReferenceException', stack: 'very large upstream payload'},
+                });
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const lookupResponse = await fetch(`${baseUrl}/api/portal/kavita/title-match`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({seriesId: 17}),
+        });
+        const lookupPayload = await lookupResponse.json();
+        assert.equal(lookupResponse.status, 500);
+        assert.match(lookupPayload.error, /Check Komf \/config\/application\.yml metadataProviders/);
+        assert.equal(lookupPayload.details, null);
+
+        const applyResponse = await fetch(`${baseUrl}/api/portal/kavita/title-match/apply`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({seriesId: 17, aniListId: 151807}),
+        });
+        const applyPayload = await applyResponse.json();
+        assert.equal(applyResponse.status, 500);
+        assert.match(applyPayload.error, /restart noona-komf plus noona-kavita/);
+        assert.equal(applyPayload.details, null);
     } finally {
         await stopServer(server);
     }

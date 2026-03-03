@@ -14,6 +14,7 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Home page](src/app/page.tsx)
 - [Libraries page route](src/app/libraries/page.tsx)
 - [Downloads page route](src/app/downloads/page.tsx)
+- [Downloads modal](src/components/noona/DownloadsAddModal.tsx)
 - [Rebooting page route](src/app/rebooting/page.tsx)
 - [Settings page route](src/app/settings/page.tsx)
 - [Setup wizard route](src/app/setupwizard/page.tsx)
@@ -22,6 +23,7 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Noona page components](src/components/noona/)
 - [Rebooting page component](src/components/noona/RebootingPage.tsx)
 - [Setup wizard component](src/components/noona/SetupWizard.tsx)
+- [Shared config editor styles](src/components/noona/ConfigEditor.module.scss)
 - [Setup summary component](src/components/noona/SetupSummaryPage.tsx)
 - [Discord callback component](src/components/noona/DiscordCallbackPage.tsx)
 - [Header](src/components/Header.tsx)
@@ -43,20 +45,24 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - `/libraries` - Library browsing, filtering, and title drill-down. The tab and direct page now require the
   `library_management` permission.
 - `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
-  the `download_management` permission.
+  the `download_management` permission, and the add-download flow now uses a centered modal with a dedicated
+  search/select/queue layout instead of the old inline overlay.
 - `/rebooting` - Internal transition screen used by Warden `Update all`. It keeps a dedicated reboot monitor open,
   retries interrupted service-image updates after Moon comes back, and shows live service health while the stack
   settles.
 - `/settings` - Service control for managed services with explicit save/restart actions, Portal join-default pickers
-  plus Kavita role guidance, Discord access settings, ecosystem restart controls, Warden image-update tooling with
-  single-service and update-all actions, Vault-backed persistence for service overrides in `noona_settings`, vault
-  tools, a direct Redis Stack Web UI link from the Vault tab using Warden's host-facing service URL metadata, default
-  permissions for first-time Discord sign-ins, per-thread Raven speed limits, and diagnostics.
+  plus Kavita role guidance, Discord access settings, Portal subtabs for `Discord`, `Kavita`, and `Komf`, a managed
+  Komf `/config/application.yml` editor, ecosystem restart controls, Warden image-update tooling with single-service
+  and update-all actions, Vault-backed persistence for service overrides in `noona_settings`, vault tools, a direct
+  Redis Stack Web UI link from the Vault tab using Warden's host-facing service URL metadata, default permissions for
+  first-time Discord sign-ins, per-thread Raven speed limits, and diagnostics.
   Successful self-permission edits now update the local user-management state first so Moon does not report a false
   save failure when the change intentionally removes that account's `user_management` access. The Moon permission
   editor now exposes the canonical `library_management` and `download_management` roles while still normalizing the
   legacy Raven permission names returned by older records. Raven worker speed-limit inputs now accept raw KB/s values
-  or `mb` / `gb` suffixes, and `-1` means unlimited speed.
+  or `mb` / `gb` suffixes, and `-1` means unlimited speed. Moon's Portal-backed Kavita metadata-match proxy now also
+  preserves compact Portal `500` responses for metadata failures instead of collapsing them into a large multi-backend
+  error string.
 - `/setupwizard` - First-run stack configuration flow with storage, integrations, services, and install tabs. It
   previews the shared Noona folder tree, defaults to managed `noona-kavita` and Komf, allows switching either one to
   external URLs, includes a Discord bot login test with client/guild auto-fill for Portal setup, upgrades Portal
@@ -65,7 +71,8 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
   auto-provisions the managed Kavita API key into Portal/Raven/Komf after install, pushes those credentials into
   managed `noona-kavita` as
   `KAVITA_ADMIN_USERNAME`, `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD`, and persists the selected managed
-  service set for future Warden boots. The services tab now groups the managed stack into `Storage`, `Library
+  service set for future Warden boots. The integrations step now exposes the managed Komf `application.yml` content so
+  metadata providers can be tuned before install. The services tab groups the managed stack into `Storage`, `Library
   Management`, and `External APIs`, and install payloads follow the Warden lifecycle order (`mongo -> redis -> vault
   -> kavita -> raven -> komf -> portal`). Portal defaults now prefill `/join` access as `*,-admin` for roles and `*`
   for libraries, and the managed Vault token is injected automatically instead of being entered by hand. The install

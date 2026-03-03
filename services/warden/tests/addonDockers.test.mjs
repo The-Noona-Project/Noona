@@ -44,6 +44,7 @@ test('noona-komf addon descriptor only exposes Kavita-specific configuration fie
     assert.ok(configKeys.has('KOMF_KAVITA_BASE_URI'))
     assert.ok(configKeys.has('KOMF_KAVITA_API_KEY'))
     assert.ok(configKeys.has('KOMF_CONFIG_HOST_MOUNT_PATH'))
+    assert.ok(configKeys.has('KOMF_APPLICATION_YML'))
 
     assert.ok(!configKeys.has('KOMF_KOMGA_BASE_URI'))
     assert.ok(!configKeys.has('KOMF_KOMGA_USER'))

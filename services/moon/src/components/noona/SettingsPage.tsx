@@ -14,9 +14,11 @@ import {
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 import {emitNoonaSiteNotification} from "./SiteNotifications";
+import editorStyles from "./ConfigEditor.module.scss";
 
 type TabId = "general" | "moon" | "raven" | "vault" | "sage" | "warden" | "portal";
 type MainSectionId = "ecosystem" | "users";
+type PortalSettingsSubtabId = "discord" | "kavita" | "komf";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -241,6 +243,17 @@ const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_ROLE_SCAN",
     "REQUIRED_ROLE_SEARCH",
 ]);
+const PORTAL_SETTINGS_SUBTABS: Array<{ id: PortalSettingsSubtabId; label: string }> = [
+    {id: "discord", label: "Discord"},
+    {id: "kavita", label: "Kavita"},
+    {id: "komf", label: "Komf"},
+];
+const PORTAL_SETTINGS_SERVICES: Record<PortalSettingsSubtabId, string> = {
+    discord: "noona-portal",
+    kavita: "noona-portal",
+    komf: "noona-komf",
+};
+const KOMF_APPLICATION_YML_KEY = "KOMF_APPLICATION_YML";
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
 const normalizeTab = (value: string | null | undefined): TabId =>
@@ -369,6 +382,7 @@ const BG_WARNING_ALPHA_WEAK = "warning-alpha-weak" as const;
 export function SettingsPage() {
     const searchParams = useSearchParams();
     const [activeTab, setActiveTab] = useState<TabId>(normalizeTab(searchParams.get("tab")));
+    const [portalSubtab, setPortalSubtab] = useState<PortalSettingsSubtabId>("discord");
     const [activeSection, setActiveSection] = useState<MainSectionId>("ecosystem");
     const [navOpen, setNavOpen] = useState(false);
     const [currentPermissions, setCurrentPermissions] = useState<MoonPermission[]>([]);
@@ -497,7 +511,9 @@ export function SettingsPage() {
     );
     const updatesBusy = updatesApplyingAll || Object.values(updating).some(Boolean);
 
-    const currentService = TAB_SERVICE[activeTab] ?? null;
+    const currentService = activeTab === "portal"
+        ? PORTAL_SETTINGS_SERVICES[portalSubtab]
+        : (TAB_SERVICE[activeTab] ?? null);
     const currentEditor = currentService ? (editors[currentService] ?? defaultEditor()) : defaultEditor();
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
     const redisServiceMeta = catalogByName.get("noona-redis") ?? null;
@@ -1559,7 +1575,9 @@ export function SettingsPage() {
 
     useEffect(() => {
         if (!canAccessEcosystem) return;
-        const serviceName = TAB_SERVICE[activeTab];
+        const serviceName = activeTab === "portal"
+            ? PORTAL_SETTINGS_SERVICES[portalSubtab]
+            : TAB_SERVICE[activeTab];
         if (serviceName) {
             void loadServiceConfig(serviceName);
         }
@@ -1576,13 +1594,13 @@ export function SettingsPage() {
         if (activeTab === "vault") {
             void loadCollections();
         }
-        if (activeTab === "portal") {
+        if (activeTab === "portal" && portalSubtab === "kavita") {
             void loadPortalJoinOptions();
         }
         if (activeTab === "warden") {
             void loadUpdates();
         }
-    }, [activeTab, canAccessEcosystem]);
+    }, [activeTab, canAccessEcosystem, portalSubtab]);
 
     useEffect(() => {
         if (activeTab !== "vault") return;
@@ -1746,10 +1764,11 @@ export function SettingsPage() {
         if (!currentService) return null;
         const envConfig = Array.isArray(currentEditor.config?.envConfig) ? currentEditor.config?.envConfig : [];
         const isPortalTab = activeTab === "portal";
+        const isPortalService = currentService === "noona-portal";
         const genericFields = envConfig.filter((entry) => {
             const key = normalizeString(entry?.key).trim();
             if (!key) return false;
-            if (!isPortalTab) return true;
+            if (!isPortalService) return true;
             return !PORTAL_DISCORD_KEYS.has(key)
                 && !PORTAL_JOIN_DEFAULT_KEYS.has(key)
                 && !PORTAL_COMMAND_ACCESS_KEYS.has(key);
@@ -1757,6 +1776,8 @@ export function SettingsPage() {
         const portalDiscordFields = envConfig.filter((entry) => PORTAL_DISCORD_KEYS.has(normalizeString(entry?.key).trim()));
         const portalJoinFields = envConfig.filter((entry) => PORTAL_JOIN_DEFAULT_KEYS.has(normalizeString(entry?.key).trim()));
         const portalAccessFields = envConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
+        const komfConfigFields = genericFields.filter((entry) => normalizeString(entry?.key).trim() === KOMF_APPLICATION_YML_KEY);
+        const komfRuntimeFields = genericFields.filter((entry) => normalizeString(entry?.key).trim() !== KOMF_APPLICATION_YML_KEY);
 
         const getFieldValue = (field: EnvConfigField | undefined) => {
             const key = normalizeString(field?.key).trim();
@@ -1785,6 +1806,25 @@ export function SettingsPage() {
             const key = normalizeString(field.key).trim();
             if (!key) return null;
             if (field.readOnly && !currentEditor.advanced) return null;
+
+            if (key === KOMF_APPLICATION_YML_KEY) {
+                return (
+                    <Column key={`${currentService}:${keyPrefix}:${key}`} gap="8">
+                        <Text variant="label-default-s">{normalizeString(field.label).trim() || key}</Text>
+                        <textarea
+                            id={`${currentService}:${keyPrefix}:${key}`}
+                            name={`${currentService}:${keyPrefix}:${key}`}
+                            className={editorStyles.configTextarea}
+                            value={getFieldValue(field)}
+                            disabled={field.readOnly === true}
+                            aria-label={normalizeString(field.label).trim() || key}
+                            spellCheck={false}
+                            onChange={(event) => updateEnvDraft(currentService, key, event.target.value)}
+                        />
+                        {renderFieldNotes(field)}
+                    </Column>
+                );
+            }
 
             return (
                 <Column key={`${currentService}:${keyPrefix}:${key}`} gap="8">
@@ -1869,6 +1909,11 @@ export function SettingsPage() {
                             <Row gap="8" vertical="center">
                                 <Badge background={BG_NEUTRAL_ALPHA_WEAK}
                                        onBackground="neutral-strong">{TAB_LABELS[activeTab]}</Badge>
+                                {isPortalTab && (
+                                    <Badge background={BG_SURFACE} onBackground="neutral-strong">
+                                        {PORTAL_SETTINGS_SUBTABS.find((entry) => entry.id === portalSubtab)?.label ?? "Discord"}
+                                    </Badge>
+                                )}
                                 <Heading as="h2" variant="heading-strong-l">{currentService}</Heading>
                             </Row>
                             <Button variant="secondary"
@@ -1879,13 +1924,26 @@ export function SettingsPage() {
                         <Text onBackground="neutral-weak" variant="body-default-xs">
                             {normalizeString(currentServiceMeta?.description).trim() || "No description available."}
                         </Text>
+                        {isPortalTab && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {PORTAL_SETTINGS_SUBTABS.map((entry) => (
+                                    <Button
+                                        key={entry.id}
+                                        variant={portalSubtab === entry.id ? "primary" : "secondary"}
+                                        onClick={() => setPortalSubtab(entry.id)}
+                                    >
+                                        {entry.label}
+                                    </Button>
+                                ))}
+                            </Row>
+                        )}
                         {currentEditor.error &&
                             <Text onBackground="danger-strong" variant="body-default-xs">{currentEditor.error}</Text>}
                         {currentEditor.message &&
                             <Text onBackground="neutral-weak" variant="body-default-xs">{currentEditor.message}</Text>}
                         {currentEditor.loading && <Row fillWidth horizontal="center" paddingY="24"><Spinner/></Row>}
                         {!currentEditor.loading && !isPortalTab && genericFields.map((field) => renderEditableField(field))}
-                        {!currentEditor.loading && isPortalTab && (
+                        {!currentEditor.loading && isPortalTab && isPortalService && portalSubtab === "discord" && (
                             <Column gap="12">
                                 {renderFieldBlock(
                                     "Discord bot",
@@ -1893,11 +1951,37 @@ export function SettingsPage() {
                                     "These values control which Discord application Portal logs into and which Discord role is assigned after /join.",
                                     "discord",
                                 )}
+                            </Column>
+                        )}
+                        {!currentEditor.loading && isPortalTab && isPortalService && portalSubtab === "kavita" && (
+                            <Column gap="12">
                                 {renderFieldBlock(
                                     "Service connections",
                                     genericFields,
                                     "Portal uses these upstream settings to talk to Kavita, Vault, and Redis-backed onboarding storage.",
                                     "service",
+                                )}
+                                {renderFieldBlock(
+                                    "Command access",
+                                    portalAccessFields,
+                                    "These settings control which Discord guild and roles are allowed to use Portal commands.",
+                                    "access",
+                                )}
+                            </Column>
+                        )}
+                        {!currentEditor.loading && isPortalTab && currentService === "noona-komf" && (
+                            <Column gap="12">
+                                {renderFieldBlock(
+                                    "Managed application.yml",
+                                    komfConfigFields,
+                                    "Moon writes this YAML into /config/application.yml before the managed Komf container starts.",
+                                    "komf-config",
+                                )}
+                                {renderFieldBlock(
+                                    "Komf runtime",
+                                    komfRuntimeFields,
+                                    "These values control the managed Komf container, logging, and its Kavita connection.",
+                                    "komf-runtime",
                                 )}
                             </Column>
                         )}
@@ -1914,7 +1998,7 @@ export function SettingsPage() {
                     </Column>
                 </Card>
 
-                {isPortalTab && !currentEditor.loading && (portalJoinRoleField || portalJoinLibraryField) && (
+                {isPortalService && portalSubtab === "kavita" && !currentEditor.loading && (portalJoinRoleField || portalJoinLibraryField) && (
                     <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                         <Column gap="12">
                             <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>

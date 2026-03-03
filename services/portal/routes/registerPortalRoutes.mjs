@@ -98,6 +98,19 @@ const normalizeMetadataMatch = (match = {}) => ({
     cbrId: match?.cbrId ?? null,
 });
 
+const normalizeMetadataRouteError = (error, action) => {
+    const normalized = normalizeError(error);
+    if (normalized.status < 500) {
+        return normalized;
+    }
+
+    return buildError(
+        normalized.status,
+        `Kavita metadata ${action} failed inside its external metadata service. Check Komf /config/application.yml metadataProviders and restart noona-komf plus noona-kavita.`,
+        null,
+    );
+};
+
 export const registerPortalRoutes = ({
                                          app,
                                          config,
@@ -226,7 +239,7 @@ export const registerPortalRoutes = ({
                 matches: Array.isArray(matches) ? matches.map((entry) => normalizeMetadataMatch(entry)) : [],
             });
         } catch (error) {
-            const normalized = normalizeError(error);
+            const normalized = normalizeMetadataRouteError(error, 'lookup');
             errMSG(`[Portal] Failed to fetch Kavita metadata matches for series ${parsedSeriesId}: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }
@@ -253,7 +266,7 @@ export const registerPortalRoutes = ({
                 result: result ?? null,
             });
         } catch (error) {
-            const normalized = normalizeError(error);
+            const normalized = normalizeMetadataRouteError(error, 'apply');
             errMSG(`[Portal] Failed to apply Kavita metadata match for series ${parsedSeriesId}: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }

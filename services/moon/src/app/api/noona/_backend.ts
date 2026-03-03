@@ -137,6 +137,28 @@ const prioritizeBaseUrls = (baseUrls: string[], preferredBaseUrl: string | null)
     return [preferredBaseUrl, ...baseUrls.filter((url) => url !== preferredBaseUrl)];
 };
 
+const summarizeFailedResponseBody = (body: string): string => {
+    const trimmed = body.trim();
+    if (!trimmed) return "";
+
+    try {
+        const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown } | null;
+        const structuredMessage = typeof parsed?.error === "string"
+            ? parsed.error.trim()
+            : typeof parsed?.message === "string"
+                ? parsed.message.trim()
+                : "";
+        if (structuredMessage) {
+            return structuredMessage;
+        }
+    } catch {
+        // Fall back to a trimmed plain-text summary.
+    }
+
+    const condensed = trimmed.replace(/\s+/g, " ");
+    return condensed.length > 180 ? `${condensed.slice(0, 177)}...` : condensed;
+};
+
 const fetchFirstOk = async (
     baseUrls: string[],
     path: string,
@@ -145,6 +167,7 @@ const fetchFirstOk = async (
     options: {
         preferredBaseUrl?: string | null;
         onSuccess?: (baseUrl: string) => void;
+        acceptServerErrorResponse?: boolean;
     } = {},
 ): Promise<Response> => {
     const orderedBaseUrls = prioritizeBaseUrls(baseUrls, options.preferredBaseUrl ?? null);
@@ -166,8 +189,12 @@ const fetchFirstOk = async (
                     }
                     return res;
                 }
+                if (options.acceptServerErrorResponse && res.status >= 500) {
+                    return res;
+                }
                 const body = await res.text().catch(() => "");
-                errors.push(`${baseUrl} (HTTP ${res.status}${body ? `: ${body}` : ""})`);
+                const summary = summarizeFailedResponseBody(body);
+                errors.push(`${baseUrl} (HTTP ${res.status}${summary ? `: ${summary}` : ""})`);
                 continue;
             }
             options.onSuccess?.(baseUrl);
@@ -258,7 +285,7 @@ export const ravenJson = async (
 export const portalJson = async (
     path: string,
     init: RequestInit = {},
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; acceptServerErrorResponse?: boolean } = {},
 ) => {
     const res = await fetchFirstOk(
         resolvePortalBaseUrls(),
@@ -267,6 +294,7 @@ export const portalJson = async (
         options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         {
             preferredBaseUrl: preferredPortalBaseUrl,
+            acceptServerErrorResponse: options.acceptServerErrorResponse === true,
             onSuccess: (baseUrl) => {
                 preferredPortalBaseUrl = baseUrl;
             },

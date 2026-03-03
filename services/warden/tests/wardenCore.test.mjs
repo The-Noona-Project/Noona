@@ -31,6 +31,32 @@ function buildWarden(options = {}) {
     });
 }
 
+function createMemoryFs(initialFiles = {}) {
+    const files = new Map(Object.entries(initialFiles).map(([filePath, content]) => [path.normalize(filePath), String(content)]));
+    const directories = new Set();
+
+    return {
+        mkdirSync(targetPath) {
+            directories.add(path.normalize(targetPath));
+        },
+        readFileSync(targetPath) {
+            const normalizedPath = path.normalize(targetPath);
+            if (!files.has(normalizedPath)) {
+                const error = new Error(`ENOENT: no such file or directory, open '${normalizedPath}'`);
+                error.code = 'ENOENT';
+                throw error;
+            }
+
+            return files.get(normalizedPath);
+        },
+        writeFileSync(targetPath, content) {
+            files.set(path.normalize(targetPath), String(content));
+        },
+        files,
+        directories,
+    };
+}
+
 test('resolveHostServiceUrl prefers explicit hostServiceUrl', () => {
     const warden = buildWarden({ services: { addon: {}, core: {} }, hostDockerSockets: [] });
     const service = { hostServiceUrl: 'http://custom.local' };
@@ -94,6 +120,89 @@ test('getServiceConfig injects SERVER_IP and rewrites managed host URLs', () => 
     assert.equal(moonConfig.env.SERVER_IP, '192.168.1.25');
     assert.equal(mongoConfig.hostServiceUrl, 'mongodb://192.168.1.25:27017');
     assert.equal(mongoConfig.env.SERVER_IP, '192.168.1.25');
+});
+
+test('getServiceConfig surfaces managed Komf application.yml from disk', () => {
+    const komfConfigPath = path.join('/srv/noona', 'komf', 'config', 'application.yml');
+    const memoryFs = createMemoryFs({
+        [komfConfigPath]: 'metadataProviders:\n  defaultProviders:\n    aniList:\n      enabled: true\n',
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {
+                'noona-komf': {
+                    name: 'noona-komf',
+                    image: 'sndxr/komf:latest',
+                    port: 8085,
+                    env: ['KOMF_KAVITA_BASE_URI=http://noona-kavita:5000'],
+                    envConfig: [{key: 'KOMF_APPLICATION_YML', defaultValue: ''}],
+                },
+            },
+            core: {},
+        },
+    });
+
+    const komfConfig = warden.getServiceConfig('noona-komf');
+    assert.match(komfConfig.env.KOMF_APPLICATION_YML, /metadataProviders:/);
+    assert.match(komfConfig.env.KOMF_APPLICATION_YML, /aniList:/);
+});
+
+test('startService writes managed Komf application.yml and strips it from container env', async () => {
+    const started = [];
+    const memoryFs = createMemoryFs();
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service) => {
+            started.push(service);
+            return {Id: `${service.name}-container`};
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-komf': {
+                    name: 'noona-komf',
+                    image: 'sndxr/komf:latest',
+                    port: 8085,
+                    env: ['KOMF_KAVITA_BASE_URI=http://noona-kavita:5000'],
+                    user: '1000:1000',
+                },
+            },
+            core: {},
+        },
+    });
+
+    await warden.startService({
+        name: 'noona-komf',
+        image: 'sndxr/komf:latest',
+        port: 8085,
+        env: [
+            'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+            'KOMF_APPLICATION_YML=metadataProviders:\n  defaultProviders:\n    mal:\n      enabled: true',
+        ],
+        user: '1000:1000',
+    });
+
+    const komfStart = started[0];
+    assert.ok(komfStart, 'Komf should be started');
+    assert.ok(!komfStart.env.some((entry) => entry.startsWith('KOMF_APPLICATION_YML=')));
+
+    const writtenPath = path.join('/srv/noona', 'komf', 'config', 'application.yml');
+    assert.match(memoryFs.files.get(path.normalize(writtenPath)) || '', /metadataProviders:/);
+    assert.match(memoryFs.files.get(path.normalize(writtenPath)) || '', /mal:/);
 });
 
 test('startService pulls, runs, waits, and captures history when container is absent', async () => {
