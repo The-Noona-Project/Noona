@@ -2,6 +2,7 @@
 
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 
+const DEFAULT_PROXY_TIMEOUT_MS = 10000;
 const buildError = (status, message, details) => ({status, message, details});
 
 const normalizeError = (error, fallbackStatus = 500) => {
@@ -38,6 +39,39 @@ const describeKavitaRole = (role) => {
 };
 
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
+const normalizeAbsoluteHttpUrl = (value) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return null;
+        }
+
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+};
+const normalizePositiveInteger = (value, fallback = null) => {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        return fallback;
+    }
+
+    return parsed;
+};
+const createAbortController = (timeoutMs = DEFAULT_PROXY_TIMEOUT_MS) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return {
+        controller,
+        cleanup: () => clearTimeout(timer),
+    };
+};
 
 const normalizeDistinctStrings = (...values) => {
     const seen = new Set();
@@ -111,15 +145,119 @@ const normalizeMetadataRouteError = (error, action) => {
     );
 };
 
+const buildPortalCoverUrl = (config = {}, titleUuid = '') => {
+    const normalizedUuid = normalizeString(titleUuid);
+    if (!normalizedUuid) {
+        return null;
+    }
+
+    const serviceName = normalizeString(config?.serviceName) || 'noona-portal';
+    const port = normalizePositiveInteger(config?.port, 3003);
+    try {
+        return new URL(
+            `/api/portal/kavita/title-cover/${encodeURIComponent(normalizedUuid)}`,
+            `http://${serviceName}:${port}`,
+        ).toString();
+    } catch {
+        return null;
+    }
+};
+
+const buildCoverSync = (status, message, extra = {}) => ({
+    status,
+    message,
+    ...extra,
+});
+
+const syncKavitaTitleCover = async ({
+                                        config,
+                                        kavita,
+                                        raven,
+                                        titleUuid,
+                                        seriesId,
+                                    } = {}) => {
+    const normalizedTitleUuid = normalizeString(titleUuid);
+    if (!normalizedTitleUuid) {
+        return buildCoverSync(
+            'skipped',
+            'Applied the selected Kavita metadata match. Moon did not provide a Noona title id, so the Kavita cover was left unchanged.',
+        );
+    }
+
+    if (typeof raven?.getTitle !== 'function') {
+        return buildCoverSync(
+            'failed',
+            'Applied the selected Kavita metadata match, but Portal cannot reach Raven to resolve the Noona cover art.',
+        );
+    }
+
+    if (typeof kavita?.setSeriesCover !== 'function') {
+        return buildCoverSync(
+            'failed',
+            'Applied the selected Kavita metadata match, but this Portal build does not support Kavita cover-art sync.',
+        );
+    }
+
+    const title = await raven.getTitle(normalizedTitleUuid);
+    if (!title) {
+        return buildCoverSync(
+            'failed',
+            `Applied the selected Kavita metadata match, but Noona title ${normalizedTitleUuid} was not found when resolving cover art.`,
+        );
+    }
+
+    const sourceUrl = normalizeAbsoluteHttpUrl(title?.coverUrl);
+    if (!sourceUrl) {
+        return buildCoverSync(
+            'skipped',
+            'Applied the selected Kavita metadata match. This Noona title does not currently have stored cover art, so the Kavita cover was left unchanged.',
+            {
+                titleUuid: normalizedTitleUuid,
+            },
+        );
+    }
+
+    const coverUrl = buildPortalCoverUrl(config, normalizedTitleUuid);
+    if (!coverUrl) {
+        return buildCoverSync(
+            'failed',
+            'Applied the selected Kavita metadata match, but Portal could not build the internal Noona cover-art URL for Kavita.',
+            {
+                titleUuid: normalizedTitleUuid,
+                sourceUrl,
+            },
+        );
+    }
+
+    await kavita.setSeriesCover({
+        seriesId,
+        url: coverUrl,
+        lockCover: true,
+    });
+
+    return buildCoverSync(
+        'applied',
+        'Applied the selected Kavita metadata match and synced the Noona cover art to Kavita.',
+        {
+            titleUuid: normalizedTitleUuid,
+            sourceUrl,
+            url: coverUrl,
+        },
+    );
+};
+
 export const registerPortalRoutes = ({
                                          app,
                                          config,
                                          discord,
                                          kavita,
+                                         raven,
                                          onboardingStore,
                                          vault,
+                                         fetchImpl = fetch,
                                      } = {}) => {
     const kavitaBaseUrl = typeof kavita?.getBaseUrl === 'function' ? kavita.getBaseUrl() : config?.kavita?.baseUrl ?? null;
+    const requestTimeoutMs = normalizePositiveInteger(config?.http?.timeoutMs, DEFAULT_PROXY_TIMEOUT_MS);
 
     app.get('/health', (_req, res) => {
         res.json({
@@ -135,6 +273,65 @@ export const registerPortalRoutes = ({
             baseUrl: kavitaBaseUrl,
             managedService: 'noona-kavita',
         });
+    });
+
+    app.get('/api/portal/kavita/title-cover/:titleUuid', async (req, res) => {
+        const titleUuid = normalizeString(req.params?.titleUuid);
+        if (!titleUuid) {
+            res.status(400).json({error: 'titleUuid is required.'});
+            return;
+        }
+
+        if (typeof raven?.getTitle !== 'function') {
+            res.status(503).json({error: 'Raven cover lookup is not available.'});
+            return;
+        }
+
+        try {
+            const title = await raven.getTitle(titleUuid);
+            if (!title) {
+                res.status(404).json({error: 'Title was not found.'});
+                return;
+            }
+
+            const coverUrl = normalizeAbsoluteHttpUrl(title?.coverUrl);
+            if (!coverUrl) {
+                res.status(404).json({error: 'Title cover art is not available.'});
+                return;
+            }
+
+            const {controller, cleanup} = createAbortController(requestTimeoutMs);
+
+            try {
+                const upstream = await fetchImpl(coverUrl, {
+                    method: 'GET',
+                    headers: {
+                        Accept: 'image/*,*/*;q=0.8',
+                    },
+                    redirect: 'follow',
+                    signal: controller.signal,
+                });
+
+                if (!upstream.ok) {
+                    res.status(502).json({error: `Unable to load Noona cover art (HTTP ${upstream.status}).`});
+                    return;
+                }
+
+                const contentType = normalizeString(upstream.headers?.get?.('content-type')) || 'application/octet-stream';
+                const cacheControl = normalizeString(upstream.headers?.get?.('cache-control')) || 'public, max-age=3600';
+                const payload = Buffer.from(await upstream.arrayBuffer());
+
+                res.set('Content-Type', contentType);
+                res.set('Cache-Control', cacheControl);
+                res.send(payload);
+            } finally {
+                cleanup();
+            }
+        } catch (error) {
+            const normalized = normalizeError(error, 502);
+            errMSG(`[Portal] Failed to proxy Noona cover art for ${titleUuid}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
     });
 
     app.post('/api/portal/kavita/libraries/ensure', async (req, res) => {
@@ -259,11 +456,34 @@ export const registerPortalRoutes = ({
                 malId: req.body?.malId,
                 cbrId: req.body?.cbrId,
             });
+            let coverSync = buildCoverSync(
+                'skipped',
+                'Applied the selected Kavita metadata match. Kavita cover art was left unchanged.',
+            );
+
+            try {
+                coverSync = await syncKavitaTitleCover({
+                    config,
+                    kavita,
+                    raven,
+                    titleUuid: req.body?.titleUuid,
+                    seriesId: parsedSeriesId,
+                });
+            } catch (error) {
+                const normalized = normalizeError(error, 502);
+                errMSG(`[Portal] Failed to sync Kavita cover art for series ${parsedSeriesId}: ${normalized.message}`);
+                coverSync = buildCoverSync(
+                    'failed',
+                    `Applied the selected Kavita metadata match, but Noona cover sync failed: ${normalized.message}`,
+                );
+            }
 
             res.json({
                 success: true,
                 seriesId: parsedSeriesId,
                 result: result ?? null,
+                message: coverSync.message,
+                coverSync,
             });
         } catch (error) {
             const normalized = normalizeMetadataRouteError(error, 'apply');

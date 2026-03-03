@@ -6,6 +6,23 @@ const DEFAULT_TIMEOUT = 10000;
 
 const serializeBody = body => (body == null ? undefined : JSON.stringify(body));
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+const normalizeAbsoluteHttpUrl = value => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return null;
+        }
+
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+};
 const normalizeFolderPath = value => {
     const normalized = normalizeString(value).replace(/\\/g, '/');
     if (!normalized) {
@@ -387,6 +404,27 @@ export const createKavitaClient = ({
         });
     };
 
+    const setSeriesCover = async ({seriesId, url, lockCover = true} = {}) => {
+        const parsedSeriesId = Number.parseInt(String(seriesId), 10);
+        if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
+            throw new Error('A valid Kavita series id is required to update cover art.');
+        }
+
+        const normalizedUrl = normalizeAbsoluteHttpUrl(url);
+        if (!normalizedUrl) {
+            throw new Error('A valid absolute http(s) cover-art URL is required to update a Kavita series cover.');
+        }
+
+        return request('/api/Upload/series', {
+            method: 'POST',
+            body: {
+                id: parsedSeriesId,
+                url: normalizedUrl,
+                lockCover: Boolean(lockCover),
+            },
+        });
+    };
+
     const scanLibrary = async (libraryId, {force = false} = {}) => {
         const parsedLibraryId = Number.parseInt(String(libraryId), 10);
         if (!Number.isInteger(parsedLibraryId) || parsedLibraryId < 1) {
@@ -752,6 +790,7 @@ export const createKavitaClient = ({
         searchTitles,
         fetchSeriesMetadataMatches,
         applySeriesMetadataMatch,
+        setSeriesCover,
         ensureLibrary,
         updateLibrary,
         scanLibrary,

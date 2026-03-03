@@ -76,6 +76,7 @@ const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
+const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
 const LEGACY_SERVICE_NAME_ALIASES = new Map([
@@ -366,6 +367,8 @@ function parseImageReference(image) {
 
 const timestamp = () => new Date().toISOString();
 
+const TRUTHY_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const FALSY_BOOLEAN_VALUES = new Set(['0', 'false', 'no', 'off']);
 const TRUTHY_DEBUG_VALUES = new Set(['1', 'true', 'yes', 'on', 'super']);
 const NOONA_CONTAINER_NAME_PATTERN = /(^|[._-])noona-[a-z0-9-]+([._-]\d+)?$/i;
 const NOONA_WARDEN_CONTAINER_PATTERN = /(^|[._-])noona-warden([._-]\d+)?$/i;
@@ -387,6 +390,33 @@ const isDebugFlagEnabled = (value) => {
             return false;
         }
         return TRUTHY_DEBUG_VALUES.has(normalized);
+    }
+
+    return false;
+};
+
+const isBooleanFlagEnabled = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return value > 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) {
+            return false;
+        }
+
+        if (TRUTHY_BOOLEAN_VALUES.has(normalized)) {
+            return true;
+        }
+
+        if (FALSY_BOOLEAN_VALUES.has(normalized)) {
+            return false;
+        }
     }
 
     return false;
@@ -421,8 +451,8 @@ export function createWarden(options = {}) {
     const baseLogger = createDefaultLogger(loggerOption);
     const serviceCatalog = createServiceCatalog(services);
     const fsModule = fsOption || fs;
-    const serviceName = env.SERVICE_NAME || 'noona-warden';
-    const wardenHistoryNames = Array.from(new Set(['noona-warden', serviceName].filter(Boolean)));
+    const serviceName = env.SERVICE_NAME || WARDEN_CONFIG_SERVICE_NAME;
+    const wardenHistoryNames = Array.from(new Set([WARDEN_CONFIG_SERVICE_NAME, serviceName].filter(Boolean)));
     let recordWardenHistoryLog = null;
     const logger = {
         ...baseLogger,
@@ -457,8 +487,6 @@ export function createWarden(options = {}) {
     let runtimeDebug = DEBUG;
     setLoggerDebug(isDebugFlagEnabled(runtimeDebug));
     const hostServiceBase = resolveHostServiceBase(env);
-    const hostServiceHost = resolveHostServiceHost(env);
-    const serverIp = resolveServerIp(env);
     const bootOrder = superBootOrderOption || [
         'noona-mongo',
         'noona-redis',
@@ -2335,6 +2363,10 @@ export function createWarden(options = {}) {
     };
 
     const buildServiceConfigSettingsKey = (name) => `${SERVICE_CONFIG_SETTINGS_KEY_PREFIX}${name}`;
+    const supportsRuntimeConfigTarget = (name) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        return normalizedName === WARDEN_CONFIG_SERVICE_NAME || serviceCatalog.has(normalizedName);
+    };
 
     const parsePersistedServiceConfigName = (document = {}) => {
         const directName = normalizeManagedServiceName(document?.service);
@@ -2435,7 +2467,7 @@ export function createWarden(options = {}) {
         const loaded = [];
         for (const document of documents) {
             const candidateName = parsePersistedServiceConfigName(document);
-            if (!candidateName || !serviceCatalog.has(candidateName)) {
+            if (!candidateName || !supportsRuntimeConfigTarget(candidateName)) {
                 continue;
             }
 
@@ -2471,6 +2503,15 @@ export function createWarden(options = {}) {
         };
     };
 
+    const resolveWardenRuntimeEnv = () => ({
+        ...env,
+        ...resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME).env,
+    });
+    const resolveCurrentHostServiceBase = () => resolveHostServiceBase(resolveWardenRuntimeEnv());
+    const resolveCurrentHostServiceHost = () => resolveHostServiceHost(resolveWardenRuntimeEnv());
+    const resolveCurrentServerIp = () => resolveServerIp(resolveWardenRuntimeEnv());
+    const resolveCurrentAutoUpdatesEnabled = () => isBooleanFlagEnabled(resolveWardenRuntimeEnv().AUTO_UPDATES);
+
     const writeRuntimeConfig = (name, next = {}) => {
         const normalizedName = normalizeManagedServiceName(name);
         const envOverrides = normalizeEnvOverrideMap(next.env);
@@ -2501,20 +2542,21 @@ export function createWarden(options = {}) {
         const protocol = protocolMatch?.[1]?.toLowerCase() ?? null;
 
         if (protocol && protocol !== 'http' && protocol !== 'https') {
-            return `${protocol}://${hostServiceHost}:${normalizedPort}`;
+            return `${protocol}://${resolveCurrentHostServiceHost()}:${normalizedPort}`;
         }
 
-        return `${hostServiceBase}:${normalizedPort}`;
+        return `${resolveCurrentHostServiceBase()}:${normalizedPort}`;
     };
 
     const applyServerIpEnv = (descriptor) => {
-        if (!descriptor || !serverIp) {
+        const currentServerIp = resolveCurrentServerIp();
+        if (!descriptor || !currentServerIp) {
             return descriptor;
         }
 
         return {
             ...descriptor,
-            env: upsertEnvEntry(descriptor.env, 'SERVER_IP', serverIp),
+            env: upsertEnvEntry(descriptor.env, 'SERVER_IP', currentServerIp),
         };
     };
 
@@ -2549,7 +2591,7 @@ export function createWarden(options = {}) {
             ...descriptor,
             port: webGuiPort,
             internalPort: webGuiPort,
-            hostServiceUrl: `${hostServiceBase}:${webGuiPort}`,
+            hostServiceUrl: `${resolveCurrentHostServiceBase()}:${webGuiPort}`,
             health: `http://noona-moon:${webGuiPort}/`,
             exposed: {[`${webGuiPort}/tcp`]: {}},
             ports: {[`${webGuiPort}/tcp`]: [{HostPort: String(webGuiPort)}]},
@@ -2852,6 +2894,9 @@ export function createWarden(options = {}) {
         requiredServices,
         readManagedKomfConfigFile,
         resetInstallationTracking,
+        resolveCurrentHostServiceBase,
+        resolveCurrentAutoUpdatesEnabled,
+        resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
         runtimeDebugState,
@@ -2895,12 +2940,14 @@ export function createWarden(options = {}) {
         isPersistedServiceRuntimeConfigLoaded: () => persistedServiceRuntimeConfigLoadedState.value,
         loadPersistedServiceRuntimeConfig,
         logger,
+        minimalServiceNames,
         networkName,
         normalizeHostPort,
         orderServicesForLifecycle,
         parseEnvEntries,
         processExit,
         requiredServiceSet,
+        resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
         serviceCatalog,
         startServiceUpdateTimer,

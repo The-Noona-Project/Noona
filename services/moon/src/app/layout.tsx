@@ -5,7 +5,7 @@ import "@/resources/custom.css";
 import classNames from "classnames";
 
 import {Background, Column, Flex, Meta, opacity, RevealFx, SpacingToken,} from "@once-ui-system/core";
-import {Footer, Header, Providers, RouteGuard} from "@/components";
+import {AppShell, Providers, RouteGuard} from "@/components";
 import {moonDataStyle, moonEffects, moonFonts, moonSite, moonTheme} from "@/resources";
 import {resolveMoonBaseUrl} from "@/utils/webGui";
 
@@ -87,9 +87,15 @@ export default async function RootLayout({
                       root.setAttribute('data-' + key, value);
                     }
                   });
+
+                  const savedViewMode = localStorage.getItem('moon-view-mode');
+                  const resolvedViewMode =
+                    savedViewMode === 'ultrawide' || savedViewMode === 'mobile' ? savedViewMode : 'desktop';
+                  root.setAttribute('data-moon-view-mode', resolvedViewMode);
                 } catch (e) {
                   console.error('Failed to initialize theme:', e);
                   document.documentElement.setAttribute('data-theme', 'dark');
+                  document.documentElement.setAttribute('data-moon-view-mode', 'desktop');
                 }
               })();
             `,
@@ -148,14 +154,11 @@ export default async function RootLayout({
                             }}
                         />
                     </RevealFx>
-                    <Flex fillWidth minHeight="16" s={{hide: true}}/>
-                    <Header/>
-                    <Flex zIndex={0} fillWidth padding="l" horizontal="center" flex={1}>
-                        <Flex horizontal="center" fillWidth minHeight="0">
+                    <Flex zIndex={0} fillWidth flex={1} minHeight="0">
+                        <AppShell>
                             <RouteGuard>{children}</RouteGuard>
-                        </Flex>
+                        </AppShell>
                     </Flex>
-                    <Footer/>
                 </Column>
             </Providers>
         </Flex>

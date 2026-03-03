@@ -97,6 +97,7 @@ export const startPortal = async (overrides = {}) => {
         config,
         discord,
         kavita,
+        raven,
         vault,
         onboardingStore,
     });

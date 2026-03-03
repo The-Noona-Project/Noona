@@ -296,7 +296,13 @@ export function SetupSummaryPage() {
     };
 
     return (
-        <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
+        <Column
+            fillWidth
+            horizontal="center"
+            gap="16"
+            paddingY="24"
+            style={{maxWidth: "var(--moon-page-max-width, 116rem)"}}
+        >
             <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
                 <Column gap="16">
                     <Column gap="8">

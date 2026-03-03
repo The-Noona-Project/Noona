@@ -1,7 +1,8 @@
 # Moon (Noona Stack 2.2)
 
 Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary tabs (`/libraries`, `/downloads`,
-`/settings`), setup and auth flows, and the Noona-only service proxy routes consumed by the frontend.
+the `/settings/*` route family), setup and auth flows, and the Noona-only service proxy routes consumed by the
+frontend.
 
 ## Quick Navigation
 
@@ -16,7 +17,9 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Downloads page route](src/app/downloads/page.tsx)
 - [Downloads modal](src/components/noona/DownloadsAddModal.tsx)
 - [Rebooting page route](src/app/rebooting/page.tsx)
-- [Settings page route](src/app/settings/page.tsx)
+- [Settings landing redirect](src/app/settings/page.tsx)
+- [Settings route group](src/app/settings/[...slug]/page.tsx)
+- [Settings navigation components](src/components/noona/settings/)
 - [Setup wizard route](src/app/setupwizard/page.tsx)
 - [Setup summary route](src/app/setupwizard/summary/page.tsx)
 - [Discord callback route](src/app/discord/callback/page.tsx)
@@ -26,6 +29,7 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - [Shared config editor styles](src/components/noona/ConfigEditor.module.scss)
 - [Setup summary component](src/components/noona/SetupSummaryPage.tsx)
 - [Discord callback component](src/components/noona/DiscordCallbackPage.tsx)
+- [App shell](src/components/AppShell.tsx)
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
 - [Noona API routes](src/app/api/noona/)
@@ -50,12 +54,16 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
 - `/rebooting` - Internal transition screen used by Warden `Update all`. It keeps a dedicated reboot monitor open,
   retries interrupted service-image updates after Moon comes back, and shows live service health while the stack
   settles.
-- `/settings` - Service control for managed services with explicit save/restart actions, Portal join-default pickers
-  plus Kavita role guidance, Discord access settings, Portal subtabs for `Discord`, `Kavita`, and `Komf`, a managed
-  Komf `/config/application.yml` editor, ecosystem restart controls, Warden image-update tooling with single-service
-  and update-all actions, Vault-backed persistence for service overrides in `noona_settings`, vault tools, a direct
-  Redis Stack Web UI link from the Vault tab using Warden's host-facing service URL metadata, default permissions for
-  first-time Discord sign-ins, per-thread Raven speed limits, and diagnostics.
+- `/settings/*` - Route-based settings pages such as `/settings/general`, `/settings/moon`, `/settings/raven`,
+  `/settings/usermanagement`, and `/settings/portal/discord`. These pages provide service control for managed
+  services with explicit save/restart actions, Portal join-default pickers plus Kavita role guidance, Discord access
+  settings, Portal subpages for `Discord`, `Kavita`, and `Komf`, a managed Komf `/config/application.yml` editor with
+  provider ordering/toggles plus inline `malClientId` and `comicVineApiKey` fields when those providers are enabled,
+  ecosystem restart controls, a Warden runtime-settings panel for `SERVER_IP` host-facing links plus the
+  `AUTO_UPDATES` startup-image toggle, Warden image-update tooling with single-service and update-all actions,
+  Vault-backed persistence for service overrides in `noona_settings`,
+  vault tools, a direct Redis Stack Web UI link from the Vault page using Warden's host-facing service URL metadata,
+  default permissions for first-time Discord sign-ins, per-thread Raven speed limits, and diagnostics.
   Successful self-permission edits now update the local user-management state first so Moon does not report a false
   save failure when the change intentionally removes that account's `user_management` access. The Moon permission
   editor now exposes the canonical `library_management` and `download_management` roles while still normalizing the
@@ -90,10 +98,14 @@ Moon is the Noona web GUI built with Next.js and Once UI. It renders the primary
   sign-in-or-create-account screen, the main tab bar is hidden there, and first-time Discord sign-in creates the user
   from Sage's default permission template.
 - Title detail pages now surface Kavita series links plus metadata match actions, and the footer prefers Warden's
-  host-facing managed Kavita URL before falling back to Portal's configured external Kavita base URL.
-- The header now keeps `Settings` inside the top-right account bubble with the user's Discord avatar and a `Logout`
-  action instead of showing `Settings` in the main tab strip. Moon also suppresses the setup/main navigation pill until
-  setup status resolves so completed stacks do not briefly flash the Setup tab on first load.
+  host-facing managed Kavita URL before falling back to Portal's configured external Kavita base URL. The title-page
+  `Open in Kavita` action now also rebuilds the series link from Warden's host-facing `noona-kavita` URL so the
+  button follows the configured `SERVER_IP`. Applying a Kavita metadata match from the title page now also sends the
+  Raven title UUID so Portal can lock Kavita to the same Noona cover art that Moon is rendering for that title.
+- Moon now uses a permission-aware sitewide sidebar for `Home`, `Library`, `Downloads`, and `Settings` instead of the
+  old top tab strip. Settings keeps its own nested settings-only sub-navigation inside the page content, and the
+  sidebar footer area now holds the light/dark theme toggle plus a three-mode viewport switch for `desktop`,
+  `ultrawide`, and `mobile` framing.
 
 ## API Proxy Surface (Moon -> Backend Services)
 

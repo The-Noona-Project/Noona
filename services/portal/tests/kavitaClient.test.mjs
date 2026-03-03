@@ -485,3 +485,34 @@ test('applySeriesMetadataMatch sends provider ids to Kavita update-match endpoin
     assert.equal(requestUrl.searchParams.get('aniListId'), '151807');
     assert.equal(calls[0].options.method, 'POST');
 });
+
+test('setSeriesCover sends the Noona cover URL to Kavita upload endpoint', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => '',
+            };
+        },
+    });
+
+    await kavita.setSeriesCover({
+        seriesId: 42,
+        url: 'http://noona-portal:3003/api/portal/kavita/title-cover/title-1',
+    });
+
+    const requestUrl = new URL(calls[0].url);
+    assert.equal(requestUrl.pathname, '/api/Upload/series');
+    assert.equal(calls[0].options.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        id: 42,
+        url: 'http://noona-portal:3003/api/portal/kavita/title-cover/title-1',
+        lockCover: true,
+    });
+});

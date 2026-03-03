@@ -37,6 +37,8 @@ default Discord roles.
 - `GET /health` - process health and guild metadata.
 - `GET /api/portal/kavita/info` - return the configured Kavita base URL and managed-service hint for Moon footer links.
 - `GET /api/portal/kavita/title-search` - search Kavita series and return direct Kavita title URLs for Moon title pages.
+- `GET /api/portal/kavita/title-cover/:titleUuid` - proxy the stored Noona cover art for a Raven title so Kavita can
+  download and lock the same cover image Moon displays.
 - `POST /api/portal/kavita/libraries/ensure` - idempotently create or reuse a Kavita library for Raven-managed media
   folders and merge in any missing Raven folder roots on existing libraries.
 - `POST /api/portal/kavita/libraries/scan` - resolve a Kavita library by name and trigger a scan for Raven-managed
@@ -44,8 +46,9 @@ default Discord roles.
 - `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id. Managed Komf /
   Kavita server failures return a compact operator-facing `500` that points at Komf `application.yml` instead of
   echoing the raw upstream payload.
-- `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series. Managed Komf
-  / Kavita server failures return the same compact operator-facing `500` guidance.
+- `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series and, when Moon
+  supplies the Raven `titleUuid`, immediately lock Kavita to the same Noona cover art through the `title-cover`
+  proxy route. Managed Komf / Kavita server failures return the same compact operator-facing `500` guidance.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
   picker.
 - `POST /api/portal/onboard` - create a Kavita user, store an onboarding token, and optionally persist the credential.

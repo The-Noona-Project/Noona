@@ -100,7 +100,13 @@ export function HomePage() {
     return (
         <SetupModeGate>
             <AuthGate>
-                <Column maxWidth="l" horizontal="center" gap="24" paddingY="24">
+                <Column
+                    fillWidth
+                    horizontal="center"
+                    gap="24"
+                    paddingY="24"
+                    style={{maxWidth: "var(--moon-page-max-width-narrow, 76rem)"}}
+                >
                     <Column gap="8" horizontal="center" align="center">
                         <Heading variant="display-strong-s" wrap="balance">
                             Noona Moon

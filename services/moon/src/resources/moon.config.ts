@@ -24,7 +24,7 @@ export const moonRoutes = {
     "/settings": true,
 } as const;
 
-export const moonDynamicRoutePrefixes = ["/libraries"] as const;
+export const moonDynamicRoutePrefixes = ["/libraries", "/settings"] as const;
 
 export const moonShell = {
     showTime: true,

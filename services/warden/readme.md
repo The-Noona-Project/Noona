@@ -39,8 +39,10 @@ cd services/warden
 DEBUG=super node initWarden.mjs
 ```
 
-When setup has been completed, normal Warden boot now restores the persisted setup selection in lifecycle order
-instead of blindly starting every registered service.
+When setup has been completed, normal Warden boot restores the configured stack in lifecycle order instead of blindly
+starting every registered service. If the Vault-backed setup state is unavailable during boot, Warden now falls back
+to the installed managed containers it detects through Docker so a post-setup restart does not drop back to minimal
+mode.
 
 ## Main API Endpoints
 
@@ -61,6 +63,7 @@ instead of blindly starting every registered service.
 | `DEBUG`            | Boot profile + log verbosity                                                                         | `false`                                                   |
 | `WARDEN_API_PORT`  | Warden API listen port                                                                               | `4001`                                                    |
 | `SERVER_IP`        | Optional LAN IP/hostname Warden uses for host-facing service URLs and shared runtime env             | unset                                                     |
+| `AUTO_UPDATES`     | Pull newer images during Warden startup and restart installed services whose image changed           | `false`                                                   |
 | `HOST_SERVICE_URL` | Explicit host-facing URL prefix override used in generated links (takes precedence over `SERVER_IP`) | `http://localhost`                                        |
 | `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders                | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
 | `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                                         | `3000`                                                    |
@@ -89,6 +92,11 @@ instead of blindly starting every registered service.
   root and inject `NOONA_LOG_DIR` so each service writes a persistent `latest.log` file outside the container.
 - Set `SERVER_IP` on the Warden process when Moon and setup summaries should advertise a real LAN address such as
   `http://192.168.1.25:<port>` instead of `localhost`, and Warden will also pass that value into managed service env.
+  Moon's `/settings/warden` page can now persist runtime `SERVER_IP` and `AUTO_UPDATES` overrides into
+  `noona_settings`, and Warden uses those saved values immediately when it builds host-facing service URLs and decides
+  whether to pull/apply newer images during startup.
+- When `AUTO_UPDATES` resolves to `true`, Warden checks the startup target services for newer images during boot. It
+  restarts installed services whose image changed, so startup can take longer than a normal boot.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
 - Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
@@ -112,6 +120,9 @@ instead of blindly starting every registered service.
   can publish live Noona activity from Raven downloads/checks and Warden service updates.
 - The managed Komf descriptor is now Kavita-only in setup flows. Warden no longer publishes optional Komga credentials
   in `komf` env metadata, so Moon setup only prompts for the Kavita-linked Komf fields that Noona actually uses.
+- Warden's managed Komf `application.yml` template now includes `malClientId` and `comicVineApiKey` slots plus a
+  safer provider list where credentialed providers such as `mal` and `comicVine` start disabled until Moon's Komf
+  settings editor is used to enable them with valid credentials.
 - The Portal descriptor in [docker/noonaDockers.mjs](docker/noonaDockers.mjs) now includes `PORTAL_JOIN_DEFAULT_ROLES`
   and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab. Managed
   installs default those values to `*,-admin` and `*`, and Warden injects Portal's Vault credential through the

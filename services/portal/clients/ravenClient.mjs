@@ -76,9 +76,10 @@ export const createPortalRavenClient = ({
         cachedCandidates = [preferred, ...candidates.filter((entry) => entry !== preferred)];
     };
 
-    const request = async (path) => {
+    const request = async (path, {acceptStatuses = []} = {}) => {
         const candidates = buildCandidates();
         const errors = [];
+        const accepted = new Set([200, 201, 202, 204, ...acceptStatuses]);
 
         for (const candidate of candidates) {
             const {controller, cleanup} = createAbortController(timeoutMs);
@@ -92,7 +93,7 @@ export const createPortalRavenClient = ({
                     signal: controller.signal,
                 });
 
-                if (!response.ok) {
+                if (!accepted.has(response.status)) {
                     const payload = await parseResponsePayload(response);
                     const error = new Error(`Raven responded with status ${response.status}`);
                     error.status = response.status;
@@ -101,6 +102,10 @@ export const createPortalRavenClient = ({
                 }
 
                 promoteCandidate(candidate, candidates);
+                if (response.status === 404) {
+                    return null;
+                }
+
                 return await parseResponsePayload(response);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -116,6 +121,14 @@ export const createPortalRavenClient = ({
 
     return {
         getDownloadSummary: async () => await request('/v1/download/status/summary'),
+        getTitle: async (uuid) => {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : '';
+            if (!normalized) {
+                throw new Error('uuid is required.');
+            }
+
+            return await request(`/v1/library/title/${encodeURIComponent(normalized)}`, {acceptStatuses: [404]});
+        },
     };
 };
 

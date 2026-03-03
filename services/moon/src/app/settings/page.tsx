@@ -1,22 +1,11 @@
-import {Suspense} from "react";
-import {Meta} from "@once-ui-system/core";
-import {SettingsPage} from "@/components/noona/SettingsPage";
-import {resolveMoonBaseUrl} from "@/utils/webGui";
+import {redirect} from "next/navigation";
+import {resolveLegacySettingsHref} from "@/components/noona/settings";
 
-export async function generateMetadata() {
-    return Meta.generate({
-        title: "Noona Settings",
-        description: "Configure Noona behavior.",
-        baseURL: resolveMoonBaseUrl(),
-        path: "/settings",
-        image: "/favicon.ico",
-    });
-}
+type SettingsRootPageProps = {
+    searchParams: Promise<{ tab?: string | string[] }>;
+};
 
-export default function Settings() {
-    return (
-        <Suspense fallback={null}>
-            <SettingsPage/>
-        </Suspense>
-    );
+export default async function SettingsRootPage({searchParams}: SettingsRootPageProps) {
+    const resolvedSearchParams = await searchParams;
+    redirect(resolveLegacySettingsHref(resolvedSearchParams?.tab));
 }

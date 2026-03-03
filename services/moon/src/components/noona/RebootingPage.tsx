@@ -58,7 +58,7 @@ type ServiceMonitorEntry = {
 const POLL_INTERVAL_MS = 2500;
 const REBOOT_TIMEOUT_MS = 12 * 60 * 1000;
 const STABILITY_POLLS_REQUIRED = 2;
-const RETURN_TO_DEFAULT = "/settings?tab=warden";
+const RETURN_TO_DEFAULT = "/settings/warden";
 const CORE_SERVICES = ["noona-warden", "noona-vault", "noona-moon", "noona-sage"] as const;
 const CORE_SERVICE_SET = new Set<string>(CORE_SERVICES);
 const DETAIL_PREVIEW_LIMIT = 180;

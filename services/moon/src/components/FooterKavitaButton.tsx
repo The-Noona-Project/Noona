@@ -2,17 +2,10 @@
 
 import {useEffect, useState} from "react";
 import {Button} from "@once-ui-system/core";
+import {fetchManagedServiceHostUrl} from "@/utils/kavitaLinks";
 
 type KavitaInfoResponse = {
     baseUrl?: string | null;
-};
-
-type ServicesResponse = {
-    services?: Array<{
-        hostServiceUrl?: string | null;
-        installed?: boolean | null;
-        name?: string | null;
-    }> | null;
 };
 
 const normalizeUrl = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -34,21 +27,9 @@ export function FooterKavitaButton() {
         };
 
         const load = async () => {
-            try {
-                const response = await fetch("/api/noona/services", {cache: "no-store"});
-                const payload = (await response.json().catch(() => null)) as ServicesResponse | null;
-                if (response.ok && !cancelled) {
-                    const services = Array.isArray(payload?.services) ? payload.services : [];
-                    const managedKavita = services.find((entry) =>
-                        normalizeUrl(entry?.name) === "noona-kavita" && entry?.installed === true,
-                    );
-
-                    if (setIfAvailable(managedKavita?.hostServiceUrl)) {
-                        return;
-                    }
-                }
-            } catch {
-                // Fall back to Portal's configured Kavita URL below.
+            const managedKavitaUrl = await fetchManagedServiceHostUrl("noona-kavita");
+            if (setIfAvailable(managedKavitaUrl)) {
+                return;
             }
 
             try {

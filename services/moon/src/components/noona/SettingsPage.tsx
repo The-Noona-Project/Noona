@@ -1,8 +1,8 @@
 "use client";
 
 import {useEffect, useMemo, useState} from "react";
-import {useSearchParams} from "next/navigation";
-import {Badge, Button, Card, Column, Heading, Input, Row, Spinner, Text} from "@once-ui-system/core";
+import {useRouter} from "next/navigation";
+import {Badge, Button, Card, Column, Heading, Input, Row, Spinner, Switch, Text} from "@once-ui-system/core";
 import {
     hasMoonPermission as hasPermission,
     MOON_PERMISSION_DESCRIPTIONS,
@@ -15,10 +15,19 @@ import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 import {emitNoonaSiteNotification} from "./SiteNotifications";
 import editorStyles from "./ConfigEditor.module.scss";
-
-type TabId = "general" | "moon" | "raven" | "vault" | "sage" | "warden" | "portal";
-type MainSectionId = "ecosystem" | "users";
-type PortalSettingsSubtabId = "discord" | "kavita" | "komf";
+import {
+    getSettingsHrefForPortalSubtab,
+    KomfApplicationEditor,
+    PORTAL_SETTINGS_SUBTABS,
+    type PortalSettingsSubtabId,
+    SETTINGS_LANDING_HREF,
+    SETTINGS_USER_MANAGEMENT_HREF,
+    type SettingsMainSectionId as MainSectionId,
+    SettingsNavigation,
+    type SettingsRouteSelection,
+    type SettingsTabId as TabId,
+    TAB_LABELS,
+} from "./settings";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -192,17 +201,6 @@ type ServiceEditorState = {
     envDraft: Record<string, string>;
     hostPortDraft: string;
 };
-
-const TAB_ORDER: TabId[] = ["general", "moon", "raven", "vault", "sage", "warden", "portal"];
-const TAB_LABELS: Record<TabId, string> = {
-    general: "General",
-    moon: "Moon",
-    raven: "Raven",
-    vault: "Vault",
-    sage: "Sage",
-    warden: "Warden",
-    portal: "Portal",
-};
 const TAB_SERVICE: Partial<Record<TabId, string>> = {
     moon: "noona-moon",
     raven: "noona-raven",
@@ -243,11 +241,6 @@ const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_ROLE_SCAN",
     "REQUIRED_ROLE_SEARCH",
 ]);
-const PORTAL_SETTINGS_SUBTABS: Array<{ id: PortalSettingsSubtabId; label: string }> = [
-    {id: "discord", label: "Discord"},
-    {id: "kavita", label: "Kavita"},
-    {id: "komf", label: "Komf"},
-];
 const PORTAL_SETTINGS_SERVICES: Record<PortalSettingsSubtabId, string> = {
     discord: "noona-portal",
     kavita: "noona-portal",
@@ -256,8 +249,11 @@ const PORTAL_SETTINGS_SERVICES: Record<PortalSettingsSubtabId, string> = {
 const KOMF_APPLICATION_YML_KEY = "KOMF_APPLICATION_YML";
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-const normalizeTab = (value: string | null | undefined): TabId =>
-    TAB_ORDER.includes(value as TabId) ? (value as TabId) : "general";
+const parseBooleanEnvFlag = (value: unknown): boolean => {
+    const normalized = normalizeString(value).trim().toLowerCase();
+    if (!normalized) return false;
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+};
 const parseError = (payload: unknown, fallback: string): string => {
     if (payload && typeof payload === "object" && "error" in payload) {
         const value = normalizeString((payload as { error?: unknown }).error).trim();
@@ -379,12 +375,15 @@ const BG_SURFACE = "surface" as const;
 const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
 const BG_WARNING_ALPHA_WEAK = "warning-alpha-weak" as const;
 
-export function SettingsPage() {
-    const searchParams = useSearchParams();
-    const [activeTab, setActiveTab] = useState<TabId>(normalizeTab(searchParams.get("tab")));
-    const [portalSubtab, setPortalSubtab] = useState<PortalSettingsSubtabId>("discord");
-    const [activeSection, setActiveSection] = useState<MainSectionId>("ecosystem");
-    const [navOpen, setNavOpen] = useState(false);
+type SettingsPageProps = {
+    selection: SettingsRouteSelection;
+};
+
+export function SettingsPage({selection}: SettingsPageProps) {
+    const router = useRouter();
+    const activeTab = selection.tab;
+    const portalSubtab = selection.portalSubtab;
+    const activeSection: MainSectionId = selection.section;
     const [currentPermissions, setCurrentPermissions] = useState<MoonPermission[]>([]);
     const [authStateLoading, setAuthStateLoading] = useState(true);
 
@@ -516,6 +515,12 @@ export function SettingsPage() {
         : (TAB_SERVICE[activeTab] ?? null);
     const currentEditor = currentService ? (editors[currentService] ?? defaultEditor()) : defaultEditor();
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
+    const wardenEditor = editors["noona-warden"] ?? defaultEditor();
+    const wardenEnvConfig = Array.isArray(wardenEditor.config?.envConfig) ? wardenEditor.config.envConfig : [];
+    const wardenServerIpField = wardenEnvConfig.find((entry) => normalizeString(entry?.key).trim() === "SERVER_IP");
+    const wardenAutoUpdatesField = wardenEnvConfig.find((entry) => normalizeString(entry?.key).trim() === "AUTO_UPDATES");
+    const wardenHostBaseUrl = normalizeString(wardenEditor.config?.hostServiceUrl).trim();
+    const wardenAutoUpdatesEnabled = parseBooleanEnvFlag(wardenEditor.envDraft.AUTO_UPDATES);
     const redisServiceMeta = catalogByName.get("noona-redis") ?? null;
     const redisStackUrl = normalizeString(redisServiceMeta?.hostServiceUrl).trim();
     const ravenThreadCount = useMemo(() => {
@@ -530,12 +535,8 @@ export function SettingsPage() {
     const canManageUsers = hasPermission(currentPermissions, "user_management");
     const canShowNav = canAccessEcosystem || canManageUsers;
 
-    const setTab = (tab: TabId) => {
-        setActiveTab(tab);
-        if (typeof window === "undefined") return;
-        const url = new URL(window.location.href);
-        url.searchParams.set("tab", tab);
-        window.history.replaceState(null, "", `${url.pathname}?${url.searchParams.toString()}`);
+    const navigateToSettings = (href: string) => {
+        router.push(href);
     };
 
     const patchEditor = (serviceName: string, patch: Partial<ServiceEditorState>) => {
@@ -652,9 +653,13 @@ export function SettingsPage() {
         });
     };
 
-    const saveServiceConfig = async (serviceName: string) => {
+    const saveServiceConfig = async (
+        serviceName: string,
+        options: { restart?: boolean; successMessage?: string; onSuccess?: () => Promise<void> | void } = {},
+    ) => {
         const editor = editors[serviceName] ?? defaultEditor();
         const parsedPort = parsePort(editor.hostPortDraft);
+        const shouldRestart = options.restart !== false;
         if (parsedPort === "invalid") {
             patchEditor(serviceName, {error: "Host port must be 1-65535.", message: null});
             return;
@@ -665,7 +670,7 @@ export function SettingsPage() {
             const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/config`, {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({env: editor.envDraft, hostPort: parsedPort, restart: true}),
+                body: JSON.stringify({env: editor.envDraft, hostPort: parsedPort, restart: shouldRestart}),
             });
             const json = await res.json().catch(() => null);
             if (!res.ok) {
@@ -692,8 +697,13 @@ export function SettingsPage() {
                 }
             }
 
-            patchEditor(serviceName, {message: "Saved and restarted service."});
+            patchEditor(serviceName, {
+                message: options.successMessage ?? (shouldRestart ? "Saved and restarted service." : "Saved changes."),
+            });
             await loadServiceConfig(serviceName);
+            if (typeof options.onSuccess === "function") {
+                await options.onSuccess();
+            }
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             patchEditor(serviceName, {error: msg});
@@ -1526,7 +1536,7 @@ export function SettingsPage() {
         if (typeof window !== "undefined") {
             const params = new URLSearchParams({
                 services: services.join(","),
-                returnTo: "/settings?tab=warden",
+                returnTo: "/settings/warden",
             });
             window.location.assign(`/rebooting?${params.toString()}`);
             return;
@@ -1561,20 +1571,16 @@ export function SettingsPage() {
     };
 
     useEffect(() => {
-        setActiveTab(normalizeTab(searchParams.get("tab")));
-    }, [searchParams]);
-
-    useEffect(() => {
         void loadAuthStatus();
     }, []);
 
     useEffect(() => {
-        if (authStateLoading || !canAccessEcosystem) return;
+        if (authStateLoading || !canAccessEcosystem || activeSection !== "ecosystem") return;
         void loadCatalog();
-    }, [authStateLoading, canAccessEcosystem]);
+    }, [activeSection, authStateLoading, canAccessEcosystem]);
 
     useEffect(() => {
-        if (!canAccessEcosystem) return;
+        if (!canAccessEcosystem || activeSection !== "ecosystem") return;
         const serviceName = activeTab === "portal"
             ? PORTAL_SETTINGS_SERVICES[portalSubtab]
             : TAB_SERVICE[activeTab];
@@ -1598,26 +1604,27 @@ export function SettingsPage() {
             void loadPortalJoinOptions();
         }
         if (activeTab === "warden") {
+            void loadServiceConfig("noona-warden");
             void loadUpdates();
         }
-    }, [activeTab, canAccessEcosystem, portalSubtab]);
+    }, [activeSection, activeTab, canAccessEcosystem, portalSubtab]);
 
     useEffect(() => {
-        if (activeTab !== "vault") return;
+        if (activeSection !== "ecosystem" || activeTab !== "vault") return;
         if (!collection.trim()) return;
         void loadDocuments(collection);
-    }, [activeTab, collection]);
+    }, [activeSection, activeTab, collection]);
 
     useEffect(() => {
         if (authStateLoading) return;
         if (activeSection === "ecosystem" && !canAccessEcosystem && canManageUsers) {
-            setActiveSection("users");
+            router.replace(SETTINGS_USER_MANAGEMENT_HREF);
             return;
         }
         if (activeSection === "users" && !canManageUsers && canAccessEcosystem) {
-            setActiveSection("ecosystem");
+            router.replace(SETTINGS_LANDING_HREF);
         }
-    }, [activeSection, authStateLoading, canAccessEcosystem, canManageUsers]);
+    }, [activeSection, authStateLoading, canAccessEcosystem, canManageUsers, router]);
 
     useEffect(() => {
         setDownloadWorkerRateLimits((prev) => normalizeThreadRateLimitDrafts(prev, ravenThreadCount));
@@ -1738,27 +1745,6 @@ export function SettingsPage() {
             }
         };
     }, [factoryResetProgress?.startedAt]);
-
-    useEffect(() => {
-        if (!canShowNav && navOpen) {
-            setNavOpen(false);
-        }
-    }, [canShowNav, navOpen]);
-
-    useEffect(() => {
-        if (!navOpen) return;
-
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                setNavOpen(false);
-            }
-        };
-
-        window.addEventListener("keydown", onKeyDown);
-        return () => {
-            window.removeEventListener("keydown", onKeyDown);
-        };
-    }, [navOpen]);
 
     const renderServiceConfig = () => {
         if (!currentService) return null;
@@ -1930,7 +1916,7 @@ export function SettingsPage() {
                                     <Button
                                         key={entry.id}
                                         variant={portalSubtab === entry.id ? "primary" : "secondary"}
-                                        onClick={() => setPortalSubtab(entry.id)}
+                                        onClick={() => navigateToSettings(getSettingsHrefForPortalSubtab(entry.id))}
                                     >
                                         {entry.label}
                                     </Button>
@@ -1971,11 +1957,19 @@ export function SettingsPage() {
                         )}
                         {!currentEditor.loading && isPortalTab && currentService === "noona-komf" && (
                             <Column gap="12">
-                                {renderFieldBlock(
-                                    "Managed application.yml",
-                                    komfConfigFields,
-                                    "Moon writes this YAML into /config/application.yml before the managed Komf container starts.",
-                                    "komf-config",
+                                {komfConfigFields[0] && (
+                                    <KomfApplicationEditor
+                                        label={normalizeString(komfConfigFields[0].label).trim() || "Managed application.yml"}
+                                        description={komfConfigFields[0].description}
+                                        warning={komfConfigFields[0].warning}
+                                        value={getFieldValue(komfConfigFields[0])}
+                                        defaultValue={normalizeString(komfConfigFields[0].defaultValue)}
+                                        disabled={komfConfigFields[0].readOnly === true}
+                                        showRawEditor={currentEditor.advanced}
+                                        onChange={(nextValue) =>
+                                            updateEnvDraft(currentService, KOMF_APPLICATION_YML_KEY, nextValue)
+                                        }
+                                    />
                                 )}
                                 {renderFieldBlock(
                                     "Komf runtime",
@@ -2412,26 +2406,27 @@ export function SettingsPage() {
     return (
         <SetupModeGate>
             <AuthGate>
-                <Column maxWidth="l" horizontal="center" gap="16" paddingY="24">
+                <Column
+                    fillWidth
+                    horizontal="center"
+                    gap="16"
+                    paddingY="24"
+                    style={{maxWidth: "var(--moon-page-max-width-wide, 124rem)"}}
+                >
                     <Row fillWidth horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                         <Column gap="4">
-                            <Heading variant="display-strong-s">Settings</Heading>
+                            <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                <Heading variant="display-strong-s">Settings</Heading>
+                                <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
+                                    {selection.title}
+                                </Badge>
+                            </Row>
                             <Text onBackground="neutral-weak" wrap="balance">
-                                Manage services, Discord access, updates, and tooling.
+                                {selection.description}
                             </Text>
                         </Column>
                         <Row gap="8" style={{flexWrap: "wrap"}}>
-                            {canShowNav && (
-                                <Button
-                                    variant={navOpen ? "primary" : "secondary"}
-                                    onClick={() => setNavOpen((prev) => !prev)}
-                                    aria-expanded={navOpen}
-                                    aria-controls="settings-navigation"
-                                >
-                                    {navOpen ? "Close navigation" : "Open navigation"}
-                                </Button>
-                            )}
-                            {canAccessEcosystem && (
+                            {canAccessEcosystem && activeSection === "ecosystem" && (
                                 <Button variant="secondary" disabled={catalogLoading}
                                         onClick={() => void loadCatalog()}>
                                     Refresh services
@@ -2440,86 +2435,19 @@ export function SettingsPage() {
                         </Row>
                     </Row>
 
-                    <Row fillWidth gap="16" vertical="start">
-                        {navOpen && (
-                            <Row
-                                fill
-                                style={{
-                                    position: "fixed",
-                                    inset: 0,
-                                    background: "rgba(15, 23, 42, 0.45)",
-                                    zIndex: 30,
-                                }}
-                                onClick={() => setNavOpen(false)}
-                                aria-hidden
+                    <Row fillWidth gap="16" vertical="start" style={{minWidth: 0}} s={{direction: "column"}}>
+                        {canShowNav && (
+                            <SettingsNavigation
+                                activeSection={activeSection}
+                                activeTab={activeTab}
+                                portalSubtab={portalSubtab}
+                                canAccessEcosystem={canAccessEcosystem}
+                                canManageUsers={canManageUsers}
+                                onNavigate={navigateToSettings}
                             />
                         )}
-                        {canShowNav && (
-                            <Row
-                                id="settings-navigation"
-                                style={{
-                                    position: "fixed",
-                                    inset: "0 auto 0 0",
-                                    width: "min(20rem, 92vw)",
-                                    padding: "1rem",
-                                    zIndex: 40,
-                                    transform: navOpen ? "translateX(0)" : "translateX(-105%)",
-                                    transition: "transform 220ms ease",
-                                    pointerEvents: navOpen ? "auto" : "none",
-                                }}
-                                aria-hidden={!navOpen}
-                            >
-                                <Card
-                                    fillWidth
-                                    background={BG_SURFACE}
-                                    border="neutral-alpha-weak"
-                                    padding="m"
-                                    radius="l"
-                                    style={{
-                                        height: "fit-content",
-                                        maxHeight: "calc(100dvh - 2rem)",
-                                        overflowY: "auto",
-                                        boxShadow: "0 20px 48px rgba(15, 23, 42, 0.28)",
-                                    }}
-                                >
-                                    <Column gap="8">
-                                        <Row horizontal="between" vertical="center" gap="8">
-                                            <Text variant="label-default-s" onBackground="neutral-weak">
-                                                Navigation
-                                            </Text>
-                                            <Button size="s" variant="secondary" onClick={() => setNavOpen(false)}>
-                                                Close
-                                            </Button>
-                                        </Row>
-                                        {canAccessEcosystem && (
-                                            <Button
-                                                fillWidth
-                                                variant={activeSection === "ecosystem" ? "primary" : "secondary"}
-                                                onClick={() => {
-                                                    setActiveSection("ecosystem");
-                                                    setNavOpen(false);
-                                                }}
-                                            >
-                                                Ecosystem Settings
-                                            </Button>
-                                        )}
-                                        <Button
-                                            fillWidth
-                                            variant={activeSection === "users" ? "primary" : "secondary"}
-                                            disabled={!canManageUsers}
-                                            onClick={() => {
-                                                setActiveSection("users");
-                                                setNavOpen(false);
-                                            }}
-                                        >
-                                            User Management
-                                        </Button>
-                                    </Column>
-                                </Card>
-                            </Row>
-                        )}
 
-                        <Column fillWidth gap="16">
+                        <Column fillWidth gap="16" style={{flex: "1 1 40rem", minWidth: 0}}>
                             {activeSection === "ecosystem" && canAccessEcosystem && (
                                 <>
                                     {catalogError &&
@@ -2531,15 +2459,6 @@ export function SettingsPage() {
                                     {globalMessage &&
                                         <Text onBackground="neutral-weak"
                                               variant="body-default-xs">{globalMessage}</Text>}
-
-                                    <Row gap="8" style={{flexWrap: "wrap"}}>
-                                        {TAB_ORDER.map((tab) => (
-                                            <Button key={tab} variant={activeTab === tab ? "primary" : "secondary"}
-                                                    onClick={() => setTab(tab)}>
-                                                {TAB_LABELS[tab]}
-                                            </Button>
-                                        ))}
-                                    </Row>
 
                                     {catalogLoading && (
                                         <Row fillWidth horizontal="center" paddingY="24">
@@ -2960,6 +2879,132 @@ export function SettingsPage() {
                                         Use the General tab for ecosystem actions. If Warden itself needs a restart, do
                                         that from your container host or deployment environment.
                                     </Text>
+                                </Column>
+                            </Card>
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Heading as="h3" variant="heading-strong-l">Warden runtime settings</Heading>
+                                        <Row gap="8">
+                                            <Button
+                                                variant="secondary"
+                                                disabled={wardenEditor.loading || wardenEditor.saving}
+                                                onClick={() => void loadServiceConfig("noona-warden")}
+                                            >
+                                                {wardenEditor.loading ? "Loading..." : "Reload"}
+                                            </Button>
+                                            <Button
+                                                variant="primary"
+                                                disabled={wardenEditor.loading || wardenEditor.saving}
+                                                onClick={() =>
+                                                    void saveServiceConfig("noona-warden", {
+                                                        restart: false,
+                                                        successMessage: "Saved Warden runtime settings.",
+                                                        onSuccess: async () => {
+                                                            await loadCatalog();
+                                                        },
+                                                    })
+                                                }
+                                            >
+                                                {wardenEditor.saving ? "Saving..." : "Save Warden settings"}
+                                            </Button>
+                                        </Row>
+                                    </Row>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Warden uses `SERVER_IP` to publish host-facing Noona links, and `AUTO_UPDATES`
+                                        controls whether managed Docker images are pulled and applied during startup.
+                                    </Text>
+                                    {wardenHostBaseUrl && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Current host URL base: {wardenHostBaseUrl}
+                                        </Text>
+                                    )}
+                                    {wardenEditor.error && (
+                                        <Text onBackground="danger-strong" variant="body-default-xs">
+                                            {wardenEditor.error}
+                                        </Text>
+                                    )}
+                                    {wardenEditor.message && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            {wardenEditor.message}
+                                        </Text>
+                                    )}
+                                    {wardenEditor.loading && (
+                                        <Row fillWidth horizontal="center" paddingY="12">
+                                            <Spinner/>
+                                        </Row>
+                                    )}
+                                    {!wardenEditor.loading && (wardenServerIpField || wardenAutoUpdatesField) && (
+                                        <Column gap="12">
+                                            {wardenServerIpField && (
+                                                <Column gap="8">
+                                                    <Input
+                                                        id="warden-server-ip"
+                                                        name="warden-server-ip"
+                                                        label={normalizeString(wardenServerIpField.label).trim() || "Server IP / Hostname"}
+                                                        value={normalizeString(wardenEditor.envDraft.SERVER_IP)}
+                                                        onChange={(event) =>
+                                                            updateEnvDraft("noona-warden", "SERVER_IP", event.target.value)
+                                                        }
+                                                    />
+                                                    {normalizeString(wardenServerIpField.description).trim() && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            {normalizeString(wardenServerIpField.description).trim()}
+                                                        </Text>
+                                                    )}
+                                                    {normalizeString(wardenServerIpField.warning).trim() && (
+                                                        <Text onBackground="warning-strong" variant="body-default-xs">
+                                                            {normalizeString(wardenServerIpField.warning).trim()}
+                                                        </Text>
+                                                    )}
+                                                </Column>
+                                            )}
+                                            {wardenAutoUpdatesField && (
+                                                <Row
+                                                    fillWidth
+                                                    horizontal="between"
+                                                    vertical="center"
+                                                    gap="16"
+                                                    background={BG_NEUTRAL_ALPHA_WEAK}
+                                                    style={{padding: 12, borderRadius: 16, flexWrap: "wrap"}}
+                                                >
+                                                    <Column gap="4" style={{flex: "1 1 280px", minWidth: 0}}>
+                                                        <Text variant="label-default-s">
+                                                            {normalizeString(wardenAutoUpdatesField.label).trim() || "Auto updates"}
+                                                        </Text>
+                                                        {normalizeString(wardenAutoUpdatesField.description).trim() && (
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                                {normalizeString(wardenAutoUpdatesField.description).trim()}
+                                                            </Text>
+                                                        )}
+                                                        {normalizeString(wardenAutoUpdatesField.warning).trim() && (
+                                                            <Text onBackground="warning-strong"
+                                                                  variant="body-default-xs">
+                                                                {normalizeString(wardenAutoUpdatesField.warning).trim()}
+                                                            </Text>
+                                                        )}
+                                                    </Column>
+                                                    <Column gap="4" style={{alignItems: "flex-end"}}>
+                                                        <Switch
+                                                            isChecked={wardenAutoUpdatesEnabled}
+                                                            disabled={wardenEditor.saving}
+                                                            ariaLabel="Toggle Warden auto updates"
+                                                            onToggle={() =>
+                                                                updateEnvDraft(
+                                                                    "noona-warden",
+                                                                    "AUTO_UPDATES",
+                                                                    wardenAutoUpdatesEnabled ? "false" : "true",
+                                                                )
+                                                            }
+                                                        />
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            {wardenAutoUpdatesEnabled ? "Enabled" : "Disabled"}
+                                                        </Text>
+                                                    </Column>
+                                                </Row>
+                                            )}
+                                        </Column>
+                                    )}
                                 </Column>
                             </Card>
                             <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">

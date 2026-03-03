@@ -3,6 +3,7 @@
 import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {buildKavitaSeriesUrl, fetchManagedServiceHostUrl} from "@/utils/kavitaLinks";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 
@@ -76,6 +77,17 @@ type KavitaMetadataResponse = {
     error?: string;
 };
 
+type KavitaMetadataApplyResponse = {
+    success?: boolean | null;
+    seriesId?: number | null;
+    message?: string | null;
+    coverSync?: {
+        status?: string | null;
+        message?: string | null;
+    } | null;
+    error?: string;
+};
+
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
 
 const normalizeKavitaProviderId = (value: unknown): string | null => {
@@ -145,6 +157,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [kavitaSearchLoading, setKavitaSearchLoading] = useState(false);
     const [kavitaSearchError, setKavitaSearchError] = useState<string | null>(null);
     const [kavitaSeries, setKavitaSeries] = useState<KavitaSeriesResult[]>([]);
+    const [managedKavitaBaseUrl, setManagedKavitaBaseUrl] = useState<string | null>(null);
     const [selectedKavitaSeriesId, setSelectedKavitaSeriesId] = useState<number | null>(null);
     const [kavitaMetadataLoading, setKavitaMetadataLoading] = useState(false);
     const [kavitaMetadataError, setKavitaMetadataError] = useState<string | null>(null);
@@ -159,6 +172,16 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const selectedKavitaSeries = useMemo(
         () => kavitaSeries.find((entry) => typeof entry?.seriesId === "number" && entry.seriesId === selectedKavitaSeriesId) ?? null,
         [kavitaSeries, selectedKavitaSeriesId],
+    );
+    const selectedKavitaSeriesUrl = useMemo(
+        () =>
+            buildKavitaSeriesUrl({
+                baseUrl: managedKavitaBaseUrl,
+                libraryId: selectedKavitaSeries?.libraryId,
+                seriesId: selectedKavitaSeries?.seriesId,
+                fallbackUrl: selectedKavitaSeries?.url,
+            }),
+        [managedKavitaBaseUrl, selectedKavitaSeries],
     );
 
     const latestFileTimestamp = useMemo(() => {
@@ -230,6 +253,22 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         void load();
     }, [normalizedUuid]);
 
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadManagedKavitaUrl = async () => {
+            const hostUrl = await fetchManagedServiceHostUrl("noona-kavita");
+            if (!cancelled) {
+                setManagedKavitaBaseUrl(hostUrl);
+            }
+        };
+
+        void loadManagedKavitaUrl();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     const loadKavitaSeries = async (query: string) => {
         const normalizedQuery = normalizeString(query).trim();
         if (!normalizedQuery) {
@@ -246,14 +285,18 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setKavitaMetadataMatches([]);
 
         try {
-            const response = await fetch(`/api/noona/portal/kavita/search?query=${encodeURIComponent(normalizedQuery)}`, {
-                cache: "no-store",
-            });
+            const [response, hostUrl] = await Promise.all([
+                fetch(`/api/noona/portal/kavita/search?query=${encodeURIComponent(normalizedQuery)}`, {
+                    cache: "no-store",
+                }),
+                fetchManagedServiceHostUrl("noona-kavita"),
+            ]);
             const payload = (await response.json().catch(() => null)) as KavitaSearchResponse | null;
             if (!response.ok) {
                 throw new Error(normalizeString(payload?.error).trim() || `Kavita search failed (HTTP ${response.status}).`);
             }
 
+            setManagedKavitaBaseUrl(hostUrl);
             const series = Array.isArray(payload?.series) ? payload.series : [];
             const preferred = selectPreferredKavitaSeries(series, normalizedQuery);
             setKavitaSeries(series);
@@ -323,17 +366,28 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     seriesId: selectedKavitaSeriesId,
+                    titleUuid: normalizedUuid,
                     aniListId,
                     malId,
                     cbrId,
                 }),
             });
-            const payload = (await response.json().catch(() => null)) as KavitaMetadataResponse | null;
+            const payload = (await response.json().catch(() => null)) as KavitaMetadataApplyResponse | null;
             if (!response.ok) {
                 throw new Error(normalizeString(payload?.error).trim() || `Kavita metadata apply failed (HTTP ${response.status}).`);
             }
 
-            setKavitaMetadataMessage("Applied the selected Kavita metadata match.");
+            const coverSyncStatus = normalizeString(payload?.coverSync?.status).trim().toLowerCase();
+            const responseMessage =
+                normalizeString(payload?.coverSync?.message).trim()
+                || normalizeString(payload?.message).trim()
+                || "Applied the selected Kavita metadata match.";
+
+            if (coverSyncStatus === "failed") {
+                setKavitaMetadataError(responseMessage);
+            } else {
+                setKavitaMetadataMessage(responseMessage);
+            }
         } catch (error_) {
             setKavitaMetadataError(error_ instanceof Error ? error_.message : String(error_));
         } finally {
@@ -552,8 +606,15 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         <SetupModeGate>
             <AuthGate requiredPermission="library_management"
                       deniedMessage="Library access requires Library management permission.">
-                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
-                        m={{style: {paddingInline: "24px"}}}>
+                <Column
+                    fillWidth
+                    horizontal="center"
+                    gap="16"
+                    paddingY="24"
+                    paddingX="16"
+                    style={{maxWidth: "var(--moon-page-max-width, 116rem)"}}
+                    m={{style: {paddingInline: "24px"}}}
+                >
                 <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
                     <Row gap="16" vertical="center" style={{minWidth: 0}}>
                         {coverUrl && (
@@ -591,9 +652,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                         <Button variant="secondary" onClick={() => router.push("/libraries")}>
                             Back
                         </Button>
-                        {typeof selectedKavitaSeries?.url === "string" && selectedKavitaSeries.url.trim() && (
+                        {typeof selectedKavitaSeriesUrl === "string" && selectedKavitaSeriesUrl.trim() && (
                             <Button variant="secondary"
-                                    onClick={() => window.open(selectedKavitaSeries.url ?? "", "_blank", "noopener,noreferrer")}>
+                                    onClick={() => window.open(selectedKavitaSeriesUrl, "_blank", "noopener,noreferrer")}>
                                 Open in Kavita
                             </Button>
                         )}

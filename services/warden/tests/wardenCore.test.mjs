@@ -2,9 +2,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import {load as loadYaml} from 'js-yaml';
 
 import {createWarden, defaultDockerSocketDetector} from '../core/createWarden.mjs';
 import {attachSelfToNetwork} from '../docker/dockerUtilties.mjs';
+import {DEFAULT_MANAGED_KOMF_APPLICATION_YML} from '../docker/komfConfigTemplate.mjs';
 
 function createStubDocker(overrides = {}) {
     return {
@@ -120,6 +122,50 @@ test('getServiceConfig injects SERVER_IP and rewrites managed host URLs', () => 
     assert.equal(moonConfig.env.SERVER_IP, '192.168.1.25');
     assert.equal(mongoConfig.hostServiceUrl, 'mongodb://192.168.1.25:27017');
     assert.equal(mongoConfig.env.SERVER_IP, '192.168.1.25');
+});
+
+test('getServiceConfig exposes noona-warden SERVER_IP and AUTO_UPDATES settings', () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                },
+            },
+        },
+        env: {SERVER_IP: '192.168.1.25', AUTO_UPDATES: 'true'},
+        hostDockerSockets: [],
+    });
+
+    const config = warden.getServiceConfig('noona-warden');
+
+    assert.equal(config.name, 'noona-warden');
+    assert.equal(config.hostServiceUrl, 'http://192.168.1.25');
+    assert.equal(config.env.SERVER_IP, '192.168.1.25');
+    assert.equal(config.env.AUTO_UPDATES, 'true');
+    assert.equal(config.runtimeConfig.hostPort, null);
+    assert.deepEqual(config.runtimeConfig.env, {});
+    assert.deepEqual(
+        config.envConfig.map((entry) => entry?.key),
+        ['SERVER_IP', 'AUTO_UPDATES'],
+    );
+});
+
+test('default managed Komf template includes provider credential slots and safe provider defaults', () => {
+    const config = loadYaml(DEFAULT_MANAGED_KOMF_APPLICATION_YML);
+
+    assert.equal(config?.kavita?.eventListener?.enabled, true);
+    assert.equal(config?.database?.file, '/config/database.sqlite');
+    assert.equal(config?.metadataProviders?.malClientId, '');
+    assert.equal(config?.metadataProviders?.comicVineApiKey, '');
+    assert.equal(config?.metadataProviders?.defaultProviders?.aniList?.enabled, true);
+    assert.equal(config?.metadataProviders?.defaultProviders?.mangaUpdates?.enabled, true);
+    assert.equal(config?.metadataProviders?.defaultProviders?.mal?.enabled, false);
+    assert.equal(config?.metadataProviders?.defaultProviders?.comicVine?.enabled, false);
 });
 
 test('getServiceConfig surfaces managed Komf application.yml from disk', () => {
@@ -2436,14 +2482,100 @@ test('bootFull reloads persisted service configs from noona_settings before star
     ]);
 });
 
+test('bootFull applies startup auto-updates after loading persisted noona-warden config', async () => {
+    const settingsReads = [];
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo', health: 'http://mongo/health'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    findMany: async (collection, query) => {
+                        settingsReads.push({collection, query});
+                        return [
+                            {
+                                key: 'services.config.noona-warden',
+                                type: 'service-runtime-config',
+                                service: 'noona-warden',
+                                env: {AUTO_UPDATES: 'true'},
+                            },
+                        ];
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    const restarts = [];
+    const updateCalls = [];
+    warden.startService = async (service, healthUrl) => {
+        starts.push({
+            name: service.name,
+            healthUrl,
+        });
+    };
+    warden.restartService = async (name) => {
+        restarts.push(name);
+        return {service: name, restarted: true};
+    };
+    warden.updateServiceImage = async (name, options = {}) => {
+        updateCalls.push({
+            name,
+            restart: options.restart !== false,
+        });
+
+        return {
+            service: name,
+            updated: name === 'noona-redis',
+            installed: true,
+            restarted: false,
+        };
+    };
+
+    await warden.bootFull({
+        services: ['noona-redis', 'noona-mongo', 'noona-vault', 'noona-sage', 'noona-moon'],
+    });
+
+    assert.deepEqual(settingsReads, [
+        {
+            collection: 'noona_settings',
+            query: {type: 'service-runtime-config'},
+        },
+    ]);
+    assert.deepEqual(updateCalls, [
+        {name: 'noona-mongo', restart: false},
+        {name: 'noona-redis', restart: false},
+        {name: 'noona-vault', restart: false},
+        {name: 'noona-sage', restart: true},
+        {name: 'noona-moon', restart: true},
+    ]);
+    assert.deepEqual(restarts, ['noona-redis', 'noona-vault']);
+    assert.deepEqual(starts, [
+        {name: 'noona-mongo', healthUrl: 'http://mongo/health'},
+        {name: 'noona-redis', healthUrl: 'http://noona-redis:8001/'},
+        {name: 'noona-vault', healthUrl: 'http://vault/health'},
+        {name: 'noona-sage', healthUrl: 'http://noona-sage:3004/health'},
+        {name: 'noona-moon', healthUrl: null},
+    ]);
+});
+
 test('init ensures network, attaches, and runs minimal boot sequence by default', async () => {
     const events = [];
     const dockerUtils = {
         ensureNetwork: async () => events.push('ensure'),
         attachSelfToNetwork: async () => events.push('attach'),
-        containerExists: async (_name, _options = {}) => {
-            throw new Error('containerExists should not be invoked when startService is stubbed');
-        },
+        containerExists: async () => false,
         pullImageIfNeeded: async () => {},
         runContainerWithLogs: async () => {},
         waitForHealthyStatus: async () => {},
@@ -2480,6 +2612,167 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
     assert.ok(events.includes('start:noona-sage:http://noona-sage:3004/health'));
     assert.ok(events.includes('start:noona-moon:http://noona-moon:3000/'));
     assert.ok(events.includes('✅ Warden is ready.'));
+});
+
+test('init restores the installed managed stack when setup state is unavailable', async () => {
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async (name) => [
+            'noona-mongo',
+            'noona-redis',
+            'noona-vault',
+            'noona-sage',
+            'noona-moon',
+            'noona-portal',
+        ].includes(name),
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon'},
+                'noona-vault': {name: 'noona-vault'},
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    const result = await warden.init();
+
+    assert.equal(result.mode, 'full');
+    assert.equal(result.setupCompleted, false);
+    assert.deepEqual(started, [
+        'noona-mongo',
+        'noona-redis',
+        'noona-vault',
+        'noona-sage',
+        'noona-moon',
+        'noona-portal',
+    ]);
+});
+
+test('startEcosystem restores the installed managed stack when setupCompleted is false', async () => {
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async (name) => [
+            'noona-mongo',
+            'noona-redis',
+            'noona-vault',
+            'noona-sage',
+            'noona-moon',
+            'noona-raven',
+        ].includes(name),
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon'},
+                'noona-vault': {name: 'noona-vault'},
+                'noona-raven': {name: 'noona-raven'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    const result = await warden.startEcosystem({setupCompleted: false});
+
+    assert.equal(result.mode, 'full');
+    assert.equal(result.setupCompleted, false);
+    assert.deepEqual(started, [
+        'noona-mongo',
+        'noona-redis',
+        'noona-vault',
+        'noona-sage',
+        'noona-moon',
+        'noona-raven',
+    ]);
+});
+
+test('bootMinimal checks startup image updates when AUTO_UPDATES is enabled', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-sage': {name: 'noona-sage'},
+            },
+        },
+        env: {AUTO_UPDATES: 'true'},
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    const updateCalls = [];
+    warden.startService = async (service, healthUrl) => {
+        starts.push({
+            name: service.name,
+            healthUrl,
+        });
+    };
+    warden.updateServiceImage = async (name, options = {}) => {
+        updateCalls.push({
+            name,
+            restart: options.restart !== false,
+        });
+
+        return {
+            service: name,
+            updated: false,
+            installed: false,
+            restarted: false,
+        };
+    };
+
+    await warden.bootMinimal();
+
+    assert.deepEqual(updateCalls, [
+        {name: 'noona-sage', restart: true},
+        {name: 'noona-moon', restart: true},
+    ]);
+    assert.deepEqual(starts, [
+        {name: 'noona-sage', healthUrl: 'http://noona-sage:3004/health'},
+        {name: 'noona-moon', healthUrl: 'http://noona-moon:3000/'},
+    ]);
 });
 
 
@@ -2572,6 +2865,54 @@ test('updateServiceConfig persists service runtime overrides to noona_settings',
     assert.deepEqual(update.$set.env, {WEBGUI_PORT: '3010'});
     assert.equal(update.$set.hostPort, 3010);
     assert.match(update.$set.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('updateServiceConfig on noona-warden persists SERVER_IP and AUTO_UPDATES and rewrites host-facing URLs', async () => {
+    const writes = [];
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-kavita': {name: 'noona-kavita', image: 'kavita', port: 5000},
+                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async (...args) => {
+                        writes.push(args);
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    assert.equal(warden.getServiceConfig('noona-kavita').hostServiceUrl, 'http://localhost:5000');
+
+    const result = await warden.updateServiceConfig('noona-warden', {
+        env: {SERVER_IP: '192.168.1.25', AUTO_UPDATES: 'true'},
+    });
+
+    assert.equal(result.restarted, false);
+    assert.equal(result.service.name, 'noona-warden');
+    assert.equal(result.service.hostServiceUrl, 'http://192.168.1.25');
+    assert.equal(result.service.env.SERVER_IP, '192.168.1.25');
+    assert.equal(result.service.env.AUTO_UPDATES, 'true');
+    assert.deepEqual(result.service.runtimeConfig.env, {SERVER_IP: '192.168.1.25', AUTO_UPDATES: 'true'});
+    assert.equal(warden.getServiceConfig('noona-kavita').hostServiceUrl, 'http://192.168.1.25:5000');
+    assert.equal(warden.getServiceConfig('noona-kavita').env.SERVER_IP, '192.168.1.25');
+    assert.equal(warden.getServiceConfig('noona-moon').hostServiceUrl, 'http://192.168.1.25:3000');
+
+    assert.equal(writes.length, 1);
+    const [collection, query, update, options] = writes[0];
+    assert.equal(collection, 'noona_settings');
+    assert.deepEqual(query, {key: 'services.config.noona-warden'});
+    assert.deepEqual(options, {upsert: true});
+    assert.equal(update.$set.service, 'noona-warden');
+    assert.deepEqual(update.$set.env, {SERVER_IP: '192.168.1.25', AUTO_UPDATES: 'true'});
+    assert.equal(update.$set.hostPort, null);
 });
 
 test('updateServiceConfig removes persisted service runtime overrides when cleared', async () => {
@@ -3190,7 +3531,7 @@ test('init falls back to alternate docker socket when default ping fails', async
     assert.deepEqual(dockerFactoryCalls, ['/remote/docker.sock']);
     assert.deepEqual(ensureClients, [successfulDocker]);
     assert.deepEqual(attachClients, [successfulDocker]);
-    assert.deepEqual(containerExistsClients, [successfulDocker, successfulDocker]);
+    assert.deepEqual(containerExistsClients, [successfulDocker, successfulDocker, successfulDocker, successfulDocker]);
     assert.deepEqual(pullClients, [successfulDocker, successfulDocker]);
     assert.deepEqual(runClients, [successfulDocker, successfulDocker]);
     assert.ok(

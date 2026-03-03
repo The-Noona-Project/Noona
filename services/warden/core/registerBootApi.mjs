@@ -10,12 +10,14 @@ export function registerBootApi(context = {}) {
         isPersistedServiceRuntimeConfigLoaded,
         loadPersistedServiceRuntimeConfig,
         logger,
+        minimalServiceNames = [],
         networkName,
         normalizeHostPort,
         orderServicesForLifecycle,
         parseEnvEntries,
         processExit,
         requiredServiceSet,
+        resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
         serviceCatalog,
         startServiceUpdateTimer,
@@ -30,6 +32,72 @@ export function registerBootApi(context = {}) {
         },
     };
 
+    const autoUpdatesEnabled = () =>
+        typeof resolveCurrentAutoUpdatesEnabled === 'function' ? resolveCurrentAutoUpdatesEnabled() === true : false;
+    const minimalServiceSet = new Set(
+        (Array.isArray(minimalServiceNames) && minimalServiceNames.length > 0
+            ? minimalServiceNames
+            : ['noona-sage', 'noona-moon'])
+            .filter((name) => typeof name === 'string' && name.trim()),
+    );
+
+    const resolveInstalledLifecycleServices = async (dockerClient = null) => {
+        if (typeof resolveManagedLifecycleServices !== 'function') {
+            return [];
+        }
+
+        try {
+            const resolved = await resolveManagedLifecycleServices({
+                dockerClient,
+                fallbackToAll: false,
+            });
+            return Array.isArray(resolved) ? resolved : [];
+        } catch {
+            return [];
+        }
+    };
+
+    const shouldRestoreManagedLifecycle = (names = []) =>
+        Array.isArray(names) &&
+        names.some((name) => typeof name === 'string' && !minimalServiceSet.has(name));
+
+    const runStartupAutoUpdates = async (names = [], options = {}) => {
+        const restart = options?.restart !== false;
+        const uniqueNames = Array.from(
+            new Set(
+                names.filter((name) => typeof name === 'string' && serviceCatalog.has(name)),
+            ),
+        );
+
+        if (uniqueNames.length === 0 || typeof api.updateServiceImage !== 'function') {
+            return [];
+        }
+
+        logger.log(
+            `[Warden] AUTO_UPDATES enabled — checking ${uniqueNames.length} startup service image${uniqueNames.length === 1 ? '' : 's'}.`,
+        );
+
+        const results = [];
+        for (const name of uniqueNames) {
+            try {
+                const result = await api.updateServiceImage(name, {restart});
+                results.push(result);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn(`[Warden] Failed to auto-update ${name} during startup: ${message}`);
+                results.push({
+                    service: name,
+                    updated: false,
+                    restarted: false,
+                    installed: false,
+                    error: message,
+                });
+            }
+        }
+
+        return results;
+    };
+
     api.bootMinimal = async function bootMinimal() {
         const moon = buildEffectiveServiceDescriptor('noona-moon').descriptor;
         const sage = buildEffectiveServiceDescriptor('noona-sage').descriptor;
@@ -42,6 +110,10 @@ export function registerBootApi(context = {}) {
 
             return `http://${moon.name}:${moonPort}/`;
         })();
+
+        if (autoUpdatesEnabled()) {
+            await runStartupAutoUpdates(['noona-sage', 'noona-moon'], {restart: true});
+        }
 
         await api.startService(sage, 'http://noona-sage:3004/health');
         await api.startService(moon, moonHealthUrl);
@@ -95,11 +167,35 @@ export function registerBootApi(context = {}) {
             }
 
             const loadedConfigs = await loadPersistedServiceRuntimeConfig();
-            const firstBootstrapOverrideIndex = bootstrapTargetNames.findIndex((name) =>
-                loadedConfigs.some((entry) => entry?.service === name),
+            const bootstrapConfigOverrides = new Set(
+                loadedConfigs
+                    .map((entry) => entry?.service)
+                    .filter((name) => bootstrapTargetNames.includes(name)),
             );
-            if (firstBootstrapOverrideIndex >= 0) {
-                const bootstrapRestartNames = bootstrapTargetNames.slice(firstBootstrapOverrideIndex);
+            let bootstrapUpdateResults = [];
+
+            if (autoUpdatesEnabled()) {
+                if (bootstrapTargetNames.length > 0) {
+                    bootstrapUpdateResults = await runStartupAutoUpdates(bootstrapTargetNames, {restart: false});
+                }
+
+                await runStartupAutoUpdates(
+                    bootstrapTargetNames.length > 0 ? managedTargetNames : targetNames,
+                    {restart: true},
+                );
+            }
+
+            const bootstrapUpdatesRequiringRestart = new Set(
+                bootstrapUpdateResults
+                    .filter((entry) => entry?.updated === true && entry?.installed === true)
+                    .map((entry) => entry.service)
+                    .filter(Boolean),
+            );
+            const firstBootstrapRestartIndex = bootstrapTargetNames.findIndex((name) =>
+                bootstrapConfigOverrides.has(name) || bootstrapUpdatesRequiringRestart.has(name),
+            );
+            if (firstBootstrapRestartIndex >= 0) {
+                const bootstrapRestartNames = bootstrapTargetNames.slice(firstBootstrapRestartIndex);
                 for (const name of bootstrapRestartNames) {
                     await api.restartService(name);
                 }
@@ -107,6 +203,10 @@ export function registerBootApi(context = {}) {
 
             await startServicesForBoot(bootstrapTargetNames.length > 0 ? managedTargetNames : targetNames);
             return;
+        }
+
+        if (autoUpdatesEnabled()) {
+            await runStartupAutoUpdates(targetNames, {restart: true});
         }
 
         await startServicesForBoot(targetNames);
@@ -118,13 +218,24 @@ export function registerBootApi(context = {}) {
             : options?.setupCompleted === false
                 ? false
                 : await api.isSetupCompleted();
-        const shouldBootFull = options?.forceFull === true || SUPER_MODE || setupCompleted;
+        let dockerClient = null;
+        let detectedServices = [];
+        let shouldBootFull = options?.forceFull === true || SUPER_MODE || setupCompleted;
+
+        if (!shouldBootFull && !Array.isArray(options?.services)) {
+            dockerClient = await ensureDockerConnection().catch(() => null);
+            if (dockerClient) {
+                detectedServices = await resolveInstalledLifecycleServices(dockerClient);
+                shouldBootFull = shouldRestoreManagedLifecycle(detectedServices);
+            }
+        }
 
         if (shouldBootFull) {
-            const dockerClient = await ensureDockerConnection().catch(() => null);
             const services = Array.isArray(options?.services)
                 ? options.services
-                : await resolveManagedLifecycleServices({dockerClient});
+                : detectedServices.length > 0
+                    ? detectedServices
+                    : await resolveManagedLifecycleServices({dockerClient});
             await api.bootFull({services});
         } else {
             await api.bootMinimal();
@@ -173,15 +284,22 @@ export function registerBootApi(context = {}) {
         await dockerUtils.attachSelfToNetwork(dockerClient, networkName);
 
         const setupCompleted = await api.isSetupCompleted();
-        const shouldBootFull = SUPER_MODE || setupCompleted;
+        const detectedServices = setupCompleted || SUPER_MODE
+            ? []
+            : await resolveInstalledLifecycleServices(dockerClient);
+        const shouldBootFull = SUPER_MODE || setupCompleted || shouldRestoreManagedLifecycle(detectedServices);
 
         if (shouldBootFull) {
             if (SUPER_MODE) {
                 logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
-            } else {
+            } else if (setupCompleted) {
                 logger.log('[Warden] Setup marked complete — launching configured services.');
+            } else {
+                logger.log('[Warden] Detected installed managed services — restoring configured stack.');
             }
-            const services = await resolveManagedLifecycleServices({dockerClient});
+            const services = detectedServices.length > 0
+                ? detectedServices
+                : await resolveManagedLifecycleServices({dockerClient});
             await api.bootFull({services});
         } else {
             logger.log('[Warden] 🧪 Minimal mode — launching sage and moon only');

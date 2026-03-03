@@ -10,6 +10,7 @@ const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
 const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
 const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
+const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -17,6 +18,23 @@ const normalizeString = (value) => {
     }
 
     return value.trim();
+};
+
+const normalizeBooleanSettingValue = (value, key) => {
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return '';
+    }
+
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return 'true';
+    }
+
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return 'false';
+    }
+
+    throw new Error(`${key} must be true or false.`);
 };
 
 const normalizeManagedKavitaAccount = (envMap = {}) => {
@@ -115,6 +133,9 @@ export function registerServiceManagementApi(context = {}) {
         requiredServices,
         readManagedKomfConfigFile,
         resetInstallationTracking,
+        resolveCurrentAutoUpdatesEnabled,
+        resolveCurrentHostServiceBase,
+        resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
         runtimeDebugState,
@@ -194,6 +215,57 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         return null;
+    };
+
+    const isWardenConfigName = (name) => normalizeString(name) === WARDEN_CONFIG_SERVICE_NAME;
+    const buildWardenServiceConfig = () => {
+        const runtime = resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME);
+        const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
+        const effectiveServerIp = normalizeString(resolveCurrentServerIp?.());
+        const effectiveHostServiceBase = normalizeString(resolveCurrentHostServiceBase?.());
+        const envConfig = cloneEnvConfig([
+            {
+                key: 'SERVER_IP',
+                label: 'Server IP / Hostname',
+                defaultValue: effectiveServerIp,
+                description:
+                    'Host IP address or hostname Warden should publish in Noona links such as Kavita buttons and setup summary URLs.',
+                warning:
+                    'If Warden was started with HOST_SERVICE_URL, that explicit URL still takes precedence over SERVER_IP.',
+                required: false,
+                readOnly: false,
+            },
+            {
+                key: 'AUTO_UPDATES',
+                label: 'Auto updates',
+                defaultValue: autoUpdatesEnabled ? 'true' : 'false',
+                description:
+                    'When enabled, Warden pulls newer Docker images during startup and restarts installed services that changed.',
+                warning:
+                    'Startup may take longer, and managed services can restart during boot when a newer image is found.',
+                required: false,
+                readOnly: false,
+            },
+        ]);
+
+        return {
+            name: WARDEN_CONFIG_SERVICE_NAME,
+            image: null,
+            port: null,
+            internalPort: null,
+            hostServiceUrl: effectiveHostServiceBase || null,
+            description: 'Warden publishes host-facing URLs for managed services and can auto-apply newer images during startup.',
+            health: null,
+            env: {
+                SERVER_IP: effectiveServerIp,
+                AUTO_UPDATES: autoUpdatesEnabled ? 'true' : 'false',
+            },
+            envConfig,
+            runtimeConfig: {
+                hostPort: null,
+                env: runtime.env,
+            },
+        };
     };
 
     const mergeManagedServiceRuntimeEnv = async (name, envUpdates = {}, {installOverridesByName = null} = {}) => {
@@ -1361,6 +1433,10 @@ export function registerServiceManagementApi(context = {}) {
             throw new Error('Service name must be a non-empty string.');
         }
 
+        if (isWardenConfigName(trimmedName)) {
+            return buildWardenServiceConfig();
+        }
+
         const entry = serviceCatalog.get(trimmedName);
         if (!entry) {
             throw new Error(`Service ${trimmedName} is not registered with Warden.`);
@@ -1400,6 +1476,30 @@ export function registerServiceManagementApi(context = {}) {
         const trimmedName = name.trim();
         if (!trimmedName) {
             throw new Error('Service name must be a non-empty string.');
+        }
+
+        if (isWardenConfigName(trimmedName)) {
+            if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort') && updates?.hostPort != null) {
+                throw new Error('noona-warden does not support hostPort overrides.');
+            }
+
+            const envUpdates = normalizeEnvOverrideMap(updates?.env);
+            const nextServerIp = normalizeString(envUpdates.SERVER_IP);
+            const nextAutoUpdates = normalizeBooleanSettingValue(envUpdates.AUTO_UPDATES, 'AUTO_UPDATES');
+            const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, {
+                env: {
+                    ...(nextServerIp ? {SERVER_IP: nextServerIp} : {}),
+                    ...(nextAutoUpdates ? {AUTO_UPDATES: nextAutoUpdates} : {}),
+                },
+                hostPort: null,
+            });
+
+            await persistServiceRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, nextRuntime);
+
+            return {
+                service: api.getServiceConfig(WARDEN_CONFIG_SERVICE_NAME),
+                restarted: false,
+            };
         }
 
         if (!serviceCatalog.has(trimmedName)) {

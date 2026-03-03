@@ -1,41 +1,142 @@
-# Once UI Development Rules
+# Moon UI Agent Guide
 
 ## Core Philosophy
-- You are a Design Engineer. We use Once UI for its semantic layout engine and design tokens.
-- Priority 1: Semantic clarity. Use high-level atoms to build layouts and set styles (<Column>, <Row>, <Grid>, <Heading>, <Text>).
-- Priority 2: Token consistency. Never use hex codes; Use Once UI props whenever possible. If you need additional customization, use inline styles.
-- Priotity 3: Always scan for possible components. Once UI provides many generic, flexible and customizable components. The ones you need to create are mostly product-specific ones. Create them in a single folder with a barrel export in an index.ts file. The components should be built from Once UI primitives. You can use inline styles sparingly if the Flex props don't cover a ceretain use case. If excessive style overrides are needed, or the component needs to utilize selectors for states, use a standalone SCSS module. Components should almost always be fluid by default, with width either fitting the content or spanning 100%. Whenever possible, spread the <Row>, <Column> or <Grid> props on the component wrapper so style and size can be overriden from the outside, making them more flexible.
-- Priority 4: No "Utility Noise". Avoid Tailwind classes and tools that are not part of the project already.
 
-## Component & Layout Rules
-- **Structure**: Never use <div>. Use <Column> for vertical stacking, <Row> for horizontal, and <Grid> for equally sized and distributed elements. The `horizontal` and `vertical` props for the <Row> and <Column> simplify flex layouts. They apply utility classes in the background and keep the main axis consistent, which means that `horizontal` will always set the content to "start", "center", "end", "between" or "around" regardless of direction. Same goes for `vertical`. Use the `center` shorthand to center children on both axis. `position="relative"` is the default for <Row>, <Column> and <Grid>, only add `position` to override it. Use `maxWidth` with "xs" -> "xl" values for page content and layout elements like header, or a number as REM for fixed max-widths. the `maxWidth` and `maxHeight` props automatically add `fillWidth` and `fillHeight` props for fluidity.
-- **Spacing**: Use the `gap`, `padding`, `margin` props or shorthands like `paddingX` and `marginTop`. Value can be `SpacingToken` (e.g., "16", "24", "32") or a number that equals to REM. Use `gap="-1"` to collapse stacked borders. Use responsive paddings sparingly, when makes sense. For page paddings, `paddingX="l"` makes sense. For smaller spacings, static ones ("4", "8", "16"...) are usually fine.
-- **Sizing**: Use the `fillWidth` and `fillHeight` props instead of `w-full` or `h-full`. Use `fill` as a shorthand for `fillWidth` and `fillHeight`. They automatically add `minWidth="0"` and `minHeight="0"` if not specified.
-- **Text**: Use the <Heading> and <Text> component with the `variant` prop (e.g., "display-strong-s", "body-default-m"). A nested <Text> will inherit the parent variant. You can override the weight or size with the `weight` (default or strong) and `size` ("xs" -> "xl") props. Align text with the `align` property on `Text`, `Heading`, `Row` or `Column` (it adds the text-align property, NOT flex alignment!)
-- **Colors**: Use the `background` and `onBackground` and `solid` and `onSolid` prop pairs for background + text (e.g., `background="neutral-medium" onBackground="neutral-weak"`) to ensure dark-mode compatibility. The `background` is for general purpose, low-contrast surfaces, and the solid is for high-contrast, usually interactive elements such as backgrounds. The `background` prop has a few additional values: "page", "surface" and "overlay". They behave differently based on theme. Usually the main site background is "page", with large layout elements, such as headers or sidebars being "surface" (but they can also be "page" depending on design aeshetics).
-- **Components**: Most components are wrapped in a <Column> or <Row> with Flex props spread on the outer element, making it easy to override component defaults such as paddings, margins or borders.
-- **Defaults**: There are several shorthands for styling with the <Row>, <Column> and <Grid>. For example, `border="neutral-alpha-medium"` will apply a 1px solid border if `borderWidth` and `borderStyle` is not specificed. Similarly, `position="sticky"` will apply `top="0"` if not specified otherwise. It's worth checking components, especially the `Flex` and `Grid` to understand which props are necessary and which aren't.
-- **Responsive design**: Use the `s`, `m` and `l` breakpoint objects on the <Row>, <Column> and <Grid> components to override layouts and styles at breakpoints. Not all props are supported, but they support inline styles inside the breakpoint object (`<Row s={{style: {...}}}`). Hide and show elements based on breakpoint with the `hide` and `m={{hide: false}}` props. Show or hide elements with the `dark` and `light` props. They are especially important when using the <Logo> components, because the svg doesn't change theme automatically.
+- You are a design engineer working inside Moon. Use Once UI for layout, spacing, surface treatment, and typography.
+- Reuse Moon's existing product components before creating new abstractions.
+- Prefer composition over custom styling. Reach for SCSS modules only when Once UI props and light inline styles are no
+  longer enough.
+- Keep changes scoped to the current feature. Do not redesign unrelated areas while touching a page.
 
-## Global Preferences
-- Prefer **Functional Components** and **TypeScript**.
-- Always ensure components are accessible (ARIA labels, semantic tags). Use `tooltip` for <IconButtons> when the action is not necessary or using several buttons in a group.
+## Preferred Once UI Palette
 
-## Design & Style
-- Once UI has a unique, minimal aeshetics. It can vary based on project and implementation, but it always puts an emphasis on scale, contrast, clarity and proportions.
-- Build hierarchy by grouping elements and carefully setting appropriate spacings: the amount of the spacing should be relative to the size of the elements.
-- Once UI is a dark-mode first system that stands for extremely high quality. Think of Vercel, Linear and Raycast.
-- The general style of Once UI is grounded, simple, performant. Motion is usually provided by atomic components for interactions and states rather than distruptive, layout-shifting, unnecessary animations.
+These are the Once UI primitives already used across Moon and should be the default starting point:
 
-## Recommendations
-- The recommended size for <Button> and <IconButton> is `m`, only diverge when the UI is either spacious or very compact.
-- Only use responsive spacings (gaps, margins and paddings) when distances need collapse on smaller screens. Most of the time, for general UI elements (cards, groups, etc.), static spacings are enough. Responsive spacings are reserved mostly for large layout elements, like the content area of the page, where 40px looks good on desktop but feels enormous on mobile.
-- Adding `align="center"` to a <Row> or <Column> will make ALL nested text elements align to center. It can have uninteded effects when adding them to top-level layout elements. To center the inner element, use the `horizontal="center"` prop, which will add the `justify-content` property correctly, NOT the `text-align` property.
+- `Column`, `Row`, `Flex`: primary layout primitives. Prefer `Column` and `Row`; use `Flex` only when the direction or
+  wrapping behavior is not cleanly expressed with the other two.
+- `Card`: default surface for sections, forms, empty states, warnings, and grouped controls.
+- `Heading`, `Text`: default text primitives. Build hierarchy with variants before adding custom styles.
+- `Button`, `ToggleButton`: primary and secondary actions, tab-like toggles, and compact controls.
+- `Input`: text, numeric, URL, password, and config-edit form fields.
+- `Badge`: compact status, counters, and metadata chips.
+- `SmartLink`: internal and external text links, clickable cards, and detail links.
+- `Spinner`: loading states inside cards, panels, and page-level blockers.
+- `Line`: visual separators in dense setup and detail flows.
+- `Fade`: edge fades and chrome treatments like the sticky header.
+- `Meta`: route metadata in `src/app/**/page.tsx` files. Do not use it inside client components.
+
+## Preferred Moon Patterns
+
+- Page shells usually follow `Column maxWidth="l" horizontal="center" gap="24" paddingY="24"`.
+- Status panels should usually be a `Card` with a `Heading` and one or two `Text` blocks.
+- Loading states should center a `Spinner` in a `Row fillWidth horizontal="center" paddingY="64"`.
+- Section groups inside large pages should usually be stacked `Card` blocks inside a `Column fillWidth gap="16"` or
+  `gap="24"`.
+- Use `Badge` rows for compact metadata instead of inventing custom pills.
+- Use `SmartLink` for linked cards or visible URLs instead of manually wiring click handlers on text.
+
+## Layout And Styling Rules
+
+- Do not default to raw `<div>` wrappers. Use `Column`, `Row`, or `Flex` unless a plain element is clearly required.
+- Prefer semantic layout props over CSS: `gap`, `padding`, `margin`, `horizontal`, `vertical`, `center`, `fillWidth`,
+  `fillHeight`, `maxWidth`.
+- Use Once UI color tokens only. Do not add hex colors.
+- Prefer `background` and `onBackground` token pairs for surfaces and text.
+- Components should usually be fluid by default. Use `fillWidth` often; avoid hard-coded widths unless the UI needs a
+  fixed control.
+- Use responsive overrides only when the layout actually changes on smaller screens. Do not add breakpoint objects by
+  default.
+- Inline styles are acceptable for small layout gaps like `flexWrap`, grid templates, min sizes, and overflow behavior.
+- If you need pseudo-selectors, multiple state classes, or overlay-specific styling, create an SCSS module.
+
+## Reuse Existing Moon Components First
+
+Before creating anything new, scan `src/components/noona/`, `src/components/noona/settings/`, and `src/components/`.
+
+Use these existing components when they fit:
+
+- `AuthGate`: gate full pages or sections behind login and optional Moon permissions.
+- `SetupModeGate`: guard pages that only make sense after setup is complete.
+- `SetupWizardGate`: guard setup-only pages and flows.
+- `SettingsNavigation`: use for the `/settings/*` route family instead of rebuilding settings side navigation.
+- `Header`, `Footer`, `Providers`, `RouteGuard`: app shell primitives exported from `src/components/index.ts`.
+- `FooterKavitaButton`: use when you need the shared Kavita-launch affordance in shell/footer contexts.
+
+## How To Use Moon Components
+
+- Keep gate components high in the tree. A page should usually wrap its content once with `SetupModeGate` and/or
+  `AuthGate` instead of repeating auth checks in every card.
+- Keep product-specific navigation logic inside the feature component that owns it. Example: settings navigation belongs
+  in `src/components/noona/settings/`.
+- Reuse shared helpers and feature components when the interaction already exists elsewhere. Do not duplicate fetch
+  logic, permission logic, or service-link logic.
+- When an existing component is close but too rigid, extend it or extract a shared subcomponent instead of cloning the
+  full implementation.
+
+## When To Create A New Component
+
+Create a new component when at least one of these is true:
+
+- A page section is large enough that it obscures the page's top-level flow.
+- The same card, control group, or layout pattern appears more than once.
+- A unit has a clear product meaning such as `SettingsNavigation`, `DownloadsAddModal`, or a service settings panel.
+- A UI block needs its own loading, empty, or error handling and is easier to reason about in isolation.
+
+Do not extract components just to make files shorter if the result creates prop-drilling noise without reuse or clarity.
+
+## New Component Placement
+
+- Put shared app-shell components in `src/components/`.
+- Put Moon product components in `src/components/noona/`.
+- Put feature-scoped reusable components in a feature folder such as `src/components/noona/settings/`.
+- If you create a reusable component folder, add an `index.ts` barrel export.
+- Keep route files in `src/app/**/page.tsx` thin. They should mainly set metadata, resolve params, and render the page
+  component.
+
+## New Component Guidelines
+
+- Use TypeScript and functional components.
+- Add `"use client"` only when the component uses hooks, browser APIs, or client-only navigation.
+- Prefer presentational components with explicit props. Keep heavy data fetching and orchestration in page-level or
+  container components unless the component truly owns the workflow.
+- Reusable components should usually expose the outer layout props of their wrapper so parents can adjust spacing and
+  sizing.
+- Keep component names product-specific and descriptive. Avoid vague names like `Panel`, `Widget`, or `Thing`.
+- Model common states explicitly: loading, empty, success, error, disabled.
+- Add accessible labels and dialog semantics where needed.
+- Do not hardcode route strings, service names, or permission logic in multiple places when a shared helper already
+  exists.
+
+## Reusable Component Shape
+
+When making a reusable wrapper, build it from Once UI primitives and keep the outside customizable.
+
+Typical pattern:
+
+- Use a `Column` or `Row` as the outer wrapper.
+- Spread supported wrapper props on that outer element.
+- Keep internal defaults opinionated but small.
+- Only add an SCSS module if the component has real styling complexity.
+
+## File And Naming Guidance
+
+- Page-sized components may stay as `HomePage.tsx`, `LibrariesPage.tsx`, `SettingsPage.tsx`, and similar route-aligned
+  names.
+- Feature components should use domain names like `SettingsNavigation.tsx`, `DownloadsAddModal.tsx`, or
+  `ServiceHealthCard.tsx`.
+- If a page grows multiple distinct panels, split them into named components instead of keeping one very large file.
+
+## Accessibility And Interaction
+
+- Buttons must describe the action clearly.
+- Dialog-like surfaces should set the expected ARIA attributes.
+- Avoid clickable non-interactive text when `Button` or `SmartLink` is a better fit.
+- Loading and error states should remain readable without relying on color alone.
 
 ## Documentation Addendum
 
 - Keep [README.md](README.md) updated when main tabs, route groups, or API proxy flows change.
 - The Moon README should keep a short `## Quick Navigation` section with markdown links to key routes, components, and
-  API folders so GitHub browsing stays fast.
-- If you add or move major Moon pages (`/libraries`, `/downloads`, `/settings`, `/setupwizard`), update
+  API folders.
+- If you add or move major Moon pages such as `/libraries`, `/downloads`, `/settings`, or `/setupwizard`, update
   both [README.md](README.md) and the root [../../README.md](../../README.md).

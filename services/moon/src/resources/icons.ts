@@ -17,9 +17,12 @@ import {
 
 import {
     PiBookBookmarkDuotone,
+    PiDeviceMobileDuotone,
     PiGridFourDuotone,
     PiHouseDuotone,
     PiImageDuotone,
+    PiLaptopDuotone,
+    PiMonitorDuotone,
     PiUserCircleDuotone,
 } from "react-icons/pi";
 
@@ -63,7 +66,10 @@ export const iconLibrary: Record<string, IconType> = {
     arrowUpRightFromSquare: HiArrowTopRightOnSquare,
     document: HiOutlineDocument,
     settings: HiOutlineCog6Tooth,
-  rocket: HiOutlineRocketLaunch,
+    rocket: HiOutlineRocketLaunch,
+    desktop: PiLaptopDuotone,
+    ultrawide: PiMonitorDuotone,
+    mobile: PiDeviceMobileDuotone,
     javascript: SiJavascript,
     nextjs: SiNextdotjs,
     supabase: SiSupabase,

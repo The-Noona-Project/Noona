@@ -210,6 +210,111 @@ test('POST /api/portal/kavita/title-match and apply proxy Kavita metadata matchi
     }
 });
 
+test('POST /api/portal/kavita/title-match/apply syncs the Noona cover art to Kavita', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            port: 3003,
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            applySeriesMetadataMatch: async (payload) => {
+                calls.push({type: 'apply', payload});
+                return {ok: true};
+            },
+            setSeriesCover: async (payload) => {
+                calls.push({type: 'cover', payload});
+                return {ok: true};
+            },
+        },
+        raven: {
+            getTitle: async (uuid) => {
+                calls.push({type: 'title', uuid});
+                return {
+                    uuid,
+                    coverUrl: 'https://covers.example/solo-leveling.jpg',
+                };
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/title-match/apply`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({seriesId: 17, aniListId: 151807, titleUuid: 'title-1'}),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(payload.success, true);
+        assert.equal(payload.coverSync.status, 'applied');
+        assert.equal(payload.coverSync.url, 'http://noona-portal:3003/api/portal/kavita/title-cover/title-1');
+        assert.deepEqual(calls, [
+            {type: 'apply', payload: {seriesId: 17, aniListId: 151807, malId: undefined, cbrId: undefined}},
+            {type: 'title', uuid: 'title-1'},
+            {
+                type: 'cover',
+                payload: {
+                    seriesId: 17,
+                    url: 'http://noona-portal:3003/api/portal/kavita/title-cover/title-1',
+                    lockCover: true,
+                },
+            },
+        ]);
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('GET /api/portal/kavita/title-cover proxies the stored Noona cover art', async () => {
+    const upstreamCalls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        raven: {
+            getTitle: async (uuid) => ({
+                uuid,
+                coverUrl: 'https://covers.example/solo-leveling.jpg',
+            }),
+        },
+        fetchImpl: async (url, options) => {
+            upstreamCalls.push({url, options});
+            return new Response('image-bytes', {
+                status: 200,
+                headers: {
+                    'Content-Type': 'image/jpeg',
+                    'Cache-Control': 'public, max-age=123',
+                },
+            });
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/title-cover/title-1`);
+        const payload = Buffer.from(await response.arrayBuffer()).toString();
+
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('content-type'), 'image/jpeg');
+        assert.equal(response.headers.get('cache-control'), 'public, max-age=123');
+        assert.equal(payload, 'image-bytes');
+        assert.equal(upstreamCalls.length, 1);
+        assert.equal(upstreamCalls[0].url, 'https://covers.example/solo-leveling.jpg');
+        assert.equal(upstreamCalls[0].options.method, 'GET');
+    } finally {
+        await stopServer(server);
+    }
+});
+
 test('metadata match routes return compact operator guidance when Kavita fails server-side', async () => {
     const app = createPortalApp({
         config: {

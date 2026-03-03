@@ -2062,7 +2062,13 @@ export function SetupWizard() {
     const logEntries = Array.isArray(logHistory?.entries) ? logHistory.entries : [];
 
     return (
-        <Column maxWidth="xl" gap="24" paddingY="12" horizontal="center">
+        <Column
+            fillWidth
+            gap="24"
+            paddingY="12"
+            horizontal="center"
+            style={{maxWidth: "var(--moon-page-max-width-wide, 124rem)"}}
+        >
             <Column gap="8" horizontal="center" align="center">
                 <Heading variant="display-strong-s" wrap="balance">Noona Setup Wizard</Heading>
                 <Text onBackground="neutral-weak" wrap="balance">

@@ -117,8 +117,15 @@ export function LibrariesPage() {
         <SetupModeGate>
             <AuthGate requiredPermission="library_management"
                       deniedMessage="Library access requires Library management permission.">
-                <Column fillWidth maxWidth={120} horizontal="center" gap="16" paddingY="24" paddingX="16"
-                        m={{style: {paddingInline: "24px"}}}>
+                <Column
+                    fillWidth
+                    horizontal="center"
+                    gap="16"
+                    paddingY="24"
+                    paddingX="16"
+                    style={{maxWidth: "var(--moon-page-max-width, 116rem)"}}
+                    m={{style: {paddingInline: "24px"}}}
+                >
                     <Row fillWidth horizontal="between" vertical="center" gap="12" s={{direction: "column"}}>
                         <Column gap="4" style={{minWidth: 0}}>
                             <Heading variant="display-strong-s" wrap="balance">
