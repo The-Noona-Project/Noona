@@ -9,6 +9,25 @@ const SESSION_PREFIX = 'recommend';
 const TITLE_LIMIT = 72;
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+const normalizeTitleKey = value => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim();
+const normalizeSeriesInteger = value => {
+    const parsed = Number.parseInt(String(value), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const normalizeUrlForCompare = value => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        parsed.hash = '';
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+};
 const truncate = (value, maxLength = TITLE_LIMIT) =>
     value.length > maxLength ? `${value.slice(0, Math.max(1, maxLength - 1)).trim()}…` : value;
 
@@ -97,8 +116,118 @@ const resolveUserTag = interaction =>
     || normalizeString(interaction?.member?.user?.tag)
     || null;
 
+const getLibraryTitleName = title =>
+    normalizeString(title?.title ?? title?.titleName);
+
+const pickPreferredKavitaSeries = (series, titleName) => {
+    const titleKey = normalizeTitleKey(titleName);
+    if (!titleKey) {
+        return series[0] ?? null;
+    }
+
+    for (const entry of series) {
+        const nameKey = normalizeTitleKey(entry?.name);
+        if (nameKey && nameKey === titleKey) {
+            return entry;
+        }
+    }
+
+    for (const entry of series) {
+        const localizedKey = normalizeTitleKey(entry?.localizedName);
+        const originalKey = normalizeTitleKey(entry?.originalName);
+        if (localizedKey === titleKey || originalKey === titleKey) {
+            return entry;
+        }
+    }
+
+    return series[0] ?? null;
+};
+
+const buildKavitaSeriesUrl = ({baseUrl, series, fallbackUrl} = {}) => {
+    const normalizedFallback = normalizeString(fallbackUrl);
+    if (normalizedFallback) {
+        return normalizedFallback;
+    }
+
+    const libraryId = normalizeSeriesInteger(series?.libraryId);
+    const seriesId = normalizeSeriesInteger(series?.seriesId);
+    const normalizedBase = normalizeString(baseUrl);
+    if (!normalizedBase || libraryId == null || seriesId == null) {
+        return null;
+    }
+
+    try {
+        return new URL(`/library/${libraryId}/series/${seriesId}`, normalizedBase).toString();
+    } catch {
+        return null;
+    }
+};
+
+const resolveExistingLibraryTitle = async ({
+                                               raven,
+                                               selectedTitle,
+                                               selectedHref,
+                                           } = {}) => {
+    if (!raven?.getLibrary) {
+        return null;
+    }
+
+    const library = await raven.getLibrary();
+    if (!Array.isArray(library) || library.length === 0) {
+        return null;
+    }
+
+    const selectedHrefKey = normalizeUrlForCompare(selectedHref);
+    if (selectedHrefKey) {
+        const sourceMatch = library.find(entry => normalizeUrlForCompare(entry?.sourceUrl) === selectedHrefKey);
+        if (sourceMatch) {
+            return sourceMatch;
+        }
+    }
+
+    const selectedTitleKey = normalizeTitleKey(selectedTitle);
+    if (!selectedTitleKey) {
+        return null;
+    }
+
+    return library.find(entry => normalizeTitleKey(getLibraryTitleName(entry)) === selectedTitleKey) ?? null;
+};
+
+const resolveKavitaTitleUrl = async ({
+                                         kavita,
+                                         titleName,
+                                     } = {}) => {
+    const normalizedTitle = normalizeString(titleName);
+    if (!normalizedTitle || !kavita?.searchTitles) {
+        return null;
+    }
+
+    try {
+        const payload = await kavita.searchTitles(normalizedTitle);
+        const series = Array.isArray(payload?.series) ? payload.series : [];
+        if (!series.length) {
+            return null;
+        }
+
+        const selectedSeries = pickPreferredKavitaSeries(series, normalizedTitle);
+        if (!selectedSeries) {
+            return null;
+        }
+
+        return buildKavitaSeriesUrl({
+            baseUrl: typeof kavita.getBaseUrl === 'function' ? kavita.getBaseUrl() : null,
+            series: selectedSeries,
+            fallbackUrl: selectedSeries?.url,
+        });
+    } catch (error) {
+        errMSG(`[Portal/Discord] Failed to resolve Kavita link for "${normalizedTitle}": ${error.message}`);
+        return null;
+    }
+};
+
 export const createRecommendCommand = ({
                                            raven,
+                                           kavita,
                                            vault,
                                            now = () => Date.now(),
                                            sessionTtlMs = SESSION_TTL_MS,
@@ -240,6 +369,32 @@ export const createRecommendCommand = ({
 
             if (!vault?.storeRecommendation) {
                 throw new Error('Vault client is not configured for recommendations.');
+            }
+
+            let existingTitle = null;
+            try {
+                existingTitle = await resolveExistingLibraryTitle({
+                    raven,
+                    selectedTitle: selected.title,
+                    selectedHref: selected.href,
+                });
+            } catch (error) {
+                errMSG(`[Portal/Discord] Failed to verify existing library titles for "${selected.title}": ${error.message}`);
+            }
+
+            if (existingTitle) {
+                pendingSessions.delete(sessionId);
+                const existingTitleName = getLibraryTitleName(existingTitle) || selected.title;
+                const kavitaUrl = await resolveKavitaTitleUrl({
+                    kavita,
+                    titleName: existingTitleName,
+                });
+                const kavitaLine = kavitaUrl ? `\nOpen in Kavita: ${kavitaUrl}` : '';
+                await updateComponentReply(interaction, {
+                    content: `**${existingTitleName}** is already on this server.${kavitaLine}`,
+                    components: [],
+                });
+                return true;
             }
 
             const requestedAtIso = new Date(Number(now())).toISOString();

@@ -129,6 +129,14 @@ const normalizeKavitaProviderId = (value: unknown): string | null => {
     return normalized || null;
 };
 
+const buildKavitaMetadataMatchKey = (match: KavitaMetadataMatch, index: number): string =>
+    [
+        normalizeKavitaProviderId(match.aniListId),
+        normalizeKavitaProviderId(match.malId),
+        normalizeKavitaProviderId(match.cbrId),
+        String(index),
+    ].filter(Boolean).join(":");
+
 const selectPreferredKavitaSeries = (series: KavitaSeriesResult[], titleName: string) => {
     const normalizedTitle = normalizeString(titleName).trim().toLowerCase();
     if (!normalizedTitle) {
@@ -199,6 +207,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [kavitaMetadataMessage, setKavitaMetadataMessage] = useState<string | null>(null);
     const [kavitaMetadataMatches, setKavitaMetadataMatches] = useState<KavitaMetadataMatch[]>([]);
     const [kavitaMetadataApplyingId, setKavitaMetadataApplyingId] = useState<string | null>(null);
+    const [kavitaMetadataModalOpen, setKavitaMetadataModalOpen] = useState(false);
+    const [selectedKavitaMetadataMatchKey, setSelectedKavitaMetadataMatchKey] = useState<string | null>(null);
 
     const fileCount = files?.files?.length ?? 0;
     const coverUrl = normalizeString(title?.coverUrl).trim();
@@ -211,6 +221,12 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const selectedKavitaSeries = useMemo(
         () => kavitaSeries.find((entry) => typeof entry?.seriesId === "number" && entry.seriesId === selectedKavitaSeriesId) ?? null,
         [kavitaSeries, selectedKavitaSeriesId],
+    );
+    const selectedKavitaMetadataMatch = useMemo(
+        () =>
+            kavitaMetadataMatches.find((match, index) =>
+                buildKavitaMetadataMatchKey(match, index) === selectedKavitaMetadataMatchKey) ?? null,
+        [kavitaMetadataMatches, selectedKavitaMetadataMatchKey],
     );
     const selectedKavitaSeriesUrl = useMemo(
         () =>
@@ -412,6 +428,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             return;
         }
 
+        setKavitaMetadataModalOpen(true);
         setKavitaMetadataLoading(true);
         setKavitaMetadataError(null);
         setKavitaMetadataMessage(null);
@@ -430,20 +447,25 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                 throw new Error(normalizeString(payload?.error).trim() || `Kavita metadata lookup failed (HTTP ${response.status}).`);
             }
 
-            setKavitaMetadataMatches(Array.isArray(payload?.matches) ? payload.matches : []);
+            const matches = Array.isArray(payload?.matches) ? payload.matches : [];
+            setKavitaMetadataMatches(matches);
+            setSelectedKavitaMetadataMatchKey(
+                matches.length > 0 ? buildKavitaMetadataMatchKey(matches[0], 0) : null,
+            );
             setKavitaMetadataMessage("Fetched metadata candidates from Kavita.");
         } catch (error_) {
             setKavitaMetadataMatches([]);
+            setSelectedKavitaMetadataMatchKey(null);
             setKavitaMetadataError(error_ instanceof Error ? error_.message : String(error_));
         } finally {
             setKavitaMetadataLoading(false);
         }
     };
 
-    const applyKavitaMetadataMatch = async (match: KavitaMetadataMatch) => {
+    const applyKavitaMetadataMatch = async (match: KavitaMetadataMatch): Promise<boolean> => {
         if (selectedKavitaSeriesId == null) {
             setKavitaMetadataError("Pick a Kavita title match first.");
-            return;
+            return false;
         }
 
         const aniListId = normalizeKavitaProviderId(match.aniListId);
@@ -451,7 +473,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         const cbrId = normalizeKavitaProviderId(match.cbrId);
         if (!aniListId && !malId && !cbrId) {
             setKavitaMetadataError("The selected metadata candidate does not include any provider ids Kavita can apply.");
-            return;
+            return false;
         }
 
         const applyingId = [aniListId, malId, cbrId].filter(Boolean).join(":");
@@ -484,13 +506,28 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
 
             if (coverSyncStatus === "failed") {
                 setKavitaMetadataError(responseMessage);
+                return false;
             } else {
                 setKavitaMetadataMessage(responseMessage);
+                return true;
             }
         } catch (error_) {
             setKavitaMetadataError(error_ instanceof Error ? error_.message : String(error_));
+            return false;
         } finally {
             setKavitaMetadataApplyingId(null);
+        }
+    };
+
+    const confirmSelectedKavitaMetadataMatch = async () => {
+        if (!selectedKavitaMetadataMatch) {
+            setKavitaMetadataError("Select a metadata candidate first.");
+            return;
+        }
+
+        const applied = await applyKavitaMetadataMatch(selectedKavitaMetadataMatch);
+        if (applied) {
+            setKavitaMetadataModalOpen(false);
         }
     };
 
@@ -508,7 +545,32 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setKavitaMetadataMatches([]);
         setKavitaMetadataError(null);
         setKavitaMetadataMessage(null);
+        setSelectedKavitaMetadataMatchKey(null);
+        setKavitaMetadataModalOpen(false);
     }, [selectedKavitaSeriesId]);
+
+    useEffect(() => {
+        if (!kavitaMetadataModalOpen) {
+            return;
+        }
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") {
+                return;
+            }
+
+            if (kavitaMetadataLoading || kavitaMetadataApplyingId != null) {
+                return;
+            }
+
+            setKavitaMetadataModalOpen(false);
+        };
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown);
+        };
+    }, [kavitaMetadataModalOpen, kavitaMetadataLoading, kavitaMetadataApplyingId]);
 
     const save = async () => {
         setSaveError(null);
@@ -1337,6 +1399,172 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                         </Card>
                     </Column>
                 )}
+
+                    {kavitaMetadataModalOpen && (
+                        <Column
+                            role="presentation"
+                            style={{
+                                position: "fixed",
+                                inset: 0,
+                                zIndex: 50,
+                                padding: "24px",
+                                background: "rgba(10, 14, 20, 0.52)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                overflowY: "auto",
+                            }}
+                            onClick={(event) => {
+                                if (event.target !== event.currentTarget) {
+                                    return;
+                                }
+                                if (kavitaMetadataLoading || kavitaMetadataApplyingId != null) {
+                                    return;
+                                }
+                                setKavitaMetadataModalOpen(false);
+                            }}
+                        >
+                            <Card
+                                background="surface"
+                                border="neutral-alpha-weak"
+                                padding="l"
+                                radius="l"
+                                role="dialog"
+                                aria-modal="true"
+                                aria-labelledby="kavita-metadata-match-title"
+                                style={{
+                                    width: "min(760px, 100%)",
+                                    maxHeight: "80vh",
+                                    overflow: "auto",
+                                    margin: "auto",
+                                }}
+                            >
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Column gap="4">
+                                            <Heading as="h2" id="kavita-metadata-match-title"
+                                                     variant="heading-strong-l">
+                                                Confirm metadata match
+                                            </Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                Pick the Komf metadata result that matches this Raven title, then apply
+                                                it to Kavita.
+                                            </Text>
+                                        </Column>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={kavitaMetadataLoading || kavitaMetadataApplyingId != null}
+                                            onClick={() => setKavitaMetadataModalOpen(false)}
+                                        >
+                                            Close
+                                        </Button>
+                                    </Row>
+
+                                    {kavitaMetadataLoading && (
+                                        <Row fillWidth horizontal="center" vertical="center" gap={10} paddingY="12">
+                                            <Spinner/>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                Fetching metadata candidates from Komf...
+                                            </Text>
+                                        </Row>
+                                    )}
+
+                                    {!kavitaMetadataLoading && kavitaMetadataMatches.length === 0 && (
+                                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m"
+                                              radius="l">
+                                            <Column gap="8">
+                                                <Text variant="body-default-s">No metadata candidates were
+                                                    returned.</Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                      wrap="balance">
+                                                    Try another Kavita title entry, then run metadata search again.
+                                                </Text>
+                                            </Column>
+                                        </Card>
+                                    )}
+
+                                    {!kavitaMetadataLoading && kavitaMetadataMatches.length > 0 && (
+                                        <Column gap="8">
+                                            {kavitaMetadataMatches.map((match, index) => {
+                                                const matchKey = buildKavitaMetadataMatchKey(match, index);
+                                                const selected = matchKey === selectedKavitaMetadataMatchKey;
+                                                return (
+                                                    <Row
+                                                        key={matchKey}
+                                                        fillWidth
+                                                        horizontal="between"
+                                                        vertical="center"
+                                                        gap="12"
+                                                        background={selected ? "brand-alpha-weak" : "neutral-alpha-weak"}
+                                                        padding="12"
+                                                        radius="m"
+                                                    >
+                                                        <Row gap={10} vertical="center" style={{minWidth: 0}}>
+                                                            <input
+                                                                type="radio"
+                                                                name="kavita-metadata-match"
+                                                                checked={selected}
+                                                                onChange={() => setSelectedKavitaMetadataMatchKey(matchKey)}
+                                                                aria-label={`Select metadata candidate ${index + 1}`}
+                                                            />
+                                                            <Column gap="4" style={{minWidth: 0}}>
+                                                                <Text variant="body-default-s">
+                                                                    {normalizeString(match.title).trim() || "Untitled metadata result"}
+                                                                </Text>
+                                                                <Text onBackground="neutral-weak"
+                                                                      variant="body-default-xs" wrap="balance">
+                                                                    {normalizeString(match.provider).trim() || "Unknown provider"}
+                                                                    {typeof match.score === "number" && Number.isFinite(match.score)
+                                                                        ? ` - score ${match.score}`
+                                                                        : ""}
+                                                                </Text>
+                                                                {normalizeString(match.summary).trim() && (
+                                                                    <Text onBackground="neutral-weak"
+                                                                          variant="body-default-xs" wrap="balance">
+                                                                        {match.summary}
+                                                                    </Text>
+                                                                )}
+                                                            </Column>
+                                                        </Row>
+                                                    </Row>
+                                                );
+                                            })}
+                                        </Column>
+                                    )}
+
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            <Button
+                                                variant="secondary"
+                                                disabled={kavitaMetadataLoading || kavitaMetadataApplyingId != null}
+                                                onClick={() => void loadKavitaMetadataMatches()}
+                                            >
+                                                Refresh results
+                                            </Button>
+                                            <Button
+                                                variant="secondary"
+                                                disabled={kavitaMetadataLoading || kavitaMetadataApplyingId != null}
+                                                onClick={() => setKavitaMetadataModalOpen(false)}
+                                            >
+                                                Cancel
+                                            </Button>
+                                        </Row>
+                                        <Button
+                                            variant="primary"
+                                            disabled={
+                                                kavitaMetadataLoading
+                                                || kavitaMetadataApplyingId != null
+                                                || selectedKavitaMetadataMatch == null
+                                            }
+                                            onClick={() => void confirmSelectedKavitaMetadataMatch()}
+                                        >
+                                            {kavitaMetadataApplyingId != null ? "Applying..." : "Apply selected match"}
+                                        </Button>
+                                    </Row>
+                                </Column>
+                            </Card>
+                        </Column>
+                    )}
             </Column>
             </AuthGate>
         </SetupModeGate>

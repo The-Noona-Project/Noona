@@ -42,6 +42,7 @@ const SERVICES = [
     {name: 'noona-vault', dockerfile: 'dockerfiles/vault.Dockerfile'},
     {name: 'noona-raven', dockerfile: 'dockerfiles/raven.Dockerfile'},
     {name: 'noona-kavita', dockerfile: 'dockerfiles/kavita.Dockerfile'},
+    {name: 'noona-komf', dockerfile: 'dockerfiles/komf.Dockerfile'},
     {name: 'noona-portal', dockerfile: 'dockerfiles/portal.Dockerfile'},
     {name: 'noona-oracle', dockerfile: 'dockerfiles/oracle.Dockerfile', optional: true},
 ];
@@ -53,6 +54,7 @@ const ALIASES = Object.freeze({
     vault: 'noona-vault',
     raven: 'noona-raven',
     kavita: 'noona-kavita',
+    komf: 'noona-komf',
     portal: 'noona-portal',
     oracle: 'noona-oracle',
 });
@@ -64,9 +66,9 @@ const usage = () => {
             '',
             'Usage:',
             '  node docker-images.mjs list',
-            '  node docker-images.mjs build [--services moon,sage,kavita] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache]',
-            '  node docker-images.mjs push  [--services moon,sage,kavita] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--skip-login]',
-            '  node docker-images.mjs publish [--services moon,sage,kavita] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache] [--skip-login]',
+            '  node docker-images.mjs build [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache]',
+            '  node docker-images.mjs push  [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--skip-login]',
+            '  node docker-images.mjs publish [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache] [--skip-login]',
             '',
             'Env:',
             `  NOONA_DOCKER_NAMESPACE   Full namespace override (default: ${DEFAULT_NAMESPACE})`,
@@ -201,6 +203,10 @@ const canBuildService = (service) => {
 
     if (service.name === 'noona-kavita' && !existsSync(resolve(ROOT, 'services/kavita'))) {
         return {ok: false, reason: 'Missing services/kavita; skipping noona-kavita.'};
+    }
+
+    if (service.name === 'noona-komf' && !existsSync(resolve(ROOT, 'services/komf'))) {
+        return {ok: false, reason: 'Missing services/komf; skipping noona-komf.'};
     }
 
     // Oracle is currently optional in this checkout (services/oracle may not exist).

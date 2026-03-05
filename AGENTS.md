@@ -29,6 +29,7 @@ This repository contains Noona Stack 2.2. Follow these rules when editing.
 | Raven   | [services/raven/AGENTS.md](services/raven/AGENTS.md)   | [services/raven/readme.md](services/raven/readme.md)   |
 | Vault   | [services/vault/AGENTS.md](services/vault/AGENTS.md)   | [services/vault/readme.md](services/vault/readme.md)   |
 | Kavita  | [services/kavita/AGENTS.md](services/kavita/AGENTS.md) | [services/kavita/README.md](services/kavita/README.md) |
+| Komf    | [services/komf/AGENTS.md](services/komf/AGENTS.md)     | [services/komf/README.md](services/komf/README.md)     |
 
 ## Documentation Rules
 

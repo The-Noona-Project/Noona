@@ -121,6 +121,10 @@ export const createPortalRavenClient = ({
 
     return {
         getDownloadSummary: async () => await request('/v1/download/status/summary'),
+        getLibrary: async () => {
+            const payload = await request('/v1/library/getall');
+            return Array.isArray(payload) ? payload : [];
+        },
         searchTitle: async (query) => {
             const normalized = typeof query === 'string' ? query.trim() : '';
             if (!normalized) {

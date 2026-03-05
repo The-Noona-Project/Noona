@@ -549,6 +549,64 @@ test('recommend command searches Raven and stores the selected recommendation in
     assert.deepEqual(button.edits[0].components, []);
 });
 
+test('recommend command reports existing library titles and returns a Kavita link without writing to Vault', async () => {
+    const storedRecommendations = [];
+    const kavitaSearchCalls = [];
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async () => ({
+                searchId: 'search-77',
+                options: [
+                    {index: '1', title: 'Solo Leveling', href: 'https://source.example/solo-leveling'},
+                ],
+            }),
+            getLibrary: async () => [
+                {
+                    uuid: 'library-title-1',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+        },
+        kavita: {
+            searchTitles: async title => {
+                kavitaSearchCalls.push(title);
+                return {
+                    series: [
+                        {
+                            name: 'Solo Leveling',
+                            url: 'https://kavita.example/library/3/series/12',
+                        },
+                    ],
+                };
+            },
+        },
+        vault: {
+            storeRecommendation: async recommendation => {
+                storedRecommendations.push(recommendation);
+                return {insertedId: 100};
+            },
+        },
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction();
+
+    await command.execute(interaction);
+
+    const [selectionRow] = edits[0].components.map(row => row.toJSON());
+    const firstButton = selectionRow.components[0];
+    const button = createRecommendButtonInteraction({customId: firstButton.custom_id});
+
+    await command.handleComponent(button.interaction);
+
+    assert.equal(storedRecommendations.length, 0);
+    assert.deepEqual(kavitaSearchCalls, ['Solo Leveling']);
+    assert.equal(button.edits.length, 1);
+    assert.match(button.edits[0].content, /\*\*Solo Leveling\*\* is already on this server/i);
+    assert.match(button.edits[0].content, /Open in Kavita: https:\/\/kavita\.example\/library\/3\/series\/12/i);
+    assert.deepEqual(button.edits[0].components, []);
+});
+
 test('recommend command cancels pending selections without writing to Vault', async () => {
     const storedRecommendations = [];
     const command = createRecommendCommand({

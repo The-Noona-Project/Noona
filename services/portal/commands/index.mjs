@@ -27,6 +27,7 @@ export const createPortalSlashCommands = ({
     }));
     commands.set('recommend', createRecommendCommand({
         raven,
+        kavita,
         vault,
     }));
     commands.set('scan', createScanCommand({kavita}));

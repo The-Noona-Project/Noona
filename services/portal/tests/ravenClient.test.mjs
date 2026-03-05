@@ -32,6 +32,37 @@ test('searchTitle requests the Raven search endpoint and returns the payload', a
     assert.equal(new URL(calls[0].url).pathname, '/v1/download/search/Solo%20Leveling');
 });
 
+test('getLibrary requests the Raven library endpoint and returns titles', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify([
+                {
+                    uuid: 'title-1',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ]), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const titles = await raven.getLibrary();
+
+    assert.equal(Array.isArray(titles), true);
+    assert.equal(titles.length, 1);
+    assert.equal(titles[0].uuid, 'title-1');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'GET');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/library/getall');
+});
+
 test('getTitle requests the Raven title endpoint and returns the payload', async () => {
     const calls = [];
     const raven = createPortalRavenClient({

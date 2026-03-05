@@ -505,14 +505,6 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
         return visible;
     }, [catalogByName, updates]);
-    const updatableInstalledSnapshots = useMemo(
-        () =>
-            installedUpdateSnapshots.filter((entry) => {
-                const service = normalizeString(entry?.service).trim();
-                return service.length > 0 && entry?.supported !== false && entry?.updateAvailable === true;
-            }),
-        [installedUpdateSnapshots],
-    );
     const updatesBusy = updatesApplyingAll || Object.values(updating).some(Boolean);
 
     const currentService = activeTab === "portal"
@@ -1560,13 +1552,14 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 setUpdatesMessage("No installed services available for update checks.");
                 return;
             }
+            const installedServiceSet = new Set(installedServices);
 
             const nextUpdates = await requestUpdateCheck(installedServices, {notify: false});
             const services = prioritizeRebootMonitorServices(
                 nextUpdates
                     .filter((entry) => entry?.supported !== false && entry?.updateAvailable === true)
                     .map((entry) => normalizeString(entry?.service).trim())
-                    .filter(Boolean),
+                    .filter((service) => service.length > 0 && installedServiceSet.has(service)),
             );
 
             if (services.length === 0) {
@@ -1577,7 +1570,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setUpdatesMessage("Opening reboot monitor...");
 
             if (typeof window !== "undefined") {
-                const returnTo = "/settings/warden";
+                const returnToCandidate = normalizeString(selection.href).trim();
+                const returnTo = returnToCandidate.startsWith("/") ? returnToCandidate : "/settings/warden";
                 writeRebootMonitorSession({
                     targetServices: services,
                     returnTo,
@@ -3075,7 +3069,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                             <Button variant="secondary" disabled={updatesLoading || updatesBusy}
                                                     onClick={() => void loadUpdates()}>Reload</Button>
                                             <Button variant="secondary"
-                                                    disabled={updatesLoading || updatesChecking || updatesBusy || updatableInstalledSnapshots.length === 0}
+                                                    disabled={updatesLoading || updatesChecking || updatesBusy}
                                                     onClick={() => void updateAllImages()}>
                                                 {updatesApplyingAll ? "Updating all..." : "Update all"}
                                             </Button>

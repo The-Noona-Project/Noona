@@ -90,7 +90,9 @@ mode.
   setting before container start. Moon's setup wizard and Portal settings page edit that managed file through Warden's
   normal service-config flow. The baked-in managed template now follows the current Komf sample more closely by
   enabling only `mangaUpdates` by default with `mode: API`, and Warden auto-upgrades the untouched legacy Noona Komf
-  template to that safer provider set.
+  template to that safer provider set. Managed Komf startup now also decodes escaped newline payloads before writing
+  YAML and mirrors the file through a Docker helper bind mount so `/mnt/user/noona/komf/config/application.yml` is
+  created on the real host path even when Warden itself runs containerized.
 - Warden now resolves a shared Noona host root and pre-creates the expected tree before service launch. Redis and
   Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
   managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed `noona-komf` uses

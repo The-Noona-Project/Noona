@@ -69,7 +69,8 @@ default Discord roles.
 - `/search` - search Kavita series titles by name and return matching series results.
 - `/recommend title:<name>` - search Raven for up to five title matches, ask the user to confirm the intended title
   with Discord buttons, then insert a pending recommendation document into Vault's `portal_recommendations`
-  collection.
+  collection. If the confirmed title already exists in Raven's library, Portal skips insertion and responds that the
+  title is already on the server plus a Kavita title link when one can be resolved.
 - Boot behavior: on Discord login, Portal clears current-app global commands, clears the guild command list, then
   re-registers all current slash command definitions for the configured guild.
 

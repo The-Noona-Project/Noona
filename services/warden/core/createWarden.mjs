@@ -1124,6 +1124,30 @@ export function createWarden(options = {}) {
         return directory ? path.join(directory, MANAGED_KOMF_CONFIG_FILE_NAME) : null;
     };
 
+    const parseContainerUserOwnership = (candidate) => {
+        if (typeof candidate !== 'string') {
+            return null;
+        }
+
+        const normalized = candidate.trim();
+        if (!normalized) {
+            return null;
+        }
+
+        const [uidRaw, gidRaw] = normalized.split(':');
+        const uid = Number.parseInt(uidRaw, 10);
+        if (!Number.isInteger(uid) || uid < 0) {
+            return null;
+        }
+
+        const gid = Number.parseInt(gidRaw ?? uidRaw, 10);
+        if (!Number.isInteger(gid) || gid < 0) {
+            return null;
+        }
+
+        return {uid, gid};
+    };
+
     const readManagedKomfConfigFile = (installOverridesByName = null) => {
         const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
         if (!filePath || typeof fsModule?.readFileSync !== 'function') {
@@ -1141,9 +1165,74 @@ export function createWarden(options = {}) {
         }
     };
 
-    const writeManagedKomfConfigFile = (content, installOverridesByName = null) => {
+    const writeManagedKomfConfigFileViaHelperContainer = async ({
+                                                                    dockerClient,
+                                                                    directory,
+                                                                    normalizedContent,
+                                                                    serviceUser,
+                                                                } = {}) => {
+        if (
+            !dockerClient
+            || typeof dockerClient.createContainer !== 'function'
+            || !directory
+            || typeof normalizedContent !== 'string'
+        ) {
+            return null;
+        }
+
+        const helperImage = 'busybox:1.36';
+        const helperName = `noona-komf-config-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+        const ownership = parseContainerUserOwnership(serviceUser);
+        const encodedContent = Buffer.from(normalizedContent, 'utf8').toString('base64');
+        const applyOwnershipCommand = ownership
+            ? `chown -R ${ownership.uid}:${ownership.gid} /target; chmod 775 /target`
+            : 'chmod 777 /target';
+        const helperCommand = [
+            'set -eu',
+            'mkdir -p /target',
+            applyOwnershipCommand,
+            'echo "$NOONA_KOMF_CONFIG_B64" | base64 -d > /target/application.yml',
+            ownership
+                ? `chown ${ownership.uid}:${ownership.gid} /target/application.yml; chmod 664 /target/application.yml`
+                : 'chmod 664 /target/application.yml',
+        ].join('; ');
+
+        try {
+            await dockerUtils.pullImageIfNeeded?.(helperImage, {dockerInstance: dockerClient});
+        } catch {
+            // Keep going when busybox is already available and pull checks fail.
+        }
+
+        const helperContainer = await dockerClient.createContainer({
+            name: helperName,
+            Image: helperImage,
+            Cmd: ['sh', '-lc', helperCommand],
+            Env: [`NOONA_KOMF_CONFIG_B64=${encodedContent}`],
+            HostConfig: {
+                AutoRemove: true,
+                Binds: [`${directory}:/target`],
+            },
+        });
+
+        await helperContainer.start();
+        const result = await helperContainer.wait();
+        if (result?.StatusCode != null && Number(result.StatusCode) !== 0) {
+            throw new Error(`Komf config helper exited with status ${result.StatusCode}.`);
+        }
+
+        return {
+            path: path.join(directory, MANAGED_KOMF_CONFIG_FILE_NAME),
+            via: 'docker-helper',
+        };
+    };
+
+    const writeManagedKomfConfigFile = async (
+        content,
+        installOverridesByName = null,
+        {dockerClient = null, serviceUser = null} = {},
+    ) => {
         const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
-        if (!filePath || typeof fsModule?.writeFileSync !== 'function') {
+        if (!filePath) {
             return null;
         }
 
@@ -1164,14 +1253,28 @@ export function createWarden(options = {}) {
             }
         }
 
-        if (existingContent !== normalizedContent) {
+        if (existingContent !== normalizedContent && typeof fsModule?.writeFileSync === 'function') {
             fsModule.writeFileSync(filePath, normalizedContent, 'utf8');
+        }
+
+        let helperWrite = null;
+        try {
+            helperWrite = await writeManagedKomfConfigFileViaHelperContainer({
+                dockerClient,
+                directory,
+                normalizedContent,
+                serviceUser,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to write managed Komf config on host mount: ${message}`);
         }
 
         return {
             path: filePath,
             content: normalizedContent,
             changed: existingContent !== normalizedContent,
+            hostWrite: helperWrite,
         };
     };
 
@@ -1273,7 +1376,10 @@ export function createWarden(options = {}) {
                 typeof currentEnv[MANAGED_KOMF_CONFIG_ENV_KEY] === 'string'
                     ? currentEnv[MANAGED_KOMF_CONFIG_ENV_KEY]
                     : readManagedKomfConfigFile(installOverridesByName) ?? DEFAULT_MANAGED_KOMF_APPLICATION_YML;
-            writeManagedKomfConfigFile(requestedConfigContent, installOverridesByName);
+            await writeManagedKomfConfigFile(requestedConfigContent, installOverridesByName, {
+                dockerClient,
+                serviceUser: service.user,
+            });
             const envWithDefaults = currentEnv.KOMF_KAVITA_BASE_URI
                 ? service.env
                 : upsertEnvEntry(service.env, 'KOMF_KAVITA_BASE_URI', 'http://noona-kavita:5000');

@@ -134,11 +134,31 @@ metadataProviders:
 `;
 
 const normalizeLineEndings = (value) => value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+const decodeEscapedYamlContent = (value) => {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const normalized = normalizeLineEndings(value);
+    const hasEscapedLines = normalized.includes('\\n') || normalized.includes('\\r');
+    const hasRealLines = normalized.includes('\n') || normalized.includes('\r');
+    if (!hasEscapedLines || hasRealLines) {
+        return normalized;
+    }
+
+    return normalizeLineEndings(
+        normalized
+            .replace(/\\r\\n/g, '\n')
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\n')
+            .replace(/\\"/g, '"'),
+    );
+};
 const LEGACY_MANAGED_KOMF_APPLICATION_YML_NORMALIZED = `${normalizeLineEndings(LEGACY_MANAGED_KOMF_APPLICATION_YML).trim()}\n`;
 
 export const normalizeManagedKomfConfigContent = (value) => {
     const raw = typeof value === 'string'
-        ? normalizeLineEndings(value)
+        ? decodeEscapedYamlContent(value)
         : '';
     const trimmed = raw.trim();
     if (!trimmed) {

@@ -568,12 +568,17 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                         const res = await fetch(`/api/noona/services/${encodeURIComponent(service)}/health`, {cache: "no-store"});
                         const json = (await res.json().catch(() => null)) as ServiceHealthResponse | null;
                         if (!res.ok) {
+                            const supported = typeof json?.supported === "boolean"
+                                ? json.supported
+                                : res.status !== 404;
                             return {
                                 service,
                                 success: false,
-                                supported: true,
-                                detail: parseApiError(json, `Health check failed (HTTP ${res.status}).`),
-                                status: `HTTP ${res.status}`,
+                                supported,
+                                detail: supported
+                                    ? parseApiError(json, `Health check failed (HTTP ${res.status}).`)
+                                    : "No health endpoint is defined for this service.",
+                                status: supported ? `HTTP ${res.status}` : "Not supported",
                             };
                         }
 
@@ -775,15 +780,16 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                 setPhaseState("failed", "Timed out waiting for Noona to stabilize.");
                 return;
             }
+            if (phaseRef.current === "complete" || phaseRef.current === "failed") {
+                return;
+            }
 
             const reachable = await probeNowRef.current();
             if (cancelled) return;
 
             if (!reachable) {
-                if (phaseRef.current !== "complete" && phaseRef.current !== "failed") {
-                    setStableState(0);
-                    setPhaseState("waiting", "Lost contact with Moon. Waiting for the web UI to return...");
-                }
+                setStableState(0);
+                setPhaseState("waiting", "Lost contact with Moon. Waiting for the web UI to return...");
             } else {
                 const states = serviceStatesRef.current;
                 const queueComplete = currentIndexRef.current >= targetServices.length;
@@ -811,9 +817,7 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                     }
                 } else {
                     setStableState(0);
-                    if (phaseRef.current !== "complete" && phaseRef.current !== "failed") {
-                        setPhaseState("verifying", "Waiting for services to report healthy...");
-                    }
+                    setPhaseState("verifying", "Waiting for services to report healthy...");
                 }
             }
 

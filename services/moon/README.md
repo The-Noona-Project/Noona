@@ -30,6 +30,7 @@ frontend.
 - [Setup summary component](src/components/noona/SetupSummaryPage.tsx)
 - [Discord callback component](src/components/noona/DiscordCallbackPage.tsx)
 - [Shared Raven title card](src/components/noona/RavenTitleCard.tsx)
+- [Title detail page component](src/components/noona/TitleDetailPage.tsx)
 - [App shell](src/components/AppShell.tsx)
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
@@ -113,7 +114,9 @@ frontend.
   host-facing managed Kavita URL before falling back to Portal's configured external Kavita base URL. The title-page
   `Open in Kavita` action and each inline Kavita search-result `Open` button now rebuild the series link from
   Warden's host-facing `noona-kavita` URL so they follow the configured `SERVER_IP`. Moon's metadata-match request now
-  also forwards the active title query to Portal/Kavita so Komf-backed lookup does not fail on a null query, and
+  also forwards the active title query to Portal/Kavita so Komf-backed lookup does not fail on a null query. The
+  metadata button now opens a centered confirmation modal that lists returned Komf candidates before applying the
+  selected match, and
   applying a Kavita metadata match from the title page still sends the Raven title UUID so Portal can lock Kavita to
   the same Noona cover art that Moon is rendering for that title. Title detail pages now also show Raven's stored
   downloaded-chapter index, the exact latest new/missing chapter plan returned by `Check new/missing`, and the live

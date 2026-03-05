@@ -187,6 +187,16 @@ test('normalizeManagedKomfConfigContent upgrades the legacy managed Komf templat
     assert.equal(config?.metadataProviders?.defaultProviders?.aniList?.enabled, false);
 });
 
+test('normalizeManagedKomfConfigContent decodes escaped newline payloads', () => {
+    const escaped =
+        'metadataProviders:\\n  defaultProviders:\\n    aniList:\\n      enabled: true\\n';
+    const normalized = normalizeManagedKomfConfigContent(escaped);
+
+    assert.match(normalized, /metadataProviders:\n/);
+    assert.match(normalized, /aniList:\n/);
+    assert.ok(!normalized.includes('\\n'));
+});
+
 test('getServiceConfig surfaces managed Komf application.yml from disk', () => {
     const komfConfigPath = path.join('/srv/noona', 'komf', 'config', 'application.yml');
     const memoryFs = createMemoryFs({
@@ -268,6 +278,68 @@ test('startService writes managed Komf application.yml and strips it from contai
     const writtenPath = path.join('/srv/noona', 'komf', 'config', 'application.yml');
     assert.match(memoryFs.files.get(path.normalize(writtenPath)) || '', /metadataProviders:/);
     assert.match(memoryFs.files.get(path.normalize(writtenPath)) || '', /mal:/);
+});
+
+test('startService mirrors managed Komf application.yml to host mount through helper container', async () => {
+    const helperCreateCalls = [];
+    const dockerInstance = createStubDocker({
+        createContainer: async (config) => {
+            helperCreateCalls.push(config);
+            return {
+                start: async () => {
+                },
+                wait: async () => ({StatusCode: 0}),
+            };
+        },
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => ({Id: 'noona-komf-container'}),
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        dockerInstance,
+        fs: createMemoryFs(),
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-komf': {
+                    name: 'noona-komf',
+                    image: 'sndxr/komf:latest',
+                    port: 8085,
+                    env: ['KOMF_KAVITA_BASE_URI=http://noona-kavita:5000'],
+                    user: '1000:1000',
+                },
+            },
+            core: {},
+        },
+    });
+
+    await warden.startService({
+        name: 'noona-komf',
+        image: 'sndxr/komf:latest',
+        port: 8085,
+        env: [
+            'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+            'KOMF_APPLICATION_YML=metadataProviders:\n  defaultProviders:\n    mal:\n      enabled: true',
+        ],
+        user: '1000:1000',
+    });
+
+    assert.equal(helperCreateCalls.length, 1);
+    assert.equal(helperCreateCalls[0]?.Image, 'busybox:1.36');
+    assert.match(helperCreateCalls[0]?.HostConfig?.Binds?.[0] ?? '', /komf[\\/]config:\/target$/);
+    assert.ok(
+        (helperCreateCalls[0]?.Env ?? []).some((entry) => entry.startsWith('NOONA_KOMF_CONFIG_B64=')),
+    );
 });
 
 test('startService pulls, runs, waits, and captures history when container is absent', async () => {
