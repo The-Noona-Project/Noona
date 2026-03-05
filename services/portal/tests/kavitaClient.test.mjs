@@ -452,13 +452,25 @@ test('fetchSeriesMetadataMatches calls Kavita series match endpoint', async () =
         },
     });
 
-    const matches = await kavita.fetchSeriesMetadataMatches(42);
+    const matches = await kavita.fetchSeriesMetadataMatches(42, {query: 'Solo Leveling'});
 
     assert.equal(matches.length, 1);
     const requestUrl = new URL(calls[0].url);
     assert.equal(requestUrl.pathname, '/api/Series/match');
     assert.equal(calls[0].options.method, 'POST');
-    assert.deepEqual(JSON.parse(calls[0].options.body), {seriesId: 42});
+    assert.deepEqual(JSON.parse(calls[0].options.body), {seriesId: 42, query: 'Solo Leveling'});
+});
+
+test('fetchSeriesMetadataMatches rejects empty metadata queries', async () => {
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async () => {
+            throw new Error('fetchImpl should not be called for empty metadata queries');
+        },
+    });
+
+    await assert.rejects(() => kavita.fetchSeriesMetadataMatches(42, {query: '   '}), /metadata query is required/i);
 });
 
 test('applySeriesMetadataMatch sends provider ids to Kavita update-match endpoint', async () => {

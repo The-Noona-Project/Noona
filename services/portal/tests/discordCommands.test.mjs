@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
 import createPortalSlashCommands from '../commands/index.mjs';
+import {createRecommendCommand} from '../commands/recommendCommand.mjs';
 
 const createJoinInteraction = ({
                                    username = 'reader',
@@ -91,6 +92,63 @@ const createSearchInteraction = title => {
     };
 
     return {interaction, edits};
+};
+
+const createRecommendInteraction = ({
+                                        title = 'Solo Leveling',
+                                        discordId = 'discord-user-1',
+                                        tag = 'Member#0001',
+                                        guildId = 'guild-1',
+                                        channelId = 'channel-1',
+                                    } = {}) => {
+    const edits = [];
+    const interaction = {
+        user: {id: discordId, tag},
+        guildId,
+        channelId,
+        deferred: false,
+        replied: false,
+        options: {
+            getString: name => (name === 'title' ? title : null),
+        },
+        deferReply: async () => {
+            interaction.deferred = true;
+        },
+        editReply: async payload => {
+            interaction.replied = true;
+            edits.push(payload);
+        },
+    };
+
+    return {interaction, edits};
+};
+
+const createRecommendButtonInteraction = ({
+                                              customId,
+                                              discordId = 'discord-user-1',
+                                              tag = 'Member#0001',
+                                          } = {}) => {
+    const edits = [];
+    const replies = [];
+    const interaction = {
+        customId,
+        user: {id: discordId, tag},
+        deferred: false,
+        replied: false,
+        deferUpdate: async () => {
+            interaction.deferred = true;
+        },
+        editReply: async payload => {
+            interaction.replied = true;
+            edits.push(payload);
+        },
+        reply: async payload => {
+            interaction.replied = true;
+            replies.push(payload);
+        },
+    };
+
+    return {interaction, edits, replies};
 };
 
 test('join command definition requires username, password, confirm password, and email', () => {
@@ -387,4 +445,140 @@ test('search command rejects blank titles', async () => {
     assert.equal(edits.length, 1);
     assert.equal(edits[0].ephemeral, true);
     assert.match(edits[0].content, /Provide a title to search/i);
+});
+
+test('recommend command definition requires a title option', () => {
+    const commands = createPortalSlashCommands({raven: {searchTitle: async () => ({options: []})}});
+    const command = commands.get('recommend');
+
+    assert.ok(command, 'Expected recommend command to be registered.');
+    assert.equal(command.definition.description, 'Recommend a new title from Raven search results.');
+    assert.deepEqual(command.definition.options, [
+        {
+            name: 'title',
+            description: 'Title to search for in Raven before saving a recommendation.',
+            type: 3,
+            required: true,
+        },
+    ]);
+});
+
+test('recommend command rejects blank titles', async () => {
+    const commands = createPortalSlashCommands({
+        raven: {
+            searchTitle: async () => {
+                throw new Error('searchTitle should not be called for blank recommendation titles');
+            },
+        },
+    });
+    const command = commands.get('recommend');
+    const {interaction, edits} = createRecommendInteraction({title: '   '});
+
+    await command.execute(interaction);
+
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].ephemeral, true);
+    assert.match(edits[0].content, /Provide a title to recommend/i);
+});
+
+test('recommend command searches Raven and stores the selected recommendation in Vault', async () => {
+    const ravenCalls = [];
+    const storedRecommendations = [];
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async query => {
+                ravenCalls.push(query);
+                return {
+                    searchId: 'search-42',
+                    options: [
+                        {index: '1', title: 'Solo Leveling', href: 'https://source.example/solo-leveling'},
+                        {
+                            index: '2',
+                            title: 'Solo Leveling: Side Story',
+                            href: 'https://source.example/solo-leveling-side'
+                        },
+                    ],
+                };
+            },
+        },
+        vault: {
+            storeRecommendation: async recommendation => {
+                storedRecommendations.push(recommendation);
+                return {insertedId: 99};
+            },
+        },
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction();
+
+    await command.execute(interaction);
+
+    assert.deepEqual(ravenCalls, ['Solo Leveling']);
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].content, /Select the Raven match to recommend/i);
+    assert.equal(edits[0].components.length, 2);
+
+    const [selectionRow] = edits[0].components.map(row => row.toJSON());
+    assert.equal(selectionRow.components.length, 2);
+    const firstButton = selectionRow.components[0];
+
+    const button = createRecommendButtonInteraction({customId: firstButton.custom_id});
+    await command.handleComponent(button.interaction);
+
+    assert.equal(storedRecommendations.length, 1);
+    assert.deepEqual(storedRecommendations[0], {
+        source: 'discord',
+        status: 'pending',
+        requestedAt: '2026-03-04T00:00:00.000Z',
+        query: 'Solo Leveling',
+        searchId: 'search-42',
+        selectedOptionIndex: 1,
+        title: 'Solo Leveling',
+        href: 'https://source.example/solo-leveling',
+        requestedBy: {
+            discordId: 'discord-user-1',
+            tag: 'Member#0001',
+        },
+        discordContext: {
+            guildId: 'guild-1',
+            channelId: 'channel-1',
+        },
+    });
+    assert.equal(button.edits.length, 1);
+    assert.match(button.edits[0].content, /Saved recommendation for \*\*Solo Leveling\*\*/);
+    assert.deepEqual(button.edits[0].components, []);
+});
+
+test('recommend command cancels pending selections without writing to Vault', async () => {
+    const storedRecommendations = [];
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async () => ({
+                searchId: 'search-42',
+                options: [
+                    {index: '1', title: 'Solo Leveling', href: 'https://source.example/solo-leveling'},
+                ],
+            }),
+        },
+        vault: {
+            storeRecommendation: async recommendation => {
+                storedRecommendations.push(recommendation);
+                return {insertedId: 100};
+            },
+        },
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction();
+
+    await command.execute(interaction);
+
+    const [, cancelRow] = edits[0].components.map(row => row.toJSON());
+    const cancelButton = cancelRow.components[0];
+    const button = createRecommendButtonInteraction({customId: cancelButton.custom_id});
+
+    await command.handleComponent(button.interaction);
+
+    assert.equal(storedRecommendations.length, 0);
+    assert.equal(button.edits.length, 1);
+    assert.match(button.edits[0].content, /Recommendation cancelled/i);
 });

@@ -3,6 +3,7 @@
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const DEFAULT_TIMEOUT = 10000;
+const DEFAULT_RECOMMENDATIONS_COLLECTION = 'portal_recommendations';
 
 const buildUrl = (baseUrl, path) => new URL(path, baseUrl).toString();
 
@@ -106,12 +107,39 @@ export const createVaultClient = ({
         return writeSecret(`portal/${discordId}`, credential);
     };
 
+    const storeRecommendation = async (recommendation, {
+        collection = DEFAULT_RECOMMENDATIONS_COLLECTION,
+    } = {}) => {
+        if (!recommendation || typeof recommendation !== 'object' || Array.isArray(recommendation)) {
+            throw new Error('Recommendation payload must be an object.');
+        }
+
+        if (!collection || typeof collection !== 'string' || !collection.trim()) {
+            throw new Error('Recommendation collection must be a non-empty string.');
+        }
+
+        const payload = await request('/v1/vault/handle', {
+            method: 'POST',
+            body: {
+                storageType: 'mongo',
+                operation: 'insert',
+                payload: {
+                    collection: collection.trim(),
+                    data: recommendation,
+                },
+            },
+        });
+        log(`[Portal/Vault] Stored recommendation in ${collection.trim()}.`);
+        return payload;
+    };
+
     return {
         request,
         writeSecret,
         readSecret,
         deleteSecret,
         storePortalCredential,
+        storeRecommendation,
     };
 };
 

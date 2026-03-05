@@ -12,6 +12,16 @@ export function registerRavenRoutes(context = {}) {
 
     app.use('/api/raven', requireSessionIfSetupCompleted)
 
+    app.get('/api/raven/library/latest', async (req, res) => {
+        try {
+            const library = await ravenClient.getLibrary()
+            res.json(library ?? [])
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load latest Raven titles: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve latest Raven titles.'})
+        }
+    })
+
     app.get('/api/raven/library', async (req, res) => {
         if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return

@@ -121,6 +121,14 @@ export const createPortalRavenClient = ({
 
     return {
         getDownloadSummary: async () => await request('/v1/download/status/summary'),
+        searchTitle: async (query) => {
+            const normalized = typeof query === 'string' ? query.trim() : '';
+            if (!normalized) {
+                throw new Error('query is required.');
+            }
+
+            return await request(`/v1/download/search/${encodeURIComponent(normalized)}`);
+        },
         getTitle: async (uuid) => {
             const normalized = typeof uuid === 'string' ? uuid.trim() : '';
             if (!normalized) {

@@ -14,6 +14,11 @@ import {
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 import {emitNoonaSiteNotification} from "./SiteNotifications";
+import {
+    buildRebootMonitorTargetKey,
+    prioritizeRebootMonitorServices,
+    writeRebootMonitorSession,
+} from "./rebootMonitorSession";
 import editorStyles from "./ConfigEditor.module.scss";
 import {
     getSettingsHrefForPortalSubtab,
@@ -1367,61 +1372,86 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
+    const listInstalledServiceNames = (): string[] =>
+        catalog
+            .filter((entry) => entry?.installed === true)
+            .map((entry) => normalizeString(entry?.name).trim())
+            .filter(Boolean);
+
+    const applyCheckedUpdates = (
+        nextUpdates: ServiceUpdateSnapshot[],
+        options: { notify?: boolean } = {},
+    ): ServiceUpdateSnapshot[] => {
+        setUpdates(nextUpdates);
+
+        if (options.notify === false) {
+            return nextUpdates;
+        }
+
+        const availableUpdates = nextUpdates
+            .filter((entry) => entry?.supported !== false && entry?.updateAvailable === true)
+            .map((entry) => ({
+                service: normalizeString(entry?.service).trim(),
+                checkedAt: normalizeString(entry?.checkedAt).trim(),
+            }))
+            .filter((entry) => entry.service.length > 0);
+
+        if (availableUpdates.length === 0) {
+            return nextUpdates;
+        }
+
+        const services = availableUpdates
+            .map((entry) => entry.service)
+            .sort((left, right) => left.localeCompare(right));
+        const signature = availableUpdates
+            .map((entry) => `${entry.service}:${entry.checkedAt}`)
+            .sort((left, right) => left.localeCompare(right))
+            .join("|");
+
+        emitNoonaSiteNotification({
+            variant: "warning",
+            title: "Update available",
+            message:
+                services.length === 1
+                    ? `${services[0]} has a new image update available.`
+                    : `${services.length} services have new image updates available.`,
+            durationMs: 9000,
+            dedupeKey: `update-found:${signature || services.join(",")}`,
+        });
+
+        return nextUpdates;
+    };
+
+    const requestUpdateCheck = async (
+        services: string[],
+        options: { notify?: boolean } = {},
+    ): Promise<ServiceUpdateSnapshot[]> => {
+        const res = await fetch("/api/noona/settings/services/updates", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({services}),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok) {
+            throw new Error(parseError(json, `Failed to check updates (HTTP ${res.status}).`));
+        }
+
+        const nextUpdates = Array.isArray(json?.updates) ? (json.updates as ServiceUpdateSnapshot[]) : [];
+        return applyCheckedUpdates(nextUpdates, options);
+    };
+
     const checkUpdates = async () => {
         setUpdatesChecking(true);
         setUpdatesError(null);
         setUpdatesMessage(null);
         try {
-            const services = catalog
-                .filter((entry) => entry?.installed === true)
-                .map((entry) => normalizeString(entry?.name).trim())
-                .filter(Boolean);
+            const services = listInstalledServiceNames();
             if (services.length === 0) {
                 setUpdatesMessage("No installed services available for update checks.");
                 return;
             }
-            const res = await fetch("/api/noona/settings/services/updates", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({services}),
-            });
-            const json = await res.json().catch(() => null);
-            if (!res.ok) {
-                setUpdatesError(parseError(json, `Failed to check updates (HTTP ${res.status}).`));
-                return;
-            }
-            const nextUpdates = Array.isArray(json?.updates) ? (json.updates as ServiceUpdateSnapshot[]) : [];
-            setUpdates(nextUpdates);
+            await requestUpdateCheck(services, {notify: true});
             setUpdatesMessage("Update check finished.");
-
-            const availableUpdates = nextUpdates
-                .filter((entry) => entry?.supported !== false && entry?.updateAvailable === true)
-                .map((entry) => ({
-                    service: normalizeString(entry?.service).trim(),
-                    checkedAt: normalizeString(entry?.checkedAt).trim(),
-                }))
-                .filter((entry) => entry.service.length > 0);
-
-            if (availableUpdates.length > 0) {
-                const services = availableUpdates
-                    .map((entry) => entry.service)
-                    .sort((left, right) => left.localeCompare(right));
-                const signature = availableUpdates
-                    .map((entry) => `${entry.service}:${entry.checkedAt}`)
-                    .sort((left, right) => left.localeCompare(right))
-                    .join("|");
-
-                emitNoonaSiteNotification({
-                    variant: "warning",
-                    title: "Update available",
-                    message:
-                        services.length === 1
-                            ? `${services[0]} has a new image update available.`
-                            : `${services.length} services have new image updates available.`,
-                    durationMs: 9000,
-                    dedupeKey: `update-found:${signature || services.join(",")}`,
-                });
-            }
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setUpdatesError(msg);
@@ -1520,29 +1550,59 @@ export function SettingsPage({selection}: SettingsPageProps) {
     };
 
     const updateAllImages = async () => {
-        const services = updatableInstalledSnapshots
-            .map((entry) => normalizeString(entry?.service).trim())
-            .filter(Boolean);
-
-        if (services.length === 0) {
-            setUpdatesMessage("No installed services currently need image updates.");
-            return;
-        }
-
         setUpdatesApplyingAll(true);
         setUpdatesError(null);
-        setUpdatesMessage("Opening reboot monitor...");
+        setUpdatesMessage("Checking installed services for image updates...");
 
-        if (typeof window !== "undefined") {
-            const params = new URLSearchParams({
-                services: services.join(","),
-                returnTo: "/settings/warden",
-            });
-            window.location.assign(`/rebooting?${params.toString()}`);
-            return;
+        try {
+            const installedServices = listInstalledServiceNames();
+            if (installedServices.length === 0) {
+                setUpdatesMessage("No installed services available for update checks.");
+                return;
+            }
+
+            const nextUpdates = await requestUpdateCheck(installedServices, {notify: false});
+            const services = prioritizeRebootMonitorServices(
+                nextUpdates
+                    .filter((entry) => entry?.supported !== false && entry?.updateAvailable === true)
+                    .map((entry) => normalizeString(entry?.service).trim())
+                    .filter(Boolean),
+            );
+
+            if (services.length === 0) {
+                setUpdatesMessage("No installed services currently need image updates.");
+                return;
+            }
+
+            setUpdatesMessage("Opening reboot monitor...");
+
+            if (typeof window !== "undefined") {
+                const returnTo = "/settings/warden";
+                writeRebootMonitorSession({
+                    targetServices: services,
+                    returnTo,
+                    targetKey: buildRebootMonitorTargetKey(services, returnTo),
+                    phase: "preparing",
+                    phaseDetail: "Preparing reboot monitor...",
+                    currentIndex: 0,
+                    stableSuccessCount: 0,
+                    serviceStates: {},
+                    monitorStartedAt: Date.now(),
+                    updatedAt: Date.now(),
+                });
+                const params = new URLSearchParams({
+                    services: services.join(","),
+                    returnTo,
+                });
+                window.location.assign(`/rebooting?${params.toString()}`);
+                return;
+            }
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setUpdatesError(msg);
+        } finally {
+            setUpdatesApplyingAll(false);
         }
-
-        setUpdatesApplyingAll(false);
     };
 
     const restartEcosystem = async () => {

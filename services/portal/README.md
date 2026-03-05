@@ -17,9 +17,11 @@ default Discord roles.
 - [Discord client](discord/client.mjs)
 - [Discord command inspector](discord/commandInspector.mjs)
 - [Slash command modules](commands/)
+- [Recommend command](commands/recommendCommand.mjs)
 - [Command listing script](scripts/listCommands.mjs)
 - [Onboarding token store](storage/onboardingStore.mjs)
 - [Kavita client](clients/kavitaClient.mjs)
+- [Raven client](clients/ravenClient.mjs)
 - [Vault client](clients/vaultClient.mjs)
 - [Tests](tests/)
 
@@ -28,9 +30,10 @@ default Discord roles.
 - Validate runtime config for Discord, Kavita, Vault, and Redis-backed onboarding tokens.
 - Handle onboarding and Kavita option discovery over HTTP (`/api/portal/*`).
 - Proxy Raven-triggered Kavita library scans so completed imports can surface in Kavita without direct bot access.
-- Register and execute Discord slash commands for Kavita account creation, library scans, and title search workflows.
+- Register and execute Discord slash commands for Kavita account creation, library scans, title search workflows, and
+  Raven-backed recommendation intake.
 - Poll Raven and Warden so the Discord bot presence reflects active downloads, title checks, and service updates.
-- Persist portal credentials in Vault and assign Discord roles when configured.
+- Persist portal credentials and pending recommendation documents in Vault, and assign Discord roles when configured.
 
 ## HTTP Endpoints
 
@@ -43,9 +46,10 @@ default Discord roles.
   folders and merge in any missing Raven folder roots on existing libraries.
 - `POST /api/portal/kavita/libraries/scan` - resolve a Kavita library by name and trigger a scan for Raven-managed
   imports.
-- `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id. Managed Komf /
-  Kavita server failures return a compact operator-facing `500` that points at Komf `application.yml` instead of
-  echoing the raw upstream payload.
+- `POST /api/portal/kavita/title-match` - fetch Kavita metadata candidates for a selected series id and query string.
+  Portal now forwards Moon's title query to Kavita's match endpoint so Komf-backed matching does not trip over a null
+  query, normalizes Kavita's nested `{ series, matchRating }` payload into Moon's flat match shape, and still returns
+  a compact operator-facing `500` that points at Komf `application.yml` instead of echoing the raw upstream payload.
 - `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series and, when Moon
   supplies the Raven `titleUuid`, immediately lock Kavita to the same Noona cover art through the `title-cover`
   proxy route. Managed Komf / Kavita server failures return the same compact operator-facing `500` guidance.
@@ -63,6 +67,9 @@ default Discord roles.
   `PORTAL_JOIN_DEFAULT_LIBRARIES` supports `*` for all available libraries.
 - `/scan` - autocomplete Kavita libraries in Discord and queue a scan for the selected library.
 - `/search` - search Kavita series titles by name and return matching series results.
+- `/recommend title:<name>` - search Raven for up to five title matches, ask the user to confirm the intended title
+  with Discord buttons, then insert a pending recommendation document into Vault's `portal_recommendations`
+  collection.
 - Boot behavior: on Discord login, Portal clears current-app global commands, clears the guild command list, then
   re-registers all current slash command definitions for the configured guild.
 
@@ -102,7 +109,8 @@ For Warden-managed installs that target `noona-kavita`, Warden now provisions th
 starting Portal and injects the resulting `KAVITA_API_KEY` automatically.
 
 Portal's Discord presence now prefers Warden install/update activity, then falls back to Raven download/check status,
-so the bot advertises `Updating <service>`, `Downloading <title>`, `Checking <title>`, or `Idle` automatically.
+so the bot advertises `Updating <service>`, `Downloading <title>`, `Downloading <title> (+N)`, `Recovering <title>`,
+`Checking <title>`, or `Idle` automatically.
 
 ## Documentation Rule
 

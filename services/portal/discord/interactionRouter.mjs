@@ -46,6 +46,33 @@ export const createInteractionHandler = ({
         return;
     }
 
+    if (interaction?.isButton?.()) {
+        for (const [commandName, handler] of commandMap?.entries?.() ?? []) {
+            if (typeof handler?.handleComponent !== 'function') {
+                continue;
+            }
+
+            try {
+                const handled = await handler.handleComponent(interaction);
+                if (handled) {
+                    return;
+                }
+            } catch (error) {
+                errMSG(`[Portal/Discord] Component handler for /${commandName} failed: ${error.message}`);
+                await sendInteractionReply(interaction, {
+                    content: 'Something went wrong while processing that button.',
+                    ephemeral: true,
+                    components: [],
+                }).catch(responseError => {
+                    errMSG(`[Portal/Discord] Failed to send component error response: ${responseError.message}`);
+                });
+                return;
+            }
+        }
+
+        return;
+    }
+
     if (!interaction?.isChatInputCommand?.()) {
         return;
     }

@@ -2135,6 +2135,11 @@ test('Raven routes split library and download management permissions after setup
         password: 'Password123',
         permissions: ['moon_login', 'download_new_title'],
     })
+    await vault.client.users.create({
+        username: 'HomeUser',
+        password: 'Password123',
+        permissions: ['moon_login'],
+    })
 
     const searchQueries = []
     const app = createSageApp({
@@ -2176,12 +2181,19 @@ test('Raven routes split library and download management permissions after setup
 
     const libraryToken = await loginWithPassword('LibraryUser')
     const downloadToken = await loginWithPassword('DownloadUser')
+    const homeToken = await loginWithPassword('HomeUser')
 
     const libraryResponse = await fetch(`${baseUrl}/api/raven/library`, {
         headers: {Authorization: `Bearer ${libraryToken}`},
     })
     assert.equal(libraryResponse.status, 200)
     assert.deepEqual(await libraryResponse.json(), [{title: 'One Piece'}])
+
+    const latestTitlesResponse = await fetch(`${baseUrl}/api/raven/library/latest`, {
+        headers: {Authorization: `Bearer ${homeToken}`},
+    })
+    assert.equal(latestTitlesResponse.status, 200)
+    assert.deepEqual(await latestTitlesResponse.json(), [{title: 'One Piece'}])
 
     const forbiddenDownloadsResponse = await fetch(`${baseUrl}/api/raven/downloads/status`, {
         headers: {Authorization: `Bearer ${libraryToken}`},
@@ -2202,6 +2214,11 @@ test('Raven routes split library and download management permissions after setup
         headers: {Authorization: `Bearer ${downloadToken}`},
     })
     assert.equal(forbiddenLibraryResponse.status, 403)
+
+    const forbiddenHomeLibraryResponse = await fetch(`${baseUrl}/api/raven/library`, {
+        headers: {Authorization: `Bearer ${homeToken}`},
+    })
+    assert.equal(forbiddenHomeLibraryResponse.status, 403)
 
     const downloadStatusResponse = await fetch(`${baseUrl}/api/raven/downloads/status`, {
         headers: {Authorization: `Bearer ${downloadToken}`},
@@ -3368,6 +3385,66 @@ test('auth user management updates legacy Discord users missing authProvider met
     assert.equal(storedUser.authProviderId, '222333444555666777')
     assert.equal(storedUser.username, 'Reader Legacy Prime')
     assert.deepEqual(storedUser.permissions, ['moon_login', 'library_management', 'download_management'])
+})
+
+test('auth user management updates permissions when Vault user docs expose serialized _id values', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const createResponse = await fetch(`${baseUrl}/api/auth/users`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123', role: 'member'}),
+    })
+    assert.equal(createResponse.status, 201)
+
+    const storedUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'readerone')
+    assert.ok(storedUser)
+    storedUser._id = '507f1f77bcf86cd799439011'
+
+    const originalMongoUpdate = vault.client.mongo.update
+    vault.client.mongo.update = async (collectionName, query = {}, update = {}, options = {}) => {
+        if (Object.prototype.hasOwnProperty.call(query ?? {}, '_id')) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        return originalMongoUpdate(collectionName, query, update, options)
+    }
+
+    const updateResponse = await fetch(`${baseUrl}/api/auth/users/ReaderOne`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({permissions: ['moon_login']}),
+    })
+    assert.equal(updateResponse.status, 200)
+    const updatePayload = await updateResponse.json()
+    assert.deepEqual(updatePayload.user.permissions, ['moon_login'])
+
+    const refreshedStoredUser = vault.userDocs.find((entry) => entry.usernameNormalized === 'readerone')
+    assert.ok(refreshedStoredUser)
+    assert.deepEqual(refreshedStoredUser.permissions, ['moon_login'])
 })
 
 test('auth user management surfaces Vault write failures instead of reporting false success', async (t) => {

@@ -65,6 +65,7 @@ export const startPortal = async (overrides = {}) => {
     const slashCommands = createPortalSlashCommands({
         getDiscord: () => discord,
         kavita,
+        raven,
         vault,
         onboardingStore,
         joinDefaults: config.join,

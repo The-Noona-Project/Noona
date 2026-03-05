@@ -3,15 +3,15 @@ import {dump, load} from "js-yaml";
 const PRIORITY_STEP = 10;
 
 const PROVIDER_DEFINITIONS = [
-    {key: "aniList", label: "AniList", defaultPriority: 10, defaultEnabled: true},
-    {key: "mangaUpdates", label: "MangaUpdates", defaultPriority: 20, defaultEnabled: true},
+    {key: "mangaUpdates", label: "MangaUpdates", defaultPriority: 10, defaultEnabled: true},
     {
         key: "mal",
         label: "MyAnimeList",
-        defaultPriority: 30,
+        defaultPriority: 20,
         defaultEnabled: false,
         credentialKey: "malClientId" as const
     },
+    {key: "aniList", label: "AniList", defaultPriority: 30, defaultEnabled: false},
     {key: "mangaDex", label: "MangaDex", defaultPriority: 40, defaultEnabled: false},
     {key: "nautiljon", label: "Nautiljon", defaultPriority: 50, defaultEnabled: false},
     {key: "yenPress", label: "Yen Press", defaultPriority: 60, defaultEnabled: false},
@@ -180,6 +180,9 @@ const writeProviderStates = (root: PlainRecord, providers: KomfProviderState[]) 
 
     for (const provider of orderedProviders) {
         const currentNode = isPlainRecord(existing[provider.key]) ? {...existing[provider.key] as PlainRecord} : {};
+        if (provider.key === "mangaUpdates" && !normalizeString(currentNode.mode)) {
+            currentNode.mode = "API";
+        }
         currentNode.priority = provider.priority;
         currentNode.enabled = provider.enabled;
         nextProviders[provider.key] = currentNode;

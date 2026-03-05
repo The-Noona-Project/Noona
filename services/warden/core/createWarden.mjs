@@ -365,6 +365,78 @@ function parseImageReference(image) {
     };
 }
 
+const REGISTRY_MANIFEST_ACCEPT_HEADER = [
+    'application/vnd.docker.distribution.manifest.v2+json',
+    'application/vnd.docker.distribution.manifest.list.v2+json',
+    'application/vnd.oci.image.manifest.v1+json',
+    'application/vnd.oci.image.index.v1+json',
+].join(', ');
+
+const REGISTRY_AUTH_PARAM_PATTERN = /([a-z][a-z0-9_-]*)="([^"]*)"/gi;
+
+function buildRegistryManifestUrl(imageReference) {
+    if (!imageReference) {
+        return null;
+    }
+
+    const baseUrl =
+        imageReference.registry === 'docker.io'
+            ? 'https://registry-1.docker.io'
+            : `https://${imageReference.registry}`;
+    return `${baseUrl}/v2/${imageReference.repository}/manifests/${encodeURIComponent(imageReference.tag)}`;
+}
+
+function parseRegistryAuthChallenge(headerValue) {
+    if (typeof headerValue !== 'string') {
+        return null;
+    }
+
+    const trimmed = headerValue.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const separatorIndex = trimmed.indexOf(' ');
+    const scheme = (separatorIndex >= 0 ? trimmed.slice(0, separatorIndex) : trimmed).trim().toLowerCase();
+    const paramsSource = separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1) : '';
+    const params = {};
+
+    REGISTRY_AUTH_PARAM_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = REGISTRY_AUTH_PARAM_PATTERN.exec(paramsSource)) != null) {
+        params[match[1].toLowerCase()] = match[2];
+    }
+
+    return {scheme, params};
+}
+
+function resolveRegistryCredentials(registry, env = process.env) {
+    const normalizedRegistry = typeof registry === 'string' ? registry.trim().toLowerCase() : '';
+    const configuredRegistry = typeof env?.NOONA_DOCKER_REGISTRY === 'string'
+        ? env.NOONA_DOCKER_REGISTRY.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase()
+        : '';
+    const username = typeof env?.NOONA_DOCKER_USERNAME === 'string' ? env.NOONA_DOCKER_USERNAME.trim() : '';
+    const password = typeof env?.NOONA_DOCKER_PASSWORD === 'string' ? env.NOONA_DOCKER_PASSWORD : '';
+
+    if (!username) {
+        return null;
+    }
+
+    if (configuredRegistry && normalizedRegistry && configuredRegistry !== normalizedRegistry) {
+        return null;
+    }
+
+    return {username, password};
+}
+
+function buildBasicAuthorizationHeader(credentials) {
+    if (!credentials?.username) {
+        return null;
+    }
+
+    return `Basic ${Buffer.from(`${credentials.username}:${credentials.password ?? ''}`).toString('base64')}`;
+}
+
 const timestamp = () => new Date().toISOString();
 
 const TRUTHY_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -2670,45 +2742,72 @@ export function createWarden(options = {}) {
         }
     };
 
-    const fetchDockerHubDigest = async (imageReference) => {
-        if (!imageReference || imageReference.registry !== 'docker.io') {
+    const fetchRegistryDigest = async (imageReference) => {
+        if (!imageReference) {
             return null;
         }
 
-        const scope = `repository:${imageReference.repository}:pull`;
-        const tokenResponse = await fetchImpl(
-            `https://auth.docker.io/token?service=registry.docker.io&scope=${encodeURIComponent(scope)}`,
-            {method: 'GET'},
-        );
-
-        if (!tokenResponse.ok) {
-            throw new Error(`Docker Hub token request failed with status ${tokenResponse.status}`);
+        const manifestUrl = buildRegistryManifestUrl(imageReference);
+        if (!manifestUrl) {
+            return null;
         }
 
-        const tokenPayload = await tokenResponse.json().catch(() => ({}));
-        const token = typeof tokenPayload?.token === 'string' ? tokenPayload.token.trim() : '';
-        if (!token) {
-            throw new Error('Docker Hub token response did not include a token.');
-        }
-
-        const manifestResponse = await fetchImpl(
-            `https://registry-1.docker.io/v2/${imageReference.repository}/manifests/${encodeURIComponent(imageReference.tag)}`,
-            {
+        const credentials = resolveRegistryCredentials(imageReference.registry, env);
+        const basicAuthorization = buildBasicAuthorizationHeader(credentials);
+        const createManifestRequest = (authorization = null) =>
+            fetchImpl(manifestUrl, {
                 method: 'GET',
                 headers: {
-                    Authorization: `Bearer ${token}`,
-                    Accept: [
-                        'application/vnd.docker.distribution.manifest.v2+json',
-                        'application/vnd.docker.distribution.manifest.list.v2+json',
-                        'application/vnd.oci.image.manifest.v1+json',
-                        'application/vnd.oci.image.index.v1+json',
-                    ].join(', '),
+                    ...(authorization ? {Authorization: authorization} : {}),
+                    Accept: REGISTRY_MANIFEST_ACCEPT_HEADER,
                 },
-            },
-        );
+            });
+
+        let manifestResponse = await createManifestRequest(basicAuthorization);
+
+        if (manifestResponse.status === 401) {
+            const challenge = parseRegistryAuthChallenge(manifestResponse.headers.get('www-authenticate'));
+            if (challenge?.scheme === 'bearer' && challenge.params?.realm) {
+                const tokenUrl = new URL(challenge.params.realm);
+                if (challenge.params.service) {
+                    tokenUrl.searchParams.set('service', challenge.params.service);
+                }
+                tokenUrl.searchParams.set(
+                    'scope',
+                    challenge.params.scope || `repository:${imageReference.repository}:pull`,
+                );
+
+                const tokenResponse = await fetchImpl(tokenUrl.toString(), {
+                    method: 'GET',
+                    headers: {
+                        ...(basicAuthorization ? {Authorization: basicAuthorization} : {}),
+                    },
+                });
+
+                if (!tokenResponse.ok) {
+                    throw new Error(
+                        `${imageReference.registry} token request failed with status ${tokenResponse.status}`,
+                    );
+                }
+
+                const tokenPayload = await tokenResponse.json().catch(() => ({}));
+                const token = typeof tokenPayload?.token === 'string'
+                    ? tokenPayload.token.trim()
+                    : typeof tokenPayload?.access_token === 'string'
+                        ? tokenPayload.access_token.trim()
+                        : '';
+                if (!token) {
+                    throw new Error(`${imageReference.registry} token response did not include a token.`);
+                }
+
+                manifestResponse = await createManifestRequest(`Bearer ${token}`);
+            } else if (challenge?.scheme === 'basic' && basicAuthorization) {
+                manifestResponse = await createManifestRequest(basicAuthorization);
+            }
+        }
 
         if (!manifestResponse.ok) {
-            throw new Error(`Docker Hub manifest request failed with status ${manifestResponse.status}`);
+            throw new Error(`${imageReference.registry} manifest request failed with status ${manifestResponse.status}`);
         }
 
         const remoteDigest = manifestResponse.headers.get('docker-content-digest');
@@ -2745,7 +2844,7 @@ export function createWarden(options = {}) {
         }
 
         const resolvedImage = parseImageReference(image);
-        if (!resolvedImage || resolvedImage.registry !== 'docker.io') {
+        if (!resolvedImage) {
             const snapshot = {
                 service: normalizedName,
                 image,
@@ -2755,15 +2854,25 @@ export function createWarden(options = {}) {
                 localDigests: [],
                 installed,
                 supported: false,
-                error: 'Update check currently supports Docker Hub images only.',
+                error: 'Service image reference could not be parsed.',
             };
             serviceUpdateSnapshots.set(normalizedName, snapshot);
             return snapshot;
         }
 
         const localDigests = await getLocalImageDigests(client, image);
-        const remoteDigest = await fetchDockerHubDigest(resolvedImage);
-        const updateAvailable = installed && Boolean(remoteDigest) && !localDigests.includes(remoteDigest);
+        let remoteDigest = null;
+        let supported = true;
+        let error = null;
+
+        try {
+            remoteDigest = await fetchRegistryDigest(resolvedImage);
+        } catch (digestError) {
+            supported = false;
+            error = digestError instanceof Error ? digestError.message : String(digestError);
+        }
+
+        const updateAvailable = supported && installed && Boolean(remoteDigest) && !localDigests.includes(remoteDigest);
 
         const snapshot = {
             service: normalizedName,
@@ -2773,8 +2882,8 @@ export function createWarden(options = {}) {
             remoteDigest,
             localDigests,
             installed,
-            supported: true,
-            error: null,
+            supported,
+            error,
         };
 
         serviceUpdateSnapshots.set(normalizedName, snapshot);
@@ -2916,7 +3025,7 @@ export function createWarden(options = {}) {
         detectKavitaDataMount,
         dockerUtils,
         ensureDockerConnection,
-        fetchDockerHubDigest,
+        fetchRegistryDigest,
         fetchImpl,
         getLocalImageDigests,
         invokeWizard,

@@ -173,6 +173,66 @@ public class VaultService {
         sendPacket(packet);
     }
 
+    public void setRedisValue(String key, Object value) {
+        setRedisValue(key, value, null);
+    }
+
+    public void setRedisValue(String key, Object value, Integer ttlSeconds) {
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("Redis key is required.");
+        }
+
+        java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("key", key.trim());
+        payload.put("value", value);
+        if (ttlSeconds != null && ttlSeconds > 0) {
+            payload.put("ttl", ttlSeconds);
+        }
+
+        Map<String, Object> packet = Map.of(
+                "storageType", "redis",
+                "operation", "set",
+                "payload", payload
+        );
+
+        sendPacket(packet);
+    }
+
+    public Object getRedisValue(String key) {
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("Redis key is required.");
+        }
+
+        Map<String, Object> packet = Map.of(
+                "storageType", "redis",
+                "operation", "get",
+                "payload", Map.of("key", key.trim())
+        );
+
+        try {
+            return sendPacket(packet).get("data");
+        } catch (RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().toLowerCase().contains("key not found")) {
+                return null;
+            }
+            throw e;
+        }
+    }
+
+    public void deleteRedisValue(String key) {
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("Redis key is required.");
+        }
+
+        Map<String, Object> packet = Map.of(
+                "storageType", "redis",
+                "operation", "del",
+                "payload", Map.of("key", key.trim())
+        );
+
+        sendPacket(packet);
+    }
+
     // ─────────────────────────────────────────────────────────────
     // UTILS
     // ─────────────────────────────────────────────────────────────

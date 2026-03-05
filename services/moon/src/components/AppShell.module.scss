@@ -46,3 +46,56 @@
   text-transform: uppercase;
   border: 1px solid color-mix(in srgb, var(--brand-background-strong) 32%, transparent);
 }
+
+.shellHeader {
+  position: sticky;
+  z-index: 7;
+}
+
+.drawerBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.48);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 15;
+}
+
+.drawerBackdropVisible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawerPane {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  max-width: calc(100vw - 0.75rem);
+  transform: translateX(calc(-100% - 1.5rem));
+  transition: transform 220ms ease;
+  z-index: 16;
+  pointer-events: none;
+}
+
+.drawerPaneOpen {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.drawerContent {
+  height: 100%;
+  overflow-y: auto;
+  padding: 1rem 0 1rem 1rem;
+}
+
+@media (max-width: 640px) {
+  .shellHeader {
+    top: 0.75rem;
+  }
+
+  .drawerContent {
+    padding: 0.75rem 0 0.75rem 0.75rem;
+  }
+}

@@ -52,6 +52,44 @@ const normalizeInstalledServices = (payload) =>
         ? payload.services.filter((entry) => entry?.installed === true && normalizeString(entry?.name))
         : [];
 
+const resolveRavenDownloadActivity = (ravenSummary) => {
+    const activeDownloads = Number(ravenSummary?.activeDownloads);
+    const primaryTask = ravenSummary?.currentDownload ?? ravenSummary?.currentTask ?? null;
+    const taskStatus = normalizeString(primaryTask?.status).toLowerCase();
+    const title =
+        normalizeString(primaryTask?.title)
+        || normalizeString(primaryTask?.currentChapter)
+        || normalizeString(primaryTask?.currentChapterNumber)
+        || normalizeString(ravenSummary?.statusText).replace(/^Downloading\s+/i, '');
+
+    if (Number.isFinite(activeDownloads) && activeDownloads > 0) {
+        const extraCount = activeDownloads > 1 ? ` (+${activeDownloads - 1})` : '';
+        return {
+            activityType: ActivityType.Watching,
+            name: truncate(title ? `Downloading ${title}${extraCount}` : 'Downloading from Raven'),
+            status: 'online',
+        };
+    }
+
+    if (taskStatus === 'recovering') {
+        return {
+            activityType: ActivityType.Watching,
+            name: truncate(title ? `Recovering ${title}` : 'Recovering Raven task'),
+            status: 'idle',
+        };
+    }
+
+    if (taskStatus === 'queued') {
+        return {
+            activityType: ActivityType.Watching,
+            name: truncate(title ? `Queued ${title}` : 'Queued in Raven'),
+            status: 'idle',
+        };
+    }
+
+    return null;
+};
+
 export const resolveDiscordPresenceSnapshot = ({serviceActivity = null, ravenSummary = null} = {}) => {
     const serviceLabel = formatServiceLabel(serviceActivity?.label) || formatServiceLabel(serviceActivity?.name);
     if (serviceLabel) {
@@ -62,16 +100,9 @@ export const resolveDiscordPresenceSnapshot = ({serviceActivity = null, ravenSum
         };
     }
 
-    const activeDownloads = Number(ravenSummary?.activeDownloads);
-    const downloadTitle =
-        normalizeString(ravenSummary?.currentDownload?.title)
-        || normalizeString(ravenSummary?.currentDownload?.currentChapter);
-    if (Number.isFinite(activeDownloads) && activeDownloads > 0) {
-        return {
-            activityType: ActivityType.Watching,
-            name: truncate(downloadTitle ? `Downloading ${downloadTitle}` : 'Downloading from Raven'),
-            status: 'online',
-        };
+    const downloadActivity = resolveRavenDownloadActivity(ravenSummary);
+    if (downloadActivity) {
+        return downloadActivity;
     }
 
     const currentCheckTitle = normalizeString(ravenSummary?.currentCheck?.title);

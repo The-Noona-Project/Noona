@@ -7,7 +7,7 @@ test('noona-kavita addon descriptor probes the Kavita API health endpoint with a
     const kavita = addonDockers['noona-kavita']
     assert.ok(kavita)
 
-    assert.equal(kavita.image, 'captainpax/noona-kavita:latest')
+    assert.equal(kavita.image, 'docker.darkmatterservers.com/the-noona-project/noona-kavita:latest')
     assert.equal(kavita.health, 'http://noona-kavita:5000/api/Health')
     assert.equal(kavita.healthTries, 60)
     assert.equal(kavita.healthDelayMs, 1000)

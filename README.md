@@ -34,7 +34,7 @@ Noona is a multi-service platform for orchestration, onboarding, library automat
 - Shared modules live in [utilities/](utilities/).
 - Stack-level docs live in [docs/](docs/).
 - Service Dockerfiles live in [dockerfiles/](dockerfiles/).
-- Managed Kavita is built as `captainpax/noona-kavita`
+- Managed Kavita is built as `docker.darkmatterservers.com/the-noona-project/noona-kavita`
   from [dockerfiles/kavita.Dockerfile](dockerfiles/kavita.Dockerfile).
 
 ## Local Workflow
@@ -64,6 +64,12 @@ Set `SERVER_IP` on Warden when Moon should advertise LAN URLs like `http://192.1
 - Build docker images: `npm run docker:build`
 - Push docker images: `npm run docker:push`
 - Build + push helper: `npm run docker:publish`
+- Docker scripts default to `docker.darkmatterservers.com/the-noona-project`
+- Override the default target with `NOONA_DOCKER_NAMESPACE`, or split it with `NOONA_DOCKER_REGISTRY` and
+  `NOONA_DOCKER_PROJECT`
+- The helper now runs `docker login` to Harbor automatically before `push` and `publish`
+- Set `NOONA_DOCKER_USERNAME` and `NOONA_DOCKER_PASSWORD` only if you need to override the built-in Harbor login
+- Pass `--skip-login` after `--` if you want to rely on an existing Docker login session instead
 - Pass docker helper flags after `--`, for example `npm run docker:publish -- --no-cache`
 
 ## Repo Map

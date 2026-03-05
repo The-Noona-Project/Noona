@@ -358,16 +358,22 @@ export const createKavitaClient = ({
         throw lastError ?? new Error('Unable to search Kavita titles.');
     };
 
-    const fetchSeriesMetadataMatches = async (seriesId) => {
+    const fetchSeriesMetadataMatches = async (seriesId, {query} = {}) => {
         const parsedSeriesId = Number.parseInt(String(seriesId), 10);
         if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
             throw new Error('A valid Kavita series id is required to search metadata matches.');
+        }
+
+        const normalizedQuery = normalizeString(query);
+        if (!normalizedQuery) {
+            throw new Error('A non-empty metadata query is required to search metadata matches.');
         }
 
         const matches = await request('/api/Series/match', {
             method: 'POST',
             body: {
                 seriesId: parsedSeriesId,
+                query: normalizedQuery,
             },
         });
 

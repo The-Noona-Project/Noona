@@ -121,16 +121,37 @@ const normalizeSeriesSearchResult = (series = {}, baseUrl = null) => ({
     url: toKavitaSeriesUrl(baseUrl, series),
 });
 
-const normalizeMetadataMatch = (match = {}) => ({
-    provider: normalizeString(match?.provider ?? match?.source) || null,
-    title: normalizeString(match?.title ?? match?.name) || null,
-    summary: normalizeString(match?.summary ?? match?.description) || null,
-    score: typeof match?.score === 'number' ? match.score : null,
-    coverImageUrl: normalizeString(match?.coverImageUrl ?? match?.imageUrl) || null,
-    aniListId: match?.aniListId ?? null,
-    malId: match?.malId ?? null,
-    cbrId: match?.cbrId ?? null,
-});
+const normalizeMetadataMatch = (match = {}) => {
+    const series = match?.series && typeof match.series === 'object'
+        ? match.series
+        : match?.Series && typeof match.Series === 'object'
+            ? match.Series
+            : match;
+
+    return {
+        provider: normalizeString(series?.provider ?? series?.Provider ?? series?.source) || null,
+        title: normalizeString(series?.title ?? series?.Title ?? series?.name ?? series?.Name) || null,
+        summary: normalizeString(series?.summary ?? series?.Summary ?? series?.description ?? series?.Description) || null,
+        score: typeof match?.matchRating === 'number'
+            ? match.matchRating
+            : typeof match?.MatchRating === 'number'
+                ? match.MatchRating
+                : typeof match?.score === 'number'
+                    ? match.score
+                    : null,
+        coverImageUrl: normalizeString(
+            series?.coverImageUrl
+            ?? series?.CoverImageUrl
+            ?? series?.coverUrl
+            ?? series?.CoverUrl
+            ?? series?.imageUrl
+            ?? series?.ImageUrl,
+        ) || null,
+        aniListId: series?.aniListId ?? series?.AniListId ?? match?.aniListId ?? match?.AniListId ?? null,
+        malId: series?.malId ?? series?.MALId ?? series?.MalId ?? match?.malId ?? match?.MALId ?? match?.MalId ?? null,
+        cbrId: series?.cbrId ?? series?.CbrId ?? match?.cbrId ?? match?.CbrId ?? null,
+    };
+};
 
 const normalizeMetadataRouteError = (error, action) => {
     const normalized = normalizeError(error);
@@ -429,8 +450,14 @@ export const registerPortalRoutes = ({
             return;
         }
 
+        const query = normalizeString(req.body?.query);
+        if (!query) {
+            res.status(400).json({error: 'query is required.'});
+            return;
+        }
+
         try {
-            const matches = await kavita?.fetchSeriesMetadataMatches?.(parsedSeriesId) ?? [];
+            const matches = await kavita?.fetchSeriesMetadataMatches?.(parsedSeriesId, {query}) ?? [];
             res.json({
                 seriesId: parsedSeriesId,
                 matches: Array.isArray(matches) ? matches.map((entry) => normalizeMetadataMatch(entry)) : [],

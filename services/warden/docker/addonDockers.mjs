@@ -1,6 +1,7 @@
 ﻿// services/warden/docker/addonDockers.mjs
 
 import {resolveHostServiceBase, resolveHostServiceHost, resolveSharedHostEnvEntries,} from './hostServiceUrl.mjs';
+import {resolveNoonaImage} from './imageRegistry.mjs';
 import {DEFAULT_MANAGED_KOMF_APPLICATION_YML} from './komfConfigTemplate.mjs';
 
 const HOST_SERVICE_URL = resolveHostServiceBase();
@@ -94,7 +95,7 @@ const rawList = [
     {
         name: 'noona-kavita',
         description: 'Managed Kavita library server wired to the Noona downloads folder.',
-        image: 'captainpax/noona-kavita:latest',
+        image: resolveNoonaImage('noona-kavita'),
         port: 5000,
         internalPort: 5000,
         env: [

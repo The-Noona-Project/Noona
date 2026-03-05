@@ -29,11 +29,13 @@ frontend.
 - [Shared config editor styles](src/components/noona/ConfigEditor.module.scss)
 - [Setup summary component](src/components/noona/SetupSummaryPage.tsx)
 - [Discord callback component](src/components/noona/DiscordCallbackPage.tsx)
+- [Shared Raven title card](src/components/noona/RavenTitleCard.tsx)
 - [App shell](src/components/AppShell.tsx)
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
 - [Noona API routes](src/app/api/noona/)
 - [Install history proxy](src/app/api/noona/install/history/route.ts)
+- [Home latest-titles proxy](src/app/api/noona/raven/library/latest/route.ts)
 - [Setup layout proxy](src/app/api/noona/setup/layout/route.ts)
 - [Discord auth config proxy](src/app/api/noona/auth/discord/config/route.ts)
 - [Discord auth start proxy](src/app/api/noona/auth/discord/start/route.ts)
@@ -45,20 +47,29 @@ frontend.
 
 ## Primary UI Areas
 
-- `/` - Home summary and shortcuts into library/download workflows.
+- `/` - Home summary and shortcuts into library/download workflows. Recent titles now reuse the same cover-card tiles
+  as the main library page so the landing screen and `/libraries` stay visually consistent, and signed-in users
+  without `library_management` can still see the latest titles there even though the cards stay non-clickable.
 - `/libraries` - Library browsing, filtering, and title drill-down. The tab and direct page now require the
   `library_management` permission.
 - `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
   the `download_management` permission, and the add-download flow now uses a centered modal with a dedicated
-  search/select/queue layout instead of the old inline overlay.
-- `/rebooting` - Internal transition screen used by Warden `Update all`. It keeps a dedicated reboot monitor open,
-  retries interrupted service-image updates after Moon comes back, and shows live service health while the stack
+  search/select/queue layout instead of the old inline overlay. The page now also prioritizes Raven's persisted
+  current-task snapshot, including recovery state, remaining queued chapters, and the new-vs-missing split that Raven
+  discovered for the active task. The top task panel now rotates through every live Raven task like a slide deck, and
+  both the active-download and history grids scale with Moon's selected `desktop` / `ultrawide` / `mobile` view mode.
+- `/rebooting` - Internal transition screen used by Warden `Update all`. The settings page now forces a fresh image
+  check before launching it, and the reboot monitor persists its queue state in browser session storage so interrupted
+  Moon reloads can resume the same update pass instead of starting blind. It also waits for Redis alongside Warden,
+  Vault, Sage, and Moon before retrying authenticated update calls, then shows live service health while the stack
   settles.
 - `/settings/*` - Route-based settings pages such as `/settings/general`, `/settings/moon`, `/settings/raven`,
   `/settings/usermanagement`, and `/settings/portal/discord`. These pages provide service control for managed
   services with explicit save/restart actions, Portal join-default pickers plus Kavita role guidance, Discord access
   settings, Portal subpages for `Discord`, `Kavita`, and `Komf`, a managed Komf `/config/application.yml` editor with
   provider ordering/toggles plus inline `malClientId` and `comicVineApiKey` fields when those providers are enabled,
+  and the managed Komf reset/default template now mirrors the current Komf sample by enabling only MangaUpdates by
+  default,
   ecosystem restart controls, a Warden runtime-settings panel for `SERVER_IP` host-facing links plus the
   `AUTO_UPDATES` startup-image toggle, Warden image-update tooling with single-service and update-all actions,
   Vault-backed persistence for service overrides in `noona_settings`,
@@ -80,7 +91,8 @@ frontend.
   managed `noona-kavita` as
   `KAVITA_ADMIN_USERNAME`, `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD`, and persists the selected managed
   service set for future Warden boots. The integrations step now exposes the managed Komf `application.yml` content so
-  metadata providers can be tuned before install. The services tab groups the managed stack into `Storage`, `Library
+  metadata providers can be tuned before install, starting from the safer MangaUpdates-only default template. The
+  services tab groups the managed stack into `Storage`, `Library
   Management`, and `External APIs`, and install payloads follow the Warden lifecycle order (`mongo -> redis -> vault
   -> kavita -> raven -> komf -> portal`). Portal defaults now prefill `/join` access as `*,-admin` for roles and `*`
   for libraries, and the managed Vault token is injected automatically instead of being entered by hand. The install
@@ -99,17 +111,24 @@ frontend.
   from Sage's default permission template.
 - Title detail pages now surface Kavita series links plus metadata match actions, and the footer prefers Warden's
   host-facing managed Kavita URL before falling back to Portal's configured external Kavita base URL. The title-page
-  `Open in Kavita` action now also rebuilds the series link from Warden's host-facing `noona-kavita` URL so the
-  button follows the configured `SERVER_IP`. Applying a Kavita metadata match from the title page now also sends the
-  Raven title UUID so Portal can lock Kavita to the same Noona cover art that Moon is rendering for that title.
-- Moon now uses a permission-aware sitewide sidebar for `Home`, `Library`, `Downloads`, and `Settings` instead of the
-  old top tab strip. Settings keeps its own nested settings-only sub-navigation inside the page content, and the
-  sidebar footer area now holds the light/dark theme toggle plus a three-mode viewport switch for `desktop`,
-  `ultrawide`, and `mobile` framing.
+  `Open in Kavita` action and each inline Kavita search-result `Open` button now rebuild the series link from
+  Warden's host-facing `noona-kavita` URL so they follow the configured `SERVER_IP`. Moon's metadata-match request now
+  also forwards the active title query to Portal/Kavita so Komf-backed lookup does not fail on a null query, and
+  applying a Kavita metadata match from the title page still sends the Raven title UUID so Portal can lock Kavita to
+  the same Noona cover art that Moon is rendering for that title. Title detail pages now also show Raven's stored
+  downloaded-chapter index, the exact latest new/missing chapter plan returned by `Check new/missing`, and the live
+  cached Raven task when that task belongs to the current title.
+- Moon now uses a permission-aware top header plus a slide-out navigation drawer for `Home`, `Library`, `Downloads`,
+  and `Settings` instead of the old fixed top tab strip. Settings keeps its own nested settings-only sub-navigation
+  inside the page content, the drawer now opens with the signed-in account card and close control at the top, and it
+  still holds the light/dark theme toggle plus a three-mode viewport switch for `desktop`, `ultrawide`, and `mobile`
+  framing without pinning the whole page off-center.
 
 ## API Proxy Surface (Moon -> Backend Services)
 
-- `src/app/api/noona/raven/*` - Raven search/download/library/status/history proxies.
+- `src/app/api/noona/raven/*` - Raven search/download/library/status/history proxies. The dedicated
+  `src/app/api/noona/raven/library/latest` feed keeps the Home page's latest-title cards visible for signed-in users
+  who do not have `library_management`, while full library/title navigation still stays permission-gated.
 - `src/app/api/noona/portal/kavita/*` - Portal-backed Kavita info, title search, and metadata-match proxies.
 - `src/app/api/noona/settings/*` - service settings, Portal join option helpers, vault, ecosystem, and debug operations.
 - `src/app/api/noona/settings/downloads/workers` - proxy for Raven per-thread speed-limit settings stored by Sage.

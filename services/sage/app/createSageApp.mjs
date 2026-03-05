@@ -875,11 +875,18 @@ export const createSageApp = ({
         }
         return normalizeUsernameKey(user?.username)
     }
-    const buildAuthUserLookupQuery = (user, fallbackLookupKey = '') => {
-        if (user && Object.prototype.hasOwnProperty.call(user, '_id')) {
-            return {_id: user._id}
+    const hasUsableMongoId = (value) => {
+        if (!value || typeof value !== 'object') {
+            return false
         }
 
+        if (typeof value.toHexString === 'function') {
+            return true
+        }
+
+        return normalizeString(value?._bsontype).toLowerCase() === 'objectid'
+    }
+    const buildAuthUserLookupQuery = (user, fallbackLookupKey = '') => {
         const storedLookupKey = normalizeUsernameKey(user?.usernameNormalized)
         if (storedLookupKey) {
             return {usernameNormalized: storedLookupKey}
@@ -893,6 +900,10 @@ export const createSageApp = ({
         const fallbackLookup = normalizeUsernameKey(fallbackLookupKey)
         if (fallbackLookup) {
             return {usernameNormalized: fallbackLookup}
+        }
+
+        if (user && Object.prototype.hasOwnProperty.call(user, '_id') && hasUsableMongoId(user._id)) {
+            return {_id: user._id}
         }
 
         return null

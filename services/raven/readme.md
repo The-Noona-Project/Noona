@@ -20,7 +20,8 @@ Raven is Noona's downloader and library worker service. It searches supported so
 2. Select a source option.
 3. Queue chapter downloads into the `downloading/` workspace under Raven's downloads root.
 4. Zip finished chapters there, then move completed title folders into `downloaded/`.
-5. Track progress/status and update local library metadata.
+5. Track progress/status, persist the current task into Vault-backed Mongo plus the Redis current-task cache, and
+   update local library metadata.
 6. Ask Portal/Kavita to scan the matching library after successful imports so new titles appear in Kavita.
 
 ## API Surface (Direct Raven)
@@ -57,8 +58,14 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
   folders.
 - Raven writes `latest.log` under `NOONA_LOG_DIR` when that environment variable is set. Warden-managed installs mount
   Raven logs at `/app/logs`.
+- Raven now persists the latest tracked download/sync task into Vault collection `raven_download_tasks` and mirrors the
+  current snapshot into Redis key `raven:download:current-task`. Interrupted tasks are resumed on startup when Raven
+  comes back after a crash or power loss.
 - Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming plus per-thread
   speed limits without editing container env.
+- Missing-chapter detection now prefers the stored `downloadedChapterNumbers` index on each library title instead of
+  depending only on archive file-name parsing, which avoids false positives for series names that contain digits or
+  custom chapter naming templates.
 - When `KAVITA_LIBRARY_ROOT` is configured, Raven now auto-creates matching Kavita libraries for new media-type
   folders it writes into the shared downloads tree. It prefers Portal's
   `POST /api/portal/kavita/libraries/ensure` flow when `PORTAL_BASE_URL` is available, then falls back to direct
@@ -69,7 +76,8 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
   `POST /api/portal/kavita/libraries/scan` for that media-type library so Kavita picks up the new files. If Portal is
   unavailable, Raven falls back to a direct Kavita library scan when `KAVITA_BASE_URL` and `KAVITA_API_KEY` are set.
 - `GET /v1/download/status/summary` exposes the active download title, current library-check title, idle state, and
-  the effective worker rate-limit array so Portal and Moon can surface live activity.
+  the effective worker rate-limit array plus the current persisted task snapshot so Portal and Moon can surface live
+  activity and recovery state after restarts.
 
 ## Documentation Rule
 

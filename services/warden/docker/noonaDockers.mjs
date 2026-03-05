@@ -1,6 +1,7 @@
 // services/warden/docker/noonaDockers.mjs
 
 import {resolveHostServiceBase, resolveSharedHostEnvEntries} from './hostServiceUrl.mjs';
+import {resolveNoonaImage} from './imageRegistry.mjs';
 import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
 
 const DEBUG = process.env.DEBUG || 'false';
@@ -451,7 +452,7 @@ const serviceDefs = rawList.map(name => {
 
     return {
         name,
-        image: `captainpax/${name}:latest`,
+        image: resolveNoonaImage(name),
         description: SERVICE_DESCRIPTIONS[name] ?? null,
         port: portMap[name],
         internalPort,

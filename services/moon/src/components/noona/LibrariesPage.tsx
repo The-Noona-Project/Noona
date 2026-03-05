@@ -1,27 +1,15 @@
 "use client";
 
 import {useEffect, useMemo, useState} from "react";
-import {Badge, Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {Button, Card, Column, Heading, Input, Row, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
-
-type RavenTitle = {
-    title?: string | null;
-    titleName?: string | null;
-    uuid?: string | null;
-    lastDownloaded?: string | null;
-    coverUrl?: string | null;
-    type?: string | null;
-    chapterCount?: number | null;
-    chaptersDownloaded?: number | null;
-};
+import {RAVEN_TITLE_CARD_WIDTH, RavenTitleCard, type RavenTitleCardEntry} from "./RavenTitleCard";
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-const TITLE_CARD_WIDTH = 240;
-const TITLE_CARD_HEIGHT = 340;
 
 export function LibrariesPage() {
-    const [titles, setTitles] = useState<RavenTitle[] | null>(null);
+    const [titles, setTitles] = useState<RavenTitleCardEntry[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [query, setQuery] = useState("");
     const [typeFilter, setTypeFilter] = useState<string>("All");
@@ -45,7 +33,7 @@ export function LibrariesPage() {
             }
 
             if (Array.isArray(json)) {
-                setTitles(json as RavenTitle[]);
+                setTitles(json as RavenTitleCardEntry[]);
                 return;
             }
 
@@ -193,146 +181,19 @@ export function LibrariesPage() {
                             style={{
                                 display: "grid",
                                 rowGap: "20px",
-                                gridTemplateColumns: `repeat(auto-fill, minmax(${TITLE_CARD_WIDTH}px, ${TITLE_CARD_WIDTH}px))`,
+                                gridTemplateColumns: `repeat(auto-fill, minmax(${RAVEN_TITLE_CARD_WIDTH}px, ${RAVEN_TITLE_CARD_WIDTH}px))`,
                                 justifyContent: "center",
                             }}
                             s={{style: {gridTemplateColumns: "1fr", justifyContent: "stretch"}}}
                         >
                             {filtered.map((entry) => {
                                 const uuid = normalizeString(entry.uuid);
-                                const title = normalizeString(entry.title ?? entry.titleName).trim() || uuid || "Untitled";
-                                const lastDownloaded = normalizeString(entry.lastDownloaded);
-                                const coverUrl = normalizeString(entry.coverUrl).trim();
-                                const type = normalizeString(entry.type).trim();
-                                const chapterCount = typeof entry.chapterCount === "number" && Number.isFinite(entry.chapterCount) ? entry.chapterCount : null;
-                                const chaptersDownloaded = typeof entry.chaptersDownloaded === "number" && Number.isFinite(entry.chaptersDownloaded) ? entry.chaptersDownloaded : null;
-                                const downloadTotal = typeof chaptersDownloaded === "number" ? chaptersDownloaded : 0;
-                                const chapterTotalText = typeof chapterCount === "number"
-                                    ? `${downloadTotal}/${chapterCount}`
-                                    : `${downloadTotal}`;
-
-                                const href = uuid ? `/libraries/${encodeURIComponent(uuid)}` : "/libraries";
 
                                 return (
-                                    <SmartLink
-                                        key={uuid || title}
-                                        href={href}
-                                        unstyled
-                                        fillWidth
-                                        style={{display: "block", width: "100%"}}
-                                    >
-                                        <Card
-                                            background="surface"
-                                            border="neutral-alpha-weak"
-                                            padding="0"
-                                            radius="l"
-                                            fillWidth
-                                            style={{
-                                                position: "relative",
-                                                overflow: "hidden",
-                                                width: "100%",
-                                                height: TITLE_CARD_HEIGHT,
-                                            }}
-                                        >
-                                            {coverUrl && (
-                                                <img
-                                                    src={coverUrl}
-                                                    alt={`${title} cover`}
-                                                    style={{
-                                                        position: "absolute",
-                                                        inset: 0,
-                                                        width: "100%",
-                                                        height: "100%",
-                                                        objectFit: "cover",
-                                                    }}
-                                                    loading="lazy"
-                                                />
-                                            )}
-                                            {!coverUrl && (
-                                                <Row
-                                                    fill
-                                                    background="neutral-alpha-weak"
-                                                    style={{
-                                                        position: "absolute",
-                                                        inset: 0,
-                                                    }}
-                                                />
-                                            )}
-
-                                            <Column
-                                                fill
-                                                style={{
-                                                    position: "absolute",
-                                                    inset: 0,
-                                                    justifyContent: "space-between",
-                                                }}
-                                            >
-                                                <Column
-                                                    gap="8"
-                                                    padding="12"
-                                                    background="overlay"
-                                                    style={{
-                                                        background: "linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.15) 100%)",
-                                                    }}
-                                                >
-                                                    <Row horizontal="between" vertical="center" gap="8"
-                                                         style={{flexWrap: "wrap"}}>
-                                                        {type && (
-                                                            <Badge background="neutral-alpha-weak"
-                                                                   onBackground="neutral-strong">
-                                                                {type}
-                                                            </Badge>
-                                                        )}
-                                                        <Badge background="neutral-alpha-weak"
-                                                               onBackground="neutral-strong">
-                                                            {chapterTotalText}
-                                                        </Badge>
-                                                    </Row>
-                                                    <Heading
-                                                        as="h3"
-                                                        variant="heading-strong-m"
-                                                        onBackground="neutral-strong"
-                                                        wrap="balance"
-                                                        style={{
-                                                            minWidth: 0,
-                                                            lineHeight: 1.2,
-                                                            display: "-webkit-box",
-                                                            WebkitLineClamp: 2,
-                                                            WebkitBoxOrient: "vertical",
-                                                            overflow: "hidden",
-                                                        }}
-                                                    >
-                                                        {title}
-                                                    </Heading>
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        Downloaded: {chapterTotalText}
-                                                    </Text>
-                                                </Column>
-
-                                                <Row
-                                                    padding="12"
-                                                    background="overlay"
-                                                    style={{
-                                                        background: "linear-gradient(0deg, rgba(0, 0, 0, 0.78) 0%, rgba(0, 0, 0, 0) 100%)",
-                                                    }}
-                                                >
-                                                    <Text
-                                                        onBackground="neutral-weak"
-                                                        variant="body-default-xs"
-                                                        style={{
-                                                            minWidth: 0,
-                                                            display: "-webkit-box",
-                                                            WebkitLineClamp: 1,
-                                                            WebkitBoxOrient: "vertical",
-                                                            overflow: "hidden",
-                                                        }}
-                                                    >
-                                                        {lastDownloaded ? `Last: ${lastDownloaded}` : uuid || "No chapter metadata yet"}
-                                                    </Text>
-                                                </Row>
-                                            </Column>
-                                        </Card>
-                                    </SmartLink>
+                                    <RavenTitleCard
+                                        key={uuid || normalizeString(entry.title ?? entry.titleName).trim() || "title"}
+                                        entry={entry}
+                                    />
                                 );
                             })}
                         </Row>

@@ -20,6 +20,7 @@ type RavenTitle = {
     summary?: string | null;
     coverUrl?: string | null;
     type?: string | null;
+    downloadedChapterNumbers?: string[] | null;
 };
 
 type TitleFile = {
@@ -41,6 +42,34 @@ type TitleSyncResponse = {
     totalQueued?: number | null;
     newChaptersQueued?: number | null;
     missingChaptersQueued?: number | null;
+    latestChapter?: string | null;
+    previousLastDownloaded?: string | null;
+    currentLastDownloaded?: string | null;
+    sourceChapterCount?: number | null;
+    queuedChapters?: string[] | null;
+    newChapterNumbers?: string[] | null;
+    missingChapterNumbers?: string[] | null;
+    downloadedChapterNumbers?: string[] | null;
+};
+
+type RavenDownloadTask = {
+    taskId?: string | null;
+    title?: string | null;
+    titleUuid?: string | null;
+    status?: string | null;
+    currentChapter?: string | null;
+    totalChapters?: number | null;
+    completedChapters?: number | null;
+    message?: string | null;
+    recoveredFromCache?: boolean | null;
+    queuedChapterNumbers?: string[] | null;
+    remainingChapterNumbers?: string[] | null;
+    newChapterNumbers?: string[] | null;
+    missingChapterNumbers?: string[] | null;
+};
+
+type RavenTaskSummary = {
+    currentTask?: RavenDownloadTask | null;
 };
 
 type KavitaSeriesResult = {
@@ -89,6 +118,10 @@ type KavitaMetadataApplyResponse = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const normalizeStringList = (value: unknown): string[] =>
+    Array.isArray(value)
+        ? value.map((entry) => normalizeString(entry).trim()).filter(Boolean)
+        : [];
 
 const normalizeKavitaProviderId = (value: unknown): string | null => {
     if (value == null) return null;
@@ -154,6 +187,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const [syncingTitle, setSyncingTitle] = useState(false);
     const [syncTitleMessage, setSyncTitleMessage] = useState<string | null>(null);
     const [syncTitleError, setSyncTitleError] = useState<string | null>(null);
+    const [syncResult, setSyncResult] = useState<TitleSyncResponse | null>(null);
+    const [currentTask, setCurrentTask] = useState<RavenDownloadTask | null>(null);
     const [kavitaSearchLoading, setKavitaSearchLoading] = useState(false);
     const [kavitaSearchError, setKavitaSearchError] = useState<string | null>(null);
     const [kavitaSeries, setKavitaSeries] = useState<KavitaSeriesResult[]>([]);
@@ -169,6 +204,10 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const coverUrl = normalizeString(title?.coverUrl).trim();
     const mediaType = normalizeString(title?.type).trim();
     const currentTitleName = normalizeString(title?.title ?? title?.titleName).trim();
+    const downloadedChapterNumbers = useMemo(
+        () => normalizeStringList(title?.downloadedChapterNumbers),
+        [title],
+    );
     const selectedKavitaSeries = useMemo(
         () => kavitaSeries.find((entry) => typeof entry?.seriesId === "number" && entry.seriesId === selectedKavitaSeriesId) ?? null,
         [kavitaSeries, selectedKavitaSeriesId],
@@ -194,6 +233,13 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         }, null);
         return best != null ? new Date(best).toISOString() : null;
     }, [files]);
+    const syncQueuedChapters = useMemo(() => normalizeStringList(syncResult?.queuedChapters), [syncResult]);
+    const syncNewChapterNumbers = useMemo(() => normalizeStringList(syncResult?.newChapterNumbers), [syncResult]);
+    const syncMissingChapterNumbers = useMemo(() => normalizeStringList(syncResult?.missingChapterNumbers), [syncResult]);
+    const syncDownloadedChapterNumbers = useMemo(() => {
+        const fromResult = normalizeStringList(syncResult?.downloadedChapterNumbers);
+        return fromResult.length > 0 ? fromResult : downloadedChapterNumbers;
+    }, [syncResult, downloadedChapterNumbers]);
 
     const load = async () => {
         if (!normalizedUuid) return;
@@ -202,6 +248,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setError(null);
         setTitle(null);
         setFiles(null);
+        setCurrentTask(null);
         setSelectedFiles(new Set());
         setDeleteFilesError(null);
         setDeleteFilesMessage(null);
@@ -269,6 +316,49 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         };
     }, []);
 
+    useEffect(() => {
+        if (!normalizedUuid) {
+            return;
+        }
+
+        let cancelled = false;
+        let intervalId: number | null = null;
+
+        const loadCurrentTask = async () => {
+            try {
+                const response = await fetch("/api/noona/raven/downloads/summary", {cache: "no-store"});
+                const payload = (await response.json().catch(() => null)) as RavenTaskSummary | null;
+                if (!response.ok || cancelled) {
+                    return;
+                }
+
+                const task = payload?.currentTask;
+                const taskUuid = normalizeString(task?.titleUuid).trim();
+                const taskTitle = normalizeString(task?.title).trim().toLowerCase();
+                const matchesUuid = taskUuid && taskUuid === normalizedUuid;
+                const matchesTitle = currentTitleName && taskTitle === currentTitleName.toLowerCase();
+
+                setCurrentTask(matchesUuid || matchesTitle ? (task ?? null) : null);
+            } catch {
+                if (!cancelled) {
+                    setCurrentTask(null);
+                }
+            }
+        };
+
+        void loadCurrentTask();
+        intervalId = window.setInterval(() => {
+            void loadCurrentTask();
+        }, 3000);
+
+        return () => {
+            cancelled = true;
+            if (intervalId != null) {
+                window.clearInterval(intervalId);
+            }
+        };
+    }, [normalizedUuid, currentTitleName]);
+
     const loadKavitaSeries = async (query: string) => {
         const normalizedQuery = normalizeString(query).trim();
         if (!normalizedQuery) {
@@ -316,6 +406,12 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             return;
         }
 
+        const metadataQuery = normalizeString(currentTitleName || selectedKavitaSeries?.name).trim();
+        if (!metadataQuery) {
+            setKavitaMetadataError("Moon could not determine a title query for metadata matching.");
+            return;
+        }
+
         setKavitaMetadataLoading(true);
         setKavitaMetadataError(null);
         setKavitaMetadataMessage(null);
@@ -324,7 +420,10 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             const response = await fetch("/api/noona/portal/kavita/title-match", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({seriesId: selectedKavitaSeriesId}),
+                body: JSON.stringify({
+                    seriesId: selectedKavitaSeriesId,
+                    query: metadataQuery,
+                }),
             });
             const payload = (await response.json().catch(() => null)) as KavitaMetadataResponse | null;
             if (!response.ok) {
@@ -478,6 +577,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setSyncingTitle(true);
         setSyncTitleMessage(null);
         setSyncTitleError(null);
+        setSyncResult(null);
 
         try {
             const res = await fetch(`/api/noona/raven/title/${encodeURIComponent(normalizedUuid)}/checkForNew`, {
@@ -496,6 +596,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             }
 
             const payload = json && typeof json === "object" ? (json as TitleSyncResponse) : null;
+            setSyncResult(payload);
             const totalQueued = typeof payload?.totalQueued === "number" && Number.isFinite(payload.totalQueued)
                 ? payload.totalQueued
                 : null;
@@ -710,6 +811,161 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                     <Column fillWidth gap="16">
                         <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
                             <Column gap="12">
+                                <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                    <Column gap="4">
+                                        <Heading as="h2" variant="heading-strong-l">
+                                            Sync planner
+                                        </Heading>
+                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                            Raven now tracks a stored chapter index for this title, so missing-chapter
+                                            checks
+                                            no longer depend on guessing chapter numbers from archive file names.
+                                        </Text>
+                                    </Column>
+                                    <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                        indexed chapters: {syncDownloadedChapterNumbers.length}
+                                    </Badge>
+                                </Row>
+
+                                <Row
+                                    fillWidth
+                                    gap="12"
+                                    style={{
+                                        display: "grid",
+                                        gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                                        alignItems: "start",
+                                    }}
+                                >
+                                    <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m"
+                                          radius="l">
+                                        <Column gap="8">
+                                            <Text variant="label-default-s" onBackground="neutral-weak">
+                                                Library state
+                                            </Text>
+                                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                                    last
+                                                    downloaded: {normalizeString(title?.lastDownloaded).trim() || "0"}
+                                                </Badge>
+                                                {typeof title?.chapterCount === "number" && Number.isFinite(title.chapterCount) && (
+                                                    <Badge background="neutral-alpha-weak"
+                                                           onBackground="neutral-strong">
+                                                        source count: {title.chapterCount}
+                                                    </Badge>
+                                                )}
+                                            </Row>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                {syncDownloadedChapterNumbers.length > 0
+                                                    ? syncDownloadedChapterNumbers.join(", ")
+                                                    : "No stored chapter index yet."}
+                                            </Text>
+                                        </Column>
+                                    </Card>
+
+                                    <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m"
+                                          radius="l">
+                                        <Column gap="8">
+                                            <Text variant="label-default-s" onBackground="neutral-weak">
+                                                Latest sync result
+                                            </Text>
+                                            {syncResult ? (
+                                                <>
+                                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            status: {normalizeString(syncResult.status).trim() || "unknown"}
+                                                        </Badge>
+                                                        <Badge background="brand-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            queued: {typeof syncResult.totalQueued === "number" ? syncResult.totalQueued : 0}
+                                                        </Badge>
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            new: {syncNewChapterNumbers.length}
+                                                        </Badge>
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            missing: {syncMissingChapterNumbers.length}
+                                                        </Badge>
+                                                    </Row>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                          wrap="balance">
+                                                        {normalizeString(syncResult.message).trim() || "No sync summary was returned."}
+                                                    </Text>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                          wrap="balance">
+                                                        {syncQueuedChapters.length > 0
+                                                            ? `Queued chapters: ${syncQueuedChapters.join(", ")}`
+                                                            : "Nothing is queued from the last sync pass."}
+                                                    </Text>
+                                                </>
+                                            ) : (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                      wrap="balance">
+                                                    Run `Check new/missing` to see Raven&apos;s exact plan for this
+                                                    title.
+                                                </Text>
+                                            )}
+                                        </Column>
+                                    </Card>
+
+                                    <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m"
+                                          radius="l">
+                                        <Column gap="8">
+                                            <Text variant="label-default-s" onBackground="neutral-weak">
+                                                Live task
+                                            </Text>
+                                            {currentTask ? (
+                                                <>
+                                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                        <Badge background="brand-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            {normalizeString(currentTask.status).trim() || "tracking"}
+                                                        </Badge>
+                                                        {currentTask.recoveredFromCache && (
+                                                            <Badge background="brand-alpha-weak"
+                                                                   onBackground="neutral-strong">
+                                                                recovered
+                                                            </Badge>
+                                                        )}
+                                                        <Badge background="neutral-alpha-weak"
+                                                               onBackground="neutral-strong">
+                                                            chapters: {typeof currentTask.completedChapters === "number" ? currentTask.completedChapters : 0}/
+                                                            {typeof currentTask.totalChapters === "number" ? currentTask.totalChapters : "?"}
+                                                        </Badge>
+                                                    </Row>
+                                                    {normalizeString(currentTask.currentChapter).trim() && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            Current: {normalizeString(currentTask.currentChapter).trim()}
+                                                        </Text>
+                                                    )}
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                          wrap="balance">
+                                                        {normalizeString(currentTask.message).trim()
+                                                            || "Raven is actively tracking this title."}
+                                                    </Text>
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                          wrap="balance">
+                                                        {normalizeStringList(currentTask.remainingChapterNumbers).length > 0
+                                                            ? `Remaining: ${normalizeStringList(currentTask.remainingChapterNumbers).join(", ")}`
+                                                            : "No remaining chapter queue is currently cached for this title."}
+                                                    </Text>
+                                                </>
+                                            ) : (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                      wrap="balance">
+                                                    No active or cached Raven task currently matches this title.
+                                                </Text>
+                                            )}
+                                        </Column>
+                                    </Card>
+                                </Row>
+                            </Column>
+                        </Card>
+
+                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Column gap="12">
                                 <Heading as="h2" variant="heading-strong-l">
                                     Overview
                                 </Heading>
@@ -827,6 +1083,12 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                         {kavitaSeries.map((entry) => {
                                             const entrySeriesId = typeof entry.seriesId === "number" ? entry.seriesId : null;
                                             const selected = entrySeriesId != null && entrySeriesId === selectedKavitaSeriesId;
+                                            const entryUrl = buildKavitaSeriesUrl({
+                                                baseUrl: managedKavitaBaseUrl,
+                                                libraryId: entry.libraryId,
+                                                seriesId: entry.seriesId,
+                                                fallbackUrl: entry.url,
+                                            });
                                             return (
                                                 <Row
                                                     key={`${entrySeriesId ?? "series"}:${entry.libraryId ?? "library"}`}
@@ -844,9 +1106,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                                         </Text>
                                                     </Column>
                                                     <Row gap="8" style={{flexWrap: "wrap"}}>
-                                                        {typeof entry.url === "string" && entry.url.trim() && (
+                                                        {typeof entryUrl === "string" && entryUrl.trim() && (
                                                             <Button variant="secondary"
-                                                                    onClick={() => window.open(entry.url ?? "", "_blank", "noopener,noreferrer")}>
+                                                                    onClick={() => window.open(entryUrl, "_blank", "noopener,noreferrer")}>
                                                                 Open
                                                             </Button>
                                                         )}

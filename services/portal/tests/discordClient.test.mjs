@@ -199,6 +199,61 @@ test('interaction handler executes matching autocomplete handler', async () => {
     assert.deepEqual(responses, [[{name: 'Manga', value: '1'}]]);
 });
 
+test('interaction handler executes matching button component handlers', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const componentCalls = [];
+    const commands = new Map([
+        ['recommend', {
+            definition: {name: 'recommend', description: 'Recommend title'},
+            handleComponent: async interaction => {
+                if (interaction.customId !== 'recommend:select:abc123:0') {
+                    return false;
+                }
+
+                componentCalls.push(interaction.customId);
+                await interaction.reply({
+                    content: 'Handled recommendation button.',
+                    ephemeral: true,
+                });
+                return true;
+            },
+        }],
+    ]);
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands,
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const replies = [];
+    const interaction = {
+        isAutocomplete: () => false,
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: 'recommend:select:abc123:0',
+        reply: async payload => {
+            replies.push(payload);
+        },
+    };
+
+    await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+    assert.deepEqual(componentCalls, ['recommend:select:abc123:0']);
+    assert.deepEqual(replies, [{
+        content: 'Handled recommendation button.',
+        ephemeral: true,
+    }]);
+});
+
 test('interaction handler blocks command execution when guild does not match REQUIRED_GUILD_ID', async () => {
     const previousGuild = process.env.REQUIRED_GUILD_ID;
     process.env.REQUIRED_GUILD_ID = 'expected-guild';

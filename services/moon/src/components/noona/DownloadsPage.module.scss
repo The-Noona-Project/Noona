@@ -1,6 +1,9 @@
 .addDownloadOverlay {
   position: fixed;
   inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   z-index: 120;
   width: 100vw;
   height: 100dvh;
@@ -17,7 +20,7 @@
   max-height: min(90dvh, 940px);
   margin: auto;
   transform-origin: center;
-  animation: downloadsModalIn 220ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  animation: downloadsModalPopIn 180ms cubic-bezier(0.18, 0.9, 0.24, 1);
 }
 
 .addDownloadCard {
@@ -116,6 +119,167 @@
   font-size: 0.74rem;
 }
 
+.pageShell {
+  position: relative;
+  isolation: isolate;
+  --downloads-active-min: 18rem;
+  --downloads-history-min: 18rem;
+}
+
+.pageShell::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 28rem;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+                  circle at top center,
+                  color-mix(in srgb, var(--brand-background-strong) 18%, transparent),
+                  transparent 62%
+  ),
+  linear-gradient(
+                  180deg,
+                  color-mix(in srgb, var(--brand-background-strong) 10%, transparent),
+                  transparent 72%
+  );
+  opacity: 0.95;
+}
+
+.pageShell > * {
+  position: relative;
+  z-index: 1;
+}
+
+:global(html[data-moon-view-mode="ultrawide"]) .pageShell {
+  --downloads-active-min: 21rem;
+  --downloads-history-min: 19rem;
+}
+
+:global(html[data-moon-view-mode="mobile"]) .pageShell {
+  --downloads-active-min: 100%;
+  --downloads-history-min: 100%;
+}
+
+.sectionCard {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--brand-background-strong) 14%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+  background: linear-gradient(
+                  155deg,
+                  color-mix(in srgb, var(--brand-background-strong) 8%, var(--surface-background)) 0%,
+                  color-mix(in srgb, var(--surface-background) 96%, transparent) 58%,
+                  color-mix(in srgb, var(--surface-background) 90%, transparent) 100%
+  );
+  box-shadow: 0 1.4rem 3rem color-mix(in srgb, var(--brand-background-strong) 10%, transparent);
+}
+
+.sectionCard::before {
+  content: "";
+  position: absolute;
+  inset: auto -10% 52% 48%;
+  height: 11rem;
+  pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--brand-background-strong) 20%, transparent), transparent 68%);
+  opacity: 0.7;
+}
+
+.showcaseCard {
+  background: linear-gradient(
+                  160deg,
+                  color-mix(in srgb, var(--brand-background-strong) 15%, var(--surface-background)) 0%,
+                  color-mix(in srgb, var(--surface-background) 94%, transparent) 48%,
+                  color-mix(in srgb, var(--surface-background) 88%, transparent) 100%
+  );
+}
+
+.taskDeckViewport {
+  overflow: hidden;
+  border-radius: 1.25rem;
+}
+
+.taskDeckTrack {
+  display: flex;
+  width: 100%;
+  transition: transform 320ms cubic-bezier(0.2, 0.85, 0.2, 1);
+  will-change: transform;
+}
+
+.taskDeckSlide {
+  min-width: 100%;
+}
+
+.taskSlideGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(min(100%, 17rem), 0.9fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.taskHeroPanel {
+  min-height: 100%;
+  padding: clamp(1rem, 1.2vw, 1.35rem);
+  border-radius: 1rem;
+  border: 1px solid var(--neutral-border-medium, rgba(255, 255, 255, 0.12));
+  background: linear-gradient(
+                  145deg,
+                  color-mix(in srgb, var(--brand-background-strong) 10%, var(--surface-background)),
+                  color-mix(in srgb, var(--surface-background) 92%, transparent)
+  );
+}
+
+.taskInsetStack {
+  display: grid;
+  gap: 1rem;
+}
+
+.taskInsetCard,
+.downloadCard,
+.historyCard {
+  border-color: color-mix(in srgb, var(--brand-background-strong) 10%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+  background: linear-gradient(
+                  160deg,
+                  color-mix(in srgb, var(--brand-background-strong) 6%, var(--surface-background)) 0%,
+                  color-mix(in srgb, var(--surface-background) 98%, transparent) 100%
+  );
+}
+
+.downloadCard,
+.historyCard {
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.downloadCard:hover,
+.historyCard:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--brand-background-strong) 22%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+}
+
+.progressTrackLarge {
+  height: 0.75rem;
+  overflow: hidden;
+}
+
+.progressTrackSmall {
+  height: 0.5rem;
+  overflow: hidden;
+}
+
+.activeGrid,
+.historyGrid {
+  display: grid;
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.activeGrid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--downloads-active-min)), 1fr));
+}
+
+.historyGrid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--downloads-history-min)), 1fr));
+}
+
 @media (max-width: 720px) {
   .addDownloadOverlay {
     padding: 12px;
@@ -129,6 +293,25 @@
   .resultsViewport {
     max-height: min(38vh, 360px);
   }
+
+  .pageShell {
+    --downloads-active-min: 100%;
+    --downloads-history-min: 100%;
+  }
+
+  .taskDeckViewport {
+    border-radius: 1rem;
+  }
+
+  .taskHeroPanel {
+    padding: 1rem;
+  }
+}
+
+@media (max-width: 980px) {
+  .taskSlideGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @keyframes downloadsOverlayFadeIn {
@@ -140,13 +323,15 @@
   }
 }
 
-@keyframes downloadsModalIn {
+@keyframes downloadsModalPopIn {
   from {
     opacity: 0;
-    transform: translateY(16px) scale(0.97);
+    transform: scale(0.94);
+    filter: blur(4px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: scale(1);
+    filter: blur(0);
   }
 }

@@ -9,7 +9,7 @@ export function registerDiagnosticsApi(context = {}) {
         detectKavitaDataMount,
         dockerUtils,
         ensureDockerConnection,
-        fetchDockerHubDigest,
+        fetchRegistryDigest,
         fetchImpl,
         getLocalImageDigests,
         invokeWizard,
@@ -131,7 +131,7 @@ export function registerDiagnosticsApi(context = {}) {
             throw new Error(`Service ${trimmedName} does not define an image.`);
         }
         const resolvedImage = parseImageReference(image);
-        const supportsDigestChecks = Boolean(resolvedImage && resolvedImage.registry === 'docker.io');
+        const supportsDigestChecks = Boolean(resolvedImage);
 
         const dockerClient = await ensureDockerConnection();
         const installed = await dockerUtils.containerExists(trimmedName, {dockerInstance: dockerClient});
@@ -182,9 +182,13 @@ export function registerDiagnosticsApi(context = {}) {
         let snapshot = null;
         if (supportsDigestChecks) {
             let remoteDigest = null;
+            let snapshotError = null;
+            let snapshotSupported = true;
             try {
-                remoteDigest = await fetchDockerHubDigest(resolvedImage);
+                remoteDigest = await fetchRegistryDigest(resolvedImage);
             } catch (error) {
+                snapshotSupported = false;
+                snapshotError = error instanceof Error ? error.message : String(error);
                 remoteDigest = serviceUpdateSnapshots.get(trimmedName)?.remoteDigest ?? null;
             }
 
@@ -196,8 +200,8 @@ export function registerDiagnosticsApi(context = {}) {
                 remoteDigest,
                 localDigests: afterLocalDigests,
                 installed,
-                supported: true,
-                error: null,
+                supported: snapshotSupported,
+                error: snapshotError,
             };
         } else {
             snapshot = {
@@ -209,7 +213,7 @@ export function registerDiagnosticsApi(context = {}) {
                 localDigests: afterLocalDigests,
                 installed,
                 supported: false,
-                error: 'Update check currently supports Docker Hub images only.',
+                error: 'Service image reference could not be parsed.',
             };
         }
 

@@ -1,6 +1,7 @@
 import {log} from '../../../utilities/etc/logger.mjs';
 import createDingCommand from './dingCommand.mjs';
 import createJoinCommand from './joinCommand.mjs';
+import createRecommendCommand from './recommendCommand.mjs';
 import createScanCommand from './scanCommand.mjs';
 import createSearchCommand from './searchCommand.mjs';
 
@@ -8,6 +9,7 @@ export const createPortalSlashCommands = ({
                                               discord,
                                               getDiscord,
                                               kavita,
+                                              raven,
                                               vault,
                                               onboardingStore,
                                               joinDefaults,
@@ -22,6 +24,10 @@ export const createPortalSlashCommands = ({
         vault,
         onboardingStore,
         joinDefaults,
+    }));
+    commands.set('recommend', createRecommendCommand({
+        raven,
+        vault,
     }));
     commands.set('scan', createScanCommand({kavita}));
     commands.set('search', createSearchCommand({kavita, vault}));

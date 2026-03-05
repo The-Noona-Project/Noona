@@ -163,14 +163,19 @@ test('POST /api/portal/kavita/title-match and apply proxy Kavita metadata matchi
             },
         },
         kavita: {
-            fetchSeriesMetadataMatches: async (seriesId) => {
-                calls.push({type: 'search', seriesId});
+            fetchSeriesMetadataMatches: async (seriesId, {query} = {}) => {
+                calls.push({type: 'search', seriesId, query});
                 return [
                     {
-                        provider: 'AniList',
-                        title: 'Solo Leveling',
-                        aniListId: 151807,
-                        score: 98,
+                        series: {
+                            provider: 'AniList',
+                            name: 'Solo Leveling',
+                            summary: 'Hunters climb the tower.',
+                            aniListId: 151807,
+                            malId: 3000,
+                            coverUrl: 'https://covers.example/solo-leveling.jpg',
+                        },
+                        matchRating: 98,
                     },
                 ];
             },
@@ -186,12 +191,18 @@ test('POST /api/portal/kavita/title-match and apply proxy Kavita metadata matchi
         const searchResponse = await fetch(`${baseUrl}/api/portal/kavita/title-match`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({seriesId: 17}),
+            body: JSON.stringify({seriesId: 17, query: 'Solo Leveling'}),
         });
         const searchPayload = await searchResponse.json();
         assert.equal(searchResponse.status, 200);
         assert.equal(searchPayload.matches.length, 1);
+        assert.equal(searchPayload.matches[0].provider, 'AniList');
+        assert.equal(searchPayload.matches[0].title, 'Solo Leveling');
+        assert.equal(searchPayload.matches[0].summary, 'Hunters climb the tower.');
         assert.equal(searchPayload.matches[0].aniListId, 151807);
+        assert.equal(searchPayload.matches[0].malId, 3000);
+        assert.equal(searchPayload.matches[0].coverImageUrl, 'https://covers.example/solo-leveling.jpg');
+        assert.equal(searchPayload.matches[0].score, 98);
 
         const applyResponse = await fetch(`${baseUrl}/api/portal/kavita/title-match/apply`, {
             method: 'POST',
@@ -202,7 +213,7 @@ test('POST /api/portal/kavita/title-match and apply proxy Kavita metadata matchi
         assert.equal(applyResponse.status, 200);
         assert.equal(applyPayload.success, true);
         assert.deepEqual(calls, [
-            {type: 'search', seriesId: 17},
+            {type: 'search', seriesId: 17, query: 'Solo Leveling'},
             {type: 'apply', payload: {seriesId: 17, aniListId: 151807, malId: undefined, cbrId: undefined}},
         ]);
     } finally {
@@ -342,7 +353,7 @@ test('metadata match routes return compact operator guidance when Kavita fails s
         const lookupResponse = await fetch(`${baseUrl}/api/portal/kavita/title-match`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({seriesId: 17}),
+            body: JSON.stringify({seriesId: 17, query: 'Solo Leveling'}),
         });
         const lookupPayload = await lookupResponse.json();
         assert.equal(lookupResponse.status, 500);

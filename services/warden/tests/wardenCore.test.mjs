@@ -6,7 +6,11 @@ import {load as loadYaml} from 'js-yaml';
 
 import {createWarden, defaultDockerSocketDetector} from '../core/createWarden.mjs';
 import {attachSelfToNetwork} from '../docker/dockerUtilties.mjs';
-import {DEFAULT_MANAGED_KOMF_APPLICATION_YML} from '../docker/komfConfigTemplate.mjs';
+import {
+    DEFAULT_MANAGED_KOMF_APPLICATION_YML,
+    LEGACY_MANAGED_KOMF_APPLICATION_YML,
+    normalizeManagedKomfConfigContent,
+} from '../docker/komfConfigTemplate.mjs';
 
 function createStubDocker(overrides = {}) {
     return {
@@ -32,6 +36,10 @@ function buildWarden(options = {}) {
         ...rest,
     });
 }
+
+const NOONA_IMAGE_NAMESPACE = 'docker.darkmatterservers.com/the-noona-project';
+const noonaImage = (name, tag = 'latest') => `${NOONA_IMAGE_NAMESPACE}/${name}:${tag}`;
+const noonaDigest = (name, digest) => `${NOONA_IMAGE_NAMESPACE}/${name}@${digest}`;
 
 function createMemoryFs(initialFiles = {}) {
     const files = new Map(Object.entries(initialFiles).map(([filePath, content]) => [path.normalize(filePath), String(content)]));
@@ -162,10 +170,21 @@ test('default managed Komf template includes provider credential slots and safe 
     assert.equal(config?.database?.file, '/config/database.sqlite');
     assert.equal(config?.metadataProviders?.malClientId, '');
     assert.equal(config?.metadataProviders?.comicVineApiKey, '');
-    assert.equal(config?.metadataProviders?.defaultProviders?.aniList?.enabled, true);
     assert.equal(config?.metadataProviders?.defaultProviders?.mangaUpdates?.enabled, true);
+    assert.equal(config?.metadataProviders?.defaultProviders?.mangaUpdates?.mode, 'API');
+    assert.equal(config?.metadataProviders?.defaultProviders?.aniList?.enabled, false);
     assert.equal(config?.metadataProviders?.defaultProviders?.mal?.enabled, false);
     assert.equal(config?.metadataProviders?.defaultProviders?.comicVine?.enabled, false);
+});
+
+test('normalizeManagedKomfConfigContent upgrades the legacy managed Komf template', () => {
+    const normalized = normalizeManagedKomfConfigContent(LEGACY_MANAGED_KOMF_APPLICATION_YML);
+    const config = loadYaml(normalized);
+
+    assert.equal(normalized, normalizeManagedKomfConfigContent(DEFAULT_MANAGED_KOMF_APPLICATION_YML));
+    assert.equal(config?.metadataProviders?.defaultProviders?.mangaUpdates?.enabled, true);
+    assert.equal(config?.metadataProviders?.defaultProviders?.mangaUpdates?.mode, 'API');
+    assert.equal(config?.metadataProviders?.defaultProviders?.aniList?.enabled, false);
 });
 
 test('getServiceConfig surfaces managed Komf application.yml from disk', () => {
@@ -423,12 +442,12 @@ test('startService recreates a stopped container before launching it again', asy
     });
 
     await warden.startService(
-        {name: 'noona-test', image: 'captainpax/noona-test:latest'},
+        {name: 'noona-test', image: noonaImage('noona-test')},
         'http://health.local',
     );
 
     assert.deepEqual(removeCalls, [{name: 'noona-test', dockerInstance}]);
-    assert.deepEqual(pullCalls, [{image: 'captainpax/noona-test:latest', dockerInstance}]);
+    assert.deepEqual(pullCalls, [{image: noonaImage('noona-test'), dockerInstance}]);
     assert.deepEqual(runCalls, [{service: 'noona-test', dockerInstance}]);
     assert.deepEqual(waitCalls, [{name: 'noona-test', url: 'http://health.local'}]);
 });
@@ -1115,7 +1134,7 @@ test('installServices wires managed Kavita and noona-komf into the shared Noona 
         addon: {
             'noona-kavita': {
                 name: 'noona-kavita',
-                image: 'captainpax/noona-kavita:latest',
+                image: noonaImage('noona-kavita'),
                 port: 5000,
                 env: ['TZ=UTC']
             },
@@ -1205,7 +1224,7 @@ test('installServices provisions managed Kavita API keys before starting portal 
             'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
             'noona-kavita': {
                 name: 'noona-kavita',
-                image: 'captainpax/noona-kavita:latest',
+                image: noonaImage('noona-kavita'),
                 port: 5000,
                 internalPort: 5000,
                 health: 'http://noona-kavita:5000/api/Health',
@@ -1505,7 +1524,7 @@ test('installService injects Kavita mount for Raven when detected', async () => 
             'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
-                image: 'captainpax/noona-raven:latest',
+                image: noonaImage('noona-raven'),
                 env: ['EXISTING_ENV=1'],
             },
         },
@@ -1556,7 +1575,7 @@ test('installService handles missing Kavita mount for Raven gracefully', async (
             'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
-                image: 'captainpax/noona-raven:latest',
+                image: noonaImage('noona-raven'),
                 env: ['BASE_ENV=1'],
             },
         },
@@ -1597,7 +1616,7 @@ test('installServices wires manual Raven overrides when Kavita detection fails',
             'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
-                image: 'captainpax/noona-raven:latest',
+                image: noonaImage('noona-raven'),
             },
         },
     };
@@ -1647,7 +1666,7 @@ test('installServices defaults Raven container mount path when only host path is
         },
         core: {
             'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
-            'noona-raven': { name: 'noona-raven', image: 'captainpax/noona-raven:latest' },
+            'noona-raven': {name: 'noona-raven', image: noonaImage('noona-raven')},
         },
     };
 
@@ -1708,7 +1727,7 @@ test('installService inspects alternate docker sockets when primary is missing K
             'noona-vault': { name: 'noona-vault', image: 'vault', port: 3005 },
             'noona-raven': {
                 name: 'noona-raven',
-                image: 'captainpax/noona-raven:latest',
+                image: noonaImage('noona-raven'),
             },
         },
     };
@@ -3209,7 +3228,7 @@ test('updateServiceImage does not restart an installed service when the image di
         getImage: () => ({
             inspect: async () => ({
                 Id: 'img-same',
-                RepoDigests: ['captainpax/noona-sage@sha256:aaa'],
+                RepoDigests: [noonaDigest('noona-sage', 'sha256:aaa')],
             }),
         }),
         pull: (_image, callback) => callback(null, {stream: true}),
@@ -3237,9 +3256,17 @@ test('updateServiceImage does not restart an installed service when the image di
         services: {
             addon: {},
             core: {
-                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+                'noona-sage': {name: 'noona-sage', image: noonaImage('noona-sage')},
             },
         },
+        fetchImpl: async () => ({
+            ok: true,
+            status: 200,
+            headers: {
+                get: (name) => (String(name).toLowerCase() === 'docker-content-digest' ? 'sha256:aaa' : null),
+            },
+            json: async () => ({}),
+        }),
         hostDockerSockets: [],
     });
 
@@ -3260,7 +3287,7 @@ test('updateServiceImage does not restart an installed service when the image di
 test('updateServiceImage stores an up-to-date snapshot immediately after a successful update', async () => {
     let imageState = {
         id: 'img-old',
-        digests: ['captainpax/noona-sage@sha256:aaa'],
+        digests: [noonaDigest('noona-sage', 'sha256:aaa')],
     };
     const dockerInstance = createStubDocker({
         getImage: () => ({
@@ -3272,7 +3299,7 @@ test('updateServiceImage stores an up-to-date snapshot immediately after a succe
         pull: (_image, callback) => {
             imageState = {
                 id: 'img-new',
-                digests: ['captainpax/noona-sage@sha256:bbb'],
+                digests: [noonaDigest('noona-sage', 'sha256:bbb')],
             };
             callback(null, {stream: true});
         },
@@ -3300,18 +3327,10 @@ test('updateServiceImage stores an up-to-date snapshot immediately after a succe
         services: {
             addon: {},
             core: {
-                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+                'noona-sage': {name: 'noona-sage', image: noonaImage('noona-sage')},
             },
         },
-        fetchImpl: async (url) => {
-            if (String(url).startsWith('https://auth.docker.io/token')) {
-                return {
-                    ok: true,
-                    status: 200,
-                    json: async () => ({token: 'docker-token'}),
-                };
-            }
-
+        fetchImpl: async () => {
             return {
                 ok: true,
                 status: 200,
@@ -3355,7 +3374,7 @@ test('updateServiceImage pulls images without starting services that are not ins
 
                 return {
                     Id: 'img-new',
-                    RepoDigests: ['captainpax/noona-sage@sha256:bbb'],
+                    RepoDigests: [noonaDigest('noona-sage', 'sha256:bbb')],
                 };
             },
         }),
@@ -3387,9 +3406,17 @@ test('updateServiceImage pulls images without starting services that are not ins
         services: {
             addon: {},
             core: {
-                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+                'noona-sage': {name: 'noona-sage', image: noonaImage('noona-sage')},
             },
         },
+        fetchImpl: async () => ({
+            ok: true,
+            status: 200,
+            headers: {
+                get: (name) => (String(name).toLowerCase() === 'docker-content-digest' ? 'sha256:bbb' : null),
+            },
+            json: async () => ({}),
+        }),
         hostDockerSockets: [],
     });
 
@@ -3624,9 +3651,9 @@ test('factoryResetEcosystem removes noona containers/images and restarts in clea
             },
         }),
         listImages: async () => [
-            {Id: 'img-sage', RepoTags: ['captainpax/noona-sage:latest'], RepoDigests: []},
-            {Id: 'img-warden', RepoTags: ['captainpax/noona-warden:latest'], RepoDigests: []},
-            {Id: 'img-raven', RepoTags: ['<none>:<none>'], RepoDigests: ['captainpax/noona-raven@sha256:abc']},
+            {Id: 'img-sage', RepoTags: [noonaImage('noona-sage')], RepoDigests: []},
+            {Id: 'img-warden', RepoTags: [noonaImage('noona-warden')], RepoDigests: []},
+            {Id: 'img-raven', RepoTags: ['<none>:<none>'], RepoDigests: [noonaDigest('noona-raven', 'sha256:abc')]},
         ],
         getImage: (id) => ({
             remove: async () => {
@@ -3640,7 +3667,7 @@ test('factoryResetEcosystem removes noona containers/images and restarts in clea
         services: {
             addon: {},
             core: {
-                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+                'noona-sage': {name: 'noona-sage', image: noonaImage('noona-sage')},
             },
         },
         hostDockerSockets: [],
@@ -3687,7 +3714,7 @@ test('factoryResetEcosystem marks Raven cleanup successful when no Raven mounts 
         services: {
             addon: {},
             core: {
-                'noona-sage': {name: 'noona-sage', image: 'captainpax/noona-sage:latest'},
+                'noona-sage': {name: 'noona-sage', image: noonaImage('noona-sage')},
             },
         },
         hostDockerSockets: [],

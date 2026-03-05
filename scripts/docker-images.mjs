@@ -3,8 +3,35 @@ import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 
-const DEFAULT_NAMESPACE = process.env.NOONA_DOCKER_NAMESPACE || 'captainpax';
+function normalizeNamespace(value) {
+    if (typeof value !== 'string') return '';
+    return value.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+}
+
+function isTruthyFlag(value) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value > 0;
+    if (typeof value !== 'string') return false;
+
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function hasExplicitRegistryHost(value) {
+    return typeof value === 'string' && (value.includes('.') || value.includes(':') || value === 'localhost');
+}
+
+const DEFAULT_REGISTRY = process.env.NOONA_DOCKER_REGISTRY || 'docker.darkmatterservers.com';
+const DEFAULT_PROJECT = process.env.NOONA_DOCKER_PROJECT || 'the-noona-project';
+const DEFAULT_NAMESPACE = normalizeNamespace(
+    process.env.NOONA_DOCKER_NAMESPACE || `${DEFAULT_REGISTRY}/${DEFAULT_PROJECT}`,
+);
 const DEFAULT_TAG = process.env.NOONA_DOCKER_TAG || 'latest';
+const DEFAULT_AUTO_LOGIN = process.env.NOONA_DOCKER_AUTO_LOGIN == null
+    ? true
+    : isTruthyFlag(process.env.NOONA_DOCKER_AUTO_LOGIN);
+const DEFAULT_LOGIN_USERNAME = process.env.NOONA_DOCKER_USERNAME || 'robot$noona-builder';
+const DEFAULT_LOGIN_PASSWORD = process.env.NOONA_DOCKER_PASSWORD || 'yUKTTk8NulwFmPyt4NC38MJjcjHMONOg';
 
 const ROOT = resolve('.');
 
@@ -37,12 +64,17 @@ const usage = () => {
             '',
             'Usage:',
             '  node docker-images.mjs list',
-            '  node docker-images.mjs build [--services moon,sage,kavita] [--tag latest] [--namespace captainpax] [--no-cache]',
-            '  node docker-images.mjs push  [--services moon,sage,kavita] [--tag latest] [--namespace captainpax]',
-            '  node docker-images.mjs publish [--services moon,sage,kavita] [--tag latest] [--namespace captainpax] [--no-cache]',
+            '  node docker-images.mjs build [--services moon,sage,kavita] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache]',
+            '  node docker-images.mjs push  [--services moon,sage,kavita] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--skip-login]',
+            '  node docker-images.mjs publish [--services moon,sage,kavita] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache] [--skip-login]',
             '',
             'Env:',
-            '  NOONA_DOCKER_NAMESPACE   Default namespace (default: captainpax)',
+            `  NOONA_DOCKER_NAMESPACE   Full namespace override (default: ${DEFAULT_NAMESPACE})`,
+            `  NOONA_DOCKER_REGISTRY    Registry host when namespace override is unset (default: ${DEFAULT_REGISTRY})`,
+            `  NOONA_DOCKER_PROJECT     Registry project when namespace override is unset (default: ${DEFAULT_PROJECT})`,
+            `  NOONA_DOCKER_AUTO_LOGIN  Run docker login before push/publish when credentials are present (default: ${DEFAULT_AUTO_LOGIN})`,
+            `  NOONA_DOCKER_USERNAME    Registry username override for automatic docker login (default: ${DEFAULT_LOGIN_USERNAME})`,
+            '  NOONA_DOCKER_PASSWORD    Registry password/token override for automatic docker login',
             '  NOONA_DOCKER_TAG         Default tag (default: latest)',
         ].join('\n'),
     );
@@ -107,12 +139,30 @@ const selectServices = ({servicesArg}) => {
     return SERVICES.filter((entry) => wanted.has(entry.name));
 };
 
+const resolveRegistryHost = (namespace) => {
+    const normalized = normalizeNamespace(namespace);
+    if (!normalized) return '';
+
+    const [candidate] = normalized.split('/');
+    return hasExplicitRegistryHost(candidate) ? candidate : '';
+};
+
 const resolveImageTag = (serviceName, {namespace, tag}) => `${namespace}/${serviceName}:${tag}`;
 
-const runDocker = (args) =>
+const runDocker = (args, options = {}) =>
     new Promise((resolvePromise, rejectPromise) => {
-        const child = spawn('docker', args, {stdio: 'inherit', cwd: ROOT, shell: false});
+        const stdinText = typeof options.stdinText === 'string' ? options.stdinText : null;
+        const child = spawn('docker', args, {
+            stdio: stdinText == null ? 'inherit' : ['pipe', 'inherit', 'inherit'],
+            cwd: ROOT,
+            shell: false,
+        });
         child.on('error', rejectPromise);
+        if (stdinText != null && child.stdin) {
+            child.stdin.on('error', () => {
+            });
+            child.stdin.end(stdinText);
+        }
         child.on('exit', (code) => {
             if (code === 0) {
                 resolvePromise();
@@ -121,6 +171,27 @@ const runDocker = (args) =>
             rejectPromise(new Error(`docker ${args.join(' ')} failed (exit ${code})`));
         });
     });
+
+const ensureRegistryLogin = async ({namespace, autoLogin = DEFAULT_AUTO_LOGIN} = {}) => {
+    const registry = resolveRegistryHost(namespace);
+    if (!registry || !autoLogin) {
+        return;
+    }
+
+    const username = typeof DEFAULT_LOGIN_USERNAME === 'string' ? DEFAULT_LOGIN_USERNAME.trim() : '';
+    const password = typeof DEFAULT_LOGIN_PASSWORD === 'string' ? DEFAULT_LOGIN_PASSWORD : '';
+    if (!username || !password) {
+        throw new Error(
+            'Docker login is enabled, but the registry username/password are incomplete.',
+        );
+    }
+
+    console.log(`[auth] docker login ${registry} as ${username}`);
+    await runDocker(
+        ['login', registry, '--username', username, '--password-stdin'],
+        {stdinText: `${password}\n`},
+    );
+};
 
 const canBuildService = (service) => {
     const dockerfilePath = resolve(ROOT, service.dockerfile);
@@ -182,9 +253,15 @@ const main = async () => {
         return;
     }
 
-    const namespace = String(args.namespace || DEFAULT_NAMESPACE).trim();
+    const namespace = normalizeNamespace(String(args.namespace || DEFAULT_NAMESPACE));
     const tag = String(args.tag || DEFAULT_TAG).trim();
     const noCache = args['no-cache'] === true || String(args['no-cache'] || '').toLowerCase() === 'true';
+
+    if (!namespace) {
+        console.error('Docker namespace cannot be empty.');
+        process.exitCode = 2;
+        return;
+    }
 
     const selected = selectServices({servicesArg: args.services});
     if (command === 'list') {
@@ -199,6 +276,13 @@ const main = async () => {
         console.error('No services matched the selection.');
         process.exitCode = 2;
         return;
+    }
+
+    if (command === 'push' || command === 'publish') {
+        await ensureRegistryLogin({
+            namespace,
+            autoLogin: args['skip-login'] === true ? false : DEFAULT_AUTO_LOGIN,
+        });
     }
 
     if (command === 'build' || command === 'publish') {

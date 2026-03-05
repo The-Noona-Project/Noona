@@ -93,7 +93,7 @@ class DownloadServiceTest {
                 .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
         when(titleScraper.getChapters("http://example.com/trigun"))
                 .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/trigun/1")));
-        when(sourceFinder.findSource(anyString())).thenReturn(Collections.emptyList());
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/page1.jpg"));
 
         NewTitle soloStubTitle = new NewTitle();
         soloStubTitle.setTitleName("Solo Leveling");

@@ -15,6 +15,7 @@ log streaming, and lifecycle APIs.
 - [HTTP API server](api/startWardenServer.mjs)
 - [Core descriptors](docker/noonaDockers.mjs)
 - [Addon descriptors](docker/addonDockers.mjs)
+- [Managed image registry helper](docker/imageRegistry.mjs)
 - [Managed Komf template](docker/komfConfigTemplate.mjs)
 - [Storage layout helpers](docker/storageLayout.mjs)
 - [Docker helpers](docker/dockerUtilties.mjs)
@@ -58,18 +59,22 @@ mode.
 
 ## Key Environment Variables
 
-| Variable           | Purpose                                                                                              | Default                                                   |
-|--------------------|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|
-| `DEBUG`            | Boot profile + log verbosity                                                                         | `false`                                                   |
-| `WARDEN_API_PORT`  | Warden API listen port                                                                               | `4001`                                                    |
-| `SERVER_IP`        | Optional LAN IP/hostname Warden uses for host-facing service URLs and shared runtime env             | unset                                                     |
-| `AUTO_UPDATES`     | Pull newer images during Warden startup and restart installed services whose image changed           | `false`                                                   |
-| `HOST_SERVICE_URL` | Explicit host-facing URL prefix override used in generated links (takes precedence over `SERVER_IP`) | `http://localhost`                                        |
-| `NOONA_DATA_ROOT`  | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders                | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
-| `WEBGUI_PORT`      | Moon web GUI port injected into `noona-moon`                                                         | `3000`                                                    |
-| `RAVEN_VAULT_URL`  | Vault URL injected into Raven runtime                                                                | `http://noona-vault:3005`                                 |
-| `KAVITA_ADMIN_*`   | Optional managed `noona-kavita` first-admin defaults passed through on install/start                 | unset                                                     |
-| `*_VAULT_TOKEN`    | Optional per-service token override                                                                  | generated in descriptors                                  |
+| Variable                                          | Purpose                                                                                              | Default                                                   |
+|---------------------------------------------------|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|
+| `DEBUG`                                           | Boot profile + log verbosity                                                                         | `false`                                                   |
+| `WARDEN_API_PORT`                                 | Warden API listen port                                                                               | `4001`                                                    |
+| `SERVER_IP`                                       | Optional LAN IP/hostname Warden uses for host-facing service URLs and shared runtime env             | unset                                                     |
+| `AUTO_UPDATES`                                    | Pull newer images during Warden startup and restart installed services whose image changed           | `false`                                                   |
+| `HOST_SERVICE_URL`                                | Explicit host-facing URL prefix override used in generated links (takes precedence over `SERVER_IP`) | `http://localhost`                                        |
+| `NOONA_DOCKER_NAMESPACE`                          | Full registry/project prefix Warden uses for managed Noona images                                    | `docker.darkmatterservers.com/the-noona-project`          |
+| `NOONA_DOCKER_REGISTRY`                           | Registry host used for managed Noona images when namespace override is unset                         | `docker.darkmatterservers.com`                            |
+| `NOONA_DOCKER_PROJECT`                            | Registry project used for managed Noona images when namespace override is unset                      | `the-noona-project`                                       |
+| `NOONA_DOCKER_USERNAME` / `NOONA_DOCKER_PASSWORD` | Optional registry credentials used for digest-based update checks against private registries         | unset                                                     |
+| `NOONA_DATA_ROOT`                                 | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders                | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
+| `WEBGUI_PORT`                                     | Moon web GUI port injected into `noona-moon`                                                         | `3000`                                                    |
+| `RAVEN_VAULT_URL`                                 | Vault URL injected into Raven runtime                                                                | `http://noona-vault:3005`                                 |
+| `KAVITA_ADMIN_*`                                  | Optional managed `noona-kavita` first-admin defaults passed through on install/start                 | unset                                                     |
+| `*_VAULT_TOKEN`                                   | Optional per-service token override                                                                  | generated in descriptors                                  |
 
 ## Development Commands
 
@@ -83,7 +88,9 @@ mode.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
 - Managed `noona-komf` now materializes `/config/application.yml` from the stored `KOMF_APPLICATION_YML` service
   setting before container start. Moon's setup wizard and Portal settings page edit that managed file through Warden's
-  normal service-config flow.
+  normal service-config flow. The baked-in managed template now follows the current Komf sample more closely by
+  enabling only `mangaUpdates` by default with `mode: API`, and Warden auto-upgrades the untouched legacy Noona Komf
+  template to that safer provider set.
 - Warden now resolves a shared Noona host root and pre-creates the expected tree before service launch. Redis and
   Mongo mount under the Vault folder (`vault/redis` and `vault/mongo` by default), Raven uses `raven/downloads`,
   managed `noona-kavita` uses `kavita/config` plus the Raven download share, and managed `noona-komf` uses
@@ -101,7 +108,8 @@ mode.
   the same port.
 - Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
   remain the always-on platform services around that managed stack.
-- Managed Kavita now uses `captainpax/noona-kavita:latest`, and Warden can inject `KAVITA_ADMIN_USERNAME`,
+- Managed Noona images now default to `docker.darkmatterservers.com/the-noona-project/*`, including managed Kavita at
+  `docker.darkmatterservers.com/the-noona-project/noona-kavita:latest`. Warden can inject `KAVITA_ADMIN_USERNAME`,
   `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` so Warden can provision the first admin account and persist the
   reusable managed API key into Portal and Komf startup env without the Kavita web UI wizard. The Kavita image keeps
   its local bootstrap helper available for standalone runs, but that helper is now disabled by default during managed
