@@ -166,7 +166,7 @@ export function registerUserRoutes(context = {}) {
             });
 
             if (result?.error) {
-                throw new Error(String(result.error || 'Unable to create user.'));
+                new Error(String(result.error || 'Unable to create user.'));
             }
 
             res.status(201).json({
@@ -346,7 +346,7 @@ export function registerUserRoutes(context = {}) {
             });
 
             if (result?.error) {
-                throw new Error(String(result.error || 'Unable to update user.'));
+                new Error(String(result.error || 'Unable to update user.'));
             }
 
             const refreshedUsers = await listAuthUsers();
@@ -400,7 +400,7 @@ export function registerUserRoutes(context = {}) {
             });
 
             if (result?.error) {
-                throw new Error(String(result.error || 'Unable to delete user.'));
+                new Error(String(result.error || 'Unable to delete user.'));
             }
 
             res.json({deleted: Number(result?.deleted) > 0});
