@@ -85,6 +85,8 @@ type KavitaSeriesResult = {
 
 type KavitaSearchResponse = {
     baseUrl?: string | null;
+    externalBaseUrl?: string | null;
+    internalBaseUrl?: string | null;
     series?: KavitaSeriesResult[] | null;
     error?: string;
 };
@@ -320,6 +322,22 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         let cancelled = false;
 
         const loadManagedKavitaUrl = async () => {
+            try {
+                const response = await fetch("/api/noona/portal/kavita/info", {cache: "no-store"});
+                const payload = (await response.json().catch(() => null)) as KavitaSearchResponse | null;
+                if (response.ok && !cancelled) {
+                    const baseUrl = normalizeString(payload?.baseUrl).trim()
+                        || normalizeString(payload?.externalBaseUrl).trim()
+                        || normalizeString(payload?.internalBaseUrl).trim();
+                    if (baseUrl) {
+                        setManagedKavitaBaseUrl(baseUrl);
+                        return;
+                    }
+                }
+            } catch {
+                // Fall back to Warden host URL below.
+            }
+
             const hostUrl = await fetchManagedServiceHostUrl("noona-kavita");
             if (!cancelled) {
                 setManagedKavitaBaseUrl(hostUrl);
@@ -391,18 +409,20 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setKavitaMetadataMatches([]);
 
         try {
-            const [response, hostUrl] = await Promise.all([
-                fetch(`/api/noona/portal/kavita/search?query=${encodeURIComponent(normalizedQuery)}`, {
-                    cache: "no-store",
-                }),
-                fetchManagedServiceHostUrl("noona-kavita"),
-            ]);
+            const response = await fetch(`/api/noona/portal/kavita/search?query=${encodeURIComponent(normalizedQuery)}`, {
+                cache: "no-store",
+            });
             const payload = (await response.json().catch(() => null)) as KavitaSearchResponse | null;
             if (!response.ok) {
                 throw new Error(normalizeString(payload?.error).trim() || `Kavita search failed (HTTP ${response.status}).`);
             }
 
-            setManagedKavitaBaseUrl(hostUrl);
+            const baseUrl = normalizeString(payload?.baseUrl).trim()
+                || normalizeString(payload?.externalBaseUrl).trim()
+                || normalizeString(payload?.internalBaseUrl).trim();
+            if (baseUrl) {
+                setManagedKavitaBaseUrl(baseUrl);
+            }
             const series = Array.isArray(payload?.series) ? payload.series : [];
             const preferred = selectPreferredKavitaSeries(series, normalizedQuery);
             setKavitaSeries(series);

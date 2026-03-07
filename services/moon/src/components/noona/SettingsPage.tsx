@@ -536,6 +536,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     }, [editors]);
     const canAccessEcosystem = hasPermission(currentPermissions, "admin");
     const canManageUsers = hasPermission(currentPermissions, "user_management");
+    const canManageRecommendations = hasPermission(currentPermissions, "manageRecommendations");
     const canShowNav = canAccessEcosystem || canManageUsers;
 
     const navigateToSettings = (href: string) => {
@@ -2793,6 +2794,33 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     {!redisStackUrl && (
                                         <Text onBackground="warning-strong" variant="body-default-xs">
                                             Redis Stack Web UI is unavailable until `noona-redis` reports a host URL.
+                                        </Text>
+                                    )}
+                                </Column>
+                            </Card>
+
+                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Column gap="4">
+                                            <Heading as="h3" variant="heading-strong-l">Recommendations
+                                                manager</Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                Open the admin recommendation queue for approvals, denials, and timeline
+                                                comments.
+                                            </Text>
+                                        </Column>
+                                        <Button
+                                            variant="secondary"
+                                            href={canManageRecommendations ? "/recommendations" : undefined}
+                                            disabled={!canManageRecommendations}
+                                        >
+                                            Open manage recommendations
+                                        </Button>
+                                    </Row>
+                                    {!canManageRecommendations && (
+                                        <Text onBackground="warning-strong" variant="body-default-xs">
+                                            You need the `manageRecommendations` permission to access this page.
                                         </Text>
                                     )}
                                 </Column>

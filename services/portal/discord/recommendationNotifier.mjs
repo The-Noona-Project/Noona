@@ -151,23 +151,19 @@ const pickPreferredKavitaSeries = (series = [], titleName = '') => {
 };
 
 const buildKavitaSeriesUrl = ({baseUrl, series, fallbackUrl} = {}) => {
-    const normalizedFallback = normalizeString(fallbackUrl);
-    if (normalizedFallback) {
-        return normalizedFallback;
-    }
-
     const libraryId = normalizeSeriesInteger(series?.libraryId);
     const seriesId = normalizeSeriesInteger(series?.seriesId);
     const normalizedBase = normalizeString(baseUrl);
-    if (!normalizedBase || libraryId == null || seriesId == null) {
-        return null;
+    if (normalizedBase && libraryId != null && seriesId != null) {
+        try {
+            return new URL(`/library/${libraryId}/series/${seriesId}`, normalizedBase).toString();
+        } catch {
+            // Fall back to the provided URL below.
+        }
     }
 
-    try {
-        return new URL(`/library/${libraryId}/series/${seriesId}`, normalizedBase).toString();
-    } catch {
-        return null;
-    }
+    const normalizedFallback = normalizeString(fallbackUrl);
+    return normalizedFallback || null;
 };
 
 const resolveExistingLibraryTitle = ({
@@ -357,6 +353,7 @@ const sendDirectMessage = async ({discordClient, userId, content}) => {
 const resolveKavitaTitleUrl = async ({
                                          kavitaClient,
                                          titleName,
+                                         kavitaBaseUrl,
                                          logger = {},
                                      } = {}) => {
     const normalizedTitle = normalizeString(titleName);
@@ -377,7 +374,7 @@ const resolveKavitaTitleUrl = async ({
         }
 
         return buildKavitaSeriesUrl({
-            baseUrl: typeof kavitaClient.getBaseUrl === 'function' ? kavitaClient.getBaseUrl() : null,
+            baseUrl: kavitaBaseUrl || (typeof kavitaClient.getBaseUrl === 'function' ? kavitaClient.getBaseUrl() : null),
             series: selectedSeries,
             fallbackUrl: selectedSeries?.url,
         });
@@ -394,6 +391,7 @@ export const createRecommendationNotifier = ({
                                                  kavitaClient,
                                                  wardenClient,
                                                  moonBaseUrl,
+                                                 kavitaBaseUrl,
                                                  collection = DEFAULT_RECOMMENDATION_COLLECTION,
                                                  pollMs = DEFAULT_POLL_MS,
                                                  logger = {},
@@ -403,6 +401,7 @@ export const createRecommendationNotifier = ({
     let refreshPromise = null;
     const inFlightNotifications = new Set();
     const configuredMoonBaseUrl = normalizeAbsoluteBaseUrl(moonBaseUrl);
+    const configuredKavitaBaseUrl = normalizeAbsoluteBaseUrl(kavitaBaseUrl);
     let cachedMoonBaseUrl = configuredMoonBaseUrl;
 
     const persistRecommendationUpdate = async (entry, update) => {
@@ -620,6 +619,7 @@ export const createRecommendationNotifier = ({
         const kavitaUrl = await resolveKavitaTitleUrl({
             kavitaClient,
             titleName,
+            kavitaBaseUrl: configuredKavitaBaseUrl,
             logger,
         });
         if (!kavitaUrl) {

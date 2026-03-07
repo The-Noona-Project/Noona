@@ -21,6 +21,8 @@ frontend.
 - [Recommendation admin detail route](src/app/recommendations/[id]/page.tsx)
 - [My recommendations route](src/app/myrecommendations/page.tsx)
 - [My recommendation detail route](src/app/myrecommendations/[id]/page.tsx)
+- [Legacy recommendation redirect route](src/app/recommendation/page.tsx)
+- [Legacy recommendation detail redirect route](src/app/recommendation/[id]/page.tsx)
 - [Downloads add page component](src/components/noona/DownloadsAddPage.tsx)
 - [Recommendations admin page component](src/components/noona/AdminRecommendationsPage.tsx)
 - [My recommendations page component](src/components/noona/MyRecommendationsPage.tsx)
@@ -83,6 +85,8 @@ frontend.
   They require `manageRecommendations` and expose approve, deny, close, and admin-comment actions.
 - `/myrecommendations` and `/myrecommendations/[id]` - user recommendation routes that require `myRecommendations` and
   show only the signed-in user's records plus a PR-style timeline (created, approved/denied, and threaded comments).
+- `/recommendation` and `/recommendation/[id]` - legacy compatibility redirects into the user timeline routes
+  (`/myrecommendations` and `/myrecommendations/[id]`) so older links from Discord messages do not 404.
 - `/rebooting` - Internal transition screen used by Warden `Update all`. The settings page now forces a fresh image
   check before launching it, and the reboot monitor persists its queue state in browser session storage so interrupted
   Moon reloads can resume the same update pass instead of starting blind. It also waits for Redis alongside Warden,
@@ -137,11 +141,13 @@ frontend.
 - `/login` and `/signup` - Auth entry points for the Discord-first Moon flow. Both now render the same
   sign-in-or-create-account screen, the main tab bar is hidden there, and first-time Discord sign-in creates the user
   from Sage's default permission template.
-- Title detail pages now surface Kavita series links plus metadata match actions, and the footer prefers Warden's
-  host-facing managed Kavita URL before falling back to Portal's configured external Kavita base URL. The title-page
-  `Open in Kavita` action and each inline Kavita search-result `Open` button now rebuild the series link from
-  Warden's host-facing `noona-kavita` URL so they follow the configured `SERVER_IP`. Moon's metadata-match request now
-  also forwards the active title query to Portal/Kavita so Komf-backed lookup does not fail on a null query. The
+- Title detail pages now surface Kavita series links plus metadata match actions, and the footer/title Kavita buttons
+  now prefer Portal's configured external Kavita URL (`KAVITA_EXTERNAL_URL`) before falling back to the managed
+  host-facing URL from Warden. The title-page
+  `Open in Kavita` action and each inline Kavita search-result `Open` button now rebuild the series link from Portal's
+  resolved Kavita link base (external when configured, otherwise Warden's host-facing managed URL). Moon's
+  metadata-match request now also forwards the active title query to Portal/Kavita so Komf-backed lookup does not fail
+  on a null query. The
   metadata button now opens a centered confirmation modal that lists returned Komf candidates before applying the
   selected match, and
   applying a Kavita metadata match from the title page still sends the Raven title UUID so Portal can lock Kavita to
@@ -153,7 +159,8 @@ frontend.
   sub-navigation
   inside the page content, the drawer now opens with the signed-in account card and close control at the top, and it
   still holds the light/dark theme toggle plus a three-mode viewport switch for `desktop`, `ultrawide`, and `mobile`
-  framing without pinning the whole page off-center.
+  framing without pinning the whole page off-center. The top-level `Recommendations` nav item now routes to
+  `/myrecommendations`.
 
 ## API Proxy Surface (Moon -> Backend Services)
 

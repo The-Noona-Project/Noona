@@ -6,6 +6,8 @@ import {fetchManagedServiceHostUrl} from "@/utils/kavitaLinks";
 
 type KavitaInfoResponse = {
     baseUrl?: string | null;
+    externalBaseUrl?: string | null;
+    internalBaseUrl?: string | null;
 };
 
 const normalizeUrl = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -27,21 +29,24 @@ export function FooterKavitaButton() {
         };
 
         const load = async () => {
-            const managedKavitaUrl = await fetchManagedServiceHostUrl("noona-kavita");
-            if (setIfAvailable(managedKavitaUrl)) {
-                return;
-            }
-
             try {
                 const response = await fetch("/api/noona/portal/kavita/info", {cache: "no-store"});
                 const payload = (await response.json().catch(() => null)) as KavitaInfoResponse | null;
                 if (!response.ok || cancelled) {
+                    const managedKavitaUrl = await fetchManagedServiceHostUrl("noona-kavita");
+                    setIfAvailable(managedKavitaUrl);
                     return;
                 }
 
-                setIfAvailable(payload?.baseUrl);
+                if (setIfAvailable(payload?.baseUrl) || setIfAvailable(payload?.externalBaseUrl) || setIfAvailable(payload?.internalBaseUrl)) {
+                    return;
+                }
+
+                const managedKavitaUrl = await fetchManagedServiceHostUrl("noona-kavita");
+                setIfAvailable(managedKavitaUrl);
             } catch {
-                // Ignore footer helper failures.
+                const managedKavitaUrl = await fetchManagedServiceHostUrl("noona-kavita");
+                setIfAvailable(managedKavitaUrl);
             }
         };
 

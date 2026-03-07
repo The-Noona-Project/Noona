@@ -278,6 +278,8 @@ export const registerPortalRoutes = ({
                                          fetchImpl = fetch,
                                      } = {}) => {
     const kavitaBaseUrl = typeof kavita?.getBaseUrl === 'function' ? kavita.getBaseUrl() : config?.kavita?.baseUrl ?? null;
+    const externalKavitaBaseUrl = normalizeAbsoluteHttpUrl(config?.kavita?.externalUrl);
+    const kavitaLinkBaseUrl = externalKavitaBaseUrl || normalizeAbsoluteHttpUrl(kavitaBaseUrl);
     const requestTimeoutMs = normalizePositiveInteger(config?.http?.timeoutMs, DEFAULT_PROXY_TIMEOUT_MS);
 
     app.get('/health', (_req, res) => {
@@ -291,7 +293,9 @@ export const registerPortalRoutes = ({
 
     app.get('/api/portal/kavita/info', async (_req, res) => {
         res.json({
-            baseUrl: kavitaBaseUrl,
+            baseUrl: kavitaLinkBaseUrl,
+            externalBaseUrl: externalKavitaBaseUrl,
+            internalBaseUrl: normalizeAbsoluteHttpUrl(kavitaBaseUrl),
             managedService: 'noona-kavita',
         });
     });
@@ -429,11 +433,13 @@ export const registerPortalRoutes = ({
         try {
             const payload = await kavita?.searchTitles?.(query);
             const series = Array.isArray(payload?.series)
-                ? payload.series.map((entry) => normalizeSeriesSearchResult(entry, kavitaBaseUrl))
+                ? payload.series.map((entry) => normalizeSeriesSearchResult(entry, kavitaLinkBaseUrl))
                 : [];
 
             res.json({
-                baseUrl: kavitaBaseUrl,
+                baseUrl: kavitaLinkBaseUrl,
+                externalBaseUrl: externalKavitaBaseUrl,
+                internalBaseUrl: normalizeAbsoluteHttpUrl(kavitaBaseUrl),
                 series,
             });
         } catch (error) {

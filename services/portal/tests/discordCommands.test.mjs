@@ -102,8 +102,15 @@ const createRecommendInteraction = ({
                                         channelId = 'channel-1',
                                     } = {}) => {
     const edits = [];
+    const dms = [];
     const interaction = {
-        user: {id: discordId, tag},
+        user: {
+            id: discordId,
+            tag,
+            send: async payload => {
+                dms.push(payload);
+            },
+        },
         guildId,
         channelId,
         deferred: false,
@@ -120,7 +127,7 @@ const createRecommendInteraction = ({
         },
     };
 
-    return {interaction, edits};
+    return {interaction, edits, dms};
 };
 
 const createRecommendButtonInteraction = ({
@@ -130,9 +137,16 @@ const createRecommendButtonInteraction = ({
                                           } = {}) => {
     const edits = [];
     const replies = [];
+    const dms = [];
     const interaction = {
         customId,
-        user: {id: discordId, tag},
+        user: {
+            id: discordId,
+            tag,
+            send: async payload => {
+                dms.push(payload);
+            },
+        },
         deferred: false,
         replied: false,
         deferUpdate: async () => {
@@ -148,7 +162,7 @@ const createRecommendButtonInteraction = ({
         },
     };
 
-    return {interaction, edits, replies};
+    return {interaction, edits, replies, dms};
 };
 
 test('join command definition requires username, password, confirm password, and email', () => {
@@ -547,7 +561,44 @@ test('recommend command searches Raven and stores the selected recommendation in
     assert.equal(button.edits.length, 1);
     assert.match(button.edits[0].content, /Thanks for your recommendation for \*\*Solo Leveling\*\*/);
     assert.match(button.edits[0].content, /approved or denied/i);
+    assert.match(button.edits[0].content, /I also sent this as a DM/i);
     assert.deepEqual(button.edits[0].components, []);
+    assert.equal(button.dms.length, 1);
+    assert.match(button.dms[0].content, /Thanks for your recommendation for \*\*Solo Leveling\*\*/i);
+    assert.match(button.dms[0].content, /approved or denied/i);
+});
+
+test('recommend command initial DM includes a Moon myrecommendations link when MOON_BASE_URL is configured', async () => {
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async () => ({
+                searchId: 'search-98',
+                options: [
+                    {index: '1', title: 'Naruto', href: 'https://source.example/naruto'},
+                ],
+            }),
+        },
+        vault: {
+            storeRecommendation: async () => ({insertedId: '69ab9c2b86235ade34fee0c4'}),
+        },
+        moonBaseUrl: 'http://moon.example:3000',
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction({title: 'Naruto'});
+
+    await command.execute(interaction);
+
+    const [selectionRow] = edits[0].components.map(row => row.toJSON());
+    const firstButton = selectionRow.components[0];
+    const button = createRecommendButtonInteraction({customId: firstButton.custom_id});
+
+    await command.handleComponent(button.interaction);
+
+    assert.equal(button.dms.length, 1);
+    assert.match(
+        button.dms[0].content,
+        /Track it in Moon: http:\/\/moon\.example:3000\/myrecommendations\/69ab9c2b86235ade34fee0c4/i,
+    );
 });
 
 test('recommend command reports existing library titles and returns a Kavita link without writing to Vault', async () => {
@@ -606,6 +657,54 @@ test('recommend command reports existing library titles and returns a Kavita lin
     assert.match(button.edits[0].content, /\*\*Solo Leveling\*\* is already on this server/i);
     assert.match(button.edits[0].content, /Open in Kavita: https:\/\/kavita\.example\/library\/3\/series\/12/i);
     assert.deepEqual(button.edits[0].components, []);
+});
+
+test('recommend command prefers configured external Kavita URL for existing-title links', async () => {
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async () => ({
+                searchId: 'search-88',
+                options: [
+                    {index: '1', title: 'Solo Leveling', href: 'https://source.example/solo-leveling'},
+                ],
+            }),
+            getLibrary: async () => [
+                {
+                    uuid: 'library-title-1',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+        },
+        kavita: {
+            searchTitles: async () => ({
+                series: [
+                    {
+                        libraryId: 3,
+                        seriesId: 12,
+                        name: 'Solo Leveling',
+                    },
+                ],
+            }),
+        },
+        vault: {
+            storeRecommendation: async () => ({insertedId: 100}),
+        },
+        kavitaBaseUrl: 'https://kavita.example.com',
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction();
+
+    await command.execute(interaction);
+
+    const [selectionRow] = edits[0].components.map(row => row.toJSON());
+    const firstButton = selectionRow.components[0];
+    const button = createRecommendButtonInteraction({customId: firstButton.custom_id});
+
+    await command.handleComponent(button.interaction);
+
+    assert.equal(button.edits.length, 1);
+    assert.match(button.edits[0].content, /Open in Kavita: https:\/\/kavita\.example\.com\/library\/3\/series\/12/i);
 });
 
 test('recommend command cancels pending selections without writing to Vault', async () => {

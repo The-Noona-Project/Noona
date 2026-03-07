@@ -20,6 +20,24 @@ const normalizeString = (value) => {
     return value.trim();
 };
 
+const normalizeAbsoluteHttpUrl = (value) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return null;
+        }
+
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+};
+
 const normalizeBooleanSettingValue = (value, key) => {
     const normalized = normalizeString(value).toLowerCase();
     if (!normalized) {
@@ -184,6 +202,14 @@ export function registerServiceManagementApi(context = {}) {
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
         if (!service) {
             return null;
+        }
+
+        if (service?.name === 'noona-moon') {
+            const env = parseEnvEntries(service?.env);
+            const externalMoonUrl = normalizeAbsoluteHttpUrl(env?.MOON_EXTERNAL_URL);
+            if (externalMoonUrl) {
+                return externalMoonUrl;
+            }
         }
 
         const resolveByPort = (candidatePort) => {

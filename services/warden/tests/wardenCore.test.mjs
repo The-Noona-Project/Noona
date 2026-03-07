@@ -3435,6 +3435,33 @@ test('Moon WEBGUI_PORT override updates service config and minimal boot health t
     ]);
 });
 
+test('Moon MOON_EXTERNAL_URL override publishes external hostServiceUrl metadata', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-sage': {name: 'noona-sage', image: 'sage'},
+            },
+        },
+        env: {HOST_SERVICE_URL: 'http://localhost'},
+        hostDockerSockets: [],
+    });
+
+    await warden.updateServiceConfig('noona-moon', {
+        env: {MOON_EXTERNAL_URL: 'https://moon.example.com'},
+    });
+
+    const moonConfig = warden.getServiceConfig('noona-moon');
+    assert.equal(moonConfig.hostServiceUrl, 'https://moon.example.com/');
+    assert.equal(moonConfig.env.MOON_EXTERNAL_URL, 'https://moon.example.com');
+    assert.deepEqual(moonConfig.runtimeConfig.env, {MOON_EXTERNAL_URL: 'https://moon.example.com'});
+
+    const services = await warden.listServices({includeInstalled: true});
+    const moonService = services.find((entry) => entry.name === 'noona-moon');
+    assert.equal(moonService?.hostServiceUrl, 'https://moon.example.com/');
+});
+
 test('updateServiceConfig persists service runtime overrides to noona_settings', async () => {
     const writes = [];
     const warden = buildWarden({

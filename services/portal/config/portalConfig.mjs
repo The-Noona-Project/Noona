@@ -133,6 +133,7 @@ export const loadPortalConfig = (overrides = {}) => {
         kavita: {
             baseUrl: normalizeUrl(env.KAVITA_BASE_URL || DEFAULT_MANAGED_KAVITA_BASE_URL),
             apiKey: env.KAVITA_API_KEY,
+            externalUrl: normalizeUrl(env.KAVITA_EXTERNAL_URL),
         },
         raven: {
             baseUrl: normalizeUrl(env.RAVEN_BASE_URL || DEFAULT_RAVEN_BASE_URL),

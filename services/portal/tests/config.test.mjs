@@ -54,6 +54,16 @@ test('safeLoadPortalConfig parses optional Moon base URL override', () => {
     assert.equal(config.moon.baseUrl, 'http://moon.example:3000/');
 });
 
+test('safeLoadPortalConfig parses optional Kavita external URL override', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        KAVITA_EXTERNAL_URL: 'https://kavita.example.com',
+    });
+
+    assert.equal(config.kavita.externalUrl, 'https://kavita.example.com/');
+});
+
 test('safeLoadPortalConfig throws when no vault tokens are provided', () => {
     assert.throws(
         () =>

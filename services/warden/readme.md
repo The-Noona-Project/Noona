@@ -113,6 +113,11 @@ mode.
   up with stale Kavita credentials.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
+- The managed `noona-moon` descriptor now also exposes `MOON_EXTERNAL_URL`. When set, Warden publishes that URL as
+  Moon's `hostServiceUrl`, so downstream services (including Portal recommendation DMs) can send publicly reachable
+  Moon links instead of local LAN links.
+- The managed `noona-portal` descriptor now exposes `KAVITA_EXTERNAL_URL` so Portal can emit public Kavita links in
+  Moon UI button payloads and recommendation-related Discord messages.
 - Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
   remain the always-on platform services around that managed stack.
 - Managed Noona images now default to `docker.darkmatterservers.com/the-noona-project/*`, including managed Kavita at

@@ -122,6 +122,7 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
     const expectations = [
         ['PORTAL_JOIN_DEFAULT_ROLES', '*,-admin'],
         ['PORTAL_JOIN_DEFAULT_LIBRARIES', '*'],
+        ['KAVITA_EXTERNAL_URL', ''],
         ['PORTAL_REDIS_NAMESPACE', 'portal:onboarding'],
         ['PORTAL_TOKEN_TTL', '900'],
         ['PORTAL_HTTP_TIMEOUT', '10000'],
@@ -227,11 +228,19 @@ test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health 
             moon.env.includes('WEBGUI_PORT=3010'),
             'Moon env array should include WEBGUI_PORT with the configured default.',
         );
+        assert.ok(
+            moon.env.includes('MOON_EXTERNAL_URL='),
+            'Moon env array should include MOON_EXTERNAL_URL for external link overrides.',
+        );
 
         const field = moon.envConfig.find((entry) => entry.key === 'WEBGUI_PORT');
         assert.ok(field, 'Moon envConfig should include WEBGUI_PORT.');
         assert.equal(field.defaultValue, '3010');
         assert.equal(field.required, false);
+        const externalField = moon.envConfig.find((entry) => entry.key === 'MOON_EXTERNAL_URL');
+        assert.ok(externalField, 'Moon envConfig should include MOON_EXTERNAL_URL.');
+        assert.equal(externalField.defaultValue, '');
+        assert.equal(externalField.required, false);
     } finally {
         if (previousWebGuiPort === undefined) {
             delete process.env.WEBGUI_PORT;

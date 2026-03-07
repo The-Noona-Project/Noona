@@ -147,7 +147,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const canManageRecommendations = hasMoonPermission(permissions, "manageRecommendations");
     const canAccessMyRecommendations = hasMoonPermission(permissions, "myRecommendations");
     const canAccessRecommendations = canManageRecommendations || canAccessMyRecommendations;
-    const recommendationsNavHref = canManageRecommendations ? "/recommendations" : "/myrecommendations";
+    const recommendationsNavHref = "/myrecommendations";
+    const recommendationsNavLabel = canManageRecommendations ? "Recommendations" : "My Recommendations";
     const canAccessSettings =
         hasMoonPermission(permissions, "admin") || hasMoonPermission(permissions, "user_management");
     const showSetupNav = !shellSuppressed && setupCompleted === false;
@@ -309,9 +310,12 @@ export function AppShell({children}: { children: React.ReactNode }) {
             if (canAccessRecommendations) {
                 items.push({
                     href: recommendationsNavHref,
-                    label: "Recommendations",
+                    label: recommendationsNavLabel,
                     icon: "document",
-                    selected: pathname.startsWith("/recommendations") || pathname.startsWith("/myrecommendations"),
+                    selected:
+                        pathname.startsWith("/recommendations")
+                        || pathname.startsWith("/myrecommendations")
+                        || pathname.startsWith("/recommendation"),
                 });
             }
 
@@ -335,7 +339,7 @@ export function AppShell({children}: { children: React.ReactNode }) {
         }
 
         return items;
-    }, [canAccessDownloads, canAccessLibrary, canAccessRecommendations, canAccessSettings, pathname, recommendationsNavHref, showMainNav, showSetupNav]);
+    }, [canAccessDownloads, canAccessLibrary, canAccessRecommendations, canAccessSettings, pathname, recommendationsNavHref, recommendationsNavLabel, showMainNav, showSetupNav]);
 
     const contentStyle = useMemo(
         () =>

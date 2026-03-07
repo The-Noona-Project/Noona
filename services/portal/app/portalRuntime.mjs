@@ -68,7 +68,10 @@ export const startPortal = async (overrides = {}) => {
         getDiscord: () => discord,
         kavita,
         raven,
+        warden,
         vault,
+        moonBaseUrl: config.moon?.baseUrl,
+        kavitaExternalUrl: config.kavita?.externalUrl,
         onboardingStore,
         joinDefaults: config.join,
     });
@@ -103,6 +106,7 @@ export const startPortal = async (overrides = {}) => {
         kavitaClient: kavita,
         wardenClient: warden,
         moonBaseUrl: config.moon?.baseUrl,
+        kavitaBaseUrl: config.kavita?.externalUrl,
         pollMs: config.recommendations?.pollMs,
         logger: {
             warn: errMSG,

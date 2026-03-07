@@ -7,6 +7,8 @@ const MAX_VISIBLE_RESULTS = 5;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const SESSION_PREFIX = 'recommend';
 const TITLE_LIMIT = 72;
+const MOON_SERVICE_NAMES = new Set(['noona-moon', 'moon']);
+const DEFAULT_MOON_RECOMMENDATION_PATH_PREFIX = '/myrecommendations/';
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
 const normalizeTitleKey = value => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -28,8 +30,102 @@ const normalizeUrlForCompare = value => {
         return null;
     }
 };
+const normalizeAbsoluteUrl = value => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        return new URL(normalized).toString();
+    } catch {
+        return null;
+    }
+};
+const normalizeAbsoluteBaseUrl = value => {
+    const normalized = normalizeAbsoluteUrl(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        return `${parsed.protocol}//${parsed.host}/`;
+    } catch {
+        return null;
+    }
+};
 const truncate = (value, maxLength = TITLE_LIMIT) =>
     value.length > maxLength ? `${value.slice(0, Math.max(1, maxLength - 1)).trim()}…` : value;
+const resolveRecommendationId = value => {
+    if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+    }
+
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+
+    if (typeof value.$oid === 'string' && value.$oid.trim()) {
+        return value.$oid.trim();
+    }
+
+    if (typeof value.toHexString === 'function') {
+        try {
+            const hex = value.toHexString();
+            if (typeof hex === 'string' && hex.trim()) {
+                return hex.trim();
+            }
+        } catch {
+            // Best effort fallback below.
+        }
+    }
+
+    if (typeof value.toString === 'function') {
+        const text = value.toString();
+        if (typeof text === 'string' && text.trim() && text !== '[object Object]') {
+            return text.trim();
+        }
+    }
+
+    return null;
+};
+const extractWardenServiceList = payload => {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+
+    if (Array.isArray(payload?.services)) {
+        return payload.services;
+    }
+
+    return [];
+};
+const resolveMoonBaseUrlFromWardenPayload = payload => {
+    const services = extractWardenServiceList(payload);
+    for (const service of services) {
+        const serviceName = normalizeString(service?.name).toLowerCase();
+        if (!MOON_SERVICE_NAMES.has(serviceName)) {
+            continue;
+        }
+
+        const candidates = [
+            service?.hostServiceUrl,
+            service?.host_service_url,
+            service?.hostUrl,
+            service?.host_url,
+            service?.url,
+        ];
+        for (const candidate of candidates) {
+            const baseUrl = normalizeAbsoluteBaseUrl(candidate);
+            if (baseUrl) {
+                return baseUrl;
+            }
+        }
+    }
+
+    return null;
+};
 
 const parseOptionIndex = (option, fallbackIndex) => {
     const raw = normalizeString(option?.option_number ?? option?.index);
@@ -144,23 +240,19 @@ const pickPreferredKavitaSeries = (series, titleName) => {
 };
 
 const buildKavitaSeriesUrl = ({baseUrl, series, fallbackUrl} = {}) => {
-    const normalizedFallback = normalizeString(fallbackUrl);
-    if (normalizedFallback) {
-        return normalizedFallback;
-    }
-
     const libraryId = normalizeSeriesInteger(series?.libraryId);
     const seriesId = normalizeSeriesInteger(series?.seriesId);
     const normalizedBase = normalizeString(baseUrl);
-    if (!normalizedBase || libraryId == null || seriesId == null) {
-        return null;
+    if (normalizedBase && libraryId != null && seriesId != null) {
+        try {
+            return new URL(`/library/${libraryId}/series/${seriesId}`, normalizedBase).toString();
+        } catch {
+            // Fall back to the provided URL below.
+        }
     }
 
-    try {
-        return new URL(`/library/${libraryId}/series/${seriesId}`, normalizedBase).toString();
-    } catch {
-        return null;
-    }
+    const normalizedFallback = normalizeString(fallbackUrl);
+    return normalizedFallback || null;
 };
 
 const resolveExistingLibraryTitle = async ({
@@ -196,6 +288,7 @@ const resolveExistingLibraryTitle = async ({
 const resolveKavitaTitleUrl = async ({
                                          kavita,
                                          titleName,
+                                         kavitaBaseUrl,
                                      } = {}) => {
     const normalizedTitle = normalizeString(titleName);
     if (!normalizedTitle || !kavita?.searchTitles) {
@@ -215,7 +308,7 @@ const resolveKavitaTitleUrl = async ({
         }
 
         return buildKavitaSeriesUrl({
-            baseUrl: typeof kavita.getBaseUrl === 'function' ? kavita.getBaseUrl() : null,
+            baseUrl: kavitaBaseUrl || (typeof kavita.getBaseUrl === 'function' ? kavita.getBaseUrl() : null),
             series: selectedSeries,
             fallbackUrl: selectedSeries?.url,
         });
@@ -229,10 +322,16 @@ export const createRecommendCommand = ({
                                            raven,
                                            kavita,
                                            vault,
+                                           warden,
+                                           moonBaseUrl,
+                                           kavitaBaseUrl,
                                            now = () => Date.now(),
                                            sessionTtlMs = SESSION_TTL_MS,
                                        } = {}) => {
     const pendingSessions = new Map();
+    const configuredMoonBaseUrl = normalizeAbsoluteBaseUrl(moonBaseUrl);
+    const configuredKavitaBaseUrl = normalizeAbsoluteBaseUrl(kavitaBaseUrl);
+    let cachedMoonBaseUrl = configuredMoonBaseUrl;
 
     const cleanupExpiredSessions = () => {
         const currentTime = Number(now());
@@ -240,6 +339,69 @@ export const createRecommendCommand = ({
             if (!session || typeof session.expiresAt !== 'number' || session.expiresAt <= currentTime) {
                 pendingSessions.delete(sessionId);
             }
+        }
+    };
+    const resolveMoonBaseUrl = async () => {
+        if (cachedMoonBaseUrl) {
+            return cachedMoonBaseUrl;
+        }
+
+        if (typeof warden?.listServices !== 'function') {
+            return null;
+        }
+
+        const servicesPayload = await warden.listServices({includeInstalled: true}).catch((error) => {
+            errMSG(`[Portal/Discord] Failed to resolve Moon URL from Warden for recommendation DM: ${error.message}`);
+            return null;
+        });
+        const resolvedBaseUrl = resolveMoonBaseUrlFromWardenPayload(servicesPayload);
+        if (resolvedBaseUrl) {
+            cachedMoonBaseUrl = resolvedBaseUrl;
+        }
+
+        return resolvedBaseUrl;
+    };
+    const buildMoonRecommendationUrl = async (recommendationId) => {
+        const normalizedId = resolveRecommendationId(recommendationId);
+        if (!normalizedId) {
+            return null;
+        }
+
+        const moonUrl = await resolveMoonBaseUrl();
+        if (!moonUrl) {
+            return null;
+        }
+
+        try {
+            return new URL(`${DEFAULT_MOON_RECOMMENDATION_PATH_PREFIX}${encodeURIComponent(normalizedId)}`, moonUrl).toString();
+        } catch {
+            return null;
+        }
+    };
+    const sendRecommendationReceiptDm = async ({interaction, title, recommendationId}) => {
+        const discordUser = interaction?.user;
+        if (!discordUser || typeof discordUser.send !== 'function') {
+            return {sent: false, reason: 'Discord user DM channel is unavailable.'};
+        }
+
+        const moonRecommendationUrl = await buildMoonRecommendationUrl(recommendationId);
+        const normalizedRecommendationId = resolveRecommendationId(recommendationId);
+        const lines = [
+            `Thanks for your recommendation for **${title}**.`,
+            `I'll send you a message when it's approved or denied.`,
+        ];
+        if (moonRecommendationUrl) {
+            lines.push(`Track it in Moon: ${moonRecommendationUrl}`);
+        } else if (normalizedRecommendationId) {
+            lines.push(`Track it in Moon: /myrecommendations/${encodeURIComponent(normalizedRecommendationId)}`);
+        }
+
+        try {
+            await discordUser.send({content: lines.join('\n')});
+            return {sent: true, moonRecommendationUrl};
+        } catch (error) {
+            errMSG(`[Portal/Discord] Failed to send initial recommendation DM for "${title}": ${error.message}`);
+            return {sent: false, reason: error instanceof Error ? error.message : String(error), moonRecommendationUrl};
         }
     };
 
@@ -388,6 +550,7 @@ export const createRecommendCommand = ({
                 const kavitaUrl = await resolveKavitaTitleUrl({
                     kavita,
                     titleName: existingTitleName,
+                    kavitaBaseUrl: configuredKavitaBaseUrl,
                 });
                 const kavitaLine = kavitaUrl ? `\nOpen in Kavita: ${kavitaUrl}` : '';
                 await updateComponentReply(interaction, {
@@ -420,9 +583,18 @@ export const createRecommendCommand = ({
             try {
                 const result = await vault.storeRecommendation(recommendation);
                 pendingSessions.delete(sessionId);
-                const insertedId = result?.insertedId != null ? ` (id: ${result.insertedId})` : '';
+                const recommendationId = resolveRecommendationId(result?.insertedId);
+                const insertedId = recommendationId ? ` (id: ${recommendationId})` : '';
+                const receiptDm = await sendRecommendationReceiptDm({
+                    interaction,
+                    title: selected.title,
+                    recommendationId,
+                });
+                const dmSuffix = receiptDm.sent
+                    ? '\nI also sent this as a DM.'
+                    : '\nI could not DM you. Check Discord privacy settings if you want direct updates there.';
                 await updateComponentReply(interaction, {
-                    content: `Thanks for your recommendation for **${selected.title}**${insertedId}. I'll send you a message when it's approved or denied.`,
+                    content: `Thanks for your recommendation for **${selected.title}**${insertedId}. I'll send you a message when it's approved or denied.${dmSuffix}`,
                     components: [],
                 });
             } catch (error) {

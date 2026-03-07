@@ -165,6 +165,75 @@ test('recommendation notifier DMs completion with Kavita link once title is avai
     assert.ok(typeof recommendations[0]?.completedAt === 'string');
 });
 
+test('recommendation notifier prefers configured external Kavita URL for completion DMs', async () => {
+    const recommendations = [
+        {
+            _id: 'rec-complete-2',
+            status: 'approved',
+            title: 'Omniscient Reader',
+            requestedBy: {
+                discordId: 'discord-user-2',
+            },
+            notifications: {
+                approvalDmSentAt: '2026-03-07T00:00:00.000Z',
+            },
+        },
+    ];
+    const messages = [];
+
+    const notifier = createRecommendationNotifier({
+        discordClient: {
+            sendDirectMessage: async (userId, payload) => {
+                messages.push({userId, payload});
+                return {id: `dm-${messages.length}`};
+            },
+        },
+        vaultClient: {
+            findRecommendations: async () => recommendations.map((entry) => ({...entry})),
+            updateRecommendation: async ({query, update} = {}) => {
+                const index = recommendations.findIndex((entry) => matchesQuery(entry, query));
+                if (index < 0) {
+                    return {status: 'ok', matched: 0, modified: 0};
+                }
+
+                recommendations[index] = applyUpdate(recommendations[index], update);
+                return {status: 'ok', matched: 1, modified: 1};
+            },
+        },
+        ravenClient: {
+            getLibrary: async () => [
+                {
+                    title: 'Omniscient Reader',
+                    sourceUrl: 'https://asura.example/omniscient',
+                },
+            ],
+        },
+        kavitaClient: {
+            getBaseUrl: () => 'http://noona-kavita:5000/',
+            searchTitles: async () => ({
+                series: [
+                    {
+                        libraryId: 4,
+                        seriesId: 17,
+                        name: 'Omniscient Reader',
+                    },
+                ],
+            }),
+        },
+        kavitaBaseUrl: 'https://kavita.example.com',
+        pollMs: 60000,
+        logger: {},
+    });
+
+    notifier.start();
+    await notifier.refresh();
+    notifier.stop();
+
+    assert.equal(messages.length, 1);
+    assert.match(messages[0].payload.content, /Open in Kavita: https:\/\/kavita\.example\.com\/library\/4\/series\/17/i);
+    assert.equal(recommendations[0]?.notifications?.completionKavitaUrl, 'https://kavita.example.com/library/4/series/17');
+});
+
 test('recommendation notifier DMs users when admins add timeline comments and stores sent markers', async () => {
     const recommendations = [
         {

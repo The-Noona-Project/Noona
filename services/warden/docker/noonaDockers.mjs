@@ -8,31 +8,62 @@ const DEBUG = process.env.DEBUG || 'false';
 const HOST_SERVICE_URL = resolveHostServiceBase();
 const SHARED_HOST_ENV = resolveSharedHostEnvEntries();
 const DOCKER_WARDEN_URL =
-    process.env.WARDEN_DOCKER_URL || process.env.INTERNAL_WARDEN_BASE_URL || 'http://noona-warden:4001';
+    process.env.WARDEN_DOCKER_URL
+    || process.env.INTERNAL_WARDEN_BASE_URL
+    || 'http://noona-warden:4001';
 
-const DEFAULT_MONGO_ROOT_USERNAME = process.env.MONGO_INITDB_ROOT_USERNAME || 'root';
-const DEFAULT_MONGO_ROOT_PASSWORD = process.env.MONGO_INITDB_ROOT_PASSWORD || 'example';
+const DEFAULT_MONGO_ROOT_USERNAME =
+    process.env.MONGO_INITDB_ROOT_USERNAME
+    || 'root';
+const DEFAULT_MONGO_ROOT_PASSWORD =
+    process.env.MONGO_INITDB_ROOT_PASSWORD
+    || 'example';
 const DEFAULT_VAULT_MONGO_URI =
     process.env.MONGO_URI ||
     `mongodb://${encodeURIComponent(DEFAULT_MONGO_ROOT_USERNAME)}:${encodeURIComponent(DEFAULT_MONGO_ROOT_PASSWORD)}@noona-mongo:27017/admin?authSource=admin`;
-const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
-const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
-const DEFAULT_VAULT_DATA_FOLDER = process.env.VAULT_DATA_FOLDER || 'vault';
-const DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH = process.env.VAULT_REDIS_HOST_MOUNT_PATH || '';
-const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH = process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
+const DEFAULT_VAULT_REDIS_HOST =
+    process.env.REDIS_HOST
+    || 'noona-redis';
+const DEFAULT_VAULT_REDIS_PORT =
+    process.env.REDIS_PORT
+    || '6379';
+const DEFAULT_VAULT_DATA_FOLDER =
+    process.env.VAULT_DATA_FOLDER
+    || 'vault';
+const DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH =
+    process.env.VAULT_REDIS_HOST_MOUNT_PATH || '';
+const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH =
+    process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
-    process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
+    process.env.PORTAL_VAULT_BASE_URL
+    || 'http://noona-vault:3005';
 const DEFAULT_PORTAL_RAVEN_BASE_URL =
-    process.env.RAVEN_BASE_URL || process.env.PORTAL_RAVEN_BASE_URL || 'http://noona-raven:8080';
+    process.env.RAVEN_BASE_URL
+    || process.env.PORTAL_RAVEN_BASE_URL
+    || 'http://noona-raven:8080';
 const DEFAULT_PORTAL_WARDEN_BASE_URL =
-    process.env.WARDEN_BASE_URL || process.env.PORTAL_WARDEN_BASE_URL || DOCKER_WARDEN_URL;
-const DEFAULT_PORTAL_ACTIVITY_POLL_MS = process.env.PORTAL_ACTIVITY_POLL_MS || '15000';
-const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
+    process.env.WARDEN_BASE_URL
+    || process.env.PORTAL_WARDEN_BASE_URL
+    || DOCKER_WARDEN_URL;
+const DEFAULT_PORTAL_ACTIVITY_POLL_MS =
+    process.env.PORTAL_ACTIVITY_POLL_MS
+    || '15000';
+const DEFAULT_RAVEN_VAULT_URL =
+    process.env.RAVEN_VAULT_URL
+    || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_PORTAL_BASE_URL =
-    process.env.PORTAL_BASE_URL || process.env.RAVEN_PORTAL_BASE_URL || 'http://noona-portal:3003';
-const DEFAULT_RAVEN_DOWNLOAD_THREADS = process.env.RAVEN_DOWNLOAD_THREADS || '3';
-const DEFAULT_KAVITA_BASE_URL = process.env.KAVITA_BASE_URL || 'http://noona-kavita:5000';
-const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT = process.env.RAVEN_KAVITA_LIBRARY_ROOT || '/manga';
+    process.env.PORTAL_BASE_URL
+    || process.env.RAVEN_PORTAL_BASE_URL
+    || 'http://noona-portal:3003';
+const DEFAULT_RAVEN_DOWNLOAD_THREADS =
+    process.env.RAVEN_DOWNLOAD_THREADS
+    || '3';
+const DEFAULT_KAVITA_BASE_URL =
+    process.env.KAVITA_BASE_URL
+    || 'http://noona-kavita:5000';
+const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT =
+    process.env.RAVEN_KAVITA_LIBRARY_ROOT
+    || '/manga';
 const DEFAULT_MOON_WEBGUI_PORT = (() => {
     const candidate = Number.parseInt(process.env.WEBGUI_PORT || '3000', 10);
     if (Number.isFinite(candidate) && candidate >= 1 && candidate <= 65535) {
@@ -192,11 +223,20 @@ const serviceDefs = rawList.map(name => {
 
     if (name === 'noona-moon') {
         env.push(`WEBGUI_PORT=${DEFAULT_MOON_WEBGUI_PORT}`);
+        env.push('MOON_EXTERNAL_URL=');
         envConfig.push(
             createEnvField('WEBGUI_PORT', DEFAULT_MOON_WEBGUI_PORT, {
                 label: 'Moon Web GUI Port',
                 description: 'Port Moon listens on for the web interface and the port Warden publishes on the host.',
                 warning: 'Changing this port requires restarting noona-moon and updating any bookmarks or reverse proxies.',
+                required: false,
+            }),
+            createEnvField('MOON_EXTERNAL_URL', '', {
+                label: 'Moon External URL',
+                description:
+                    'Optional public Moon URL used in external links (for example Discord recommendation DMs) instead of local host links.',
+                warning:
+                    'Set a full URL such as https://moon.example.com when users cannot reach the local host_service_url.',
                 required: false,
             }),
         );
@@ -241,6 +281,13 @@ const serviceDefs = rawList.map(name => {
                 label: 'Kavita Base URL',
                 description: 'Base URL of the Kavita instance providing library content.',
                 defaultValue: DEFAULT_KAVITA_BASE_URL,
+            },
+            {
+                key: 'KAVITA_EXTERNAL_URL',
+                label: 'Kavita External URL',
+                description:
+                    'Optional public Kavita URL used in Moon buttons and Discord messages instead of internal Docker-network URLs.',
+                required: false,
             },
             {
                 key: 'KAVITA_API_KEY',

@@ -22,11 +22,19 @@ export const moonRoutes = {
     "/downloads": true,
     "/downloads/add": true,
     "/recommendations": true,
+    "/myrecommendations": true,
+    "/recommendation": true,
     "/rebooting": true,
     "/settings": true,
 } as const;
 
-export const moonDynamicRoutePrefixes = ["/libraries", "/settings"] as const;
+export const moonDynamicRoutePrefixes = [
+    "/libraries",
+    "/recommendations",
+    "/myrecommendations",
+    "/recommendation",
+    "/settings",
+] as const;
 
 export const moonShell = {
     showTime: true,

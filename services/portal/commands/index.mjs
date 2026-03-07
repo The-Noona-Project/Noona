@@ -10,7 +10,10 @@ export const createPortalSlashCommands = ({
                                               getDiscord,
                                               kavita,
                                               raven,
+                                              warden,
                                               vault,
+                                              moonBaseUrl,
+                                              kavitaExternalUrl,
                                               onboardingStore,
                                               joinDefaults,
                                           } = {}) => {
@@ -29,6 +32,9 @@ export const createPortalSlashCommands = ({
         raven,
         kavita,
         vault,
+        warden,
+        moonBaseUrl,
+        kavitaBaseUrl: kavitaExternalUrl,
     }));
     commands.set('scan', createScanCommand({kavita}));
     commands.set('search', createSearchCommand({kavita, vault}));
