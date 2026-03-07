@@ -1,12 +1,16 @@
 export type SettingsTabId = "general" | "moon" | "raven" | "vault" | "sage" | "warden" | "portal";
 export type SettingsMainSectionId = "ecosystem" | "users";
 export type PortalSettingsSubtabId = "discord" | "kavita" | "komf";
-
-type SettingsTabRoute = {
-    id: SettingsTabId;
-    label: string;
-    description: string;
-};
+export type SettingsNavSectionId = "general" | "storage" | "downloads" | "external" | "users";
+export type SettingsViewId =
+    "overview"
+    | "filesystem"
+    | "database"
+    | "downloader"
+    | "updater"
+    | "discord"
+    | "komf"
+    | "users";
 
 type PortalSettingsSubtabRoute = {
     id: PortalSettingsSubtabId;
@@ -14,63 +18,28 @@ type PortalSettingsSubtabRoute = {
     description: string;
 };
 
+type SettingsNavItem = {
+    id: SettingsViewId;
+    label: string;
+    href: string;
+    description: string;
+};
+
+type SettingsNavSection = {
+    id: SettingsNavSectionId;
+    label: string;
+    items: SettingsNavItem[];
+};
+
 export type SettingsRouteSelection = {
     section: SettingsMainSectionId;
+    navSection: SettingsNavSectionId;
+    view: SettingsViewId;
     tab: SettingsTabId;
     portalSubtab: PortalSettingsSubtabId;
     href: string;
     title: string;
     description: string;
-};
-
-const SETTINGS_TABS: SettingsTabRoute[] = [
-    {
-        id: "general",
-        label: "General",
-        description: "Manage ecosystem-wide actions, debug logging, and service diagnostics.",
-    },
-    {
-        id: "moon",
-        label: "Moon",
-        description: "Configure Moon and review the active Discord-authenticated account.",
-    },
-    {
-        id: "raven",
-        label: "Raven",
-        description: "Adjust Raven runtime settings, naming templates, and download worker limits.",
-    },
-    {
-        id: "vault",
-        label: "Vault",
-        description: "Inspect Vault collections, secrets-backed storage, and reset controls.",
-    },
-    {
-        id: "sage",
-        label: "Sage",
-        description: "Edit Sage runtime configuration and restart behavior.",
-    },
-    {
-        id: "warden",
-        label: "Warden",
-        description: "Review orchestrator-specific controls and managed image updates.",
-    },
-    {
-        id: "portal",
-        label: "Portal",
-        description: "Configure Portal integrations, Discord onboarding, and managed Komf settings.",
-    },
-];
-
-export const TAB_ORDER = SETTINGS_TABS.map((entry) => entry.id) as SettingsTabId[];
-
-export const TAB_LABELS: Record<SettingsTabId, string> = {
-    general: "General",
-    moon: "Moon",
-    raven: "Raven",
-    vault: "Vault",
-    sage: "Sage",
-    warden: "Warden",
-    portal: "Portal",
 };
 
 export const PORTAL_SETTINGS_SUBTABS: PortalSettingsSubtabRoute[] = [
@@ -82,7 +51,7 @@ export const PORTAL_SETTINGS_SUBTABS: PortalSettingsSubtabRoute[] = [
     {
         id: "kavita",
         label: "Kavita",
-        description: "Manage Portal's Kavita, Vault, and command-access integration settings.",
+        description: "Legacy Portal/Kavita view. This now resolves to the Discord-facing external settings page.",
     },
     {
         id: "komf",
@@ -91,90 +60,375 @@ export const PORTAL_SETTINGS_SUBTABS: PortalSettingsSubtabRoute[] = [
     },
 ];
 
-const TAB_SET = new Set<SettingsTabId>(TAB_ORDER);
-const PORTAL_SUBTAB_SET = new Set<PortalSettingsSubtabId>(PORTAL_SETTINGS_SUBTABS.map((entry) => entry.id));
-const SETTINGS_TABS_BY_ID = new Map<SettingsTabId, SettingsTabRoute>(SETTINGS_TABS.map((entry) => [entry.id, entry]));
-const PORTAL_SUBTABS_BY_ID = new Map<PortalSettingsSubtabId, PortalSettingsSubtabRoute>(
-    PORTAL_SETTINGS_SUBTABS.map((entry) => [entry.id, entry]),
-);
+export const TAB_ORDER: SettingsTabId[] = ["general", "moon", "raven", "vault", "sage", "warden", "portal"];
+
+export const TAB_LABELS: Record<SettingsTabId, string> = {
+    general: "General",
+    moon: "Moon",
+    raven: "Raven",
+    vault: "Vault",
+    sage: "Sage",
+    warden: "Warden",
+    portal: "Portal",
+};
+
+export const VIEW_LABELS: Record<SettingsViewId, string> = {
+    overview: "General",
+    filesystem: "FileSystem",
+    database: "Database",
+    downloader: "Downloader",
+    updater: "Noona Updater",
+    discord: "Discord",
+    komf: "Komf",
+    users: "Users",
+};
 
 export const SETTINGS_LANDING_HREF = "/settings/general";
-export const SETTINGS_USER_MANAGEMENT_HREF = "/settings/usermanagement";
+export const SETTINGS_USER_MANAGEMENT_HREF = "/settings/users";
 
-export const getSettingsHrefForTab = (tab: SettingsTabId): string =>
-    tab === "portal" ? getSettingsHrefForPortalSubtab("discord") : `/settings/${tab}`;
-
-export const getSettingsHrefForPortalSubtab = (subtab: PortalSettingsSubtabId): string => `/settings/portal/${subtab}`;
-
-const buildSelection = (
-    section: SettingsMainSectionId,
-    tab: SettingsTabId,
-    portalSubtab: PortalSettingsSubtabId,
-): SettingsRouteSelection => {
-    if (section === "users") {
-        return {
-            section,
-            tab: "general",
-            portalSubtab: "discord",
-            href: SETTINGS_USER_MANAGEMENT_HREF,
-            title: "User Management",
-            description: "Manage Discord-linked Moon accounts and default permissions for new users.",
-        };
+export const getSettingsHrefForView = (view: SettingsViewId): string => {
+    switch (view) {
+        case "overview":
+            return "/settings/general";
+        case "filesystem":
+            return "/settings/storage/filesystem";
+        case "database":
+            return "/settings/storage/database";
+        case "downloader":
+            return "/settings/downloads/downloader";
+        case "updater":
+            return "/settings/downloads/updater";
+        case "discord":
+            return "/settings/external/discord";
+        case "komf":
+            return "/settings/external/komf";
+        case "users":
+            return SETTINGS_USER_MANAGEMENT_HREF;
+        default:
+            return SETTINGS_LANDING_HREF;
     }
-
-    if (tab === "portal") {
-        const portalEntry = PORTAL_SUBTABS_BY_ID.get(portalSubtab) ?? PORTAL_SUBTABS_BY_ID.get("discord");
-        return {
-            section,
-            tab,
-            portalSubtab,
-            href: getSettingsHrefForPortalSubtab(portalSubtab),
-            title: `Portal ${portalEntry?.label ?? "Discord"}`,
-            description: portalEntry?.description
-                ?? "Configure Portal integrations, Discord onboarding, and managed Komf settings.",
-        };
-    }
-
-    const tabEntry = SETTINGS_TABS_BY_ID.get(tab) ?? SETTINGS_TABS_BY_ID.get("general");
-    return {
-        section,
-        tab,
-        portalSubtab: "discord",
-        href: getSettingsHrefForTab(tab),
-        title: tabEntry?.label ?? "General",
-        description: tabEntry?.description ?? "Manage Noona settings.",
-    };
 };
+
+export const getSettingsHrefForPortalSubtab = (subtab: PortalSettingsSubtabId): string => {
+    if (subtab === "komf") {
+        return getSettingsHrefForView("komf");
+    }
+
+    return getSettingsHrefForView("discord");
+};
+
+export const getSettingsHrefForTab = (tab: SettingsTabId): string => {
+    switch (tab) {
+        case "general":
+        case "moon":
+        case "sage":
+            return getSettingsHrefForView("overview");
+        case "raven":
+            return getSettingsHrefForView("downloader");
+        case "vault":
+            return getSettingsHrefForView("database");
+        case "warden":
+            return getSettingsHrefForView("updater");
+        case "portal":
+            return getSettingsHrefForView("discord");
+        default:
+            return SETTINGS_LANDING_HREF;
+    }
+};
+
+export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
+    {
+        id: "general",
+        label: "General",
+        items: [
+            {
+                id: "overview",
+                label: "Overview",
+                href: getSettingsHrefForView("overview"),
+                description: "Loaded profile, service links, and ecosystem controls.",
+            },
+        ],
+    },
+    {
+        id: "storage",
+        label: "Storage",
+        items: [
+            {
+                id: "filesystem",
+                label: "FileSystem",
+                href: getSettingsHrefForView("filesystem"),
+                description: "Folder tree, storage root, and shared mounts.",
+            },
+            {
+                id: "database",
+                label: "Database",
+                href: getSettingsHrefForView("database"),
+                description: "Mongo URI, collection viewer, and reset tooling.",
+            },
+        ],
+    },
+    {
+        id: "downloads",
+        label: "Downloads",
+        items: [
+            {
+                id: "downloader",
+                label: "Downloader",
+                href: getSettingsHrefForView("downloader"),
+                description: "Raven worker controls, speed limits, and naming.",
+            },
+            {
+                id: "updater",
+                label: "Noona Updater",
+                href: getSettingsHrefForView("updater"),
+                description: "Managed Docker checks, update actions, and auto-update policy.",
+            },
+        ],
+    },
+    {
+        id: "external",
+        label: "External",
+        items: [
+            {
+                id: "discord",
+                label: "Discord",
+                href: getSettingsHrefForView("discord"),
+                description: "Portal Discord bot credentials, validation, and command roles.",
+            },
+            {
+                id: "komf",
+                label: "Komf",
+                href: getSettingsHrefForView("komf"),
+                description: "Komf application.yml and runtime settings.",
+            },
+        ],
+    },
+    {
+        id: "users",
+        label: "Users",
+        items: [
+            {
+                id: "users",
+                label: "User Management",
+                href: SETTINGS_USER_MANAGEMENT_HREF,
+                description: "Manage Discord-linked Moon accounts and default permissions.",
+            },
+        ],
+    },
+];
+
+const buildSelection = ({
+                            section,
+                            navSection,
+                            view,
+                            tab,
+                            portalSubtab = "discord",
+                            title,
+                            description,
+                        }: {
+    section: SettingsMainSectionId;
+    navSection: SettingsNavSectionId;
+    view: SettingsViewId;
+    tab: SettingsTabId;
+    portalSubtab?: PortalSettingsSubtabId;
+    title: string;
+    description: string;
+}): SettingsRouteSelection => ({
+    section,
+    navSection,
+    view,
+    tab,
+    portalSubtab,
+    href: getSettingsHrefForView(view),
+    title,
+    description,
+});
 
 export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSelection | null => {
     if (!Array.isArray(slug) || slug.length === 0) {
-        return buildSelection("ecosystem", "general", "discord");
+        return buildSelection({
+            section: "ecosystem",
+            navSection: "general",
+            view: "overview",
+            tab: "general",
+            title: "General",
+            description: "Loaded profile, service links, and ecosystem controls.",
+        });
     }
 
-    const [firstSegmentRaw, secondSegmentRaw, ...rest] = slug;
-    const firstSegment = firstSegmentRaw?.toLowerCase().trim() ?? "";
-    const secondSegment = secondSegmentRaw?.toLowerCase().trim() ?? "";
-    if (rest.length > 0) return null;
-
-    if (firstSegment === "usermanagement") {
-        return slug.length === 1 ? buildSelection("users", "general", "discord") : null;
-    }
-
-    if (firstSegment === "portal") {
-        if (slug.length === 1) {
-            return buildSelection("ecosystem", "portal", "discord");
-        }
-        if (!PORTAL_SUBTAB_SET.has(secondSegment as PortalSettingsSubtabId)) {
-            return null;
-        }
-        return buildSelection("ecosystem", "portal", secondSegment as PortalSettingsSubtabId);
-    }
-
-    if (slug.length !== 1 || !TAB_SET.has(firstSegment as SettingsTabId) || firstSegment === "portal") {
+    const normalized = slug.map((segment) => (typeof segment === "string" ? segment.toLowerCase().trim() : ""));
+    const [firstSegment = "", secondSegment = "", thirdSegment = ""] = normalized;
+    if (thirdSegment) {
         return null;
     }
 
-    return buildSelection("ecosystem", firstSegment as SettingsTabId, "discord");
+    if (firstSegment === "general") {
+        return buildSelection({
+            section: "ecosystem",
+            navSection: "general",
+            view: "overview",
+            tab: "general",
+            title: "General",
+            description: "Loaded profile, service links, and ecosystem controls.",
+        });
+    }
+
+    if (firstSegment === "storage") {
+        if (!secondSegment || secondSegment === "filesystem") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "storage",
+                view: "filesystem",
+                tab: "vault",
+                title: "Storage FileSystem",
+                description: "Folder tree, storage root, and shared mount paths.",
+            });
+        }
+        if (secondSegment === "database") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "storage",
+                view: "database",
+                tab: "vault",
+                title: "Storage Database",
+                description: "Mongo URI, collection viewer, and reset controls.",
+            });
+        }
+        return null;
+    }
+
+    if (firstSegment === "downloads") {
+        if (!secondSegment || secondSegment === "downloader") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "downloads",
+                view: "downloader",
+                tab: "raven",
+                title: "Downloads Downloader",
+                description: "Raven worker controls, speed limits, and naming.",
+            });
+        }
+        if (secondSegment === "updater") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "downloads",
+                view: "updater",
+                tab: "warden",
+                title: "Downloads Noona Updater",
+                description: "Managed Docker checks, update actions, and auto-update policy.",
+            });
+        }
+        return null;
+    }
+
+    if (firstSegment === "external") {
+        if (!secondSegment || secondSegment === "discord") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "external",
+                view: "discord",
+                tab: "portal",
+                portalSubtab: "discord",
+                title: "External Discord",
+                description: "Portal Discord bot credentials, validation, and command roles.",
+            });
+        }
+        if (secondSegment === "komf") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "external",
+                view: "komf",
+                tab: "portal",
+                portalSubtab: "komf",
+                title: "External Komf",
+                description: "Komf application.yml and runtime settings.",
+            });
+        }
+        return null;
+    }
+
+    if (firstSegment === "users" || firstSegment === "usermanagement") {
+        return buildSelection({
+            section: "users",
+            navSection: "users",
+            view: "users",
+            tab: "general",
+            title: "User Management",
+            description: "Manage Discord-linked Moon accounts and default permissions for new users.",
+        });
+    }
+
+    if (firstSegment === "moon" || firstSegment === "sage") {
+        return buildSelection({
+            section: "ecosystem",
+            navSection: "general",
+            view: "overview",
+            tab: firstSegment === "moon" ? "moon" : "sage",
+            title: "General",
+            description: "Loaded profile, service links, and ecosystem controls.",
+        });
+    }
+
+    if (firstSegment === "raven") {
+        return buildSelection({
+            section: "ecosystem",
+            navSection: "downloads",
+            view: "downloader",
+            tab: "raven",
+            title: "Downloads Downloader",
+            description: "Raven worker controls, speed limits, and naming.",
+        });
+    }
+
+    if (firstSegment === "vault") {
+        return buildSelection({
+            section: "ecosystem",
+            navSection: "storage",
+            view: "database",
+            tab: "vault",
+            title: "Storage Database",
+            description: "Mongo URI, collection viewer, and reset controls.",
+        });
+    }
+
+    if (firstSegment === "warden") {
+        return buildSelection({
+            section: "ecosystem",
+            navSection: "downloads",
+            view: "updater",
+            tab: "warden",
+            title: "Downloads Noona Updater",
+            description: "Managed Docker checks, update actions, and auto-update policy.",
+        });
+    }
+
+    if (firstSegment === "portal") {
+        if (!secondSegment || secondSegment === "discord" || secondSegment === "kavita") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "external",
+                view: "discord",
+                tab: "portal",
+                portalSubtab: secondSegment === "kavita" ? "kavita" : "discord",
+                title: "External Discord",
+                description: "Portal Discord bot credentials, validation, and command roles.",
+            });
+        }
+        if (secondSegment === "komf") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "external",
+                view: "komf",
+                tab: "portal",
+                portalSubtab: "komf",
+                title: "External Komf",
+                description: "Komf application.yml and runtime settings.",
+            });
+        }
+        return null;
+    }
+
+    return null;
 };
 
 export const resolveLegacySettingsHref = (value: string | string[] | undefined): string => {
@@ -182,7 +436,10 @@ export const resolveLegacySettingsHref = (value: string | string[] | undefined):
     const normalized = typeof raw === "string" ? raw.toLowerCase().trim() : "";
     if (!normalized) return SETTINGS_LANDING_HREF;
     if (normalized === "users" || normalized === "usermanagement") return SETTINGS_USER_MANAGEMENT_HREF;
-    if (normalized === "portal") return getSettingsHrefForPortalSubtab("discord");
-    if (!TAB_SET.has(normalized as SettingsTabId) || normalized === "portal") return SETTINGS_LANDING_HREF;
-    return getSettingsHrefForTab(normalized as SettingsTabId);
+    if (normalized === "portal") return getSettingsHrefForView("discord");
+    if (normalized === "moon" || normalized === "sage") return getSettingsHrefForView("overview");
+    if (normalized === "raven") return getSettingsHrefForView("downloader");
+    if (normalized === "vault") return getSettingsHrefForView("database");
+    if (normalized === "warden") return getSettingsHrefForView("updater");
+    return SETTINGS_LANDING_HREF;
 };

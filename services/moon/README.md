@@ -96,18 +96,16 @@ frontend.
   Moon reloads can resume the same update pass instead of starting blind. It also waits for Redis alongside Warden,
   Vault, Sage, and Moon before retrying authenticated update calls, then shows live service health while the stack
   settles.
-- `/settings/*` - Route-based settings pages such as `/settings/general`, `/settings/moon`, `/settings/raven`,
-  `/settings/usermanagement`, and `/settings/portal/discord`. These pages provide service control for managed
-  services with explicit save/restart actions, Portal join-default pickers plus Kavita role guidance, Discord access
-  settings, Portal subpages for `Discord`, `Kavita`, and `Komf`, a managed Komf `/config/application.yml` editor with
-  provider ordering/toggles plus inline `malClientId` and `comicVineApiKey` fields when those providers are enabled,
-  and the managed Komf reset/default template now mirrors the current Komf sample by enabling only MangaUpdates by
-  default,
-  ecosystem restart controls, a Warden runtime-settings panel for `SERVER_IP` host-facing links plus the
-  `AUTO_UPDATES` startup-image toggle, Warden image-update tooling with single-service and update-all actions,
-  Vault-backed persistence for service overrides in `noona_settings`,
-  vault tools, a direct Redis Stack Web UI link from the Vault page using Warden's host-facing service URL metadata,
-  default permissions for first-time Discord sign-ins, per-thread Raven speed limits, and diagnostics.
+- `/settings/*` - Route-based settings pages now grouped by user-facing tasks instead of internal service names:
+  `/settings/general`, `/settings/storage/filesystem`, `/settings/storage/database`,
+  `/settings/downloads/downloader`, `/settings/downloads/updater`, `/settings/external/discord`,
+  `/settings/external/komf`, and `/settings/users`. These pages cover loaded profile details, ecosystem
+  start/stop/restart
+  controls, internal and external service links, the setup-wizard-style storage tree, editable storage paths, the
+  hidden-by-default Vault Mongo URI, a sorted Once UI `InfiniteScroll` collection viewer, downloader worker/naming
+  controls, the grid-based Noona Docker updater, Discord bot validation plus per-command role fields, the managed
+  Komf `/config/application.yml` editor, Vault-backed persistence for service overrides in `noona_settings`, default
+  permissions for first-time Discord sign-ins, and diagnostics.
   Successful self-permission edits now update the local user-management state first so Moon does not report a false
   save failure when the change intentionally removes that account's `user_management` access. The Moon permission
   editor now exposes the canonical `library_management`, `download_management`, `myRecommendations`, and

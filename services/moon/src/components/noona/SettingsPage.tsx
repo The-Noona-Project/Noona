@@ -2,7 +2,19 @@
 
 import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Badge, Button, Card, Column, Heading, Input, Row, Spinner, Switch, Text} from "@once-ui-system/core";
+import {
+    Badge,
+    Button,
+    Card,
+    Column,
+    Heading,
+    InfiniteScroll,
+    Input,
+    Row,
+    Spinner,
+    Switch,
+    Text
+} from "@once-ui-system/core";
 import {
     hasMoonPermission as hasPermission,
     MOON_PERMISSION_DESCRIPTIONS,
@@ -22,6 +34,7 @@ import {
 import editorStyles from "./ConfigEditor.module.scss";
 import {
     getSettingsHrefForPortalSubtab,
+    getSettingsHrefForView,
     KomfApplicationEditor,
     PORTAL_SETTINGS_SUBTABS,
     type PortalSettingsSubtabId,
@@ -29,8 +42,10 @@ import {
     SETTINGS_USER_MANAGEMENT_HREF,
     type SettingsMainSectionId as MainSectionId,
     SettingsNavigation,
+    type SettingsNavSectionId as NavSectionId,
     type SettingsRouteSelection,
     type SettingsTabId as TabId,
+    type SettingsViewId as ViewId,
     TAB_LABELS,
 } from "./settings";
 
@@ -66,6 +81,24 @@ type ServiceConfig = {
     runtimeConfig?: {
         hostPort?: number | null;
     } | null;
+    error?: string;
+};
+
+type StorageLayoutFolder = {
+    key?: string | null;
+    hostPath?: string | null;
+    containerPath?: string | null;
+};
+
+type StorageLayoutService = {
+    service?: string | null;
+    label?: string | null;
+    folders?: StorageLayoutFolder[] | null;
+};
+
+type StorageLayoutResponse = {
+    root?: string | null;
+    services?: StorageLayoutService[] | null;
     error?: string;
 };
 
@@ -146,6 +179,41 @@ type AuthStatusResponse = {
     error?: string;
 };
 
+type DiscordSetupGuild = {
+    id?: string | null;
+    name?: string | null;
+    description?: string | null;
+    icon?: string | null;
+};
+
+type DiscordSetupApplication = {
+    id?: string | null;
+    name?: string | null;
+    verified?: boolean;
+    providedClientId?: string | null;
+    clientIdMatches?: boolean;
+};
+
+type DiscordSetupBotUser = {
+    id?: string | null;
+    username?: string | null;
+    tag?: string | null;
+};
+
+type DiscordSetupResponse = {
+    application?: DiscordSetupApplication | null;
+    botUser?: DiscordSetupBotUser | null;
+    guilds?: DiscordSetupGuild[] | null;
+    guild?: DiscordSetupGuild | null;
+    suggested?: {
+        clientId?: string | null;
+        guildId?: string | null;
+    } | null;
+    roles?: Array<{ id?: string | null; name?: string | null }> | null;
+    channels?: Array<{ id?: string | null; name?: string | null }> | null;
+    error?: string;
+};
+
 type ManagedUser = {
     username?: string | null;
     usernameNormalized?: string | null;
@@ -206,6 +274,7 @@ type ServiceEditorState = {
     envDraft: Record<string, string>;
     hostPortDraft: string;
 };
+
 const TAB_SERVICE: Partial<Record<TabId, string>> = {
     moon: "noona-moon",
     raven: "noona-raven",
@@ -252,6 +321,21 @@ const PORTAL_SETTINGS_SERVICES: Record<PortalSettingsSubtabId, string> = {
     komf: "noona-komf",
 };
 const KOMF_APPLICATION_YML_KEY = "KOMF_APPLICATION_YML";
+const GENERAL_LINK_SERVICES = ["noona-moon", "noona-sage", "noona-portal", "noona-raven", "noona-kavita", "noona-komf", "noona-warden"] as const;
+const FILESYSTEM_SERVICES = ["noona-raven", "noona-vault", "noona-kavita", "noona-komf"] as const;
+const DATABASE_DOCUMENT_PAGE_SIZE = 25;
+const LINK_FIELD_PATTERN = /(?:SERVER_IP|(?:BASE|EXTERNAL)?_?URL|HOST)$/i;
+const PATH_FIELD_PATTERN = /(PATH|FOLDER|ROOT|DIR|MOUNT)/i;
+const STORAGE_LABELS: Record<string, string> = {
+    "noona-moon": "Moon",
+    "noona-portal": "Portal",
+    "noona-raven": "Raven",
+    "noona-sage": "Sage",
+    "noona-vault": "Vault",
+    "noona-kavita": "Kavita",
+    "noona-komf": "Komf",
+    "noona-warden": "Noona Updater",
+};
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
 const parseBooleanEnvFlag = (value: unknown): boolean => {
@@ -292,6 +376,8 @@ const parseCsvSelections = (value: unknown): string[] => {
 };
 const serializeCsvSelections = (values: string[]): string => values.join(", ");
 const isSecretKey = (key: string) => /TOKEN|PASSWORD|API_KEY|SECRET/i.test(key);
+const isUrlLikeField = (key: string) => LINK_FIELD_PATTERN.test(key);
+const isPathLikeField = (key: string) => PATH_FIELD_PATTERN.test(key);
 const THREAD_RATE_LIMIT_UNLIMITED = "-1";
 const THREAD_RATE_LIMIT_MB_MULTIPLIER = 1024;
 const THREAD_RATE_LIMIT_GB_MULTIPLIER = 1024 * THREAD_RATE_LIMIT_MB_MULTIPLIER;
@@ -358,6 +444,160 @@ const clampPercent = (value: number): number => {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(100, Math.round(value)));
 };
+const detectPathSeparator = (root: string) => (root.includes("\\") ? "\\" : "/");
+const joinHostPath = (root: string, ...segments: string[]) => {
+    const separator = detectPathSeparator(root);
+    const normalizedRoot = root.replace(/[\\/]+$/, "");
+    const safeSegments = segments.map((segment) =>
+        segment.replace(/[\\/]+/g, separator).replace(new RegExp(`^${separator}+|${separator}+$`, "g"), ""),
+    );
+    return [normalizedRoot, ...safeSegments.filter(Boolean)].join(separator);
+};
+const normalizeVaultFolderName = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return "vault";
+    if (trimmed === "." || trimmed === ".." || trimmed.includes("/") || trimmed.includes("\\")) return "vault";
+    const cleaned = trimmed.replace(/[:*?"<>|]/g, "").trim();
+    return cleaned || "vault";
+};
+const getStoragePreview = (root: string, vaultFolderName: string) => {
+    const safeRoot = root.trim();
+    const vaultFolder = normalizeVaultFolderName(vaultFolderName);
+
+    return [
+        {
+            service: "noona-moon",
+            label: "Moon",
+            folders: [{
+                key: "logs",
+                label: "Logs",
+                hostPath: joinHostPath(safeRoot, "moon", "logs"),
+                containerPath: "/var/log/noona",
+            }],
+        },
+        {
+            service: "noona-portal",
+            label: "Portal",
+            folders: [{
+                key: "logs",
+                label: "Logs",
+                hostPath: joinHostPath(safeRoot, "portal", "logs"),
+                containerPath: "/var/log/noona",
+            }],
+        },
+        {
+            service: "noona-raven",
+            label: "Raven",
+            folders: [
+                {
+                    key: "downloads",
+                    label: "Downloads",
+                    hostPath: joinHostPath(safeRoot, "raven", "downloads"),
+                    containerPath: "/downloads",
+                },
+                {
+                    key: "logs",
+                    label: "Logs",
+                    hostPath: joinHostPath(safeRoot, "raven", "logs"),
+                    containerPath: "/app/logs",
+                },
+            ],
+        },
+        {
+            service: "noona-sage",
+            label: "Sage",
+            folders: [{
+                key: "logs",
+                label: "Logs",
+                hostPath: joinHostPath(safeRoot, "sage", "logs"),
+                containerPath: "/var/log/noona",
+            }],
+        },
+        {
+            service: "noona-vault",
+            label: "Vault",
+            folders: [
+                {
+                    key: "logs",
+                    label: "Logs",
+                    hostPath: joinHostPath(safeRoot, vaultFolder, "logs"),
+                    containerPath: "/var/log/noona",
+                },
+                {
+                    key: "mongo",
+                    label: "Mongo data",
+                    hostPath: joinHostPath(safeRoot, vaultFolder, "mongo"),
+                    containerPath: "/data/db",
+                },
+                {
+                    key: "redis",
+                    label: "Redis data",
+                    hostPath: joinHostPath(safeRoot, vaultFolder, "redis"),
+                    containerPath: "/data",
+                },
+            ],
+        },
+        {
+            service: "noona-kavita",
+            label: "Kavita",
+            folders: [
+                {
+                    key: "config",
+                    label: "Config",
+                    hostPath: joinHostPath(safeRoot, "kavita", "config"),
+                    containerPath: "/kavita/config",
+                },
+                {
+                    key: "manga",
+                    label: "Library share",
+                    hostPath: joinHostPath(safeRoot, "raven", "downloads"),
+                    containerPath: "/manga",
+                },
+            ],
+        },
+        {
+            service: "noona-komf",
+            label: "Komf",
+            folders: [{
+                key: "config",
+                label: "Config",
+                hostPath: joinHostPath(safeRoot, "komf", "config"),
+                containerPath: "/config",
+            }],
+        },
+    ];
+};
+const sortCollections = (entries: string[]) => [...entries].sort((left, right) => left.localeCompare(right));
+const documentSortValue = (entry: unknown): number => {
+    if (!entry || typeof entry !== "object") {
+        return 0;
+    }
+
+    const record = entry as Record<string, unknown>;
+    const candidateKeys = ["updatedAt", "createdAt", "requestedAt", "approvedAt", "completedAt"];
+    for (const key of candidateKeys) {
+        const value = normalizeString(record[key]).trim();
+        if (!value) {
+            continue;
+        }
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+
+    return 0;
+};
+const sortDocumentsForDisplay = (entries: unknown[]) =>
+    [...entries].sort((left, right) => {
+        const rightValue = documentSortValue(right);
+        const leftValue = documentSortValue(left);
+        if (rightValue !== leftValue) {
+            return rightValue - leftValue;
+        }
+
+        return JSON.stringify(left).localeCompare(JSON.stringify(right));
+    });
 const shouldTrackFactoryResetRecovery = (message: string): boolean => {
     const normalized = normalizeString(message).toLowerCase();
     if (!normalized) return false;
@@ -387,6 +627,8 @@ type SettingsPageProps = {
 export function SettingsPage({selection}: SettingsPageProps) {
     const router = useRouter();
     const activeTab = selection.tab;
+    const activeView: ViewId = selection.view;
+    const activeNavSection: NavSectionId = selection.navSection;
     const portalSubtab = selection.portalSubtab;
     const activeSection: MainSectionId = selection.section;
     const [currentPermissions, setCurrentPermissions] = useState<MoonPermission[]>([]);
@@ -448,9 +690,19 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [collections, setCollections] = useState<string[]>([]);
     const [collection, setCollection] = useState("");
     const [limit, setLimit] = useState("50");
+    const [loadedDocumentLimit, setLoadedDocumentLimit] = useState(50);
+    const [documentsHasMore, setDocumentsHasMore] = useState(false);
     const [documentsLoading, setDocumentsLoading] = useState(false);
     const [documentsError, setDocumentsError] = useState<string | null>(null);
     const [documents, setDocuments] = useState<unknown[]>([]);
+    const [storageLayoutLoading, setStorageLayoutLoading] = useState(false);
+    const [storageLayoutError, setStorageLayoutError] = useState<string | null>(null);
+    const [storageLayoutRoot, setStorageLayoutRoot] = useState("");
+    const [storageLayoutServices, setStorageLayoutServices] = useState<StorageLayoutService[]>([]);
+    const [showMongoUri, setShowMongoUri] = useState(false);
+    const [discordValidating, setDiscordValidating] = useState(false);
+    const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
+    const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
     const [factoryResetPassword, setFactoryResetPassword] = useState("");
     const [factoryResetBusy, setFactoryResetBusy] = useState(false);
     const [factoryResetDeleteRavenDownloads, setFactoryResetDeleteRavenDownloads] = useState(false);
@@ -512,20 +764,25 @@ export function SettingsPage({selection}: SettingsPageProps) {
         return visible;
     }, [catalogByName, updates]);
     const updatesBusy = updatesApplyingAll || Object.values(updating).some(Boolean);
-
-    const currentService = activeTab === "portal"
-        ? PORTAL_SETTINGS_SERVICES[portalSubtab]
-        : (TAB_SERVICE[activeTab] ?? null);
+    const currentService = (() => {
+        if (activeView === "downloader") return "noona-raven";
+        if (activeView === "discord") return "noona-portal";
+        if (activeView === "komf") return "noona-komf";
+        if (activeView === "database") return "noona-vault";
+        return activeTab === "portal"
+            ? PORTAL_SETTINGS_SERVICES[portalSubtab]
+            : (TAB_SERVICE[activeTab] ?? null);
+    })();
     const currentEditor = currentService ? (editors[currentService] ?? defaultEditor()) : defaultEditor();
     const currentServiceMeta = currentService ? catalogByName.get(currentService) : null;
+    const ravenEditor = editors["noona-raven"] ?? defaultEditor();
+    const ravenEnvConfig = Array.isArray(ravenEditor.config?.envConfig) ? ravenEditor.config.envConfig : [];
     const wardenEditor = editors["noona-warden"] ?? defaultEditor();
     const wardenEnvConfig = Array.isArray(wardenEditor.config?.envConfig) ? wardenEditor.config.envConfig : [];
     const wardenServerIpField = wardenEnvConfig.find((entry) => normalizeString(entry?.key).trim() === "SERVER_IP");
     const wardenAutoUpdatesField = wardenEnvConfig.find((entry) => normalizeString(entry?.key).trim() === "AUTO_UPDATES");
     const wardenHostBaseUrl = normalizeString(wardenEditor.config?.hostServiceUrl).trim();
     const wardenAutoUpdatesEnabled = parseBooleanEnvFlag(wardenEditor.envDraft.AUTO_UPDATES);
-    const redisServiceMeta = catalogByName.get("noona-redis") ?? null;
-    const redisStackUrl = normalizeString(redisServiceMeta?.hostServiceUrl).trim();
     const ravenThreadCount = useMemo(() => {
         const configured = editors["noona-raven"]?.config?.env?.RAVEN_DOWNLOAD_THREADS;
         const parsed = Number(configured);
@@ -536,8 +793,27 @@ export function SettingsPage({selection}: SettingsPageProps) {
     }, [editors]);
     const canAccessEcosystem = hasPermission(currentPermissions, "admin");
     const canManageUsers = hasPermission(currentPermissions, "user_management");
-    const canManageRecommendations = hasPermission(currentPermissions, "manageRecommendations");
     const canShowNav = canAccessEcosystem || canManageUsers;
+    const sortedCollections = useMemo(() => sortCollections(collections), [collections]);
+    const sortedDocuments = useMemo(() => sortDocumentsForDisplay(documents), [documents]);
+    const vaultEditor = editors["noona-vault"] ?? defaultEditor();
+    const vaultEnvConfig = Array.isArray(vaultEditor.config?.envConfig) ? vaultEditor.config.envConfig : [];
+    const vaultMongoUriField = vaultEnvConfig.find((entry) => normalizeString(entry?.key).trim() === "MONGO_URI");
+    const portalEditor = editors["noona-portal"] ?? defaultEditor();
+    const portalEnvConfig = Array.isArray(portalEditor.config?.envConfig) ? portalEditor.config.envConfig : [];
+    const portalDiscordFields = portalEnvConfig.filter((entry) => PORTAL_DISCORD_KEYS.has(normalizeString(entry?.key).trim()));
+    const portalAccessFields = portalEnvConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
+    const komfEditor = editors["noona-komf"] ?? defaultEditor();
+    const komfEnvConfig = Array.isArray(komfEditor.config?.envConfig) ? komfEditor.config.envConfig : [];
+    const filesystemPreview = useMemo(() => {
+        const actualServices = Array.isArray(storageLayoutServices) ? storageLayoutServices.filter((entry) => entry && typeof entry === "object") : [];
+        if (actualServices.length > 0) {
+            return actualServices;
+        }
+
+        const vaultFolderName = normalizeVaultFolderName(normalizeString(vaultEditor.envDraft.VAULT_DATA_FOLDER));
+        return storageLayoutRoot.trim() ? getStoragePreview(storageLayoutRoot, vaultFolderName) : [];
+    }, [storageLayoutRoot, storageLayoutServices, vaultEditor.envDraft.VAULT_DATA_FOLDER]);
 
     const navigateToSettings = (href: string) => {
         router.push(href);
@@ -601,6 +877,39 @@ export function SettingsPage({selection}: SettingsPageProps) {
             patchEditor(serviceName, {loading: false, error: msg});
         }
     };
+    const ensureServiceConfigLoaded = (serviceName: string) => {
+        const editor = editors[serviceName];
+        if (editor?.loading || editor?.config) {
+            return;
+        }
+
+        void loadServiceConfig(serviceName);
+    };
+    const ensureServiceConfigGroupLoaded = (serviceNames: readonly string[]) => {
+        serviceNames.forEach((serviceName) => ensureServiceConfigLoaded(serviceName));
+    };
+    const loadStorageLayout = async () => {
+        setStorageLayoutLoading(true);
+        setStorageLayoutError(null);
+        try {
+            const res = await fetch("/api/noona/setup/layout", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as StorageLayoutResponse | null;
+            if (!res.ok) {
+                setStorageLayoutError(parseError(json, `Failed to load storage layout (HTTP ${res.status}).`));
+                return;
+            }
+
+            const root = normalizeString(json?.root).trim();
+            const services = Array.isArray(json?.services) ? json.services : [];
+            setStorageLayoutRoot(root);
+            setStorageLayoutServices(services);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setStorageLayoutError(msg);
+        } finally {
+            setStorageLayoutLoading(false);
+        }
+    };
 
     const loadPortalJoinOptions = async () => {
         setPortalJoinOptionsLoading(true);
@@ -655,6 +964,81 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 },
             };
         });
+    };
+    const selectDiscordGuild = (guildId: string) => {
+        updateEnvDraft("noona-portal", "DISCORD_GUILD_ID", guildId);
+        setDiscordValidation((prev) => prev ? ({
+            ...prev,
+            suggested: {
+                ...(prev.suggested ?? {}),
+                guildId,
+            },
+            guild: (Array.isArray(prev.guilds) ? prev.guilds.find((entry) => normalizeString(entry?.id).trim() === guildId) : null) ?? prev.guild ?? null,
+        }) : prev);
+        void testDiscordConnection(guildId);
+    };
+    const testDiscordConnection = async (guildOverride?: string) => {
+        const portalValues = editors["noona-portal"]?.envDraft ?? {};
+        const token = normalizeString(portalValues.DISCORD_BOT_TOKEN).trim();
+        const clientId = normalizeString(portalValues.DISCORD_CLIENT_ID).trim();
+        const guildId = normalizeString(guildOverride ?? portalValues.DISCORD_GUILD_ID).trim();
+
+        if (!token) {
+            setDiscordValidation(null);
+            setDiscordValidationError("Discord bot token is required before testing the bot login.");
+            return;
+        }
+
+        setDiscordValidating(true);
+        setDiscordValidationError(null);
+
+        try {
+            const response = await fetch("/api/noona/setup/discord/validate", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({token, clientId, guildId}),
+            });
+            const payload = (await response.json().catch(() => null)) as DiscordSetupResponse | null;
+            if (!response.ok) {
+                throw new Error(normalizeString(payload?.error).trim() || `Discord validation failed (HTTP ${response.status}).`);
+            }
+
+            setDiscordValidation(payload);
+            const suggestedClientId = normalizeString(payload?.suggested?.clientId).trim();
+            if (suggestedClientId && !clientId) {
+                updateEnvDraft("noona-portal", "DISCORD_CLIENT_ID", suggestedClientId);
+            }
+            const suggestedGuildId = normalizeString(payload?.suggested?.guildId).trim();
+            if (suggestedGuildId && !guildId) {
+                updateEnvDraft("noona-portal", "DISCORD_GUILD_ID", suggestedGuildId);
+            }
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordValidation(null);
+            setDiscordValidationError(msg);
+        } finally {
+            setDiscordValidating(false);
+        }
+    };
+    const updateEcosystemState = async (action: "start" | "stop" | "restart") => {
+        setEcosystemBusy(true);
+        setGlobalError(null);
+        setGlobalMessage(null);
+        try {
+            const res = await fetch(`/api/noona/settings/ecosystem/${action}`, {method: "POST"});
+            const json = await res.json().catch(() => null);
+            if (!res.ok) {
+                setGlobalError(parseError(json, `Failed to ${action} ecosystem (HTTP ${res.status}).`));
+                return;
+            }
+            setGlobalMessage(`${action.charAt(0).toUpperCase()}${action.slice(1)} request sent.`);
+            await loadCatalog();
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setGlobalError(msg);
+        } finally {
+            setEcosystemBusy(false);
+        }
     };
 
     const saveServiceConfig = async (
@@ -932,7 +1316,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 return;
             }
 
-            const next = Array.isArray(json?.collections) ? json.collections.filter((entry: unknown) => typeof entry === "string") : [];
+            const next = Array.isArray(json?.collections)
+                ? sortCollections(json.collections.filter((entry: unknown) => typeof entry === "string"))
+                : [];
             setCollections(next);
             if (!next.includes(collection)) {
                 setCollection(next[0] ?? "");
@@ -966,13 +1352,25 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 setDocumentsError(parseError(json, `Failed to load documents (HTTP ${res.status}).`));
                 return;
             }
-            setDocuments(Array.isArray(json?.documents) ? json.documents : []);
+            const nextDocuments = Array.isArray(json?.documents) ? json.documents : [];
+            setDocuments(nextDocuments);
+            setLoadedDocumentLimit(safeLimit);
+            setDocumentsHasMore(nextDocuments.length >= safeLimit && safeLimit < 200);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setDocumentsError(msg);
         } finally {
             setDocumentsLoading(false);
         }
+    };
+    const loadMoreDocuments = async (): Promise<boolean> => {
+        if (!collection.trim() || documentsLoading || !documentsHasMore) {
+            return false;
+        }
+
+        const nextLimit = Math.min(200, loadedDocumentLimit + DATABASE_DOCUMENT_PAGE_SIZE);
+        await loadDocuments(collection, String(nextLimit));
+        return nextLimit > loadedDocumentLimit;
     };
 
     const beginFactoryResetRecovery = (detail: string) => {
@@ -1586,7 +1984,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
             if (typeof window !== "undefined") {
                 const returnToCandidate = normalizeString(selection.href).trim();
-                const returnTo = returnToCandidate.startsWith("/") ? returnToCandidate : "/settings/warden";
+                const returnTo = returnToCandidate.startsWith("/") ? returnToCandidate : getSettingsHrefForView("updater");
                 writeRebootMonitorSession({
                     targetServices: services,
                     returnTo,
@@ -1614,30 +2012,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
-    const restartEcosystem = async () => {
-        setEcosystemBusy(true);
-        setGlobalError(null);
-        setGlobalMessage(null);
-        try {
-            const res = await fetch("/api/noona/settings/ecosystem/restart", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({trackedOnly: false}),
-            });
-            const json = await res.json().catch(() => null);
-            if (!res.ok) {
-                setGlobalError(parseError(json, `Failed to restart ecosystem (HTTP ${res.status}).`));
-                return;
-            }
-            setGlobalMessage("Restart request sent.");
-            await loadCatalog();
-        } catch (error_) {
-            const msg = error_ instanceof Error ? error_.message : String(error_);
-            setGlobalError(msg);
-        } finally {
-            setEcosystemBusy(false);
-        }
-    };
+    const restartEcosystem = async () => await updateEcosystemState("restart");
 
     useEffect(() => {
         void loadAuthStatus();
@@ -1650,39 +2025,47 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
     useEffect(() => {
         if (!canAccessEcosystem || activeSection !== "ecosystem") return;
-        const serviceName = activeTab === "portal"
-            ? PORTAL_SETTINGS_SERVICES[portalSubtab]
-            : TAB_SERVICE[activeTab];
-        if (serviceName) {
-            void loadServiceConfig(serviceName);
-        }
-        if (activeTab === "general") {
-            void loadDebugSetting();
-        }
-        if (activeTab === "moon") {
+        if (activeView === "overview") {
             void loadAuthStatus();
+            void loadDebugSetting();
+            ensureServiceConfigGroupLoaded(GENERAL_LINK_SERVICES);
+            return;
         }
-        if (activeTab === "raven") {
+        if (activeView === "filesystem") {
+            void loadStorageLayout();
+            ensureServiceConfigGroupLoaded(FILESYSTEM_SERVICES);
+            return;
+        }
+        if (activeView === "database") {
+            ensureServiceConfigLoaded("noona-vault");
+            void loadCollections();
+            return;
+        }
+        if (activeView === "downloader") {
+            ensureServiceConfigLoaded("noona-raven");
             void loadNaming();
             void loadDownloadWorkerSettings();
+            return;
         }
-        if (activeTab === "vault") {
-            void loadCollections();
-        }
-        if (activeTab === "portal" && portalSubtab === "kavita") {
-            void loadPortalJoinOptions();
-        }
-        if (activeTab === "warden") {
-            void loadServiceConfig("noona-warden");
+        if (activeView === "updater") {
+            ensureServiceConfigLoaded("noona-warden");
             void loadUpdates();
+            return;
         }
-    }, [activeSection, activeTab, canAccessEcosystem, portalSubtab]);
+        if (activeView === "discord") {
+            ensureServiceConfigLoaded("noona-portal");
+            return;
+        }
+        if (activeView === "komf") {
+            ensureServiceConfigLoaded("noona-komf");
+        }
+    }, [activeSection, activeView, canAccessEcosystem]);
 
     useEffect(() => {
-        if (activeSection !== "ecosystem" || activeTab !== "vault") return;
+        if (activeSection !== "ecosystem" || activeView !== "database") return;
         if (!collection.trim()) return;
         void loadDocuments(collection);
-    }, [activeSection, activeTab, collection]);
+    }, [activeSection, activeView, collection]);
 
     useEffect(() => {
         if (authStateLoading) return;
@@ -2214,6 +2597,1221 @@ export function SettingsPage({selection}: SettingsPageProps) {
             </Column>
         );
     };
+    void renderServiceConfig;
+
+    const getServiceLabel = (serviceName: string) => STORAGE_LABELS[serviceName] ?? serviceName;
+
+    const getEditorFieldValue = (editor: ServiceEditorState, field: EnvConfigField | undefined) => {
+        const key = normalizeString(field?.key).trim();
+        if (!key) return "";
+        return Object.prototype.hasOwnProperty.call(editor.envDraft, key)
+            ? editor.envDraft[key]
+            : normalizeString(field?.defaultValue);
+    };
+
+    const renderSharedFieldNotes = (field: EnvConfigField) => (
+        <>
+            {normalizeString(field.description).trim() && (
+                <Text onBackground="neutral-weak" variant="body-default-xs">
+                    {normalizeString(field.description).trim()}
+                </Text>
+            )}
+            {normalizeString(field.warning).trim() && (
+                <Text onBackground="warning-strong" variant="body-default-xs">
+                    {normalizeString(field.warning).trim()}
+                </Text>
+            )}
+        </>
+    );
+
+    const renderEditorFeedback = (editor: ServiceEditorState) => (
+        <>
+            {editor.error && <Text onBackground="danger-strong" variant="body-default-xs">{editor.error}</Text>}
+            {editor.message && <Text onBackground="neutral-weak" variant="body-default-xs">{editor.message}</Text>}
+        </>
+    );
+
+    const renderEditorField = (
+        serviceName: string,
+        editor: ServiceEditorState,
+        field: EnvConfigField,
+        keyPrefix: string,
+        options: { secretVisible?: boolean; type?: "text" | "password" | "number" } = {},
+    ) => {
+        const key = normalizeString(field.key).trim();
+        if (!key || field.readOnly === true) return null;
+
+        return (
+            <Column key={`${serviceName}:${keyPrefix}:${key}`} gap="8">
+                <Input
+                    id={`${serviceName}:${keyPrefix}:${key}`}
+                    name={`${serviceName}:${keyPrefix}:${key}`}
+                    label={normalizeString(field.label).trim() || key}
+                    type={options.type ?? (isSecretKey(key) && !options.secretVisible ? "password" : "text")}
+                    value={getEditorFieldValue(editor, field)}
+                    onChange={(event) => updateEnvDraft(serviceName, key, event.target.value)}
+                />
+                {renderSharedFieldNotes(field)}
+            </Column>
+        );
+    };
+
+    const renderServiceCards = (
+        serviceNames: readonly string[],
+        resolveFields: (serviceName: string, editor: ServiceEditorState) => EnvConfigField[],
+        options: {
+            emptyTitle: string;
+            emptyDescription: string;
+            saveLabel: string;
+            descriptionForService?: (serviceName: string, editor: ServiceEditorState) => string;
+        },
+    ) => {
+        const visibleServiceNames = serviceNames.filter((serviceName) => {
+            const editor = editors[serviceName];
+            return Boolean(editor?.config) || catalogByName.has(serviceName);
+        });
+
+        if (visibleServiceNames.length === 0) {
+            return (
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="8">
+                        <Heading as="h3" variant="heading-strong-l">{options.emptyTitle}</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">{options.emptyDescription}</Text>
+                    </Column>
+                </Card>
+            );
+        }
+
+        return (
+            <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(18rem, 1fr))", gap: 12}}>
+                {visibleServiceNames.map((serviceName) => {
+                    const editor = editors[serviceName] ?? defaultEditor();
+                    const meta = catalogByName.get(serviceName);
+                    const fields = resolveFields(serviceName, editor).filter((field) => field.readOnly !== true);
+                    const hostUrl = normalizeString(editor.config?.hostServiceUrl ?? meta?.hostServiceUrl).trim();
+
+                    return (
+                        <Card
+                            key={`service-card-${serviceName}`}
+                            fillWidth
+                            background={BG_SURFACE}
+                            border="neutral-alpha-weak"
+                            padding="l"
+                            radius="l"
+                        >
+                            <Column gap="12">
+                                <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                    <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                        <Heading as="h3"
+                                                 variant="heading-strong-m">{getServiceLabel(serviceName)}</Heading>
+                                        {hostUrl && (
+                                            <Badge background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
+                                                Live link available
+                                            </Badge>
+                                        )}
+                                    </Row>
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Button
+                                            variant="secondary"
+                                            disabled={editor.loading || editor.saving}
+                                            onClick={() => void loadServiceConfig(serviceName)}
+                                        >
+                                            {editor.loading ? "Loading..." : "Reload"}
+                                        </Button>
+                                        <Button
+                                            variant="primary"
+                                            disabled={editor.loading || editor.saving || fields.length === 0}
+                                            onClick={() => void saveServiceConfig(serviceName)}
+                                        >
+                                            {editor.saving ? "Saving..." : options.saveLabel}
+                                        </Button>
+                                    </Row>
+                                </Row>
+                                {options.descriptionForService && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        {options.descriptionForService(serviceName, editor)}
+                                    </Text>
+                                )}
+                                {hostUrl && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Current detected URL: {hostUrl}
+                                    </Text>
+                                )}
+                                {renderEditorFeedback(editor)}
+                                {editor.loading && (
+                                    <Row fillWidth horizontal="center" paddingY="16">
+                                        <Spinner/>
+                                    </Row>
+                                )}
+                                {!editor.loading && fields.length === 0 && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        No editable settings are exposed here for this service.
+                                    </Text>
+                                )}
+                                {!editor.loading && fields.map((field) =>
+                                    renderEditorField(serviceName, editor, field, "service-card"),
+                                )}
+                            </Column>
+                        </Card>
+                    );
+                })}
+            </div>
+        );
+    };
+
+    const renderOverviewSettings = () => (
+        <Column fillWidth gap="16">
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Heading as="h2" variant="heading-strong-l">Loaded profile</Heading>
+                    {accountLoading && (
+                        <Row fillWidth horizontal="center" paddingY="16">
+                            <Spinner/>
+                        </Row>
+                    )}
+                    {!accountLoading && (
+                        <Column gap="8">
+                            {accountError &&
+                                <Text onBackground="danger-strong" variant="body-default-xs">{accountError}</Text>}
+                            {accountUser ? (
+                                <>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Signed in as {normalizeString(accountUser.username).trim() || "Unknown user"}.
+                                    </Text>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Provider: {normalizeString(accountUser.authProvider).trim() || "unknown"}
+                                    </Text>
+                                    {normalizeString(accountUser.email).trim() && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Email: {normalizeString(accountUser.email).trim()}
+                                        </Text>
+                                    )}
+                                    {normalizeString(accountUser.discordUsername).trim() && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Discord: {normalizeString(accountUser.discordUsername).trim()}
+                                            {normalizeString(accountUser.discordGlobalName).trim()
+                                                ? ` (${normalizeString(accountUser.discordGlobalName).trim()})`
+                                                : ""}
+                                        </Text>
+                                    )}
+                                    {currentPermissions.length > 0 && (
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {currentPermissions.map((permission) => (
+                                                <Badge key={`current-permission-${permission}`}
+                                                       background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
+                                                    {MOON_PERMISSION_LABELS[permission]}
+                                                </Badge>
+                                            ))}
+                                        </Row>
+                                    )}
+                                </>
+                            ) : (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    No signed-in profile is available.
+                                </Text>
+                            )}
+                        </Column>
+                    )}
+                </Column>
+            </Card>
+
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Heading as="h2" variant="heading-strong-l">Ecosystem controls</Heading>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        Start, stop, or restart the managed Noona stack from one place.
+                    </Text>
+                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                        <Button variant="secondary" disabled={ecosystemBusy}
+                                onClick={() => void updateEcosystemState("start")}>
+                            {ecosystemBusy ? "Working..." : "Start ecosystem"}
+                        </Button>
+                        <Button variant="primary" disabled={ecosystemBusy} onClick={() => void restartEcosystem()}>
+                            {ecosystemBusy ? "Working..." : "Restart ecosystem"}
+                        </Button>
+                        <Button variant="secondary" disabled={ecosystemBusy}
+                                onClick={() => void updateEcosystemState("stop")}>
+                            {ecosystemBusy ? "Working..." : "Stop ecosystem"}
+                        </Button>
+                    </Row>
+                </Column>
+            </Card>
+
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                        <Heading as="h2" variant="heading-strong-l">Service links</Heading>
+                        <Button variant="secondary" disabled={catalogLoading} onClick={() => void loadCatalog()}>
+                            {catalogLoading ? "Refreshing..." : "Refresh service list"}
+                        </Button>
+                    </Row>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        Keep the internal and external links in sync without exposing the full backend wiring.
+                    </Text>
+                    {renderServiceCards(
+                        GENERAL_LINK_SERVICES,
+                        (_serviceName, editor) =>
+                            (Array.isArray(editor.config?.envConfig) ? editor.config.envConfig : []).filter((field) => {
+                                const key = normalizeString(field.key).trim();
+                                return key === "SERVER_IP" || isUrlLikeField(key);
+                            }),
+                        {
+                            emptyTitle: "No service links available",
+                            emptyDescription: "The current stack has not published any editable service links yet.",
+                            saveLabel: "Save and restart",
+                            descriptionForService: (serviceName, editor) =>
+                                normalizeString(editor.config?.name).trim()
+                                || normalizeString(catalogByName.get(serviceName)?.description).trim()
+                                || "Update the user-facing addresses for this part of Noona.",
+                        },
+                    )}
+                </Column>
+            </Card>
+
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                        <Heading as="h2" variant="heading-strong-l">Diagnostics</Heading>
+                        <Badge background={debugEnabled ? "warning-alpha-weak" : "neutral-alpha-weak"}
+                               onBackground="neutral-strong">
+                            {debugEnabled ? "debug enabled" : "debug disabled"}
+                        </Badge>
+                    </Row>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        Toggle live debug logging across the managed services when you need deeper troubleshooting.
+                    </Text>
+                    {formatIso(debugUpdatedAt) && (
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Updated {formatIso(debugUpdatedAt)}
+                        </Text>
+                    )}
+                    {debugError && <Text onBackground="danger-strong" variant="body-default-xs">{debugError}</Text>}
+                    {debugMessage && <Text onBackground="neutral-weak" variant="body-default-xs">{debugMessage}</Text>}
+                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                        <Button variant="primary" disabled={debugLoading || debugSaving}
+                                onClick={() => void setDebugMode(!debugEnabled)}>
+                            {debugSaving ? "Updating..." : debugEnabled ? "Disable debug mode" : "Enable debug mode"}
+                        </Button>
+                        <Button variant="secondary" disabled={debugLoading || debugSaving}
+                                onClick={() => void loadDebugSetting()}>
+                            {debugLoading ? "Refreshing..." : "Refresh"}
+                        </Button>
+                    </Row>
+                </Column>
+            </Card>
+        </Column>
+    );
+
+    const renderFilesystemSettings = () => (
+        <Column fillWidth gap="16">
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                        <Heading as="h2" variant="heading-strong-l">File system layout</Heading>
+                        <Button variant="secondary" disabled={storageLayoutLoading}
+                                onClick={() => void loadStorageLayout()}>
+                            {storageLayoutLoading ? "Refreshing..." : "Refresh layout"}
+                        </Button>
+                    </Row>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        This mirrors the setup wizard view so users can see where Noona is reading and writing files.
+                    </Text>
+                    {storageLayoutRoot && (
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Root folder: {storageLayoutRoot}
+                        </Text>
+                    )}
+                    {storageLayoutError &&
+                        <Text onBackground="danger-strong" variant="body-default-xs">{storageLayoutError}</Text>}
+                    {storageLayoutLoading && (
+                        <Row fillWidth horizontal="center" paddingY="16">
+                            <Spinner/>
+                        </Row>
+                    )}
+                    {!storageLayoutLoading && filesystemPreview.length === 0 && (
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            No storage layout preview is available yet.
+                        </Text>
+                    )}
+                    {!storageLayoutLoading && filesystemPreview.length > 0 && (
+                        <div style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(18rem, 1fr))",
+                            gap: 12
+                        }}>
+                            {filesystemPreview.map((serviceEntry, index) => {
+                                const serviceName = normalizeString(serviceEntry.service).trim();
+                                const label = normalizeString(serviceEntry.label).trim() || getServiceLabel(serviceName);
+                                const folders = Array.isArray(serviceEntry.folders) ? serviceEntry.folders : [];
+
+                                return (
+                                    <Card
+                                        key={`filesystem-preview-${serviceName || index}`}
+                                        fillWidth
+                                        background={BG_SURFACE}
+                                        border="neutral-alpha-weak"
+                                        padding="m"
+                                        radius="l"
+                                    >
+                                        <Column gap="8">
+                                            <Heading as="h3" variant="heading-strong-m">{label}</Heading>
+                                            {folders.length === 0 && (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    No folders were published for this service.
+                                                </Text>
+                                            )}
+                                            {folders.map((folder, folderIndex) => (
+                                                <Card
+                                                    key={`filesystem-folder-${serviceName}-${folderIndex}`}
+                                                    fillWidth
+                                                    background={BG_NEUTRAL_ALPHA_WEAK}
+                                                    border="neutral-alpha-weak"
+                                                    padding="m"
+                                                    radius="l"
+                                                >
+                                                    <Column gap="4">
+                                                        <Text variant="label-default-s">
+                                                            {normalizeString(folder.key).trim() || `Folder ${folderIndex + 1}`}
+                                                        </Text>
+                                                        {normalizeString(folder.hostPath).trim() && (
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                                Host: {normalizeString(folder.hostPath).trim()}
+                                                            </Text>
+                                                        )}
+                                                        {normalizeString(folder.containerPath).trim() && (
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                                Container: {normalizeString(folder.containerPath).trim()}
+                                                            </Text>
+                                                        )}
+                                                    </Column>
+                                                </Card>
+                                            ))}
+                                        </Column>
+                                    </Card>
+                                );
+                            })}
+                        </div>
+                    )}
+                </Column>
+            </Card>
+
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Heading as="h2" variant="heading-strong-l">Editable storage paths</Heading>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        Update the managed folder paths without leaving the settings page.
+                    </Text>
+                    {renderServiceCards(
+                        FILESYSTEM_SERVICES,
+                        (_serviceName, editor) =>
+                            (Array.isArray(editor.config?.envConfig) ? editor.config.envConfig : []).filter((field) => {
+                                const key = normalizeString(field.key).trim();
+                                return isPathLikeField(key);
+                            }),
+                        {
+                            emptyTitle: "No storage paths available",
+                            emptyDescription: "No editable storage path settings were published for the current stack.",
+                            saveLabel: "Save and restart",
+                            descriptionForService: () => "Change the folders this service uses on disk.",
+                        },
+                    )}
+                </Column>
+            </Card>
+        </Column>
+    );
+
+    const renderDatabaseSettings = () => {
+        const renderDocumentCard = (entry: unknown, index: number) => {
+            const record = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
+            const oidValue = record && typeof record._id === "object" && record._id && "$oid" in (record._id as Record<string, unknown>)
+                ? (record._id as Record<string, unknown>).$oid
+                : record?._id;
+            const idCandidate = normalizeString(oidValue).trim();
+            const label = record
+                ? normalizeString(record.title ?? record.name ?? record.key ?? idCandidate).trim()
+                : "";
+            const timestamp = formatIso(
+                record?.updatedAt ?? record?.createdAt ?? record?.requestedAt ?? record?.approvedAt ?? record?.completedAt,
+            );
+
+            return (
+                <Card
+                    key={`${collection}-${idCandidate || index}`}
+                    fillWidth
+                    background={BG_SURFACE}
+                    border="neutral-alpha-weak"
+                    padding="m"
+                    radius="l"
+                >
+                    <Column gap="8">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Text variant="label-default-s">{label || `Document ${index + 1}`}</Text>
+                            {timestamp && (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    {timestamp}
+                                </Text>
+                            )}
+                        </Row>
+                        {idCandidate && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                ID: {idCandidate}
+                            </Text>
+                        )}
+                        <Text variant="body-default-xs"
+                              style={{whiteSpace: "pre-wrap", fontFamily: "var(--font-code)"}}>
+                            {JSON.stringify(entry, null, 2)}
+                        </Text>
+                    </Column>
+                </Card>
+            );
+        };
+
+        return (
+            <Column fillWidth gap="16">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Database connection</Heading>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button
+                                    variant="secondary"
+                                    disabled={vaultEditor.loading || vaultEditor.saving}
+                                    onClick={() => setShowMongoUri((prev) => !prev)}
+                                >
+                                    {showMongoUri ? "Hide URI" : "Show URI"}
+                                </Button>
+                                <Button
+                                    variant="secondary"
+                                    disabled={vaultEditor.loading || vaultEditor.saving}
+                                    onClick={() => void loadServiceConfig("noona-vault")}
+                                >
+                                    {vaultEditor.loading ? "Loading..." : "Reload"}
+                                </Button>
+                                <Button
+                                    variant="primary"
+                                    disabled={vaultEditor.loading || vaultEditor.saving || !vaultMongoUriField}
+                                    onClick={() => void saveServiceConfig("noona-vault")}
+                                >
+                                    {vaultEditor.saving ? "Saving..." : "Save and restart"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Keep the managed Mongo URI hidden by default, but editable when you need to change it.
+                        </Text>
+                        {renderEditorFeedback(vaultEditor)}
+                        {vaultEditor.loading && (
+                            <Row fillWidth horizontal="center" paddingY="16">
+                                <Spinner/>
+                            </Row>
+                        )}
+                        {!vaultEditor.loading && vaultMongoUriField && renderEditorField(
+                            "noona-vault",
+                            vaultEditor,
+                            vaultMongoUriField,
+                            "mongo-uri",
+                            {secretVisible: showMongoUri},
+                        )}
+                        {!vaultEditor.loading && !vaultMongoUriField && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                No editable Mongo URI field is available for the current Vault configuration.
+                            </Text>
+                        )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Collection viewer</Heading>
+                            <Button variant="secondary" disabled={collectionsLoading}
+                                    onClick={() => void loadCollections()}>
+                                {collectionsLoading ? "Refreshing..." : "Refresh collections"}
+                            </Button>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Collections are sorted alphabetically, and documents are sorted by the newest timestamp Moon
+                            can infer.
+                        </Text>
+                        {collectionsError &&
+                            <Text onBackground="danger-strong" variant="body-default-xs">{collectionsError}</Text>}
+                        {collectionsLoading && (
+                            <Row fillWidth horizontal="center" paddingY="16">
+                                <Spinner/>
+                            </Row>
+                        )}
+                        {!collectionsLoading && (
+                            <Column gap="12">
+                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                    {sortedCollections.map((name) => (
+                                        <Button
+                                            key={`collection-${name}`}
+                                            variant={collection === name ? "primary" : "secondary"}
+                                            onClick={() => setCollection(name)}
+                                        >
+                                            {name}
+                                        </Button>
+                                    ))}
+                                </Row>
+                                {collection && (
+                                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                                        <Input
+                                            id="vault-limit"
+                                            name="vault-limit"
+                                            type="number"
+                                            label="Initial batch size"
+                                            value={limit}
+                                            onChange={(event) => setLimit(event.target.value)}
+                                        />
+                                        <Button variant="secondary" disabled={documentsLoading}
+                                                onClick={() => void loadDocuments(collection, limit)}>
+                                            {documentsLoading ? "Loading..." : "Load documents"}
+                                        </Button>
+                                    </Row>
+                                )}
+                                {documentsError && <Text onBackground="danger-strong"
+                                                         variant="body-default-xs">{documentsError}</Text>}
+                                {documentsLoading && sortedDocuments.length === 0 && (
+                                    <Row fillWidth horizontal="center" paddingY="16">
+                                        <Spinner/>
+                                    </Row>
+                                )}
+                                {collection && sortedDocuments.length === 0 && !documentsLoading && !documentsError && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        No documents were returned for this collection.
+                                    </Text>
+                                )}
+                                {sortedDocuments.length > 0 && (
+                                    <Column gap="8">
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            Showing {sortedDocuments.length} document{sortedDocuments.length === 1 ? "" : "s"}
+                                            {documentsHasMore ? " with more available as you scroll." : "."}
+                                        </Text>
+                                        <InfiniteScroll
+                                            fillWidth
+                                            direction="column"
+                                            gap="8"
+                                            items={sortedDocuments}
+                                            loading={documentsLoading}
+                                            loadMore={loadMoreDocuments}
+                                            renderItem={renderDocumentCard}
+                                        />
+                                    </Column>
+                                )}
+                            </Column>
+                        )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Heading as="h2" variant="heading-strong-l">Danger zone</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Factory reset wipes Vault storage and restarts Noona as a clean build.
+                        </Text>
+                        <Input
+                            id="vault-factory-reset-password"
+                            name="vault-factory-reset-password"
+                            type="password"
+                            label="Confirm with password"
+                            value={factoryResetPassword}
+                            disabled={factoryResetBusy}
+                            onChange={(event) => setFactoryResetPassword(event.target.value)}
+                        />
+                        <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
+                            <input
+                                type="checkbox"
+                                checked={factoryResetDeleteRavenDownloads}
+                                disabled={factoryResetBusy}
+                                onChange={(event) => setFactoryResetDeleteRavenDownloads(event.target.checked)}
+                            />
+                            <Text variant="body-default-xs">Delete Raven&apos;s downloads</Text>
+                        </label>
+                        <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
+                            <input
+                                type="checkbox"
+                                checked={factoryResetDeleteDockers}
+                                disabled={factoryResetBusy}
+                                onChange={(event) => setFactoryResetDeleteDockers(event.target.checked)}
+                            />
+                            <Text variant="body-default-xs">Delete dockers</Text>
+                        </label>
+                        {factoryResetProgress && (
+                            <Card fillWidth background={BG_SURFACE} border={BG_WARNING_ALPHA_WEAK} padding="m"
+                                  radius="l">
+                                <Column gap="8">
+                                    <Row horizontal="between" vertical="center">
+                                        <Text variant="label-default-s">Restart progress</Text>
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            {clampPercent(factoryResetProgress.percent)}%
+                                        </Text>
+                                    </Row>
+                                    <Row fillWidth background={BG_NEUTRAL_ALPHA_WEAK}
+                                         style={{height: 8, borderRadius: 999, overflow: "hidden"}}>
+                                        <Row background={BG_WARNING_ALPHA_WEAK} style={{
+                                            height: "100%",
+                                            width: `${clampPercent(factoryResetProgress.percent)}%`
+                                        }}/>
+                                    </Row>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        {factoryResetProgress.detail}
+                                    </Text>
+                                </Column>
+                            </Card>
+                        )}
+                        {factoryResetError &&
+                            <Text onBackground="danger-strong" variant="body-default-xs">{factoryResetError}</Text>}
+                        {factoryResetMessage &&
+                            <Text onBackground="neutral-weak" variant="body-default-xs">{factoryResetMessage}</Text>}
+                        <Row gap="12" style={{flexWrap: "wrap"}}>
+                            <Button variant="secondary" disabled={factoryResetBusy}
+                                    onClick={() => void runFactoryReset()}>
+                                {factoryResetProgress ? "Restarting..." : factoryResetBusy ? "Resetting..." : "Factory reset"}
+                            </Button>
+                        </Row>
+                    </Column>
+                </Card>
+            </Column>
+        );
+    };
+
+    const renderDownloaderSettings = () => {
+        const downloaderRuntimeFields = ravenEnvConfig.filter((field) => {
+            const key = normalizeString(field.key).trim();
+            if (!key || key === KOMF_APPLICATION_YML_KEY || field.readOnly === true) return false;
+            return !isUrlLikeField(key) && !isPathLikeField(key) && !/KAVITA_API_KEY/i.test(key);
+        });
+
+        return (
+            <Column fillWidth gap="16">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Downloader runtime</Heading>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button variant="secondary" disabled={ravenEditor.loading || ravenEditor.saving}
+                                        onClick={() => void loadServiceConfig("noona-raven")}>
+                                    {ravenEditor.loading ? "Loading..." : "Reload"}
+                                </Button>
+                                <Button variant="primary" disabled={ravenEditor.loading || ravenEditor.saving}
+                                        onClick={() => void saveServiceConfig("noona-raven")}>
+                                    {ravenEditor.saving ? "Saving..." : "Save and restart"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Worker count and other downloader runtime controls live here.
+                        </Text>
+                        {renderEditorFeedback(ravenEditor)}
+                        {ravenEditor.loading && (
+                            <Row fillWidth horizontal="center" paddingY="16">
+                                <Spinner/>
+                            </Row>
+                        )}
+                        {!ravenEditor.loading && downloaderRuntimeFields.length === 0 && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                No editable downloader runtime fields are available.
+                            </Text>
+                        )}
+                        {!ravenEditor.loading && downloaderRuntimeFields.map((field) =>
+                            renderEditorField("noona-raven", ravenEditor, field, "downloader-runtime"),
+                        )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Naming schema</Heading>
+                            <Row gap="8">
+                                <Button variant="secondary" disabled={namingLoading} onClick={() => void loadNaming()}>
+                                    {namingLoading ? "Reloading..." : "Reload"}
+                                </Button>
+                                <Button variant="primary" disabled={namingLoading || namingSaving}
+                                        onClick={() => void saveNaming()}>
+                                    {namingSaving ? "Saving..." : "Save naming"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Tokens: {TOKENS.join(" ")}
+                        </Text>
+                        {namingError &&
+                            <Text onBackground="danger-strong" variant="body-default-xs">{namingError}</Text>}
+                        {namingMessage &&
+                            <Text onBackground="neutral-weak" variant="body-default-xs">{namingMessage}</Text>}
+                        <Input id="titleTemplate" name="titleTemplate" label="Title template" value={titleTemplate}
+                               onChange={(event) => setTitleTemplate(event.target.value)}/>
+                        <Input id="chapterTemplate" name="chapterTemplate" label="Chapter template"
+                               value={chapterTemplate} onChange={(event) => setChapterTemplate(event.target.value)}/>
+                        <Input id="pageTemplate" name="pageTemplate" label="Page template" value={pageTemplate}
+                               onChange={(event) => setPageTemplate(event.target.value)}/>
+                        <Row gap="12" style={{flexWrap: "wrap"}}>
+                            <Input id="pagePad" name="pagePad" label="Page padding" type="number" value={pagePad}
+                                   onChange={(event) => setPagePad(event.target.value)}/>
+                            <Input id="chapterPad" name="chapterPad" label="Chapter padding" type="number"
+                                   value={chapterPad} onChange={(event) => setChapterPad(event.target.value)}/>
+                        </Row>
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Column gap="4">
+                                <Heading as="h2" variant="heading-strong-l">Thread speed limits</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                    Set a per-thread download cap in KB/s, or type values like 10mb or 1gb. Use -1 for
+                                    unlimited speed.
+                                </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Raven is currently configured
+                                    for {ravenThreadCount} thread{ravenThreadCount === 1 ? "" : "s"}.
+                                </Text>
+                                {downloadWorkerSettingsUpdatedAt && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Updated {formatIso(downloadWorkerSettingsUpdatedAt)}
+                                    </Text>
+                                )}
+                            </Column>
+                            <Row gap="8">
+                                <Button variant="secondary" disabled={downloadWorkerSettingsLoading}
+                                        onClick={() => void loadDownloadWorkerSettings()}>
+                                    {downloadWorkerSettingsLoading ? "Reloading..." : "Reload"}
+                                </Button>
+                                <Button
+                                    variant="primary"
+                                    disabled={downloadWorkerSettingsLoading || downloadWorkerSettingsSaving}
+                                    onClick={() => void saveDownloadWorkerSettings()}
+                                >
+                                    {downloadWorkerSettingsSaving ? "Saving..." : "Save speed limits"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        {downloadWorkerSettingsError && <Text onBackground="danger-strong"
+                                                              variant="body-default-xs">{downloadWorkerSettingsError}</Text>}
+                        {downloadWorkerSettingsMessage && <Text onBackground="neutral-weak"
+                                                                variant="body-default-xs">{downloadWorkerSettingsMessage}</Text>}
+                        <Column gap="12">
+                            {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => (
+                                <Input
+                                    key={`raven-thread-rate-limit-${index + 1}`}
+                                    id={`raven-thread-rate-limit-${index + 1}`}
+                                    name={`raven-thread-rate-limit-${index + 1}`}
+                                    label={`Thread ${index + 1} speed limit`}
+                                    type="text"
+                                    placeholder="512, 10mb, 1gb, or -1"
+                                    value={value}
+                                    onChange={(event) => setDownloadWorkerRateLimits((prev) => {
+                                        const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
+                                        next[index] = event.target.value;
+                                        return next;
+                                    })}
+                                />
+                            ))}
+                        </Column>
+                    </Column>
+                </Card>
+            </Column>
+        );
+    };
+
+    const renderUpdaterSettings = () => (
+        <Column fillWidth gap="16">
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                        <Heading as="h2" variant="heading-strong-l">Update behavior</Heading>
+                        <Button
+                            variant="primary"
+                            disabled={wardenEditor.loading || wardenEditor.saving}
+                            onClick={() =>
+                                void saveServiceConfig("noona-warden", {
+                                    restart: false,
+                                    successMessage: "Saved updater settings.",
+                                    onSuccess: async () => {
+                                        await loadCatalog();
+                                    },
+                                })
+                            }
+                        >
+                            {wardenEditor.saving ? "Saving..." : "Save updater settings"}
+                        </Button>
+                    </Row>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        The updater uses the host base URL and auto-update policy from Warden.
+                    </Text>
+                    {wardenHostBaseUrl && (
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Current host URL base: {wardenHostBaseUrl}
+                        </Text>
+                    )}
+                    {renderEditorFeedback(wardenEditor)}
+                    {wardenEditor.loading && (
+                        <Row fillWidth horizontal="center" paddingY="16">
+                            <Spinner/>
+                        </Row>
+                    )}
+                    {!wardenEditor.loading && (
+                        <Column gap="12">
+                            {wardenServerIpField && renderEditorField("noona-warden", wardenEditor, wardenServerIpField, "warden-links")}
+                            {wardenAutoUpdatesField && (
+                                <Row
+                                    fillWidth
+                                    horizontal="between"
+                                    vertical="center"
+                                    gap="16"
+                                    background={BG_NEUTRAL_ALPHA_WEAK}
+                                    style={{padding: 12, borderRadius: 16, flexWrap: "wrap"}}
+                                >
+                                    <Column gap="4" style={{flex: "1 1 280px", minWidth: 0}}>
+                                        <Text variant="label-default-s">
+                                            {normalizeString(wardenAutoUpdatesField.label).trim() || "Auto updates"}
+                                        </Text>
+                                        {renderSharedFieldNotes(wardenAutoUpdatesField)}
+                                    </Column>
+                                    <Column gap="4" style={{alignItems: "flex-end"}}>
+                                        <Switch
+                                            isChecked={wardenAutoUpdatesEnabled}
+                                            disabled={wardenEditor.saving}
+                                            ariaLabel="Toggle Warden auto updates"
+                                            onToggle={() =>
+                                                updateEnvDraft(
+                                                    "noona-warden",
+                                                    "AUTO_UPDATES",
+                                                    wardenAutoUpdatesEnabled ? "false" : "true",
+                                                )
+                                            }
+                                        />
+                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                            {wardenAutoUpdatesEnabled ? "Enabled" : "Disabled"}
+                                        </Text>
+                                    </Column>
+                                </Row>
+                            )}
+                        </Column>
+                    )}
+                </Column>
+            </Card>
+
+            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                <Column gap="12">
+                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                        <Heading as="h2" variant="heading-strong-l">Noona updater</Heading>
+                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                            <Button variant="secondary" disabled={updatesLoading || updatesBusy}
+                                    onClick={() => void loadUpdates()}>
+                                {updatesLoading ? "Reloading..." : "Reload"}
+                            </Button>
+                            <Button variant="secondary" disabled={updatesLoading || updatesChecking || updatesBusy}
+                                    onClick={() => void updateAllImages()}>
+                                {updatesApplyingAll ? "Updating all..." : "Update all"}
+                            </Button>
+                            <Button variant="primary" disabled={updatesChecking || updatesBusy}
+                                    onClick={() => void checkUpdates()}>
+                                {updatesChecking ? "Checking..." : "Check now"}
+                            </Button>
+                        </Row>
+                    </Row>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                        Check and apply Docker image updates in a grid so users can see the whole stack at once.
+                    </Text>
+                    {updatesError && <Text onBackground="danger-strong" variant="body-default-xs">{updatesError}</Text>}
+                    {updatesMessage &&
+                        <Text onBackground="neutral-weak" variant="body-default-xs">{updatesMessage}</Text>}
+                    {updatesLoading && (
+                        <Row fillWidth horizontal="center" paddingY="16">
+                            <Spinner/>
+                        </Row>
+                    )}
+                    {!updatesLoading && installedUpdateSnapshots.length === 0 && (
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            No update snapshots are available for installed services.
+                        </Text>
+                    )}
+                    {!updatesLoading && installedUpdateSnapshots.length > 0 && (
+                        <div style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(18rem, 1fr))",
+                            gap: 12
+                        }}>
+                            {installedUpdateSnapshots.map((entry, index) => {
+                                const service = normalizeString(entry.service).trim();
+                                const updateAvailable = entry.updateAvailable === true;
+                                const unsupported = entry.supported === false;
+                                const checkedAt = formatIso(entry.checkedAt);
+                                const badgeBackground = unsupported
+                                    ? "danger-alpha-weak"
+                                    : updateAvailable
+                                        ? "warning-alpha-weak"
+                                        : checkedAt
+                                            ? "success-alpha-weak"
+                                            : "neutral-alpha-weak";
+                                const badgeLabel = unsupported
+                                    ? "unsupported"
+                                    : updateAvailable
+                                        ? "update available"
+                                        : checkedAt
+                                            ? "up to date"
+                                            : "not checked";
+
+                                return (
+                                    <Card
+                                        key={`${service || "unknown"}-${index}`}
+                                        fillWidth
+                                        background={BG_SURFACE}
+                                        border="neutral-alpha-weak"
+                                        padding="m"
+                                        radius="l"
+                                    >
+                                        <Column gap="8">
+                                            <Row horizontal="between" vertical="center" gap="12"
+                                                 style={{flexWrap: "wrap"}}>
+                                                <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                                    <Text
+                                                        variant="heading-default-s">{getServiceLabel(service || "unknown")}</Text>
+                                                    <Badge background={badgeBackground} onBackground="neutral-strong">
+                                                        {badgeLabel}
+                                                    </Badge>
+                                                </Row>
+                                                <Button
+                                                    variant="secondary"
+                                                    disabled={!service || unsupported || !updateAvailable || updatesApplyingAll || updating[service]}
+                                                    onClick={() => void updateImage(service)}
+                                                >
+                                                    {updating[service] ? "Updating..." : "Update service"}
+                                                </Button>
+                                            </Row>
+                                            {normalizeString(entry.image).trim() && (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Image: {normalizeString(entry.image).trim()}
+                                                </Text>
+                                            )}
+                                            {checkedAt && (
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    Checked: {checkedAt}
+                                                </Text>
+                                            )}
+                                            {normalizeString(entry.error).trim() && (
+                                                <Text onBackground="danger-strong" variant="body-default-xs">
+                                                    {normalizeString(entry.error).trim()}
+                                                </Text>
+                                            )}
+                                        </Column>
+                                    </Card>
+                                );
+                            })}
+                        </div>
+                    )}
+                </Column>
+            </Card>
+        </Column>
+    );
+
+    const renderDiscordSettings = () => {
+        const discordRoles = Array.isArray(discordValidation?.roles) ? discordValidation.roles : [];
+        const guilds = Array.isArray(discordValidation?.guilds) ? discordValidation.guilds : [];
+
+        return (
+            <Column fillWidth gap="16">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Discord connection</Heading>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button
+                                    variant="secondary"
+                                    disabled={portalEditor.loading || portalEditor.saving || discordValidating}
+                                    onClick={() => void testDiscordConnection()}
+                                >
+                                    {discordValidating ? "Testing..." : "Test Discord connection"}
+                                </Button>
+                                <Button
+                                    variant="primary"
+                                    disabled={portalEditor.loading || portalEditor.saving}
+                                    onClick={() => void saveServiceConfig("noona-portal")}
+                                >
+                                    {portalEditor.saving ? "Saving..." : "Save and restart"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Edit the Discord bot credentials and validate them against the selected guild.
+                        </Text>
+                        {renderEditorFeedback(portalEditor)}
+                        {discordValidationError && <Text onBackground="danger-strong"
+                                                         variant="body-default-xs">{discordValidationError}</Text>}
+                        {portalEditor.loading && (
+                            <Row fillWidth horizontal="center" paddingY="16">
+                                <Spinner/>
+                            </Row>
+                        )}
+                        {!portalEditor.loading && portalDiscordFields.map((field) =>
+                            renderEditorField("noona-portal", portalEditor, field, "discord-connection"),
+                        )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Heading as="h2" variant="heading-strong-l">Discord validation</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Use this like the setup wizard: confirm the bot, application, and guild before saving role
+                            rules.
+                        </Text>
+                        {!discordValidation && !discordValidationError && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Run a connection test to load guild and role details.
+                            </Text>
+                        )}
+                        {discordValidation?.botUser && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Bot
+                                user: {normalizeString(discordValidation.botUser.tag).trim() || normalizeString(discordValidation.botUser.username).trim()}
+                            </Text>
+                        )}
+                        {discordValidation?.application && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Application: {normalizeString(discordValidation.application.name).trim()}
+                                {discordValidation.application.verified ? " (verified)" : ""}
+                            </Text>
+                        )}
+                        {guilds.length > 0 && (
+                            <Column gap="8">
+                                <Text onBackground="neutral-weak" variant="label-default-s">Guild</Text>
+                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                    {guilds.map((guild) => {
+                                        const guildId = normalizeString(guild.id).trim();
+                                        const selected = normalizeString(portalEditor.envDraft.DISCORD_GUILD_ID).trim() === guildId;
+                                        return (
+                                            <Button
+                                                key={`discord-guild-${guildId}`}
+                                                variant={selected ? "primary" : "secondary"}
+                                                onClick={() => selectDiscordGuild(guildId)}
+                                            >
+                                                {normalizeString(guild.name).trim() || guildId}
+                                            </Button>
+                                        );
+                                    })}
+                                </Row>
+                            </Column>
+                        )}
+                        {discordRoles.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {discordRoles.map((role) => (
+                                    <Badge key={`discord-role-${normalizeString(role.id).trim()}`}
+                                           background={BG_NEUTRAL_ALPHA_WEAK} onBackground="neutral-strong">
+                                        {normalizeString(role.name).trim() || normalizeString(role.id).trim()}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Heading as="h2" variant="heading-strong-l">Command permissions</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Assign the Discord role required for each command.
+                        </Text>
+                        {portalAccessFields.length === 0 && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                No command role fields are available for the current Portal configuration.
+                            </Text>
+                        )}
+                        {portalAccessFields.map((field) => {
+                            const fieldKey = normalizeString(field.key).trim();
+                            const selectedRoleId = normalizeString(portalEditor.envDraft[fieldKey]).trim();
+
+                            return (
+                                <Column key={`portal-access-${fieldKey}`} gap="8">
+                                    {renderEditorField("noona-portal", portalEditor, field, "command-access")}
+                                    {discordRoles.length > 0 && (
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {discordRoles.map((role) => {
+                                                const roleId = normalizeString(role.id).trim();
+                                                const selected = selectedRoleId === roleId;
+                                                return (
+                                                    <Button
+                                                        key={`portal-access-role-${fieldKey}-${roleId}`}
+                                                        variant={selected ? "primary" : "secondary"}
+                                                        onClick={() => updateEnvDraft("noona-portal", fieldKey, roleId)}
+                                                    >
+                                                        {normalizeString(role.name).trim() || roleId}
+                                                    </Button>
+                                                );
+                                            })}
+                                        </Row>
+                                    )}
+                                </Column>
+                            );
+                        })}
+                    </Column>
+                </Card>
+            </Column>
+        );
+    };
+
+    const renderKomfSettings = () => {
+        const komfConfigField = komfEnvConfig.find((field) => normalizeString(field.key).trim() === KOMF_APPLICATION_YML_KEY);
+        const komfRuntimeFields = komfEnvConfig.filter((field) => {
+            const key = normalizeString(field.key).trim();
+            return key !== KOMF_APPLICATION_YML_KEY && field.readOnly !== true;
+        });
+
+        return (
+            <Column fillWidth gap="16">
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Komf settings</Heading>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button variant="secondary"
+                                        onClick={() => patchEditor("noona-komf", {advanced: !komfEditor.advanced})}>
+                                    {komfEditor.advanced ? "Hide raw editor" : "Show raw editor"}
+                                </Button>
+                                <Button variant="secondary" disabled={komfEditor.loading || komfEditor.saving}
+                                        onClick={() => void loadServiceConfig("noona-komf")}>
+                                    {komfEditor.loading ? "Loading..." : "Reload"}
+                                </Button>
+                                <Button variant="primary" disabled={komfEditor.loading || komfEditor.saving}
+                                        onClick={() => void saveServiceConfig("noona-komf")}>
+                                    {komfEditor.saving ? "Saving..." : "Save and restart"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Edit the managed Komf application file and the runtime settings Moon exposes for it.
+                        </Text>
+                        {renderEditorFeedback(komfEditor)}
+                        {komfEditor.loading && (
+                            <Row fillWidth horizontal="center" paddingY="16">
+                                <Spinner/>
+                            </Row>
+                        )}
+                        {!komfEditor.loading && komfConfigField && (
+                            <KomfApplicationEditor
+                                label={normalizeString(komfConfigField.label).trim() || "Managed application.yml"}
+                                description={komfConfigField.description}
+                                warning={komfConfigField.warning}
+                                value={getEditorFieldValue(komfEditor, komfConfigField)}
+                                defaultValue={normalizeString(komfConfigField.defaultValue)}
+                                disabled={komfConfigField.readOnly === true}
+                                showRawEditor={komfEditor.advanced}
+                                onChange={(nextValue) => updateEnvDraft("noona-komf", KOMF_APPLICATION_YML_KEY, nextValue)}
+                            />
+                        )}
+                        {!komfEditor.loading && komfRuntimeFields.length > 0 && (
+                            <Column gap="12">
+                                {komfRuntimeFields.map((field) => renderEditorField("noona-komf", komfEditor, field, "komf-runtime"))}
+                            </Column>
+                        )}
+                    </Column>
+                </Card>
+            </Column>
+        );
+    };
 
     const renderUserManagement = () => {
         if (!canManageUsers) {
@@ -2316,7 +3914,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                         />
                                         <Text variant="body-default-xs">{MOON_PERMISSION_LABELS[permission]}</Text>
                                     </label>
-                                ))} 
+                                ))}
                             </Row>
                             <Column gap="8">
                                 {MOON_PERMISSION_ORDER.map((permission) => (
@@ -2507,9 +4105,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     <Row fillWidth gap="16" vertical="start" style={{minWidth: 0}} s={{direction: "column"}}>
                         {canShowNav && (
                             <SettingsNavigation
-                                activeSection={activeSection}
-                                activeTab={activeTab}
-                                portalSubtab={portalSubtab}
+                                activeSection={activeNavSection}
+                                activeView={activeView}
                                 canAccessEcosystem={canAccessEcosystem}
                                 canManageUsers={canManageUsers}
                                 onNavigate={navigateToSettings}
@@ -2519,15 +4116,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Column fillWidth gap="16" style={{flex: "1 1 40rem", minWidth: 0}}>
                             {activeSection === "ecosystem" && canAccessEcosystem && (
                                 <>
-                                    {catalogError &&
-                                        <Text onBackground="danger-strong"
-                                              variant="body-default-xs">{catalogError}</Text>}
-                                    {globalError &&
-                                        <Text onBackground="danger-strong"
-                                              variant="body-default-xs">{globalError}</Text>}
-                                    {globalMessage &&
-                                        <Text onBackground="neutral-weak"
-                                              variant="body-default-xs">{globalMessage}</Text>}
+                                    {catalogError && <Text onBackground="danger-strong"
+                                                           variant="body-default-xs">{catalogError}</Text>}
+                                    {globalError && <Text onBackground="danger-strong"
+                                                          variant="body-default-xs">{globalError}</Text>}
+                                    {globalMessage && <Text onBackground="neutral-weak"
+                                                            variant="body-default-xs">{globalMessage}</Text>}
 
                                     {catalogLoading && (
                                         <Row fillWidth horizontal="center" paddingY="24">
@@ -2535,680 +4129,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                         </Row>
                                     )}
 
-                                    {activeTab === "general" && (
-                                        <>
-                                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak"
-                                                  padding="l"
-                                                  radius="l">
-                                                <Column gap="12">
-                                                    <Heading as="h2" variant="heading-strong-l">Ecosystem</Heading>
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        Restart the full ecosystem from Warden.
-                                                    </Text>
-                                                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                                                        <Button variant="primary" disabled={ecosystemBusy}
-                                                                onClick={() => void restartEcosystem()}>
-                                                            {ecosystemBusy ? "Working..." : "Restart ecosystem"}
-                                                        </Button>
-                                                    </Row>
-                                                </Column>
-                                            </Card>
-
-                                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak"
-                                                  padding="l"
-                                                  radius="l">
-                                                <Column gap="12">
-                                                    <Row horizontal="between" vertical="center" gap="12"
-                                                         style={{flexWrap: "wrap"}}>
-                                                        <Heading as="h2" variant="heading-strong-l">Debug mode</Heading>
-                                                        <Badge
-                                                            background={debugEnabled ? "warning-alpha-weak" : "neutral-alpha-weak"}
-                                                            onBackground="neutral-strong"
-                                                        >
-                                                            {debugEnabled ? "enabled" : "disabled"}
-                                                        </Badge>
-                                                    </Row>
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        Toggle live debug logging across Sage, Warden, Raven, and Vault.
-                                                    </Text>
-                                                    {formatIso(debugUpdatedAt) && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            last updated: {formatIso(debugUpdatedAt)}
-                                                        </Text>
-                                                    )}
-                                                    {debugError && <Text onBackground="danger-strong"
-                                                                         variant="body-default-xs">{debugError}</Text>}
-                                                    {debugMessage && <Text onBackground="neutral-weak"
-                                                                           variant="body-default-xs">{debugMessage}</Text>}
-                                                    {debugLoading && (
-                                                        <Row fillWidth horizontal="center" paddingY="12">
-                                                            <Spinner/>
-                                                        </Row>
-                                                    )}
-                                                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                                                        <Button variant="primary" disabled={debugLoading || debugSaving}
-                                                                onClick={() => void setDebugMode(!debugEnabled)}>
-                                                            {debugSaving ? "Updating..." : debugEnabled ? "Disable debug mode" : "Enable debug mode"}
-                                                        </Button>
-                                                        <Button variant="secondary"
-                                                                disabled={debugLoading || debugSaving}
-                                                                onClick={() => void loadDebugSetting()}>
-                                                            Refresh
-                                                        </Button>
-                                                    </Row>
-                                                </Column>
-                                            </Card>
-                                        </>
-                    )}
-
-                    {activeTab !== "general" && renderServiceConfig()}
-
-                    {activeTab === "moon" && (
-                        <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                            <Column gap="12">
-                                <Heading as="h3" variant="heading-strong-l">Moon account</Heading>
-                                {accountLoading && (
-                                    <Row fillWidth horizontal="center" paddingY="16">
-                                        <Spinner/>
-                                    </Row>
-                                )}
-                                {!accountLoading && (
-                                    <Column gap="12">
-                                        {accountError && (
-                                            <Text onBackground="danger-strong"
-                                                  variant="body-default-xs">{accountError}</Text>
-                                        )}
-                                        {accountUser && (
-                                            <>
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Signed in
-                                                    as {normalizeString(accountUser.username).trim() || "Unknown user"}.
-                                                </Text>
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Provider: {normalizeString(accountUser.authProvider).trim() || "unknown"}
-                                                </Text>
-                                                {normalizeString(accountUser.discordUserId).trim() && (
-                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                        Discord ID: {normalizeString(accountUser.discordUserId).trim()}
-                                                    </Text>
-                                                )}
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Web login is managed by Discord OAuth. Username/password changes are
-                                                    no longer part of Moon.
-                                                </Text>
-                                            </>
-                                        )}
-                                    </Column>
-                                )}
-                            </Column>
-                        </Card>
-                    )}
-
-                    {activeTab === "raven" && (
-                        <>
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Heading as="h3" variant="heading-strong-l">Naming schema</Heading>
-                                        <Row gap="8">
-                                            <Button variant="secondary" disabled={namingLoading}
-                                                    onClick={() => void loadNaming()}>
-                                                Reload
-                                            </Button>
-                                            <Button variant="primary" disabled={namingLoading || namingSaving}
-                                                    onClick={() => void saveNaming()}>
-                                                {namingSaving ? "Saving..." : "Save naming"}
-                                            </Button>
-                                        </Row>
-                                    </Row>
-                                    <Text onBackground="neutral-weak"
-                                          variant="body-default-xs">Tokens: {TOKENS.join(" ")}</Text>
-                                    {namingError && <Text onBackground="danger-strong"
-                                                          variant="body-default-xs">{namingError}</Text>}
-                                    {namingMessage && <Text onBackground="neutral-weak"
-                                                            variant="body-default-xs">{namingMessage}</Text>}
-                                    <Input id="titleTemplate" name="titleTemplate" label="Title template"
-                                           value={titleTemplate} onChange={(e) => setTitleTemplate(e.target.value)}/>
-                                    <Input id="chapterTemplate" name="chapterTemplate" label="Chapter template"
-                                           value={chapterTemplate}
-                                           onChange={(e) => setChapterTemplate(e.target.value)}/>
-                                    <Input id="pageTemplate" name="pageTemplate" label="Page template"
-                                           value={pageTemplate} onChange={(e) => setPageTemplate(e.target.value)}/>
-                                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                                        <Input id="pagePad" name="pagePad" label="Page padding" type="number"
-                                               value={pagePad} onChange={(e) => setPagePad(e.target.value)}/>
-                                        <Input id="chapterPad" name="chapterPad" label="Chapter padding" type="number"
-                                               value={chapterPad} onChange={(e) => setChapterPad(e.target.value)}/>
-                                    </Row>
-                                </Column>
-                            </Card>
-
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Column gap="4">
-                                            <Heading as="h3" variant="heading-strong-l">Thread speed limits</Heading>
-                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                                Set a per-thread download cap in KB/s, or type values like 10mb or 1gb.
-                                                Use -1 for unlimited speed.
-                                            </Text>
-                                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                Raven is currently configured
-                                                for {ravenThreadCount} thread{ravenThreadCount === 1 ? "" : "s"}.
-                                            </Text>
-                                            {downloadWorkerSettingsUpdatedAt && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Updated {formatIso(downloadWorkerSettingsUpdatedAt)}
-                                                </Text>
-                                            )}
-                                        </Column>
-                                        <Row gap="8">
-                                            <Button
-                                                variant="secondary"
-                                                disabled={downloadWorkerSettingsLoading}
-                                                onClick={() => void loadDownloadWorkerSettings()}
-                                            >
-                                                Reload
-                                            </Button>
-                                            <Button
-                                                variant="primary"
-                                                disabled={downloadWorkerSettingsLoading || downloadWorkerSettingsSaving}
-                                                onClick={() => void saveDownloadWorkerSettings()}
-                                            >
-                                                {downloadWorkerSettingsSaving ? "Saving..." : "Save speed limits"}
-                                            </Button>
-                                        </Row>
-                                    </Row>
-                                    {downloadWorkerSettingsError && (
-                                        <Text onBackground="danger-strong" variant="body-default-xs">
-                                            {downloadWorkerSettingsError}
-                                        </Text>
-                                    )}
-                                    {downloadWorkerSettingsMessage && (
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            {downloadWorkerSettingsMessage}
-                                        </Text>
-                                    )}
-                                    <Column gap="12">
-                                        {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => (
-                                            <Input
-                                                key={`raven-thread-rate-limit-${index + 1}`}
-                                                id={`raven-thread-rate-limit-${index + 1}`}
-                                                name={`raven-thread-rate-limit-${index + 1}`}
-                                                label={`Thread ${index + 1} speed limit`}
-                                                type="text"
-                                                placeholder="512, 10mb, 1gb, or -1"
-                                                value={value}
-                                                onChange={(event) => setDownloadWorkerRateLimits((prev) => {
-                                                    const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
-                                                    next[index] = event.target.value;
-                                                    return next;
-                                                })}
-                                            />
-                                        ))}
-                                    </Column>
-                                </Column>
-                            </Card>
-
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Heading as="h3" variant="heading-strong-l">Downloads moved</Heading>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                        Queue controls, worker status, and Raven download history now live in the
-                                        Downloads tab.
-                                    </Text>
-                                    <Row>
-                                        <Button variant="secondary" href="/downloads">
-                                            Open downloads
-                                        </Button>
-                                    </Row>
-                                </Column>
-                            </Card>
-                        </>
-                    )}
-
-                    {activeTab === "vault" && (
-                        <>
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Column gap="4">
-                                            <Heading as="h3" variant="heading-strong-l">Redis Stack viewer</Heading>
-                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                                Open the Redis Stack Web UI for the live Noona Redis database.
-                                            </Text>
-                                            {redisStackUrl && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    {redisStackUrl}
-                                                </Text>
-                                            )}
-                                        </Column>
-                                        <Button
-                                            variant="secondary"
-                                            disabled={!redisStackUrl}
-                                            onClick={() => window.open(redisStackUrl, "_blank", "noopener,noreferrer")}
-                                        >
-                                            View Redis database
-                                        </Button>
-                                    </Row>
-                                    {!redisStackUrl && (
-                                        <Text onBackground="warning-strong" variant="body-default-xs">
-                                            Redis Stack Web UI is unavailable until `noona-redis` reports a host URL.
-                                        </Text>
-                                    )}
-                                </Column>
-                            </Card>
-
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Column gap="4">
-                                            <Heading as="h3" variant="heading-strong-l">Recommendations
-                                                manager</Heading>
-                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                                Open the admin recommendation queue for approvals, denials, and timeline
-                                                comments.
-                                            </Text>
-                                        </Column>
-                                        <Button
-                                            variant="secondary"
-                                            href={canManageRecommendations ? "/recommendations" : undefined}
-                                            disabled={!canManageRecommendations}
-                                        >
-                                            Open manage recommendations
-                                        </Button>
-                                    </Row>
-                                    {!canManageRecommendations && (
-                                        <Text onBackground="warning-strong" variant="body-default-xs">
-                                            You need the `manageRecommendations` permission to access this page.
-                                        </Text>
-                                    )}
-                                </Column>
-                            </Card>
-
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center">
-                                        <Heading as="h3" variant="heading-strong-l">Collection viewer</Heading>
-                                        <Button variant="secondary" disabled={collectionsLoading}
-                                                onClick={() => void loadCollections()}>
-                                            Refresh collections
-                                        </Button>
-                                    </Row>
-                                    {collectionsError && <Text onBackground="danger-strong"
-                                                               variant="body-default-xs">{collectionsError}</Text>}
-                                    {collectionsLoading && (
-                                        <Row fillWidth horizontal="center" paddingY="12">
-                                            <Spinner/>
-                                        </Row>
-                                    )}
-                                    {!collectionsLoading && (
-                                        <Column gap="12">
-                                            <Row gap="8" style={{flexWrap: "wrap"}}>
-                                                {collections.map((name) => (
-                                                    <Button key={name}
-                                                            variant={collection === name ? "primary" : "secondary"}
-                                                            onClick={() => setCollection(name)}>
-                                                        {name}
-                                                    </Button>
-                                                ))}
-                                            </Row>
-                                            {collection && (
-                                                <Row gap="12" style={{flexWrap: "wrap"}}>
-                                                    <Input id="vault-limit" name="vault-limit" type="number"
-                                                           label="Document limit" value={limit}
-                                                           onChange={(e) => setLimit(e.target.value)}/>
-                                                    <Button variant="secondary" disabled={documentsLoading}
-                                                            onClick={() => void loadDocuments(collection, limit)}>
-                                                        {documentsLoading ? "Loading..." : "Load documents"}
-                                                    </Button>
-                                                </Row>
-                                            )}
-                                            {documentsError && <Text onBackground="danger-strong"
-                                                                     variant="body-default-xs">{documentsError}</Text>}
-                                            {documents.length > 0 && (
-                                                <Column gap="8">
-                                                    {documents.map((entry, index) => (
-                                                        <Card key={`${collection}-${index}`} fillWidth
-                                                              background={BG_SURFACE}
-                                                              border="neutral-alpha-weak" padding="m" radius="l">
-                                                            <Text variant="body-default-xs" style={{
-                                                                whiteSpace: "pre-wrap",
-                                                                fontFamily: "var(--font-code)"
-                                                            }}>
-                                                                {JSON.stringify(entry, null, 2)}
-                                                            </Text>
-                                                        </Card>
-                                                    ))}
-                                                </Column>
-                                            )}
-                                        </Column>
-                                    )}
-                                </Column>
-                            </Card>
-
-                            <Card fillWidth background={BG_SURFACE} border="danger-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Heading as="h3" variant="heading-strong-l">Danger zone</Heading>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Factory reset wipes Vault storage and restarts Noona as a clean build.
-                                    </Text>
-                                    <Input
-                                        id="vault-factory-reset-password"
-                                        name="vault-factory-reset-password"
-                                        type="password"
-                                        label="Confirm with password"
-                                        value={factoryResetPassword}
-                                        disabled={factoryResetBusy}
-                                        onChange={(event) => setFactoryResetPassword(event.target.value)}
-                                    />
-                                    <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
-                                        <input
-                                            type="checkbox"
-                                            checked={factoryResetDeleteRavenDownloads}
-                                            disabled={factoryResetBusy}
-                                            onChange={(event) => setFactoryResetDeleteRavenDownloads(event.target.checked)}
-                                        />
-                                        <Text variant="body-default-xs">Delete Raven&apos;s downloads</Text>
-                                    </label>
-                                    <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
-                                        <input
-                                            type="checkbox"
-                                            checked={factoryResetDeleteDockers}
-                                            disabled={factoryResetBusy}
-                                            onChange={(event) => setFactoryResetDeleteDockers(event.target.checked)}
-                                        />
-                                        <Text variant="body-default-xs">Delete dockers</Text>
-                                    </label>
-                                    {factoryResetProgress && (
-                                        <Card fillWidth background={BG_SURFACE} border={BG_WARNING_ALPHA_WEAK}
-                                              padding="m"
-                                              radius="l">
-                                            <Column gap="8">
-                                                <Row horizontal="between" vertical="center">
-                                                    <Text variant="label-default-s">Restart progress</Text>
-                                                    <Text onBackground="neutral-weak"
-                                                          variant="body-default-xs">{clampPercent(factoryResetProgress.percent)}%</Text>
-                                                </Row>
-                                                <Row fillWidth background={BG_NEUTRAL_ALPHA_WEAK} style={{
-                                                    height: 8,
-                                                    borderRadius: 999,
-                                                    overflow: "hidden",
-                                                }}>
-                                                    <Row background={BG_WARNING_ALPHA_WEAK} style={{
-                                                        height: "100%",
-                                                        width: `${clampPercent(factoryResetProgress.percent)}%`,
-                                                    }}/>
-                                                </Row>
-                                                <Text onBackground="neutral-weak"
-                                                      variant="body-default-xs">{factoryResetProgress.detail}</Text>
-                                            </Column>
-                                        </Card>
-                                    )}
-                                    {factoryResetError &&
-                                        <Text onBackground="danger-strong"
-                                              variant="body-default-xs">{factoryResetError}</Text>}
-                                    {factoryResetMessage &&
-                                        <Text onBackground="neutral-weak"
-                                              variant="body-default-xs">{factoryResetMessage}</Text>}
-                                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                                        <Button variant="secondary" disabled={factoryResetBusy}
-                                                onClick={() => void runFactoryReset()}>
-                                            {factoryResetProgress ? "Restarting..." : factoryResetBusy ? "Resetting..." : "Factory Reset"}
-                                        </Button>
-                                    </Row>
-                                </Column>
-                            </Card>
-                        </>
-                    )}
-
-                    {activeTab === "warden" && (
-                        <Column fillWidth gap="16">
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="8">
-                                    <Heading as="h3" variant="heading-strong-l">Warden controls</Heading>
-                                    <Text onBackground="neutral-weak" variant="body-default-s">
-                                        Warden is the orchestrator for the stack and is not managed through Moon&apos;s
-                                        generic save/restart service editor.
-                                    </Text>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Use the General tab for ecosystem actions. If Warden itself needs a restart, do
-                                        that from your container host or deployment environment.
-                                    </Text>
-                                </Column>
-                            </Card>
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Heading as="h3" variant="heading-strong-l">Warden runtime settings</Heading>
-                                        <Row gap="8">
-                                            <Button
-                                                variant="secondary"
-                                                disabled={wardenEditor.loading || wardenEditor.saving}
-                                                onClick={() => void loadServiceConfig("noona-warden")}
-                                            >
-                                                {wardenEditor.loading ? "Loading..." : "Reload"}
-                                            </Button>
-                                            <Button
-                                                variant="primary"
-                                                disabled={wardenEditor.loading || wardenEditor.saving}
-                                                onClick={() =>
-                                                    void saveServiceConfig("noona-warden", {
-                                                        restart: false,
-                                                        successMessage: "Saved Warden runtime settings.",
-                                                        onSuccess: async () => {
-                                                            await loadCatalog();
-                                                        },
-                                                    })
-                                                }
-                                            >
-                                                {wardenEditor.saving ? "Saving..." : "Save Warden settings"}
-                                            </Button>
-                                        </Row>
-                                    </Row>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Warden uses `SERVER_IP` to publish host-facing Noona links, and `AUTO_UPDATES`
-                                        controls whether managed Docker images are pulled and applied during startup.
-                                    </Text>
-                                    {wardenHostBaseUrl && (
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            Current host URL base: {wardenHostBaseUrl}
-                                        </Text>
-                                    )}
-                                    {wardenEditor.error && (
-                                        <Text onBackground="danger-strong" variant="body-default-xs">
-                                            {wardenEditor.error}
-                                        </Text>
-                                    )}
-                                    {wardenEditor.message && (
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            {wardenEditor.message}
-                                        </Text>
-                                    )}
-                                    {wardenEditor.loading && (
-                                        <Row fillWidth horizontal="center" paddingY="12">
-                                            <Spinner/>
-                                        </Row>
-                                    )}
-                                    {!wardenEditor.loading && (wardenServerIpField || wardenAutoUpdatesField) && (
-                                        <Column gap="12">
-                                            {wardenServerIpField && (
-                                                <Column gap="8">
-                                                    <Input
-                                                        id="warden-server-ip"
-                                                        name="warden-server-ip"
-                                                        label={normalizeString(wardenServerIpField.label).trim() || "Server IP / Hostname"}
-                                                        value={normalizeString(wardenEditor.envDraft.SERVER_IP)}
-                                                        onChange={(event) =>
-                                                            updateEnvDraft("noona-warden", "SERVER_IP", event.target.value)
-                                                        }
-                                                    />
-                                                    {normalizeString(wardenServerIpField.description).trim() && (
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            {normalizeString(wardenServerIpField.description).trim()}
-                                                        </Text>
-                                                    )}
-                                                    {normalizeString(wardenServerIpField.warning).trim() && (
-                                                        <Text onBackground="warning-strong" variant="body-default-xs">
-                                                            {normalizeString(wardenServerIpField.warning).trim()}
-                                                        </Text>
-                                                    )}
-                                                </Column>
-                                            )}
-                                            {wardenAutoUpdatesField && (
-                                                <Row
-                                                    fillWidth
-                                                    horizontal="between"
-                                                    vertical="center"
-                                                    gap="16"
-                                                    background={BG_NEUTRAL_ALPHA_WEAK}
-                                                    style={{padding: 12, borderRadius: 16, flexWrap: "wrap"}}
-                                                >
-                                                    <Column gap="4" style={{flex: "1 1 280px", minWidth: 0}}>
-                                                        <Text variant="label-default-s">
-                                                            {normalizeString(wardenAutoUpdatesField.label).trim() || "Auto updates"}
-                                                        </Text>
-                                                        {normalizeString(wardenAutoUpdatesField.description).trim() && (
-                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                                {normalizeString(wardenAutoUpdatesField.description).trim()}
-                                                            </Text>
-                                                        )}
-                                                        {normalizeString(wardenAutoUpdatesField.warning).trim() && (
-                                                            <Text onBackground="warning-strong"
-                                                                  variant="body-default-xs">
-                                                                {normalizeString(wardenAutoUpdatesField.warning).trim()}
-                                                            </Text>
-                                                        )}
-                                                    </Column>
-                                                    <Column gap="4" style={{alignItems: "flex-end"}}>
-                                                        <Switch
-                                                            isChecked={wardenAutoUpdatesEnabled}
-                                                            disabled={wardenEditor.saving}
-                                                            ariaLabel="Toggle Warden auto updates"
-                                                            onToggle={() =>
-                                                                updateEnvDraft(
-                                                                    "noona-warden",
-                                                                    "AUTO_UPDATES",
-                                                                    wardenAutoUpdatesEnabled ? "false" : "true",
-                                                                )
-                                                            }
-                                                        />
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            {wardenAutoUpdatesEnabled ? "Enabled" : "Disabled"}
-                                                        </Text>
-                                                    </Column>
-                                                </Row>
-                                            )}
-                                        </Column>
-                                    )}
-                                </Column>
-                            </Card>
-                            <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12">
-                                        <Heading as="h3" variant="heading-strong-l">Image updates</Heading>
-                                        <Row gap="8">
-                                            <Button variant="secondary" disabled={updatesLoading || updatesBusy}
-                                                    onClick={() => void loadUpdates()}>Reload</Button>
-                                            <Button variant="secondary"
-                                                    disabled={updatesLoading || updatesChecking || updatesBusy}
-                                                    onClick={() => void updateAllImages()}>
-                                                {updatesApplyingAll ? "Updating all..." : "Update all"}
-                                            </Button>
-                                            <Button variant="primary" disabled={updatesChecking || updatesBusy}
-                                                    onClick={() => void checkUpdates()}>
-                                                {updatesChecking ? "Checking..." : "Check now"}
-                                            </Button>
-                                        </Row>
-                                    </Row>
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Warden also checks update digests automatically every hour.
-                                    </Text>
-                                    {updatesError &&
-                                        <Text onBackground="danger-strong"
-                                              variant="body-default-xs">{updatesError}</Text>}
-                                    {updatesMessage &&
-                                        <Text onBackground="neutral-weak"
-                                              variant="body-default-xs">{updatesMessage}</Text>}
-                                    {updatesLoading && (
-                                        <Row fillWidth horizontal="center" paddingY="12">
-                                            <Spinner/>
-                                        </Row>
-                                    )}
-                                    {!updatesLoading && installedUpdateSnapshots.length === 0 && (
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">No update snapshots
-                                            available for installed services.</Text>
-                                    )}
-                                    {!updatesLoading && installedUpdateSnapshots.length > 0 && (
-                                        <Column gap="8">
-                                            {installedUpdateSnapshots.map((entry, index) => {
-                                                const service = normalizeString(entry.service).trim();
-                                                const updateAvailable = entry.updateAvailable === true;
-                                                const unsupported = entry.supported === false;
-                                                const checkedAt = formatIso(entry.checkedAt);
-                                                const badgeBackground = unsupported
-                                                    ? "danger-alpha-weak"
-                                                    : updateAvailable
-                                                        ? "warning-alpha-weak"
-                                                        : checkedAt
-                                                            ? "success-alpha-weak"
-                                                            : "neutral-alpha-weak";
-                                                const badgeLabel = unsupported
-                                                    ? "unsupported"
-                                                    : updateAvailable
-                                                        ? "update available"
-                                                        : checkedAt
-                                                            ? "up to date"
-                                                            : "not checked";
-                                                return (
-                                                    <Card key={`${service || "unknown"}-${index}`} fillWidth
-                                                          background={BG_SURFACE} border="neutral-alpha-weak"
-                                                          padding="m"
-                                                          radius="l">
-                                                        <Column gap="8">
-                                                            <Row horizontal="between" vertical="center" gap="12"
-                                                                 style={{flexWrap: "wrap"}}>
-                                                                <Row gap="8" vertical="center"
-                                                                     style={{flexWrap: "wrap"}}>
-                                                                    <Text
-                                                                        variant="heading-default-s">{service || "unknown"}</Text>
-                                                                    <Badge
-                                                                        background={badgeBackground}
-                                                                        onBackground="neutral-strong"
-                                                                    >
-                                                                        {badgeLabel}
-                                                                    </Badge>
-                                                                </Row>
-                                                                <Button
-                                                                    variant="secondary"
-                                                                    disabled={!service || unsupported || !updateAvailable || updatesApplyingAll || updating[service]}
-                                                                    onClick={() => void updateImage(service)}
-                                                                >
-                                                                    {updating[service] ? "Updating..." : "Update service"}
-                                                                </Button>
-                                                            </Row>
-                                                            {normalizeString(entry.image).trim() && (
-                                                                <Text onBackground="neutral-weak"
-                                                                      variant="body-default-xs">image: {normalizeString(entry.image).trim()}</Text>
-                                                            )}
-                                                            {checkedAt && (
-                                                                <Text onBackground="neutral-weak"
-                                                                      variant="body-default-xs">checked: {checkedAt}</Text>
-                                                            )}
-                                                            {normalizeString(entry.error).trim() && (
-                                                                <Text onBackground="danger-strong"
-                                                                      variant="body-default-xs">{normalizeString(entry.error).trim()}</Text>
-                                                            )}
-                                                        </Column>
-                                                    </Card>
-                                                );
-                                            })}
-                                        </Column>
-                                    )}
-                                </Column>
-                            </Card>
-                        </Column>
-                    )}
+                                    {activeView === "overview" && renderOverviewSettings()}
+                                    {activeView === "filesystem" && renderFilesystemSettings()}
+                                    {activeView === "database" && renderDatabaseSettings()}
+                                    {activeView === "downloader" && renderDownloaderSettings()}
+                                    {activeView === "updater" && renderUpdaterSettings()}
+                                    {activeView === "discord" && renderDiscordSettings()}
+                                    {activeView === "komf" && renderKomfSettings()}
                                 </>
                             )}
 
