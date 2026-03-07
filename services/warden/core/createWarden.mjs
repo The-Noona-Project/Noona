@@ -76,6 +76,8 @@ const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
+const SETUP_CONFIG_DIRECTORY_NAME = 'warden';
+const SETUP_CONFIG_FILE_NAME = 'setup-wizard-state.json';
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
@@ -539,6 +541,9 @@ export function createWarden(options = {}) {
     };
     const serviceRuntimeConfig = new Map();
     let persistedServiceRuntimeConfigLoaded = false;
+    let setupConfigSnapshotCache = null;
+    let setupConfigSnapshotCacheLoaded = false;
+    let setupConfigSnapshotPathCache = null;
     const serviceUpdateSnapshots = new Map();
     const updateCheckIntervalMs = (() => {
         const candidate = Number.parseInt(env.SERVICE_UPDATE_CHECK_INTERVAL_MS ?? '3600000', 10);
@@ -2460,6 +2465,278 @@ export function createWarden(options = {}) {
         return names;
     };
 
+    const parsePersistedServiceSelectionFromServiceEntries = (candidate) => {
+        if (!Array.isArray(candidate)) {
+            return [];
+        }
+
+        const names = [];
+        for (const entry of candidate) {
+            if (typeof entry === 'string') {
+                names.push(entry);
+                continue;
+            }
+
+            if (entry && typeof entry === 'object' && typeof entry.name === 'string') {
+                names.push(entry.name);
+            }
+        }
+
+        return parsePersistedServiceSelection(names);
+    };
+
+    const normalizeSetupConfigSnapshotEnvMap = (candidate) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return {};
+        }
+
+        const normalized = {};
+        for (const [rawKey, rawValue] of Object.entries(candidate)) {
+            if (typeof rawKey !== 'string') {
+                continue;
+            }
+
+            const key = rawKey.trim();
+            if (!key) {
+                continue;
+            }
+
+            const value = rawValue == null ? '' : String(rawValue);
+            if (!value.trim()) {
+                continue;
+            }
+
+            normalized[key] = value;
+        }
+
+        return normalized;
+    };
+
+    const normalizeSetupConfigSnapshotValues = (candidate) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return {};
+        }
+
+        const values = {};
+        for (const [rawServiceName, rawEnv] of Object.entries(candidate)) {
+            const service = normalizeManagedServiceName(rawServiceName);
+            if (!service || !supportsRuntimeConfigTarget(service)) {
+                continue;
+            }
+
+            const env = normalizeSetupConfigSnapshotEnvMap(rawEnv);
+            if (Object.keys(env).length === 0) {
+                continue;
+            }
+
+            values[service] = env;
+        }
+
+        return values;
+    };
+
+    const extractPersistedSetupSelectionFromSetupSnapshot = (snapshot) => {
+        const candidates = [
+            snapshot?.selected,
+            snapshot?.selectedServices,
+            snapshot?.services,
+        ];
+
+        for (const candidate of candidates) {
+            const normalized = Array.isArray(candidate)
+            && candidate.some((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+                ? parsePersistedServiceSelectionFromServiceEntries(candidate)
+                : parsePersistedServiceSelection(candidate);
+            if (normalized.length > 0) {
+                return normalized;
+            }
+        }
+
+        return [];
+    };
+
+    const normalizeSetupConfigSnapshot = (candidate) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return null;
+        }
+
+        const normalized = {
+            version: Number.isFinite(Number(candidate.version))
+                ? Math.max(1, Math.floor(Number(candidate.version)))
+                : 2,
+            selected: extractPersistedSetupSelectionFromSetupSnapshot(candidate),
+            values: normalizeSetupConfigSnapshotValues(candidate?.values),
+            storageRoot: normalizePathValue(candidate?.storageRoot) || null,
+            integrations:
+                candidate?.integrations && typeof candidate.integrations === 'object' && !Array.isArray(candidate.integrations)
+                    ? cloneMeta(candidate.integrations)
+                    : null,
+            savedAt: typeof candidate?.savedAt === 'string' && candidate.savedAt.trim()
+                ? candidate.savedAt.trim()
+                : null,
+        };
+
+        return normalized;
+    };
+
+    const buildSetupConfigSnapshotForDisk = (snapshot = {}) => {
+        const normalized = normalizeSetupConfigSnapshot(snapshot);
+        if (!normalized) {
+            return null;
+        }
+
+        return {
+            version: normalized.version,
+            selected: normalized.selected,
+            values: normalized.values,
+            storageRoot: normalized.storageRoot,
+            integrations: normalized.integrations,
+            savedAt: normalized.savedAt || timestamp(),
+        };
+    };
+
+    const resolveSetupConfigRoot = (snapshot = null) => {
+        const candidates = [];
+        const appendCandidate = (value) => {
+            const normalized = normalizePathValue(value);
+            if (normalized) {
+                candidates.push(normalized);
+            }
+        };
+
+        appendCandidate(snapshot?.storageRoot);
+
+        const values = snapshot?.values && typeof snapshot.values === 'object' ? snapshot.values : {};
+        for (const serviceName of ['noona-vault', 'noona-raven', 'noona-kavita', 'noona-komf']) {
+            appendCandidate(values?.[serviceName]?.NOONA_DATA_ROOT);
+        }
+
+        appendCandidate(resolveRuntimeConfig('noona-vault')?.env?.NOONA_DATA_ROOT);
+        appendCandidate(resolveRuntimeConfig('noona-raven')?.env?.NOONA_DATA_ROOT);
+        appendCandidate(resolveRuntimeConfig('noona-kavita')?.env?.NOONA_DATA_ROOT);
+        appendCandidate(resolveRuntimeConfig('noona-komf')?.env?.NOONA_DATA_ROOT);
+
+        return resolveNoonaDataRoot({
+            candidate: candidates[0] ?? null,
+            env,
+            cwd: process.cwd(),
+        });
+    };
+
+    const resolveSetupConfigSnapshotPath = (snapshot = null) =>
+        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
+
+    const readSetupConfigSnapshot = ({refresh = false} = {}) => {
+        if (!refresh && setupConfigSnapshotCacheLoaded) {
+            return {
+                snapshot: setupConfigSnapshotCache,
+                path: setupConfigSnapshotPathCache,
+                exists: Boolean(setupConfigSnapshotCache),
+            };
+        }
+
+        const filePath = resolveSetupConfigSnapshotPath(setupConfigSnapshotCache);
+        setupConfigSnapshotPathCache = filePath;
+
+        if (typeof fsModule?.readFileSync !== 'function') {
+            setupConfigSnapshotCache = null;
+            setupConfigSnapshotCacheLoaded = true;
+            return {snapshot: null, path: filePath, exists: false};
+        }
+
+        try {
+            const raw = fsModule.readFileSync(filePath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const normalized = normalizeSetupConfigSnapshot(parsed);
+            setupConfigSnapshotCache = normalized;
+            setupConfigSnapshotCacheLoaded = true;
+            return {snapshot: normalized, path: filePath, exists: Boolean(normalized)};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                setupConfigSnapshotCache = null;
+                setupConfigSnapshotCacheLoaded = true;
+                return {snapshot: null, path: filePath, exists: false};
+            }
+
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${message}`);
+            setupConfigSnapshotCache = null;
+            setupConfigSnapshotCacheLoaded = true;
+            return {snapshot: null, path: filePath, exists: false, error: message};
+        }
+    };
+
+    const writeSetupConfigSnapshot = (snapshot = {}) => {
+        const prepared = buildSetupConfigSnapshotForDisk(snapshot);
+        if (!prepared) {
+            throw new Error('Setup config snapshot must be a JSON object.');
+        }
+
+        const filePath = resolveSetupConfigSnapshotPath(prepared);
+        if (typeof fsModule?.mkdirSync === 'function') {
+            fsModule.mkdirSync(path.dirname(filePath), {recursive: true});
+        }
+
+        if (typeof fsModule?.writeFileSync !== 'function') {
+            throw new Error('Filesystem write support is not available for setup config snapshots.');
+        }
+
+        fsModule.writeFileSync(filePath, JSON.stringify(prepared, null, 2), 'utf8');
+        setupConfigSnapshotCache = prepared;
+        setupConfigSnapshotCacheLoaded = true;
+        setupConfigSnapshotPathCache = filePath;
+
+        return {snapshot: prepared, path: filePath};
+    };
+
+    const applySetupConfigSnapshotRuntimeConfig = async (
+        snapshot,
+        {preferExisting = true, persist = false} = {},
+    ) => {
+        const normalized = normalizeSetupConfigSnapshot(snapshot);
+        if (!normalized) {
+            return [];
+        }
+
+        const loaded = [];
+        for (const [service, envOverrides] of Object.entries(normalized.values)) {
+            if (!supportsRuntimeConfigTarget(service)) {
+                continue;
+            }
+
+            const current = resolveRuntimeConfig(service);
+            const mergedEnv = preferExisting
+                ? {
+                    ...envOverrides,
+                    ...normalizeEnvOverrideMap(current.env),
+                }
+                : {
+                    ...normalizeEnvOverrideMap(current.env),
+                    ...envOverrides,
+                };
+
+            const nextRuntime = writeRuntimeConfig(service, {
+                env: mergedEnv,
+                hostPort: current.hostPort,
+            });
+
+            if (!hasPersistedRuntimeConfig(nextRuntime)) {
+                continue;
+            }
+
+            if (persist) {
+                await persistServiceRuntimeConfig(service, nextRuntime);
+            }
+
+            loaded.push({
+                service,
+                ...nextRuntime,
+            });
+        }
+
+        return loaded;
+    };
+
     const extractPersistedSetupServiceSelection = (state) => {
         const candidates = [
             state?.verification?.actor?.metadata?.selectedServices,
@@ -2479,13 +2756,21 @@ export function createWarden(options = {}) {
     };
 
     const resolvePersistedSetupServiceNames = async () => {
-        if (!wizardStateClient || typeof wizardStateClient.loadState !== 'function') {
-            return [];
+        if (wizardStateClient && typeof wizardStateClient.loadState === 'function') {
+            try {
+                const state = await wizardStateClient.loadState({fallbackToDefault: true});
+                const selection = extractPersistedSetupServiceSelection(state);
+                if (selection.length > 0) {
+                    return selection;
+                }
+            } catch {
+                // Fall through to setup snapshot selection.
+            }
         }
 
         try {
-            const state = await wizardStateClient.loadState({fallbackToDefault: true});
-            return extractPersistedSetupServiceSelection(state);
+            const {snapshot} = readSetupConfigSnapshot();
+            return extractPersistedSetupSelectionFromSetupSnapshot(snapshot);
         } catch {
             return [];
         }
@@ -2633,39 +2918,73 @@ export function createWarden(options = {}) {
             return [];
         }
 
-        if (!settingsClient?.mongo?.findMany) {
-            persistedServiceRuntimeConfigLoaded = true;
-            return [];
-        }
-
-        const documents = await settingsClient.mongo.findMany(settingsCollection, {
-            type: SERVICE_CONFIG_SETTINGS_TYPE,
-        });
-
-        const loaded = [];
-        for (const document of documents) {
-            const candidateName = parsePersistedServiceConfigName(document);
-            if (!candidateName || !supportsRuntimeConfigTarget(candidateName)) {
-                continue;
+        const loadedByService = new Map();
+        const recordLoaded = (entry = {}) => {
+            const service = normalizeManagedServiceName(entry?.service);
+            if (!service || !supportsRuntimeConfigTarget(service)) {
+                return;
             }
 
-            const snapshot = writeRuntimeConfig(candidateName, {
-                env: document?.env,
-                hostPort: document?.hostPort,
-            });
-
+            const snapshot = normalizePersistedRuntimeConfig(entry);
             if (!hasPersistedRuntimeConfig(snapshot)) {
-                continue;
+                return;
             }
 
-            loaded.push({
-                service: candidateName,
+            loadedByService.set(service, {
+                service,
                 ...snapshot,
             });
+        };
+
+        if (settingsClient?.mongo?.findMany) {
+            try {
+                const documents = await settingsClient.mongo.findMany(settingsCollection, {
+                    type: SERVICE_CONFIG_SETTINGS_TYPE,
+                });
+
+                for (const document of documents) {
+                    const candidateName = parsePersistedServiceConfigName(document);
+                    if (!candidateName || !supportsRuntimeConfigTarget(candidateName)) {
+                        continue;
+                    }
+
+                    const snapshot = writeRuntimeConfig(candidateName, {
+                        env: document?.env,
+                        hostPort: document?.hostPort,
+                    });
+
+                    recordLoaded({
+                        service: candidateName,
+                        ...snapshot,
+                    });
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn?.(
+                    `[${serviceName}] Failed to load runtime service config from ${settingsCollection}: ${message}`,
+                );
+            }
+        }
+
+        try {
+            const snapshotLoaded = await applySetupConfigSnapshotRuntimeConfig(readSetupConfigSnapshot().snapshot, {
+                preferExisting: true,
+                persist: false,
+            });
+            for (const entry of snapshotLoaded) {
+                const current = resolveRuntimeConfig(entry.service);
+                recordLoaded({
+                    service: entry.service,
+                    ...current,
+                });
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to apply setup config snapshot runtime: ${message}`);
         }
 
         persistedServiceRuntimeConfigLoaded = true;
-        return loaded;
+        return Array.from(loadedByService.values());
     };
 
     const resolveRuntimeConfig = (name) => {
@@ -3042,6 +3361,33 @@ export function createWarden(options = {}) {
         return describeNoonaStorageLayout(resolveSharedStorageRoot(installOverridesByName), {
             vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
         });
+    };
+
+    api.getSetupConfig = function getSetupConfig(options = {}) {
+        const state = readSetupConfigSnapshot({refresh: options?.refresh === true});
+        return {
+            exists: state.exists === true,
+            path: state.path ?? null,
+            snapshot: state.snapshot ?? null,
+            error: state.error ?? null,
+        };
+    };
+
+    api.saveSetupConfig = async function saveSetupConfig(snapshot = {}, options = {}) {
+        const {snapshot: persistedSnapshot, path: persistedPath} = writeSetupConfigSnapshot(snapshot);
+        const loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
+            preferExisting: options?.replaceRuntime !== true,
+            persist: options?.persistRuntime === true,
+        });
+        const selected = extractPersistedSetupSelectionFromSetupSnapshot(persistedSnapshot);
+
+        return {
+            exists: true,
+            path: persistedPath,
+            snapshot: persistedSnapshot,
+            selected,
+            runtime: loadedRuntimeConfig,
+        };
     };
 
     Object.defineProperty(api, 'DEBUG', {

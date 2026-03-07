@@ -13,6 +13,7 @@ class FakeClient extends EventEmitter {
         super();
         this.destroyed = false;
         this.lastLoginToken = null;
+        this.directMessages = [];
         this.application = {
             commands: {
                 calls: [],
@@ -41,6 +42,19 @@ class FakeClient extends EventEmitter {
                             },
                         };
                     },
+                },
+            }),
+        };
+        this.users = {
+            fetch: async userId => ({
+                id: userId,
+                send: async payload => {
+                    const message = {
+                        id: `dm-${this.directMessages.length + 1}`,
+                        payload,
+                    };
+                    this.directMessages.push({userId, payload, message});
+                    return message;
                 },
             }),
         };
@@ -197,6 +211,35 @@ test('interaction handler executes matching autocomplete handler', async () => {
     await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
 
     assert.deepEqual(responses, [[{name: 'Manga', value: '1'}]]);
+});
+
+test('createDiscordClient sends direct messages through the Discord user client', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const message = await discord.sendDirectMessage('discord-user-1', {content: 'Hello from Portal'});
+    assert.equal(message.id, 'dm-1');
+    assert.deepEqual(fakeClient.directMessages, [
+        {
+            userId: 'discord-user-1',
+            payload: {content: 'Hello from Portal'},
+            message: {
+                id: 'dm-1',
+                payload: {content: 'Hello from Portal'},
+            },
+        },
+    ]);
 });
 
 test('interaction handler executes matching button component handlers', async () => {

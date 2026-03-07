@@ -50,6 +50,8 @@ mode.
 - `GET /health` - Warden process health.
 - `GET /api/services` - service catalog + status.
 - `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
+- `GET /api/setup/config` - read Warden's persisted setup JSON snapshot (path + parsed payload when available).
+- `POST /api/setup/config` - persist setup JSON snapshot and hydrate runtime overrides from the saved values.
 - `POST /api/services/install` - install/start one or more services. Add `?async=true` to accept the install in the
   background and return `202` with the current progress snapshot instead of holding the request open.
 - `GET /api/services/install/progress` - current installation timeline.
@@ -106,6 +108,9 @@ mode.
   whether to pull/apply newer images during startup.
 - When `AUTO_UPDATES` resolves to `true`, Warden checks the startup target services for newer images during boot. It
   restarts installed services whose image changed, so startup can take longer than a normal boot.
+- During full-stack boot, Warden now defers managed-service restarts until each service reaches its lifecycle start
+  step. This keeps managed Kavita API-key provisioning ahead of Portal/Komf recreation so those containers do not come
+  up with stale Kavita credentials.
 - `WEBGUI_PORT` is consumed by Warden's Moon descriptor and passed through to Moon so the UI listens and publishes on
   the same port.
 - Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
@@ -121,6 +126,11 @@ mode.
 - Managed Kavita API key provisioning now retries transient first-user login/register failures during Kavita startup,
   including temporary 5xx registration responses before the admin account exists, reuses existing Kavita auth keys
   when available, and only creates a named key when no reusable key exists yet.
+- During full-stack restore boot, Warden now uses login-only managed Kavita API key refresh for dependent services.
+  It does not trigger first-user registration during restore, and missing `KAVITA_ADMIN_*` credentials no longer stop
+  the stack from starting.
+- Restore boot now also attempts to recover managed Kavita API keys from existing Portal/Komf container environment
+  values before falling back to active provisioning, which helps older installs come back online after Warden restarts.
 - Managed Portal now also uses an extended health-check window because Discord login and slash-command synchronization
   complete before the HTTP `/health` endpoint starts listening.
 - Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create
@@ -139,6 +149,9 @@ mode.
   generated `VAULT_API_TOKEN` field instead of asking users to type a Vault token during setup.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under
   `services.config.*` keys, and Warden reloads them during full boot before launching the rest of the managed stack.
+- Warden also reads a setup JSON snapshot from `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` during startup.
+  When that file exists, Warden restores runtime env overrides from its `values` payload and can recover full-stack
+  boot selection even if wizard-state or `noona_settings` entries are unavailable.
 - Normal Warden shutdown and ecosystem restart now stop managed Noona services without deleting their containers, and
   full startup brings the configured stack back online; only factory reset uses the destructive remove/wipe path.
 - Service image updates only restart installed services when Docker actually pulls a newer image digest, and Warden now

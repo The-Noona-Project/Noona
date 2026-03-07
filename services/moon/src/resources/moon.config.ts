@@ -20,6 +20,8 @@ export const moonRoutes = {
     "/setupwizard/summary": true,
     "/libraries": true,
     "/downloads": true,
+    "/downloads/add": true,
+    "/recommendations": true,
     "/rebooting": true,
     "/settings": true,
 } as const;

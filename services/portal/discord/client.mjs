@@ -130,6 +130,34 @@ export const createDiscordClient = ({
         }
     };
 
+    const sendDirectMessage = async (userId, payload) => {
+        const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+        if (!normalizedUserId) {
+            throw new Error('Discord user id is required to send a direct message.');
+        }
+
+        const contentPayload = typeof payload === 'string' ? {content: payload} : payload;
+        if (!contentPayload || typeof contentPayload !== 'object') {
+            throw new Error('Direct message payload must be a string or object.');
+        }
+
+        if (typeof client.users?.fetch !== 'function') {
+            throw new Error('Discord user client is not available.');
+        }
+
+        try {
+            const user = await client.users.fetch(normalizedUserId);
+            if (!user || typeof user.send !== 'function') {
+                throw new Error('Discord user could not receive direct messages.');
+            }
+
+            return await user.send(contentPayload);
+        } catch (error) {
+            errMSG(`[Portal/Discord] Failed to send direct message to ${normalizedUserId}: ${error.message}`);
+            throw error;
+        }
+    };
+
     const destroy = () => {
         client.destroy();
     };
@@ -141,6 +169,7 @@ export const createDiscordClient = ({
         fetchGuild,
         fetchMember,
         assignDefaultRole,
+        sendDirectMessage,
         waitUntilReady: () => ready,
     };
 };

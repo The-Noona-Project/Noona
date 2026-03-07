@@ -98,6 +98,14 @@ export function registerBootApi(context = {}) {
         return results;
     };
 
+    const collectUpdatedInstalledServiceNames = (results = []) =>
+        new Set(
+            results
+                .filter((entry) => entry?.updated === true && entry?.installed === true)
+                .map((entry) => (typeof entry?.service === 'string' ? entry.service.trim() : ''))
+                .filter((name) => Boolean(name) && serviceCatalog.has(name)),
+        );
+
     api.bootMinimal = async function bootMinimal() {
         const moon = buildEffectiveServiceDescriptor('noona-moon').descriptor;
         const sage = buildEffectiveServiceDescriptor('noona-sage').descriptor;
@@ -119,7 +127,7 @@ export function registerBootApi(context = {}) {
         await api.startService(moon, moonHealthUrl);
     };
 
-    const startServiceForBoot = async (name) => {
+    const startServiceForBoot = async (name, options = {}) => {
         if (!serviceCatalog.has(name)) {
             return;
         }
@@ -132,13 +140,20 @@ export function registerBootApi(context = {}) {
                     ? 'http://noona-sage:3004/health'
                     : svc.health || null;
 
-        await api.startService(svc, healthUrl);
+        await api.startService(svc, healthUrl, {
+            recreate: options?.recreate === true,
+        });
     };
 
-    const startServicesForBoot = async (names = []) => {
+    const startServicesForBoot = async (names = [], options = {}) => {
+        const forceRecreateNames =
+            options?.forceRecreateNames instanceof Set ? options.forceRecreateNames : new Set();
+
         for (let index = 0; index < names.length; index += 1) {
             const name = names[index];
-            await startServiceForBoot(name);
+            await startServiceForBoot(name, {
+                recreate: forceRecreateNames.has(name),
+            });
 
             if (name === 'noona-kavita' && typeof api.ensureManagedKavitaAccess === 'function') {
                 const remainingTargets = names.slice(index + 1).filter((candidate) =>
@@ -148,7 +163,19 @@ export function registerBootApi(context = {}) {
                 );
 
                 if (remainingTargets.length > 0) {
-                    await api.ensureManagedKavitaAccess({targetServices: remainingTargets});
+                    const provisioning = await api.ensureManagedKavitaAccess({
+                        targetServices: remainingTargets,
+                        allowRegister: false,
+                        failOnError: false,
+                    });
+
+                    if (provisioning?.skipped !== true && Array.isArray(provisioning?.configuredServices)) {
+                        for (const configuredService of provisioning.configuredServices) {
+                            if (typeof configuredService === 'string' && configuredService.trim()) {
+                                forceRecreateNames.add(configuredService);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -173,16 +200,18 @@ export function registerBootApi(context = {}) {
                     .filter((name) => bootstrapTargetNames.includes(name)),
             );
             let bootstrapUpdateResults = [];
+            let deferredManagedRecreateNames = new Set();
 
             if (autoUpdatesEnabled()) {
                 if (bootstrapTargetNames.length > 0) {
                     bootstrapUpdateResults = await runStartupAutoUpdates(bootstrapTargetNames, {restart: false});
                 }
 
-                await runStartupAutoUpdates(
+                const managedUpdateResults = await runStartupAutoUpdates(
                     bootstrapTargetNames.length > 0 ? managedTargetNames : targetNames,
-                    {restart: true},
+                    {restart: false},
                 );
+                deferredManagedRecreateNames = collectUpdatedInstalledServiceNames(managedUpdateResults);
             }
 
             const bootstrapUpdatesRequiringRestart = new Set(
@@ -201,15 +230,21 @@ export function registerBootApi(context = {}) {
                 }
             }
 
-            await startServicesForBoot(bootstrapTargetNames.length > 0 ? managedTargetNames : targetNames);
+            await startServicesForBoot(bootstrapTargetNames.length > 0 ? managedTargetNames : targetNames, {
+                forceRecreateNames: deferredManagedRecreateNames,
+            });
             return;
         }
 
+        let deferredRecreateNames = new Set();
         if (autoUpdatesEnabled()) {
-            await runStartupAutoUpdates(targetNames, {restart: true});
+            const updateResults = await runStartupAutoUpdates(targetNames, {restart: false});
+            deferredRecreateNames = collectUpdatedInstalledServiceNames(updateResults);
         }
 
-        await startServicesForBoot(targetNames);
+        await startServicesForBoot(targetNames, {
+            forceRecreateNames: deferredRecreateNames,
+        });
     };
 
     api.startEcosystem = async function startEcosystem(options = {}) {

@@ -463,14 +463,20 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [usersSaving, setUsersSaving] = useState(false);
     const [usersError, setUsersError] = useState<string | null>(null);
     const [usersMessage, setUsersMessage] = useState<string | null>(null);
-    const [defaultUserPermissions, setDefaultUserPermissions] = useState<MoonPermission[]>(["moon_login"]);
+    const [defaultUserPermissions, setDefaultUserPermissions] = useState<MoonPermission[]>([
+        "moon_login",
+        "myRecommendations",
+    ]);
     const [defaultUserPermissionsSaving, setDefaultUserPermissionsSaving] = useState(false);
     const [defaultUserPermissionsMessage, setDefaultUserPermissionsMessage] = useState<string | null>(null);
     const [defaultUserPermissionsUpdatedAt, setDefaultUserPermissionsUpdatedAt] = useState<string | null>(null);
     const [managedUsers, setManagedUsers] = useState<ManagedUser[]>([]);
     const [newUserDiscordId, setNewUserDiscordId] = useState("");
     const [newUserDisplayName, setNewUserDisplayName] = useState("");
-    const [newUserPermissions, setNewUserPermissions] = useState<MoonPermission[]>(["moon_login"]);
+    const [newUserPermissions, setNewUserPermissions] = useState<MoonPermission[]>([
+        "moon_login",
+        "myRecommendations",
+    ]);
     const [editingUser, setEditingUser] = useState<Record<string, {
         username: string;
         permissions: MoonPermission[]
@@ -1070,9 +1076,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
             const list = Array.isArray(json?.users) ? json.users : [];
             const loadedDefaultPermissions = normalizePermissions(json?.defaultPermissions);
             setManagedUsers(list);
-            setDefaultUserPermissions(loadedDefaultPermissions.length ? loadedDefaultPermissions : ["moon_login"]);
+            setDefaultUserPermissions(
+                loadedDefaultPermissions.length ? loadedDefaultPermissions : ["moon_login", "myRecommendations"],
+            );
             if (!newUserDiscordId.trim() && !newUserDisplayName.trim()) {
-                setNewUserPermissions(loadedDefaultPermissions.length ? loadedDefaultPermissions : ["moon_login"]);
+                setNewUserPermissions(
+                    loadedDefaultPermissions.length ? loadedDefaultPermissions : ["moon_login", "myRecommendations"],
+                );
             }
             setEditingUser(() => {
                 const next: Record<string, { username: string; permissions: MoonPermission[] }> = {};
@@ -1131,9 +1141,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 ? prev.filter((entry) => entry !== permission)
                 : MOON_PERMISSION_ORDER.filter((entry) => entry === permission || prev.includes(entry));
             if (!next.includes("moon_login")) {
-                return MOON_PERMISSION_ORDER.filter((entry) => entry === "moon_login" || next.includes(entry));
+                return normalizePermissions(
+                    MOON_PERMISSION_ORDER.filter((entry) => entry === "moon_login" || next.includes(entry)),
+                );
             }
-            return next;
+            return normalizePermissions(next);
         });
     };
 
@@ -1141,9 +1153,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
         setNewUserPermissions((prev) => {
             const has = prev.includes(permission);
             if (has) {
-                return prev.filter((entry) => entry !== permission);
+                return normalizePermissions(prev.filter((entry) => entry !== permission));
             }
-            return MOON_PERMISSION_ORDER.filter((entry) => entry === permission || prev.includes(entry));
+            return normalizePermissions(
+                MOON_PERMISSION_ORDER.filter((entry) => entry === permission || prev.includes(entry)),
+            );
         });
     };
 
@@ -1159,7 +1173,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 ...prev,
                 [key]: {
                     ...current,
-                    permissions,
+                    permissions: normalizePermissions(permissions),
                 },
             };
         });

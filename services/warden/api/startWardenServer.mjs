@@ -359,6 +359,47 @@ export const startWardenServer = ({
             return;
         }
 
+        if (req.method === 'GET' && url.pathname === '/api/setup/config') {
+            try {
+                const config = await warden.getSetupConfig?.();
+                sendJson(res, 200, config ?? {
+                    exists: false,
+                    path: null,
+                    snapshot: null,
+                    error: null,
+                });
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to load setup config snapshot: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to load setup config snapshot.'});
+            }
+            return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/setup/config') {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req)) || {};
+            } catch {
+                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                return;
+            }
+
+            if (!body || typeof body !== 'object' || Array.isArray(body)) {
+                sendJson(res, 400, {error: 'Setup config payload must be a JSON object.'});
+                return;
+            }
+
+            try {
+                const config = await warden.saveSetupConfig?.(body);
+                sendJson(res, 200, config ?? {});
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to persist setup config snapshot: ${error.message}`);
+                sendJson(res, 500, {error: 'Unable to persist setup config snapshot.'});
+            }
+            return;
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/services/install') {
             let body;
 

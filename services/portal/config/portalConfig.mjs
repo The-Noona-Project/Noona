@@ -146,12 +146,18 @@ export const loadPortalConfig = (overrides = {}) => {
         warden: {
             baseUrl: normalizeUrl(env.WARDEN_BASE_URL || DEFAULT_WARDEN_BASE_URL),
         },
+        moon: {
+            baseUrl: normalizeUrl(env.MOON_BASE_URL),
+        },
         join: {
             defaultRoles: splitCsv(env.PORTAL_JOIN_DEFAULT_ROLES ?? '*,-admin'),
             defaultLibraries: splitCsv(env.PORTAL_JOIN_DEFAULT_LIBRARIES ?? '*'),
         },
         activity: {
             pollMs: numberOrDefault(env.PORTAL_ACTIVITY_POLL_MS, 15000),
+        },
+        recommendations: {
+            pollMs: numberOrDefault(env.PORTAL_RECOMMENDATION_POLL_MS, 30000),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',

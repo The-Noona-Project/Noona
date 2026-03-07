@@ -545,7 +545,8 @@ test('recommend command searches Raven and stores the selected recommendation in
         },
     });
     assert.equal(button.edits.length, 1);
-    assert.match(button.edits[0].content, /Saved recommendation for \*\*Solo Leveling\*\*/);
+    assert.match(button.edits[0].content, /Thanks for your recommendation for \*\*Solo Leveling\*\*/);
+    assert.match(button.edits[0].content, /approved or denied/i);
     assert.deepEqual(button.edits[0].components, []);
 });
 

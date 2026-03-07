@@ -436,9 +436,7 @@ const buildPersistedWizardEnvState = (
             envConfig
                 .filter((field) =>
                     field?.key
-                    && field.readOnly !== true
-                    && !DERIVED_KEYS.has(field.key)
-                    && field.key !== "NOONA_DATA_ROOT",
+                    && field.readOnly !== true,
                 )
                 .map((field) => field.key),
         ));
@@ -954,7 +952,7 @@ export function SetupWizard() {
     const summaryNavigationRef = useRef(false);
     const configInputRef = useRef<HTMLInputElement | null>(null);
 
-    const services = catalog ?? [];
+    const services = useMemo(() => catalog ?? [], [catalog]);
     const servicesByName = useMemo(() => new Map(services.map((entry) => [entry.name, entry])), [services]);
     const komfManagedFields = useMemo(() => {
         const komf = servicesByName.get("noona-komf");
@@ -1375,7 +1373,7 @@ export function SetupWizard() {
         });
     };
 
-    const useDiscordGuild = (guildId: string) => {
+    const selectDiscordGuild = (guildId: string) => {
         updateEnv("noona-portal", "DISCORD_GUILD_ID", guildId);
         setDiscordValidation((prev) => prev ? ({
             ...prev,
@@ -1431,41 +1429,96 @@ export function SetupWizard() {
         }));
     };
 
+    const buildSetupConfigPayload = (
+        overrides: {
+            kavitaApiKey?: string | null;
+            kavitaBaseUrl?: string | null;
+        } = {},
+    ): WizardConfigPayloadV2 | null => {
+        if (!catalog) {
+            return null;
+        }
+
+        const resolvedKavitaApiKey = normalizeString(overrides.kavitaApiKey ?? kavitaApiKey);
+        const resolvedKavitaBaseUrl = normalizeString(overrides.kavitaBaseUrl ?? kavitaBaseUrl);
+        const persistedValues = buildDerivedValues({
+            values,
+            storageRoot,
+            servicesByName,
+            kavitaMode,
+            kavitaBaseUrl: resolvedKavitaBaseUrl,
+            kavitaApiKey: resolvedKavitaApiKey,
+            kavitaAdminUsername,
+            kavitaAdminEmail,
+            kavitaAdminPassword,
+            kavitaSharedLibraryPath,
+            komfMode,
+        });
+
+        return {
+            version: 2,
+            selected: Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right)),
+            values: buildPersistedWizardEnvState(catalog, persistedValues),
+            storageRoot,
+            integrations: {
+                kavita: {
+                    mode: kavitaMode,
+                    baseUrl: resolvedKavitaBaseUrl,
+                    apiKey: resolvedKavitaApiKey,
+                    sharedLibraryPath: kavitaSharedLibraryPath,
+                    containerName: kavitaContainerName,
+                    account: {
+                        username: kavitaAdminUsername,
+                        email: kavitaAdminEmail,
+                        password: kavitaAdminPassword,
+                    },
+                },
+                komf: {
+                    mode: komfMode,
+                    baseUrl: komfBaseUrl,
+                    containerName: komfContainerName,
+                },
+            },
+        };
+    };
+
+    const persistSetupConfigSnapshot = async (
+        overrides: {
+            kavitaApiKey?: string | null;
+            kavitaBaseUrl?: string | null;
+        } = {},
+    ) => {
+        const payload = buildSetupConfigPayload(overrides);
+        if (!payload) {
+            throw new Error("Services have not loaded yet.");
+        }
+
+        const response = await fetch("/api/noona/setup/config", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) {
+            throw new Error(
+                normalizeString(result?.error).trim()
+                || `Failed to save setup JSON snapshot (HTTP ${response.status}).`,
+            );
+        }
+
+        return payload;
+    };
+
     const downloadConfigFile = () => {
         setConfigMessage(null);
         setConfigError(null);
 
-        if (!catalog) {
-            setConfigError("Services have not loaded yet.");
-            return;
-        }
-
         try {
-            const payload: WizardConfigPayloadV2 = {
-                version: 2,
-                selected: Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right)),
-                values: buildPersistedWizardEnvState(catalog, values),
-                storageRoot,
-                integrations: {
-                    kavita: {
-                        mode: kavitaMode,
-                        baseUrl: kavitaBaseUrl,
-                        apiKey: kavitaMode === "external" ? kavitaApiKey : "",
-                        sharedLibraryPath: kavitaSharedLibraryPath,
-                        containerName: kavitaContainerName,
-                        account: {
-                            username: kavitaAdminUsername,
-                            email: kavitaAdminEmail,
-                            password: kavitaAdminPassword,
-                        },
-                    },
-                    komf: {
-                        mode: komfMode,
-                        baseUrl: komfBaseUrl,
-                        containerName: komfContainerName,
-                    },
-                },
-            };
+            const payload = buildSetupConfigPayload();
+            if (!payload) {
+                setConfigError("Services have not loaded yet.");
+                return;
+            }
             const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
             const url = URL.createObjectURL(blob);
             const now = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1532,9 +1585,7 @@ export function SetupWizard() {
                         envConfig
                             .filter((field) =>
                                 field?.key
-                                && field.readOnly !== true
-                                && !DERIVED_KEYS.has(field.key)
-                                && field.key !== "NOONA_DATA_ROOT",
+                                && field.readOnly !== true,
                             )
                             .map((field) => field.key),
                     );
@@ -1563,7 +1614,7 @@ export function SetupWizard() {
                     const nextKavitaMode = kavita.mode === "external" ? "external" : "managed";
                     setKavitaMode(nextKavitaMode);
                     setKavitaBaseUrl(normalizeString(kavita.baseUrl) || "http://noona-kavita:5000");
-                    setKavitaApiKey(nextKavitaMode === "external" ? normalizeString(kavita.apiKey) : "");
+                    setKavitaApiKey(normalizeString(kavita.apiKey));
                     setKavitaAdminUsername(normalizeString(kavita.account?.username));
                     setKavitaAdminEmail(normalizeString(kavita.account?.email));
                     setKavitaAdminPassword(normalizeString(kavita.account?.password));
@@ -1584,7 +1635,7 @@ export function SetupWizard() {
                 const nextKavitaMode = nextSelected.has("noona-kavita") ? "managed" : "external";
                 setKavitaMode(nextKavitaMode);
                 setKavitaBaseUrl(normalizeString(importedPortal.KAVITA_BASE_URL) || "http://noona-kavita:5000");
-                setKavitaApiKey(nextKavitaMode === "external" ? normalizeString(importedPortal.KAVITA_API_KEY) : "");
+                setKavitaApiKey(normalizeString(importedPortal.KAVITA_API_KEY));
                 setKavitaAdminUsername("");
                 setKavitaAdminEmail("");
                 setKavitaAdminPassword("");
@@ -1638,7 +1689,10 @@ export function SetupWizard() {
 
     const provisionManagedKavitaServiceKey = async () => {
         if (kavitaMode !== "managed" || managedKavitaServiceTargets.length === 0) {
-            return;
+            return {
+                apiKey: normalizeString(kavitaApiKey).trim(),
+                baseUrl: normalizeString(kavitaBaseUrl).trim(),
+            };
         }
 
         const account = {
@@ -1684,6 +1738,11 @@ export function SetupWizard() {
                 setKavitaAdminEmail(email);
             }
         }
+
+        return {
+            apiKey: nextApiKey || normalizeString(kavitaApiKey).trim(),
+            baseUrl: nextBaseUrl || normalizeString(kavitaBaseUrl).trim(),
+        };
     };
 
     const openSetupSummary = async () => {
@@ -1692,8 +1751,12 @@ export function SetupWizard() {
         summaryNavigationRef.current = true;
         setOpeningSummary(true);
         try {
-            await provisionManagedKavitaServiceKey();
+            const managedKavita = await provisionManagedKavitaServiceKey();
             await persistDiscordAuthConfig();
+            await persistSetupConfigSnapshot({
+                kavitaApiKey: managedKavita?.apiKey ?? normalizeString(kavitaApiKey).trim(),
+                kavitaBaseUrl: managedKavita?.baseUrl ?? normalizeString(kavitaBaseUrl).trim(),
+            });
             const selectedServices = Array.from(effectiveSelected).sort((left, right) => left.localeCompare(right));
             const nextUrl = `/setupwizard/summary?selected=${encodeURIComponent(selectedServices.join(","))}`;
             router.push(nextUrl);
@@ -1726,6 +1789,14 @@ export function SetupWizard() {
         });
         if (!validation.ok) {
             setInstallError(validation.message);
+            setActiveTab("install");
+            return;
+        }
+
+        try {
+            await persistSetupConfigSnapshot();
+        } catch (error) {
+            setInstallError(error instanceof Error ? error.message : String(error));
             setActiveTab("install");
             return;
         }
@@ -1951,7 +2022,7 @@ export function SetupWizard() {
                                                             </Column>
                                                             <Button size="s"
                                                                     variant={currentGuildId === guildId ? "primary" : "secondary"}
-                                                                    onClick={() => useDiscordGuild(guildId)}
+                                                                    onClick={() => selectDiscordGuild(guildId)}
                                                                     disabled={!guildId}>
                                                                 {currentGuildId === guildId ? "Selected" : "Use guild"}
                                                             </Button>

@@ -422,7 +422,7 @@ export const createRecommendCommand = ({
                 pendingSessions.delete(sessionId);
                 const insertedId = result?.insertedId != null ? ` (id: ${result.insertedId})` : '';
                 await updateComponentReply(interaction, {
-                    content: `Saved recommendation for **${selected.title}**${insertedId}.`,
+                    content: `Thanks for your recommendation for **${selected.title}**${insertedId}. I'll send you a message when it's approved or denied.`,
                     components: [],
                 });
             } catch (error) {

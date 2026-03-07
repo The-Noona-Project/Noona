@@ -1,33 +1,10 @@
 "use client";
 
-import {useEffect, useEffectEvent, useMemo, useState} from "react";
+import {useCallback, useEffect, useEffectEvent, useMemo, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
-import {DownloadsAddModal} from "./DownloadsAddModal";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 import styles from "./DownloadsPage.module.scss";
-
-type RavenSearchOption = {
-    index?: string | null;
-    option_number?: string | null;
-    title?: string | null;
-    href?: string | null;
-    coverUrl?: string | null;
-    type?: string | null;
-};
-
-type RavenSearchResponse = {
-    searchId?: string | null;
-    options?: RavenSearchOption[] | null;
-};
-
-type ResolvedSearchOption = {
-    optionIndex: number;
-    title: string;
-    href: string;
-    coverUrl: string;
-    type: string;
-};
 
 type RavenDownloadProgress = {
     taskId?: string | null;
@@ -99,11 +76,6 @@ type ResolvedTaskView = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-const parseOptionIndex = (option: RavenSearchOption, fallbackIndex: number): number => {
-    const optionIndexRaw = normalizeString(option.option_number ?? option.index).trim();
-    const optionIndexParsed = optionIndexRaw ? Number(optionIndexRaw) : NaN;
-    return Number.isFinite(optionIndexParsed) ? optionIndexParsed : fallbackIndex;
-};
 const formatEpochMs = (value: unknown): string => {
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
     return new Date(value).toLocaleString();
@@ -137,7 +109,7 @@ const progressBarBackground = (statusRaw: string) => {
     return "brand-alpha-medium";
 };
 const truncateLabel = (value: string, limit = 24): string =>
-    value.length > limit ? `${value.slice(0, Math.max(1, limit - 1)).trim()}…` : value;
+    value.length > limit ? `${value.slice(0, Math.max(1, limit - 1)).trim()}...` : value;
 const isTerminalStatus = (statusRaw: string) => {
     const status = statusRaw.trim().toLowerCase();
     return status === "completed"
@@ -280,16 +252,6 @@ const resolveTaskView = (entry: RavenDownloadProgress, fallbackIndex = 0): Resol
 };
 
 export function DownloadsPage() {
-    const [addOpen, setAddOpen] = useState(false);
-    const [addQuery, setAddQuery] = useState("");
-    const [searching, setSearching] = useState(false);
-    const [searchError, setSearchError] = useState<string | null>(null);
-    const [searchResult, setSearchResult] = useState<RavenSearchResponse | null>(null);
-    const [selectedOptions, setSelectedOptions] = useState<number[]>([]);
-    const [queueing, setQueueing] = useState(false);
-    const [queueError, setQueueError] = useState<string | null>(null);
-    const [queueMessage, setQueueMessage] = useState<string | null>(null);
-
     const [downloads, setDownloads] = useState<RavenDownloadProgress[] | null>(null);
     const [downloadsError, setDownloadsError] = useState<string | null>(null);
 
@@ -305,25 +267,6 @@ export function DownloadsPage() {
     const [syncLibraryMessage, setSyncLibraryMessage] = useState<string | null>(null);
     const [syncLibraryError, setSyncLibraryError] = useState<string | null>(null);
     const [taskSlideIndex, setTaskSlideIndex] = useState(0);
-
-    const resolvedSearchOptions = useMemo<ResolvedSearchOption[]>(() => {
-        if (!Array.isArray(searchResult?.options)) return [];
-        return searchResult.options.map((option, idx) => {
-            const optionIndex = parseOptionIndex(option, idx + 1);
-            return {
-                optionIndex,
-                title: normalizeString(option?.title).trim(),
-                href: normalizeString(option?.href).trim(),
-                coverUrl: normalizeString(option?.coverUrl).trim(),
-                type: normalizeString(option?.type).trim(),
-            };
-        });
-    }, [searchResult]);
-
-    const selectedOptionSet = useMemo(() => new Set<number>(selectedOptions), [selectedOptions]);
-    const searchResultCount = resolvedSearchOptions.length;
-    const selectedCount = selectedOptions.length;
-    const hasSearchResult = searchResult != null;
 
     const pollDownloads = async () => {
         try {
@@ -399,207 +342,6 @@ export function DownloadsPage() {
             window.clearInterval(interval);
         };
     }, []);
-
-    const closeAdd = ({force = false}: { force?: boolean } = {}) => {
-        if (queueing && !force) {
-            return;
-        }
-        setAddOpen(false);
-        setAddQuery("");
-        setSearching(false);
-        setSearchError(null);
-        setSearchResult(null);
-        setSelectedOptions([]);
-        setQueueing(false);
-        setQueueError(null);
-        setQueueMessage(null);
-    };
-
-    const openAdd = () => {
-        setAddOpen(true);
-        setAddQuery("");
-        setSearching(false);
-        setSearchError(null);
-        setSearchResult(null);
-        setSelectedOptions([]);
-        setQueueing(false);
-        setQueueError(null);
-        setQueueMessage(null);
-    };
-
-    useEffect(() => {
-        if (!addOpen) {
-            return;
-        }
-
-        const previousBodyOverflow = document.body.style.overflow;
-        const previousHtmlOverflow = document.documentElement.style.overflow;
-        document.body.style.overflow = "hidden";
-        document.documentElement.style.overflow = "hidden";
-
-        const focusTimer = window.setTimeout(() => {
-            const input = document.getElementById("add-title-query");
-            if (input instanceof HTMLInputElement) {
-                input.focus();
-                input.select();
-            }
-        }, 40);
-
-        return () => {
-            window.clearTimeout(focusTimer);
-            document.body.style.overflow = previousBodyOverflow;
-            document.documentElement.style.overflow = previousHtmlOverflow;
-        };
-    }, [addOpen]);
-
-    const performSearch = async () => {
-        const needle = addQuery.trim();
-        if (!needle) {
-            return;
-        }
-
-        setSearching(true);
-        setSearchError(null);
-        setSearchResult(null);
-        setSelectedOptions([]);
-        setQueueError(null);
-        setQueueMessage(null);
-
-        try {
-            const res = await fetch("/api/noona/raven/search", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({query: needle}),
-            });
-
-            const json = (await res.json().catch(() => null)) as unknown;
-            if (!res.ok) {
-                throw new Error(parseErrorMessage(json, `Search failed (HTTP ${res.status}).`));
-            }
-
-            const payload = json && typeof json === "object" ? (json as RavenSearchResponse) : null;
-            setSearchResult(payload);
-
-            const options = Array.isArray(payload?.options) ? payload.options : [];
-            if (options.length === 1) {
-                setSelectedOptions([parseOptionIndex(options[0], 1)]);
-            } else {
-                setSelectedOptions([]);
-            }
-        } catch (error_) {
-            const message = error_ instanceof Error ? error_.message : String(error_);
-            setSearchError(message);
-        } finally {
-            setSearching(false);
-        }
-    };
-
-    const toggleSelectedOption = (optionIndex: number) => {
-        setSelectedOptions((prev) => (
-            prev.includes(optionIndex)
-                ? prev.filter((entry) => entry !== optionIndex)
-                : [...prev, optionIndex]
-        ));
-    };
-
-    const selectAllOptions = () => {
-        setSelectedOptions(resolvedSearchOptions.map((entry) => entry.optionIndex));
-    };
-
-    const clearSelectedOptions = () => {
-        setSelectedOptions([]);
-    };
-
-    const queueSelectedDownloads = async () => {
-        const searchId = normalizeString(searchResult?.searchId).trim();
-        const queueTargets = Array.from(new Set(selectedOptions));
-        if (!searchId || queueTargets.length === 0) {
-            return;
-        }
-
-        setQueueing(true);
-        setQueueError(null);
-        setQueueMessage(null);
-
-        let successCount = 0;
-        const failedOptionIndexes = new Set<number>();
-        const failures: string[] = [];
-        const optionByIndex = new Map<number, ResolvedSearchOption>();
-        for (const option of resolvedSearchOptions) {
-            optionByIndex.set(option.optionIndex, option);
-        }
-
-        try {
-            for (const optionIndex of queueTargets) {
-                try {
-                    const res = await fetch("/api/noona/raven/download", {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify({searchId, optionIndex}),
-                    });
-
-                    const json = (await res.json().catch(() => null)) as unknown;
-                    if (!res.ok) {
-                        throw new Error(parseErrorMessage(json, `Queue failed (HTTP ${res.status}).`));
-                    }
-                    successCount += 1;
-                } catch (error_) {
-                    const message = error_ instanceof Error ? error_.message : String(error_);
-                    const label = optionByIndex.get(optionIndex)?.title || `Option ${optionIndex}`;
-                    failedOptionIndexes.add(optionIndex);
-                    failures.push(`${label}: ${message}`);
-                }
-            }
-
-            if (successCount > 0) {
-                const downloadWord = successCount === 1 ? "download" : "downloads";
-                const failedText = failures.length > 0 ? ` (${failures.length} failed)` : "";
-                setQueueMessage(`Queued ${successCount} ${downloadWord}${failedText}.`);
-                await refreshAll();
-            }
-
-            if (failures.length > 0) {
-                const extraCount = failures.length - 1;
-                const extraText = extraCount > 0 ? ` (+${extraCount} more)` : "";
-                setQueueError(`${failures[0]}${extraText}`);
-            }
-
-            if (failedOptionIndexes.size > 0) {
-                setSelectedOptions(Array.from(failedOptionIndexes));
-            } else {
-                setSelectedOptions([]);
-            }
-        } finally {
-            setQueueing(false);
-        }
-    };
-
-    const handleAddModalKeyDown = useEffectEvent((event: KeyboardEvent) => {
-        if (event.key === "Escape") {
-            closeAdd();
-            return;
-        }
-
-        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-            event.preventDefault();
-            if (!queueing && selectedOptions.length > 0) {
-                void queueSelectedDownloads();
-            }
-        }
-    });
-
-    useEffect(() => {
-        if (!addOpen) {
-            return;
-        }
-
-        const onKeyDown = (event: KeyboardEvent) => {
-            handleAddModalKeyDown(event);
-        };
-
-        window.addEventListener("keydown", onKeyDown);
-        return () => window.removeEventListener("keydown", onKeyDown);
-    }, [addOpen]);
 
     const checkLibraryForNewChapters = async () => {
         setSyncingLibrary(true);
@@ -703,7 +445,7 @@ export function DownloadsPage() {
         [history],
     );
     const currentTaskSlide = currentTaskDeckViews[taskSlideIndex] ?? null;
-    const advanceTaskSlide = useEffectEvent((direction: number) => {
+    const advanceTaskSlide = useCallback((direction: number) => {
         if (currentTaskDeckViews.length < 2) {
             return;
         }
@@ -712,7 +454,7 @@ export function DownloadsPage() {
             const next = previous + direction;
             return (next + currentTaskDeckViews.length) % currentTaskDeckViews.length;
         });
-    });
+    }, [currentTaskDeckViews.length]);
 
     useEffect(() => {
         if (taskSlideIndex < currentTaskDeckViews.length) {
@@ -1258,7 +1000,7 @@ export function DownloadsPage() {
                             </Text>
                         </Column>
                         <Row gap="12" style={{flexWrap: "wrap"}}>
-                            <Button variant="primary" onClick={() => openAdd()}>
+                            <Button variant="primary" href="/downloads/add">
                                 Add download
                             </Button>
                             <Button variant="secondary" onClick={() => void checkLibraryForNewChapters()}
@@ -1300,28 +1042,6 @@ export function DownloadsPage() {
                     {workersCard}
 
                     {historyCard}
-
-                    {addOpen && (
-                        <DownloadsAddModal
-                            addQuery={addQuery}
-                            searching={searching}
-                            searchError={searchError}
-                            hasSearchResult={hasSearchResult}
-                            resolvedSearchOptions={resolvedSearchOptions}
-                            selectedCount={selectedCount}
-                            selectedOptionSet={selectedOptionSet}
-                            queueing={queueing}
-                            queueError={queueError}
-                            queueMessage={queueMessage}
-                            onClose={() => closeAdd()}
-                            onQueryChange={setAddQuery}
-                            onSearch={() => void performSearch()}
-                            onToggleSelected={toggleSelectedOption}
-                            onSelectAll={selectAllOptions}
-                            onClearSelection={clearSelectedOptions}
-                            onQueueSelected={() => void queueSelectedDownloads()}
-                        />
-                    )}
                 </Column>
             </AuthGate>
         </SetupModeGate>

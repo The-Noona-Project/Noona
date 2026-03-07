@@ -144,6 +144,10 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const permissions = accountUser?.permissions ?? null;
     const canAccessLibrary = hasMoonPermission(permissions, "library_management");
     const canAccessDownloads = hasMoonPermission(permissions, "download_management");
+    const canManageRecommendations = hasMoonPermission(permissions, "manageRecommendations");
+    const canAccessMyRecommendations = hasMoonPermission(permissions, "myRecommendations");
+    const canAccessRecommendations = canManageRecommendations || canAccessMyRecommendations;
+    const recommendationsNavHref = canManageRecommendations ? "/recommendations" : "/myrecommendations";
     const canAccessSettings =
         hasMoonPermission(permissions, "admin") || hasMoonPermission(permissions, "user_management");
     const showSetupNav = !shellSuppressed && setupCompleted === false;
@@ -302,6 +306,15 @@ export function AppShell({children}: { children: React.ReactNode }) {
                 });
             }
 
+            if (canAccessRecommendations) {
+                items.push({
+                    href: recommendationsNavHref,
+                    label: "Recommendations",
+                    icon: "document",
+                    selected: pathname.startsWith("/recommendations") || pathname.startsWith("/myrecommendations"),
+                });
+            }
+
             if (canAccessSettings) {
                 items.push({
                     href: "/settings/general",
@@ -322,7 +335,7 @@ export function AppShell({children}: { children: React.ReactNode }) {
         }
 
         return items;
-    }, [canAccessDownloads, canAccessLibrary, canAccessSettings, pathname, showMainNav, showSetupNav]);
+    }, [canAccessDownloads, canAccessLibrary, canAccessRecommendations, canAccessSettings, pathname, recommendationsNavHref, showMainNav, showSetupNav]);
 
     const contentStyle = useMemo(
         () =>

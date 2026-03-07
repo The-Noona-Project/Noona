@@ -15,8 +15,10 @@ RUN chmod +x ./gradlew \
 FROM eclipse-temurin:17-jre
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip \
-    && pip3 install --no-cache-dir apprise \
+    && apt-get install -y --no-install-recommends python3 python3-venv \
+    && python3 -m venv /opt/apprise-venv \
+    && /opt/apprise-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/apprise-venv/bin/pip install --no-cache-dir apprise \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,6 +27,7 @@ COPY --from=builder /out/komf-app-all.jar ./komf-app-all.jar
 
 ENV LC_ALL=en_US.UTF-8
 ENV KOMF_CONFIG_DIR=/config
+ENV PATH="/opt/apprise-venv/bin:${PATH}"
 
 EXPOSE 8085
 

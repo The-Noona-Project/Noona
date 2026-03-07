@@ -332,6 +332,96 @@ export function registerServiceManagementApi(context = {}) {
         );
     };
 
+    const recoverManagedKavitaEnvFromContainer = async (name, {
+        fallbackBaseUrl,
+        dockerClient = null,
+    } = {}) => {
+        if (name !== MANAGED_KAVITA_PORTAL_SERVICE_NAME && name !== MANAGED_KAVITA_KOMF_SERVICE_NAME) {
+            return null;
+        }
+
+        let client = dockerClient;
+        if (!client) {
+            try {
+                client = await ensureDockerConnection();
+            } catch {
+                return null;
+            }
+        }
+
+        let matches = [];
+        try {
+            matches = await findMatchingContainersByName(name, client);
+        } catch {
+            return null;
+        }
+
+        if (!Array.isArray(matches) || matches.length === 0) {
+            return null;
+        }
+
+        const sortedMatches = [...matches].sort((left, right) => {
+            const leftRunning = String(left?.State || '').toLowerCase() === 'running' ? 1 : 0;
+            const rightRunning = String(right?.State || '').toLowerCase() === 'running' ? 1 : 0;
+            return rightRunning - leftRunning;
+        });
+
+        const normalizeContainerId = (container = {}) => {
+            const id = normalizeString(container?.Id);
+            if (id) {
+                return id;
+            }
+
+            const names = Array.isArray(container?.Names) ? container.Names : [];
+            for (const entry of names) {
+                const normalized = normalizeString(typeof entry === 'string' ? entry.replace(/^\//, '') : '');
+                if (normalized) {
+                    return normalized;
+                }
+            }
+
+            return '';
+        };
+
+        for (const container of sortedMatches) {
+            const containerId = normalizeContainerId(container);
+            if (!containerId || typeof client.getContainer !== 'function') {
+                continue;
+            }
+
+            let inspection = null;
+            try {
+                inspection = await client.getContainer(containerId).inspect();
+            } catch {
+                inspection = null;
+            }
+
+            const envMap = parseEnvEntries(inspection?.Config?.Env || []);
+            const recoveredApiKey = name === MANAGED_KAVITA_PORTAL_SERVICE_NAME
+                ? normalizeString(envMap.KAVITA_API_KEY)
+                : normalizeString(envMap.KOMF_KAVITA_API_KEY);
+
+            if (!recoveredApiKey) {
+                continue;
+            }
+
+            const recoveredBaseUrlRaw = name === MANAGED_KAVITA_PORTAL_SERVICE_NAME
+                ? envMap.KAVITA_BASE_URL
+                : envMap.KOMF_KAVITA_BASE_URI;
+            const recoveredBaseUrl = normalizeString(recoveredBaseUrlRaw) || normalizeString(fallbackBaseUrl);
+            const nextEnv = buildManagedKavitaServiceEnv(name, {
+                baseUrl: recoveredBaseUrl,
+                apiKey: recoveredApiKey,
+            });
+
+            if (nextEnv) {
+                return nextEnv;
+            }
+        }
+
+        return null;
+    };
+
     api.needsManagedKavitaProvisioning = function needsManagedKavitaProvisioning(name, options = {}) {
         return serviceNeedsManagedKavitaProvisioning(name, options);
     };
@@ -345,10 +435,13 @@ export function registerServiceManagementApi(context = {}) {
             };
         }
 
+        const allowRegister = options?.allowRegister !== false;
+        const failOnError = options?.failOnError !== false;
+        const tryRecoverExistingKeys = options?.tryRecoverExistingKeys !== false;
         const installOverridesByName =
             options?.installOverridesByName instanceof Map ? options.installOverridesByName : null;
         const targetServices = Array.isArray(options?.targetServices) ? options.targetServices : [];
-        const configuredServices = Array.from(
+        let configuredServices = Array.from(
             new Set(
                 targetServices.filter((candidate) =>
                     serviceNeedsManagedKavitaProvisioning(candidate, {
@@ -374,12 +467,86 @@ export function registerServiceManagementApi(context = {}) {
         const envMap = parseEnvEntries(descriptor.env);
         const account = normalizeManagedKavitaAccount(envMap);
 
+        if (configuredServices.length > 0 && tryRecoverExistingKeys) {
+            let dockerClient = null;
+            try {
+                dockerClient = await ensureDockerConnection();
+            } catch {
+                dockerClient = null;
+            }
+
+            for (const targetName of configuredServices) {
+                const recoveredEnv = await recoverManagedKavitaEnvFromContainer(targetName, {
+                    fallbackBaseUrl: baseUrl,
+                    dockerClient,
+                });
+                if (!recoveredEnv) {
+                    continue;
+                }
+
+                await mergeManagedServiceRuntimeEnv(targetName, recoveredEnv, {installOverridesByName});
+                appendHistoryEntry(targetName, {
+                    type: 'status',
+                    status: 'configured',
+                    message: 'Recovered managed Kavita API key from existing container',
+                    detail: normalizeString(
+                        targetName === MANAGED_KAVITA_PORTAL_SERVICE_NAME
+                            ? recoveredEnv.KAVITA_BASE_URL
+                            : recoveredEnv.KOMF_KAVITA_BASE_URI,
+                    ) || normalizeString(baseUrl),
+                    clearError: true,
+                });
+            }
+
+            configuredServices = Array.from(
+                new Set(
+                    targetServices.filter((candidate) =>
+                        serviceNeedsManagedKavitaProvisioning(candidate, {
+                            envOverrides: installOverridesByName?.get(candidate) || null,
+                        }),
+                    ),
+                ),
+            );
+        }
+
+        if (configuredServices.length === 0) {
+            return {
+                configuredServices: [],
+                skipped: false,
+                reason: 'managed-kavita-targets-prepared',
+            };
+        }
+
         appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
             type: 'status',
             status: 'configuring',
             message: 'Provisioning managed Kavita API key for dependent services',
             detail: configuredServices.join(', '),
         });
+
+        if (!account && !allowRegister) {
+            const message =
+                'Managed Kavita API key provisioning skipped because KAVITA_ADMIN_USERNAME, KAVITA_ADMIN_EMAIL, and KAVITA_ADMIN_PASSWORD are not configured.';
+            appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
+                type: 'error',
+                status: 'error',
+                message: 'Managed Kavita API key provisioning skipped',
+                detail: message,
+                error: message,
+            });
+
+            if (!failOnError) {
+                logger?.warn?.(`[${serviceName}] ${message}`);
+                return {
+                    configuredServices,
+                    skipped: true,
+                    reason: 'managed-kavita-account-missing',
+                    error: message,
+                };
+            }
+
+            throw new Error(message);
+        }
 
         try {
             const client = createManagedKavitaSetupClient({
@@ -390,7 +557,7 @@ export function registerServiceManagementApi(context = {}) {
             });
             const provisioning = await client.ensureServiceApiKey({
                 account,
-                allowRegister: true,
+                allowRegister,
             });
             const normalizedBaseUrl = client.getBaseUrl().replace(/\/$/, '');
             const managedApiKey = normalizeString(provisioning?.apiKey);
@@ -455,6 +622,19 @@ export function registerServiceManagementApi(context = {}) {
                 detail: message,
                 error: message,
             });
+
+            if (!failOnError) {
+                logger?.warn?.(
+                    `[${serviceName}] Managed Kavita API key provisioning failed for ${configuredServices.join(', ')}: ${message}`,
+                );
+                return {
+                    configuredServices,
+                    skipped: true,
+                    reason: 'managed-kavita-provisioning-failed',
+                    error: message,
+                };
+            }
+
             throw error;
         }
     };

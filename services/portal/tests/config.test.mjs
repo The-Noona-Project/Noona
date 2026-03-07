@@ -34,6 +34,26 @@ test('safeLoadPortalConfig parses join defaults from csv env values', () => {
     assert.deepEqual(config.join.defaultLibraries, ['*', '12']);
 });
 
+test('safeLoadPortalConfig parses recommendation notifier poll interval', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        PORTAL_RECOMMENDATION_POLL_MS: '45000',
+    });
+
+    assert.equal(config.recommendations.pollMs, 45000);
+});
+
+test('safeLoadPortalConfig parses optional Moon base URL override', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        MOON_BASE_URL: 'http://moon.example:3000',
+    });
+
+    assert.equal(config.moon.baseUrl, 'http://moon.example:3000/');
+});
+
 test('safeLoadPortalConfig throws when no vault tokens are provided', () => {
     assert.throws(
         () =>

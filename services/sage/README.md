@@ -12,6 +12,7 @@ download/library routes for Moon and other clients.
 - [Setup client](app/createSetupClient.mjs)
 - [Route modules](routes/)
 - [Auth routes](routes/registerAuthRoutes.mjs)
+- [Raven routes](routes/registerRavenRoutes.mjs)
 - [Setup routes](routes/registerSetupRoutes.mjs)
 - [Managed Kavita setup client](clients/managedKavitaSetupClient.mjs)
 - [Downstream clients](clients/)
@@ -26,6 +27,7 @@ download/library routes for Moon and other clients.
 - Own Moon auth state, Discord OAuth config, Discord callback handling, Discord-linked user/session management, and
   the default permission template used when a Discord user signs in for the first time.
 - Proxy Raven search/download/library/status routes.
+- Serve Vault-backed recommendation records for Moon's recommendations page.
 - Persist Vault-backed Raven naming and per-thread worker speed-limit settings for Moon.
 - Normalize downstream failures into consistent API responses.
 
@@ -72,6 +74,24 @@ download/library routes for Moon and other clients.
     - Library listing/title/file routes require `library_management` after setup completes.
     - Search, queue, download-status/history, and library-wide sync routes require `download_management` after setup
       completes.
+- Recommendations admin routes: `/api/recommendations*`
+    - `GET /api/recommendations` and `GET /api/recommendations/:id` require `manageRecommendations` and return
+      normalized recommendation records (including timeline events).
+    - `POST /api/recommendations/:id/approve` requires `manageRecommendations`, queues Raven download (`searchId` +
+      `selectedOptionIndex`), marks the recommendation approved, and records an approval timeline event.
+    - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores
+      optional denial reason, and records a denial timeline event.
+    - `POST /api/recommendations/:id/comments` requires `manageRecommendations` and appends an admin comment timeline
+      event.
+    - `DELETE /api/recommendations/:id` requires `manageRecommendations` and closes/deletes the selected recommendation,
+      retrying with a field-based fallback query when legacy/serialized `_id` values do not match Vault's stored Mongo
+      `_id` type.
+- Recommendations user routes: `/api/myrecommendations*`
+    - `GET /api/myrecommendations` and `GET /api/myrecommendations/:id` require `myRecommendations` (or
+      `manageRecommendations`) and return only recommendation records owned by the signed-in Discord user unless the
+      caller is a manager.
+    - `POST /api/myrecommendations/:id/comments` requires `myRecommendations` (or `manageRecommendations`) and appends a
+      user/admin timeline reply event.
 
 ## Key Environment Variables
 

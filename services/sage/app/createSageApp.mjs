@@ -603,11 +603,17 @@ export const createSageApp = ({
         lookup_new_title: 'library_management',
         download_new_title: 'download_management',
         check_download_missing_titles: 'download_management',
+        myrecommendations: 'myRecommendations',
+        managerecommendations: 'manageRecommendations',
+        my_recommendations: 'myRecommendations',
+        manage_recommendations: 'manageRecommendations',
     })
     const SUPPORTED_MOON_PERMISSION_KEYS = Object.freeze([
         'moon_login',
         'library_management',
         'download_management',
+        'myRecommendations',
+        'manageRecommendations',
         'user_management',
         'admin',
         ...Object.keys(LEGACY_MOON_PERMISSION_ALIASES),
@@ -616,6 +622,8 @@ export const createSageApp = ({
         'moon_login',
         'library_management',
         'download_management',
+        'myRecommendations',
+        'manageRecommendations',
         'user_management',
         'admin',
     ])
@@ -624,6 +632,7 @@ export const createSageApp = ({
         'moon_login',
         'library_management',
         'download_management',
+        'myRecommendations',
     ])
     const DEFAULT_MEMBER_PERMISSIONS_SETTINGS = Object.freeze({
         key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY,
@@ -649,6 +658,13 @@ export const createSageApp = ({
         return MOON_OP_PERMISSION_KEYS.filter((entry) => present.has(entry))
     }
     const normalizePermissionEntry = (value) => normalizeString(value).toLowerCase()
+    const applyPermissionDependencies = (permissions = []) => {
+        const next = new Set(Array.isArray(permissions) ? permissions : [])
+        if (next.has('manageRecommendations')) {
+            next.add('myRecommendations')
+        }
+        return Array.from(next)
+    }
     const normalizePermissionKey = (value) => {
         const key = normalizePermissionEntry(value)
         if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
@@ -671,7 +687,7 @@ export const createSageApp = ({
             normalized.push(key)
         }
 
-        return sortMoonPermissions(Array.from(new Set(normalized)))
+        return sortMoonPermissions(applyPermissionDependencies(Array.from(new Set(normalized))))
     }
     const validatePermissionListInput = (value) => {
         if (!Array.isArray(value)) {
@@ -692,13 +708,14 @@ export const createSageApp = ({
 
         return {
             ok: true,
-            permissions: sortMoonPermissions(Array.from(new Set(normalized))),
+            permissions: sortMoonPermissions(applyPermissionDependencies(Array.from(new Set(normalized)))),
         }
     }
     const normalizeDefaultMemberPermissions = (value) => {
         const normalized = normalizePermissionList(value)
         const next = new Set(normalized)
         next.add('moon_login')
+        next.add('myRecommendations')
         return sortMoonPermissions(Array.from(next))
     }
     const parseThreadRateLimitEntry = (value, {strict = false} = {}) => {

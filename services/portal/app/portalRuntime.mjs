@@ -10,6 +10,7 @@ import createOnboardingStore from '../storage/onboardingStore.mjs';
 import {safeLoadPortalConfig} from '../config/portalConfig.mjs';
 import {createDiscordClient} from '../discord/client.mjs';
 import {createDiscordPresenceUpdater} from '../discord/presenceUpdater.mjs';
+import {createRecommendationNotifier} from '../discord/recommendationNotifier.mjs';
 import {createPortalSlashCommands} from '../commands/index.mjs';
 
 const runtime = {
@@ -19,6 +20,7 @@ const runtime = {
     kavita: null,
     onboardingStore: null,
     presenceUpdater: null,
+    recommendationNotifier: null,
     raven: null,
     server: null,
     vault: null,
@@ -94,6 +96,21 @@ export const startPortal = async (overrides = {}) => {
     presenceUpdater.start();
     runtime.presenceUpdater = presenceUpdater;
 
+    const recommendationNotifier = createRecommendationNotifier({
+        discordClient: discord,
+        vaultClient: vault,
+        ravenClient: raven,
+        kavitaClient: kavita,
+        wardenClient: warden,
+        moonBaseUrl: config.moon?.baseUrl,
+        pollMs: config.recommendations?.pollMs,
+        logger: {
+            warn: errMSG,
+        },
+    });
+    recommendationNotifier.start();
+    runtime.recommendationNotifier = recommendationNotifier;
+
     const {server, close} = await startPortalServer({
         config,
         discord,
@@ -120,6 +137,10 @@ export const stopPortal = async () => {
         runtime.presenceUpdater.stop();
     }
 
+    if (runtime.recommendationNotifier) {
+        runtime.recommendationNotifier.stop();
+    }
+
     if (runtime.discord) {
         runtime.discord.destroy();
     }
@@ -131,6 +152,7 @@ export const stopPortal = async () => {
     runtime.vault = null;
     runtime.onboardingStore = null;
     runtime.presenceUpdater = null;
+    runtime.recommendationNotifier = null;
     runtime.raven = null;
     runtime.config = null;
     runtime.warden = null;

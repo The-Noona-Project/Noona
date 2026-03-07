@@ -2384,7 +2384,6 @@ test('bootFull launches services in super boot order with correct health URLs', 
 
 test('bootFull provisions managed Kavita API keys before starting dependent services', async () => {
     const fetchCalls = [];
-    let loginAttempts = 0;
     const warden = buildWarden({
         services: {
             addon: {
@@ -2429,27 +2428,10 @@ test('bootFull provisions managed Kavita API keys before starting dependent serv
             fetchCalls.push(requestUrl.pathname);
 
             if (requestUrl.pathname === '/api/Account/login') {
-                loginAttempts += 1;
-                if (loginAttempts === 1) {
-                    return {
-                        ok: false,
-                        status: 401,
-                        text: async () => JSON.stringify({error: 'Unauthorized'}),
-                    };
-                }
-
                 return {
                     ok: true,
                     status: 200,
                     text: async () => JSON.stringify({token: 'managed-jwt-token'}),
-                };
-            }
-
-            if (requestUrl.pathname === '/api/Account/register') {
-                return {
-                    ok: true,
-                    status: 200,
-                    text: async () => JSON.stringify({id: 1, username: 'reader-admin'}),
                 };
             }
 
@@ -2496,7 +2478,180 @@ test('bootFull provisions managed Kavita API keys before starting dependent serv
 
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=managed-api-key'));
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
-    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/auth-keys']);
+    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/auth-keys']);
+});
+
+test('bootFull continues startup when managed Kavita credentials are missing during restore', async () => {
+    const warnings = [];
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-kavita': {
+                    name: 'noona-kavita',
+                    port: 5000,
+                    internalPort: 5000,
+                    env: ['TZ=UTC'],
+                    health: 'http://kavita/health',
+                },
+                'noona-komf': {
+                    name: 'noona-komf',
+                    env: [
+                        'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+                        'KOMF_KAVITA_API_KEY=',
+                    ],
+                },
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', health: 'http://moon/health'},
+                'noona-raven': {name: 'noona-raven'},
+                'noona-portal': {
+                    name: 'noona-portal',
+                    health: 'http://portal/health',
+                    env: [
+                        'KAVITA_BASE_URL=http://noona-kavita:5000',
+                        'KAVITA_API_KEY=',
+                    ],
+                },
+            },
+        },
+        fetchImpl: async () => {
+            throw new Error('Managed Kavita HTTP calls should be skipped when credentials are missing during boot.');
+        },
+        logger: {
+            log: () => {
+            },
+            warn: (message) => warnings.push(message),
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service, healthUrl) => {
+        started.push({
+            name: service.name,
+            healthUrl,
+            env: [...(service.env || [])],
+        });
+    };
+
+    await warden.bootFull({
+        services: [
+            'noona-redis',
+            'noona-mongo',
+            'noona-vault',
+            'noona-sage',
+            'noona-moon',
+            'noona-raven',
+            'noona-kavita',
+            'noona-portal',
+            'noona-komf',
+        ],
+    });
+
+    assert.ok(started.some((entry) => entry.name === 'noona-portal'));
+    assert.ok(started.some((entry) => entry.name === 'noona-komf'));
+    assert.ok(
+        warnings.some((message) =>
+            String(message).includes('Managed Kavita API key provisioning skipped because KAVITA_ADMIN_USERNAME'),
+        ),
+    );
+});
+
+test('bootFull recovers managed Portal Kavita API key from existing container env during restore', async () => {
+    const fetchCalls = [];
+    const dockerInstance = createStubDocker({
+        listContainers: async () => [
+            {
+                Id: 'portal-container',
+                Names: ['/noona-portal'],
+                State: 'running',
+                Status: 'Up 3 minutes',
+            },
+        ],
+        getContainer: (id) => ({
+            inspect: async () => {
+                if (id !== 'portal-container') {
+                    throw new Error(`Unexpected container id: ${id}`);
+                }
+
+                return {
+                    Config: {
+                        Env: [
+                            'KAVITA_BASE_URL=http://noona-kavita:5000',
+                            'KAVITA_API_KEY=recovered-api-key',
+                        ],
+                    },
+                };
+            },
+        }),
+    });
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-kavita': {
+                    name: 'noona-kavita',
+                    port: 5000,
+                    internalPort: 5000,
+                    env: ['TZ=UTC'],
+                    health: 'http://kavita/health',
+                },
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', health: 'http://moon/health'},
+                'noona-raven': {name: 'noona-raven'},
+                'noona-portal': {
+                    name: 'noona-portal',
+                    health: 'http://portal/health',
+                    env: [
+                        'KAVITA_BASE_URL=http://noona-kavita:5000',
+                        'KAVITA_API_KEY=',
+                    ],
+                },
+            },
+        },
+        fetchImpl: async () => {
+            fetchCalls.push('called');
+            throw new Error('Managed Kavita HTTP provisioning should not run when key is recovered from container env.');
+        },
+        dockerInstance,
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service, healthUrl, options = {}) => {
+        started.push({
+            name: service.name,
+            healthUrl,
+            env: [...(service.env || [])],
+            recreate: options.recreate === true,
+        });
+    };
+
+    await warden.bootFull({
+        services: [
+            'noona-redis',
+            'noona-mongo',
+            'noona-vault',
+            'noona-sage',
+            'noona-moon',
+            'noona-raven',
+            'noona-kavita',
+            'noona-portal',
+        ],
+    });
+
+    const portalStart = started.find((entry) => entry.name === 'noona-portal');
+    assert.ok(portalStart, 'Portal should be started');
+    assert.ok(portalStart.env.includes('KAVITA_API_KEY=recovered-api-key'));
+    assert.deepEqual(fetchCalls, []);
 });
 
 test('bootFull reloads persisted service configs from noona_settings before starting managed services', async () => {
@@ -2571,6 +2726,81 @@ test('bootFull reloads persisted service configs from noona_settings before star
         {name: 'noona-sage', port: null, healthUrl: 'http://noona-sage:3004/health'},
         {name: 'noona-moon', port: 3010, healthUrl: 'http://noona-moon:3010/'},
     ]);
+});
+
+test('bootFull applies setup snapshot runtime values when persisted settings are unavailable', async () => {
+    const snapshotPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            storageRoot: '/srv/noona',
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                    DISCORD_CLIENT_ID: 'portal-client',
+                    DISCORD_GUILD_ID: 'portal-guild',
+                    KAVITA_API_KEY: 'kavita-api',
+                },
+            },
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo', health: 'http://mongo/health'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-portal': {
+                    name: 'noona-portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'DISCORD_BOT_TOKEN=',
+                        'DISCORD_CLIENT_ID=',
+                        'DISCORD_GUILD_ID=',
+                        'KAVITA_API_KEY=',
+                    ],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    findMany: async () => {
+                        throw new Error('vault settings unavailable');
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    warden.startService = async (service, healthUrl) => {
+        starts.push({
+            name: service.name,
+            env: [...(service.env || [])],
+            healthUrl,
+        });
+    };
+
+    await warden.bootFull({
+        services: ['noona-redis', 'noona-mongo', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+    });
+
+    const portalStart = starts.find((entry) => entry.name === 'noona-portal');
+    assert.ok(portalStart, 'Portal should be started');
+    assert.ok(portalStart.env.includes('DISCORD_BOT_TOKEN=portal-token'));
+    assert.ok(portalStart.env.includes('DISCORD_CLIENT_ID=portal-client'));
+    assert.ok(portalStart.env.includes('DISCORD_GUILD_ID=portal-guild'));
+    assert.ok(portalStart.env.includes('KAVITA_API_KEY=kavita-api'));
 });
 
 test('bootFull applies startup auto-updates after loading persisted noona-warden config', async () => {
@@ -2648,8 +2878,8 @@ test('bootFull applies startup auto-updates after loading persisted noona-warden
         {name: 'noona-mongo', restart: false},
         {name: 'noona-redis', restart: false},
         {name: 'noona-vault', restart: false},
-        {name: 'noona-sage', restart: true},
-        {name: 'noona-moon', restart: true},
+        {name: 'noona-sage', restart: false},
+        {name: 'noona-moon', restart: false},
     ]);
     assert.deepEqual(restarts, ['noona-redis', 'noona-vault']);
     assert.deepEqual(starts, [
@@ -2659,6 +2889,164 @@ test('bootFull applies startup auto-updates after loading persisted noona-warden
         {name: 'noona-sage', healthUrl: 'http://noona-sage:3004/health'},
         {name: 'noona-moon', healthUrl: null},
     ]);
+});
+
+test('bootFull keeps starting services when a startup auto-update fails', async () => {
+    const warnings = [];
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo', health: 'http://mongo/health'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+            },
+        },
+        env: {AUTO_UPDATES: 'true'},
+        logger: {
+            log: () => {
+            },
+            warn: (message) => warnings.push(String(message)),
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    const updateCalls = [];
+    warden.startService = async (service, healthUrl) => {
+        starts.push({
+            name: service.name,
+            healthUrl,
+        });
+    };
+    warden.updateServiceImage = async (name, options = {}) => {
+        updateCalls.push({
+            name,
+            restart: options.restart !== false,
+        });
+
+        if (name === 'noona-vault') {
+            throw new Error('registry unavailable');
+        }
+
+        return {
+            service: name,
+            updated: false,
+            installed: true,
+            restarted: false,
+        };
+    };
+
+    await warden.bootFull({
+        services: ['noona-redis', 'noona-mongo', 'noona-vault', 'noona-sage', 'noona-moon'],
+    });
+
+    assert.deepEqual(updateCalls, [
+        {name: 'noona-mongo', restart: false},
+        {name: 'noona-redis', restart: false},
+        {name: 'noona-vault', restart: false},
+        {name: 'noona-sage', restart: false},
+        {name: 'noona-moon', restart: false},
+    ]);
+    assert.deepEqual(starts, [
+        {name: 'noona-mongo', healthUrl: 'http://mongo/health'},
+        {name: 'noona-redis', healthUrl: 'http://noona-redis:8001/'},
+        {name: 'noona-vault', healthUrl: 'http://vault/health'},
+        {name: 'noona-sage', healthUrl: 'http://noona-sage:3004/health'},
+        {name: 'noona-moon', healthUrl: null},
+    ]);
+    assert.ok(
+        warnings.some((message) => message.includes('Failed to auto-update noona-vault during startup: registry unavailable')),
+    );
+});
+
+test('bootFull defers managed service restarts until after managed Kavita provisioning', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+                'noona-kavita': {name: 'noona-kavita', health: 'http://kavita/health'},
+                'noona-komf': {name: 'noona-komf'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', health: 'http://moon/health'},
+                'noona-raven': {name: 'noona-raven'},
+                'noona-portal': {name: 'noona-portal', health: 'http://portal/health'},
+            },
+        },
+        env: {AUTO_UPDATES: 'true'},
+        hostDockerSockets: [],
+    });
+
+    const updateCalls = [];
+    const starts = [];
+    const provisioningCalls = [];
+    warden.updateServiceImage = async (name, options = {}) => {
+        updateCalls.push({
+            name,
+            restart: options.restart !== false,
+        });
+
+        return {
+            service: name,
+            updated: name === 'noona-portal',
+            installed: name === 'noona-portal',
+            restarted: false,
+        };
+    };
+    warden.needsManagedKavitaProvisioning = (name) => name === 'noona-portal' || name === 'noona-komf';
+    warden.ensureManagedKavitaAccess = async (options = {}) => {
+        provisioningCalls.push([...(options.targetServices || [])]);
+        return {
+            skipped: false,
+            configuredServices: ['noona-portal', 'noona-komf'],
+        };
+    };
+    warden.startService = async (service, healthUrl, options = {}) => {
+        starts.push({
+            name: service.name,
+            healthUrl,
+            recreate: options.recreate === true,
+        });
+    };
+
+    await warden.bootFull({
+        services: [
+            'noona-mongo',
+            'noona-redis',
+            'noona-vault',
+            'noona-sage',
+            'noona-moon',
+            'noona-kavita',
+            'noona-raven',
+            'noona-portal',
+            'noona-komf',
+        ],
+    });
+
+    assert.deepEqual(updateCalls, [
+        {name: 'noona-mongo', restart: false},
+        {name: 'noona-redis', restart: false},
+        {name: 'noona-vault', restart: false},
+        {name: 'noona-sage', restart: false},
+        {name: 'noona-moon', restart: false},
+        {name: 'noona-kavita', restart: false},
+        {name: 'noona-raven', restart: false},
+        {name: 'noona-komf', restart: false},
+        {name: 'noona-portal', restart: false},
+    ]);
+    assert.deepEqual(provisioningCalls, [['noona-komf', 'noona-portal']]);
+
+    const portalStart = starts.find((entry) => entry.name === 'noona-portal');
+    const komfStart = starts.find((entry) => entry.name === 'noona-komf');
+    assert.equal(portalStart?.recreate, true);
+    assert.equal(komfStart?.recreate, true);
 });
 
 test('init ensures network, attaches, and runs minimal boot sequence by default', async () => {
@@ -2727,6 +3115,73 @@ test('init restores the installed managed stack when setup state is unavailable'
         },
     };
     const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon'},
+                'noona-vault': {name: 'noona-vault'},
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    const result = await warden.init();
+
+    assert.equal(result.mode, 'full');
+    assert.equal(result.setupCompleted, false);
+    assert.deepEqual(started, [
+        'noona-mongo',
+        'noona-redis',
+        'noona-vault',
+        'noona-sage',
+        'noona-moon',
+        'noona-portal',
+    ]);
+});
+
+test('init restores full lifecycle from setup snapshot selection when wizard state is unavailable', async () => {
+    const snapshotPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            storageRoot: '/srv/noona',
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                    DISCORD_CLIENT_ID: 'portal-client',
+                    DISCORD_GUILD_ID: 'portal-guild',
+                },
+            },
+        }),
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
         dockerUtils,
         services: {
             addon: {
@@ -2866,6 +3321,66 @@ test('bootMinimal checks startup image updates when AUTO_UPDATES is enabled', as
     ]);
 });
 
+test('bootMinimal continues startup when a startup auto-update fails', async () => {
+    const warnings = [];
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-sage': {name: 'noona-sage'},
+            },
+        },
+        env: {AUTO_UPDATES: 'true'},
+        logger: {
+            log: () => {
+            },
+            warn: (message) => warnings.push(String(message)),
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    const updateCalls = [];
+    warden.startService = async (service, healthUrl) => {
+        starts.push({
+            name: service.name,
+            healthUrl,
+        });
+    };
+    warden.updateServiceImage = async (name, options = {}) => {
+        updateCalls.push({
+            name,
+            restart: options.restart !== false,
+        });
+
+        if (name === 'noona-sage') {
+            throw new Error('pull timeout');
+        }
+
+        return {
+            service: name,
+            updated: false,
+            installed: true,
+            restarted: false,
+        };
+    };
+
+    await warden.bootMinimal();
+
+    assert.deepEqual(updateCalls, [
+        {name: 'noona-sage', restart: true},
+        {name: 'noona-moon', restart: true},
+    ]);
+    assert.deepEqual(starts, [
+        {name: 'noona-sage', healthUrl: 'http://noona-sage:3004/health'},
+        {name: 'noona-moon', healthUrl: 'http://noona-moon:3000/'},
+    ]);
+    assert.ok(
+        warnings.some((message) => message.includes('Failed to auto-update noona-sage during startup: pull timeout')),
+    );
+});
+
 
 test('Moon WEBGUI_PORT override updates service config and minimal boot health target', async () => {
     const warden = buildWarden({
@@ -2956,6 +3471,60 @@ test('updateServiceConfig persists service runtime overrides to noona_settings',
     assert.deepEqual(update.$set.env, {WEBGUI_PORT: '3010'});
     assert.equal(update.$set.hostPort, 3010);
     assert.match(update.$set.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('saveSetupConfig writes setup snapshot to disk and applies runtime env overrides', async () => {
+    const memoryFs = createMemoryFs();
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'DISCORD_BOT_TOKEN=',
+                        'KAVITA_API_KEY=',
+                    ],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const payload = {
+        version: 2,
+        selected: ['noona-portal'],
+        storageRoot: '/srv/noona',
+        values: {
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'portal-token',
+                KAVITA_API_KEY: 'kavita-api',
+            },
+        },
+    };
+
+    const result = await warden.saveSetupConfig(payload);
+    const expectedPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
+
+    assert.equal(result.exists, true);
+    assert.equal(result.path, expectedPath);
+    assert.deepEqual(result.selected, ['noona-portal']);
+    assert.equal(result.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
+    assert.equal(result.snapshot.values['noona-portal'].KAVITA_API_KEY, 'kavita-api');
+    assert.ok(memoryFs.files.has(path.normalize(expectedPath)));
+
+    const loadedSnapshot = warden.getSetupConfig();
+    assert.equal(loadedSnapshot.exists, true);
+    assert.equal(loadedSnapshot.path, expectedPath);
+    assert.equal(loadedSnapshot.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
+
+    const portalConfig = warden.getServiceConfig('noona-portal');
+    assert.equal(portalConfig.runtimeConfig.env.DISCORD_BOT_TOKEN, 'portal-token');
+    assert.equal(portalConfig.runtimeConfig.env.KAVITA_API_KEY, 'kavita-api');
 });
 
 test('updateServiceConfig on noona-warden persists SERVER_IP and AUTO_UPDATES and rewrites host-facing URLs', async () => {

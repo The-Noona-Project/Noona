@@ -133,6 +133,62 @@ export const createVaultClient = ({
         return payload;
     };
 
+    const findRecommendations = async ({
+                                           collection = DEFAULT_RECOMMENDATIONS_COLLECTION,
+                                           query = {},
+                                       } = {}) => {
+        if (!collection || typeof collection !== 'string' || !collection.trim()) {
+            throw new Error('Recommendation collection must be a non-empty string.');
+        }
+
+        const payload = await request('/v1/vault/handle', {
+            method: 'POST',
+            body: {
+                storageType: 'mongo',
+                operation: 'findMany',
+                payload: {
+                    collection: collection.trim(),
+                    query: query && typeof query === 'object' ? query : {},
+                },
+            },
+        });
+
+        return Array.isArray(payload?.data) ? payload.data : [];
+    };
+
+    const updateRecommendation = async ({
+                                            collection = DEFAULT_RECOMMENDATIONS_COLLECTION,
+                                            query,
+                                            update,
+                                            upsert = false,
+                                        } = {}) => {
+        if (!collection || typeof collection !== 'string' || !collection.trim()) {
+            throw new Error('Recommendation collection must be a non-empty string.');
+        }
+
+        if (!query || typeof query !== 'object' || Array.isArray(query) || Object.keys(query).length === 0) {
+            throw new Error('Recommendation update query must be a non-empty object.');
+        }
+
+        if (!update || typeof update !== 'object' || Array.isArray(update) || Object.keys(update).length === 0) {
+            throw new Error('Recommendation update payload must be a non-empty object.');
+        }
+
+        return request('/v1/vault/handle', {
+            method: 'POST',
+            body: {
+                storageType: 'mongo',
+                operation: 'update',
+                payload: {
+                    collection: collection.trim(),
+                    query,
+                    update,
+                    upsert: upsert === true,
+                },
+            },
+        });
+    };
+
     return {
         request,
         writeSecret,
@@ -140,6 +196,8 @@ export const createVaultClient = ({
         deleteSecret,
         storePortalCredential,
         storeRecommendation,
+        findRecommendations,
+        updateRecommendation,
     };
 };
 
