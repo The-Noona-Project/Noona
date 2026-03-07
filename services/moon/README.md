@@ -73,7 +73,9 @@ frontend.
 
 - `/` - Home summary and shortcuts into library/download workflows. Recent titles now reuse the same cover-card tiles
   as the main library page so the landing screen and `/libraries` stay visually consistent, and signed-in users
-  without `library_management` can still see the latest titles there even though the cards stay non-clickable.
+  without `library_management` can still see the latest titles there even though the cards stay non-clickable. The
+  home hero now layers Once UI `WeatherFx` falling leaves behind the page content and a `GlitchFx` treatment inside
+  the hero card background so the landing screen feels more like the rest of Noona's visual identity.
 - `/libraries` - Library browsing, filtering, and title drill-down. The tab and direct page now require the
   `library_management` permission.
 - `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
@@ -101,9 +103,12 @@ frontend.
   `/settings/downloads/downloader`, `/settings/downloads/updater`, `/settings/external/discord`,
   `/settings/external/komf`, and `/settings/users`. These pages cover loaded profile details, ecosystem
   start/stop/restart
-  controls, internal and external service links, the setup-wizard-style storage tree, editable storage paths, the
-  hidden-by-default Vault Mongo URI, a sorted Once UI `InfiniteScroll` collection viewer, downloader worker/naming
-  controls, the grid-based Noona Docker updater, Discord bot validation plus per-command role fields, the managed
+  controls, internal and external service links including Moon's public `MOON_EXTERNAL_URL` override, the
+  setup-wizard-style storage tree, editable storage paths, the
+  hidden-by-default Vault Mongo URI toggle, a fixed-height sorted Once UI `InfiniteScroll` collection viewer, downloader
+  worker/naming
+  controls, the grid-based Noona Docker updater, Discord bot validation plus per-command role fields for `/ding`,
+  `/join`, `/scan`, `/search`, and `/recommend`, the managed
   Komf `/config/application.yml` editor, Vault-backed persistence for service overrides in `noona_settings`, default
   permissions for first-time Discord sign-ins, and diagnostics.
   Successful self-permission edits now update the local user-management state first so Moon does not report a false

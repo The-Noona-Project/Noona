@@ -48,8 +48,13 @@ needed, Portal creates or refreshes the matching Kavita account with a generated
 short-lived handoff token through `NOONA_PORTAL_BASE_URL` and completes a normal Kavita JWT login without exposing the
 generated password in the browser.
 
-Managed installs now default `NOONA_SOCIAL_LOGIN_ONLY=true`. When that flag stays enabled and `NOONA_MOON_BASE_URL` is
-set, Kavita hides the legacy username/password form on `/login` and rejects direct password logins on
+When `NOONA_MOON_BASE_URL` is missing, the managed build now falls back to the current host metadata in this order:
+`HOST_SERVICE_URL`, `SERVER_IP`, then the active request host, always targeting Moon's configured/default web port.
+That keeps the Noona button available on upgraded installs where the explicit Moon URL env was never persisted into the
+running Kavita container.
+
+Managed installs now default `NOONA_SOCIAL_LOGIN_ONLY=true`. When that flag stays enabled and Kavita can resolve a
+Moon login URL, Kavita hides the legacy username/password form on `/login` and rejects direct password logins on
 `POST /api/account/login`, forcing users through the Noona handoff button instead. Set
 `NOONA_SOCIAL_LOGIN_ONLY=false` only if you intentionally need to restore local Kavita password logins.
 

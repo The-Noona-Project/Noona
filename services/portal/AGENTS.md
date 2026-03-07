@@ -31,11 +31,13 @@
 
 ## Slash command structure
 
-- `commands/` holds one module per command (`ding`, `join`, `scan`, `search`) plus shared helpers in
+- `commands/` holds one module per command (`ding`, `join`, `scan`, `search`, `recommend`) plus shared helpers in
   `commands/utils.mjs`.
 - Command factories receive dependencies (`discord`, `getDiscord`, `kavita`, `vault`, `onboardingStore`,
   `joinDefaults`) for
   testability.
+- When adding a new slash command, update Moon's Portal settings command-permission fields and setup-wizard role-field
+  list in the same change so the new `REQUIRED_ROLE_<COMMAND>` override is editable in the UI.
 
 ## HTTP and persistence modules
 

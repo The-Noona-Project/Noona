@@ -80,7 +80,16 @@ const SETUP_CONFIG_DIRECTORY_NAME = 'warden';
 const SETUP_CONFIG_FILE_NAME = 'setup-wizard-state.json';
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
+const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
+const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
+const DEFAULT_NOONA_PORTAL_BASE_URL = 'http://noona-portal:3003';
+const DEFAULT_NOONA_SOCIAL_LOGIN_ONLY = 'true';
+const MANAGED_KAVITA_DEFAULT_ENV_FALLBACK_KEYS = new Set([
+    'NOONA_MOON_BASE_URL',
+    'NOONA_PORTAL_BASE_URL',
+    'NOONA_SOCIAL_LOGIN_ONLY',
+]);
 const LEGACY_SERVICE_NAME_ALIASES = new Map([
     ['kavita', 'noona-kavita'],
 ]);
@@ -254,6 +263,49 @@ function parseEnvEntries(entries = []) {
     }
 
     return envMap;
+}
+
+function normalizeAbsoluteHttpUrl(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+        return '';
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return '';
+        }
+
+        return parsed.toString().replace(/\/+$/, '');
+    } catch {
+        return '';
+    }
+}
+
+function normalizeBooleanSettingValue(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+        return '';
+    }
+
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return 'true';
+    }
+
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return 'false';
+    }
+
+    return '';
 }
 
 function upsertEnvEntry(entries, key, value) {
@@ -3009,9 +3061,29 @@ export function createWarden(options = {}) {
     const resolveCurrentServerIp = () => resolveServerIp(resolveWardenRuntimeEnv());
     const resolveCurrentAutoUpdatesEnabled = () => isBooleanFlagEnabled(resolveWardenRuntimeEnv().AUTO_UPDATES);
 
+    const sanitizeServiceRuntimeEnvOverrides = (name, envOverrides = {}) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        if (normalizedName !== MANAGED_KAVITA_SERVICE_NAME) {
+            return envOverrides;
+        }
+
+        const sanitized = {...envOverrides};
+        for (const key of MANAGED_KAVITA_DEFAULT_ENV_FALLBACK_KEYS) {
+            if (
+                Object.prototype.hasOwnProperty.call(sanitized, key)
+                && typeof sanitized[key] === 'string'
+                && !sanitized[key].trim()
+            ) {
+                delete sanitized[key];
+            }
+        }
+
+        return sanitized;
+    };
+
     const writeRuntimeConfig = (name, next = {}) => {
         const normalizedName = normalizeManagedServiceName(name);
-        const envOverrides = normalizeEnvOverrideMap(next.env);
+        const envOverrides = sanitizeServiceRuntimeEnvOverrides(normalizedName, normalizeEnvOverrideMap(next.env));
         const hostPort = normalizeHostPort(next.hostPort);
 
         if (Object.keys(envOverrides).length === 0 && hostPort == null) {
@@ -3073,6 +3145,63 @@ export function createWarden(options = {}) {
         };
     };
 
+    function resolveManagedKavitaMoonBaseUrl() {
+        if (!serviceCatalog.has(MANAGED_MOON_SERVICE_NAME)) {
+            return '';
+        }
+
+        const moonDescriptor = buildEffectiveServiceDescriptor(MANAGED_MOON_SERVICE_NAME).descriptor;
+        const moonEnv = parseEnvEntries(moonDescriptor?.env);
+        const externalUrl = normalizeAbsoluteHttpUrl(moonEnv.MOON_EXTERNAL_URL);
+        if (externalUrl) {
+            return externalUrl;
+        }
+
+        const explicitUrl = normalizeAbsoluteHttpUrl(moonDescriptor?.hostServiceUrl);
+        if (explicitUrl) {
+            return explicitUrl;
+        }
+
+        const port = normalizeHostPort(moonDescriptor?.port ?? moonDescriptor?.internalPort);
+        return port == null ? '' : `${resolveCurrentHostServiceBase()}:${port}`;
+    }
+
+    function applyManagedKavitaNoonaDefaults(descriptor) {
+        if (!descriptor || descriptor.name !== MANAGED_KAVITA_SERVICE_NAME) {
+            return descriptor;
+        }
+
+        const envMap = parseEnvEntries(descriptor.env);
+        const moonBaseUrl =
+            normalizeAbsoluteHttpUrl(envMap.NOONA_MOON_BASE_URL)
+            || resolveManagedKavitaMoonBaseUrl();
+        const portalBaseUrl =
+            normalizeAbsoluteHttpUrl(envMap.NOONA_PORTAL_BASE_URL)
+            || DEFAULT_NOONA_PORTAL_BASE_URL;
+        const socialLoginOnly =
+            normalizeBooleanSettingValue(envMap.NOONA_SOCIAL_LOGIN_ONLY)
+            || DEFAULT_NOONA_SOCIAL_LOGIN_ONLY;
+
+        let nextDescriptor = descriptor;
+        if (moonBaseUrl) {
+            nextDescriptor = {
+                ...nextDescriptor,
+                env: upsertEnvEntry(nextDescriptor.env, 'NOONA_MOON_BASE_URL', moonBaseUrl),
+            };
+        }
+
+        nextDescriptor = {
+            ...nextDescriptor,
+            env: upsertEnvEntry(
+                upsertEnvEntry(nextDescriptor.env, 'NOONA_PORTAL_BASE_URL', portalBaseUrl),
+                'NOONA_SOCIAL_LOGIN_ONLY',
+                socialLoginOnly,
+            ),
+        };
+
+        return nextDescriptor;
+    }
+
     const applyMoonWebGuiPort = (descriptor) => {
         if (!descriptor || descriptor.name !== 'noona-moon') {
             return descriptor;
@@ -3113,6 +3242,7 @@ export function createWarden(options = {}) {
         descriptor = applyServerIpEnv(descriptor);
         descriptor = applyMoonWebGuiPort(descriptor);
         descriptor = applyHostServiceBase(descriptor);
+        descriptor = applyManagedKavitaNoonaDefaults(descriptor);
         const internalPort = descriptor.internalPort || descriptor.port || null;
         const hostPort = normalizeHostPort(runtime.hostPort);
 

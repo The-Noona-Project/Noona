@@ -3462,6 +3462,80 @@ test('Moon MOON_EXTERNAL_URL override publishes external hostServiceUrl metadata
     assert.equal(moonService?.hostServiceUrl, 'https://moon.example.com/');
 });
 
+test('managed noona-kavita inherits the current Moon URL for Noona login defaults', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-kavita': {
+                    name: 'noona-kavita',
+                    image: 'kavita',
+                    port: 5000,
+                    internalPort: 5000,
+                    env: [
+                        'SERVICE_NAME=noona-kavita',
+                        'NOONA_MOON_BASE_URL=',
+                        'NOONA_PORTAL_BASE_URL=',
+                        'NOONA_SOCIAL_LOGIN_ONLY=',
+                    ],
+                },
+            },
+            core: {
+                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+            },
+        },
+        env: {HOST_SERVICE_URL: 'http://localhost'},
+        hostDockerSockets: [],
+    });
+
+    await warden.updateServiceConfig('noona-moon', {
+        env: {WEBGUI_PORT: '3010'},
+    });
+
+    const kavitaConfig = warden.getServiceConfig('noona-kavita');
+    assert.equal(kavitaConfig.env.NOONA_MOON_BASE_URL, 'http://localhost:3010');
+    assert.equal(kavitaConfig.env.NOONA_PORTAL_BASE_URL, 'http://noona-portal:3003');
+    assert.equal(kavitaConfig.env.NOONA_SOCIAL_LOGIN_ONLY, 'true');
+});
+
+test('blank managed noona-kavita Noona overrides are treated as unset', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-kavita': {
+                    name: 'noona-kavita',
+                    image: 'kavita',
+                    port: 5000,
+                    internalPort: 5000,
+                    env: ['SERVICE_NAME=noona-kavita'],
+                },
+            },
+            core: {
+                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+            },
+        },
+        env: {HOST_SERVICE_URL: 'http://localhost'},
+        hostDockerSockets: [],
+    });
+
+    await warden.updateServiceConfig('noona-moon', {
+        env: {MOON_EXTERNAL_URL: 'https://moon.example.com'},
+    });
+
+    await warden.updateServiceConfig('noona-kavita', {
+        env: {
+            NOONA_MOON_BASE_URL: '',
+            NOONA_PORTAL_BASE_URL: '',
+            NOONA_SOCIAL_LOGIN_ONLY: '',
+        },
+    });
+
+    const kavitaConfig = warden.getServiceConfig('noona-kavita');
+    assert.equal(kavitaConfig.env.NOONA_MOON_BASE_URL, 'https://moon.example.com');
+    assert.equal(kavitaConfig.env.NOONA_PORTAL_BASE_URL, 'http://noona-portal:3003');
+    assert.equal(kavitaConfig.env.NOONA_SOCIAL_LOGIN_ONLY, 'true');
+    assert.deepEqual(kavitaConfig.runtimeConfig.env, {});
+});
+
 test('updateServiceConfig persists service runtime overrides to noona_settings', async () => {
     const writes = [];
     const warden = buildWarden({

@@ -140,6 +140,7 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         'REQUIRED_ROLE_JOIN',
         'REQUIRED_ROLE_SCAN',
         'REQUIRED_ROLE_SEARCH',
+        'REQUIRED_ROLE_RECOMMEND',
     ];
 
     for (const [key, value] of requiredExpectations) {

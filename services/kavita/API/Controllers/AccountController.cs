@@ -120,10 +120,55 @@ public class AccountController : BaseApiController
         };
     }
 
-    private static string GetNoonaMoonBaseUrl() =>
-        NormalizeAbsoluteHttpUrl(Environment.GetEnvironmentVariable("NOONA_MOON_BASE_URL"));
+    private static int GetNoonaMoonPort()
+    {
+        var candidate = Environment.GetEnvironmentVariable("NOONA_MOON_PORT");
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            candidate = Environment.GetEnvironmentVariable("WEBGUI_PORT");
+        }
 
-    private static bool IsNoonaSocialLoginOnlyEnabled()
+        return int.TryParse(candidate, out var port) && port is >= 1 and <= 65535 ? port : 3000;
+    }
+
+    private static string BuildAbsoluteHttpUrl(string? scheme, string? host, int port)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return string.Empty;
+
+        var normalizedScheme = string.Equals(scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            ? Uri.UriSchemeHttps
+            : Uri.UriSchemeHttp;
+
+        return new UriBuilder(normalizedScheme, host.Trim(), port).Uri.ToString().TrimEnd('/');
+    }
+
+    private string GetNoonaMoonBaseUrl()
+    {
+        var configured = NormalizeAbsoluteHttpUrl(Environment.GetEnvironmentVariable("NOONA_MOON_BASE_URL"));
+        if (!string.IsNullOrEmpty(configured))
+        {
+            return configured;
+        }
+
+        var defaultMoonPort = GetNoonaMoonPort();
+        var hostServiceUrl = NormalizeAbsoluteHttpUrl(Environment.GetEnvironmentVariable("HOST_SERVICE_URL"));
+        if (!string.IsNullOrEmpty(hostServiceUrl) && Uri.TryCreate(hostServiceUrl, UriKind.Absolute, out var hostServiceUri))
+        {
+            return BuildAbsoluteHttpUrl(hostServiceUri.Scheme, hostServiceUri.Host, defaultMoonPort);
+        }
+
+        var serverIp = Environment.GetEnvironmentVariable("SERVER_IP")?.Trim();
+        if (!string.IsNullOrWhiteSpace(serverIp))
+        {
+            return BuildAbsoluteHttpUrl(Request?.Scheme, serverIp, defaultMoonPort);
+        }
+
+        return string.IsNullOrWhiteSpace(Request?.Host.Host)
+            ? string.Empty
+            : BuildAbsoluteHttpUrl(Request.Scheme, Request.Host.Host, defaultMoonPort);
+    }
+
+    private bool IsNoonaSocialLoginOnlyEnabled()
     {
         var moonBaseUrl = GetNoonaMoonBaseUrl();
         if (string.IsNullOrEmpty(moonBaseUrl)) return false;

@@ -388,6 +388,12 @@ const serviceDefs = rawList.map(name => {
                 description: 'Discord role ID required to execute the /search command.',
                 required: false,
             },
+            {
+                key: 'REQUIRED_ROLE_RECOMMEND',
+                label: 'Required Role for /recommend',
+                description: 'Discord role ID required to execute the /recommend command.',
+                required: false,
+            },
         ];
 
         portalEnvFields.forEach(field => {

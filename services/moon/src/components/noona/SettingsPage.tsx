@@ -102,6 +102,12 @@ type StorageLayoutResponse = {
     error?: string;
 };
 
+type DocumentLoadResult = {
+    documents: unknown[];
+    hasMore: boolean;
+    limit: number;
+};
+
 type PortalJoinLibraryOption = {
     id?: number | null;
     name?: string | null;
@@ -314,6 +320,7 @@ const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_ROLE_JOIN",
     "REQUIRED_ROLE_SCAN",
     "REQUIRED_ROLE_SEARCH",
+    "REQUIRED_ROLE_RECOMMEND",
 ]);
 const PORTAL_SETTINGS_SERVICES: Record<PortalSettingsSubtabId, string> = {
     discord: "noona-portal",
@@ -324,8 +331,24 @@ const KOMF_APPLICATION_YML_KEY = "KOMF_APPLICATION_YML";
 const GENERAL_LINK_SERVICES = ["noona-moon", "noona-sage", "noona-portal", "noona-raven", "noona-kavita", "noona-komf", "noona-warden"] as const;
 const FILESYSTEM_SERVICES = ["noona-raven", "noona-vault", "noona-kavita", "noona-komf"] as const;
 const DATABASE_DOCUMENT_PAGE_SIZE = 25;
+const DATABASE_DOCUMENT_VIEWER_HEIGHT = "40rem";
 const LINK_FIELD_PATTERN = /(?:SERVER_IP|(?:BASE|EXTERNAL)?_?URL|HOST)$/i;
 const PATH_FIELD_PATTERN = /(PATH|FOLDER|ROOT|DIR|MOUNT)/i;
+const SERVICE_LINK_FALLBACK_FIELDS: Record<string, EnvConfigField[]> = {
+    "noona-moon": [
+        {
+            key: "MOON_EXTERNAL_URL",
+            label: "Moon External URL",
+            defaultValue: "",
+            description:
+                "Optional public Moon URL used in external links instead of the detected local host address.",
+            warning:
+                "Set a full URL such as https://moon.example.com when users cannot reach the detected local Moon address.",
+            required: false,
+            readOnly: false,
+        },
+    ],
+};
 const STORAGE_LABELS: Record<string, string> = {
     "noona-moon": "Moon",
     "noona-portal": "Portal",
@@ -1331,11 +1354,17 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
-    const loadDocuments = async (collectionName: string, rawLimit = limit) => {
+    const loadDocuments = async (collectionName: string, rawLimit = limit): Promise<DocumentLoadResult> => {
         const safeCollection = collectionName.trim();
         if (!safeCollection) {
             setDocuments([]);
-            return;
+            setLoadedDocumentLimit(0);
+            setDocumentsHasMore(false);
+            return {
+                documents: [],
+                hasMore: false,
+                limit: 0,
+            };
         }
         const parsed = Number(rawLimit);
         const safeLimit = Number.isFinite(parsed) ? Math.max(1, Math.min(200, Math.floor(parsed))) : 50;
@@ -1350,15 +1379,30 @@ export function SettingsPage({selection}: SettingsPageProps) {
             const json = await res.json().catch(() => null);
             if (!res.ok) {
                 setDocumentsError(parseError(json, `Failed to load documents (HTTP ${res.status}).`));
-                return;
+                return {
+                    documents: [],
+                    hasMore: false,
+                    limit: safeLimit,
+                };
             }
             const nextDocuments = Array.isArray(json?.documents) ? json.documents : [];
+            const hasMore = nextDocuments.length >= safeLimit && safeLimit < 200;
             setDocuments(nextDocuments);
             setLoadedDocumentLimit(safeLimit);
-            setDocumentsHasMore(nextDocuments.length >= safeLimit && safeLimit < 200);
+            setDocumentsHasMore(hasMore);
+            return {
+                documents: nextDocuments,
+                hasMore,
+                limit: safeLimit,
+            };
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setDocumentsError(msg);
+            return {
+                documents: [],
+                hasMore: false,
+                limit: safeLimit,
+            };
         } finally {
             setDocumentsLoading(false);
         }
@@ -1369,8 +1413,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
 
         const nextLimit = Math.min(200, loadedDocumentLimit + DATABASE_DOCUMENT_PAGE_SIZE);
-        await loadDocuments(collection, String(nextLimit));
-        return nextLimit > loadedDocumentLimit;
+        const result = await loadDocuments(collection, String(nextLimit));
+        return result.hasMore;
     };
 
     const beginFactoryResetRecovery = (detail: string) => {
@@ -2288,7 +2332,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
             return (
                 <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="m" radius="l">
-                    <Column gap="8">
+                    <Column gap="8" style={{minWidth: 0}}>
                         <Heading as="h3" variant="heading-strong-m">{title}</Heading>
                         {description && (
                             <Text onBackground="neutral-weak" variant="body-default-xs">{description}</Text>
@@ -2656,6 +2700,20 @@ export function SettingsPage({selection}: SettingsPageProps) {
         );
     };
 
+    const mergeFallbackFields = (fields: EnvConfigField[], fallbackFields: EnvConfigField[]) => {
+        const merged: EnvConfigField[] = [];
+        const seen = new Set<string>();
+
+        for (const field of [...fields, ...fallbackFields]) {
+            const key = normalizeString(field?.key).trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            merged.push(field);
+        }
+
+        return merged;
+    };
+
     const renderServiceCards = (
         serviceNames: readonly string[],
         resolveFields: (serviceName: string, editor: ServiceEditorState) => EnvConfigField[],
@@ -2850,8 +2908,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     </Text>
                     {renderServiceCards(
                         GENERAL_LINK_SERVICES,
-                        (_serviceName, editor) =>
-                            (Array.isArray(editor.config?.envConfig) ? editor.config.envConfig : []).filter((field) => {
+                        (serviceName, editor) =>
+                            mergeFallbackFields(
+                                Array.isArray(editor.config?.envConfig) ? editor.config.envConfig : [],
+                                editor.config ? (SERVICE_LINK_FALLBACK_FIELDS[serviceName] ?? []) : [],
+                            ).filter((field) => {
                                 const key = normalizeString(field.key).trim();
                                 return key === "SERVER_IP" || isUrlLikeField(key);
                             }),
@@ -3035,15 +3096,15 @@ export function SettingsPage({selection}: SettingsPageProps) {
             );
 
             return (
-                <Card
-                    key={`${collection}-${idCandidate || index}`}
-                    fillWidth
-                    background={BG_SURFACE}
-                    border="neutral-alpha-weak"
-                    padding="m"
-                    radius="l"
-                >
-                    <Column gap="8">
+                <Row key={`${collection}-${idCandidate || index}`} fillWidth>
+                    <Card
+                        fillWidth
+                        background={BG_SURFACE}
+                        border="neutral-alpha-weak"
+                        padding="m"
+                        radius="l"
+                    >
+                        <Column gap="8" style={{minWidth: 0}}>
                         <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                             <Text variant="label-default-s">{label || `Document ${index + 1}`}</Text>
                             {timestamp && (
@@ -3058,11 +3119,18 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             </Text>
                         )}
                         <Text variant="body-default-xs"
-                              style={{whiteSpace: "pre-wrap", fontFamily: "var(--font-code)"}}>
+                              style={{
+                                  whiteSpace: "pre-wrap",
+                                  fontFamily: "var(--font-code)",
+                                  overflowWrap: "anywhere",
+                                  wordBreak: "break-word",
+                                  minWidth: 0,
+                              }}>
                             {JSON.stringify(entry, null, 2)}
                         </Text>
-                    </Column>
-                </Card>
+                        </Column>
+                    </Card>
+                </Row>
             );
         };
 
@@ -3110,7 +3178,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             vaultEditor,
                             vaultMongoUriField,
                             "mongo-uri",
-                            {secretVisible: showMongoUri},
+                            {type: showMongoUri ? "text" : "password"},
                         )}
                         {!vaultEditor.loading && !vaultMongoUriField && (
                             <Text onBackground="neutral-weak" variant="body-default-xs">
@@ -3154,15 +3222,17 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     ))}
                                 </Row>
                                 {collection && (
-                                    <Row gap="12" style={{flexWrap: "wrap"}}>
-                                        <Input
-                                            id="vault-limit"
-                                            name="vault-limit"
-                                            type="number"
-                                            label="Initial batch size"
-                                            value={limit}
-                                            onChange={(event) => setLimit(event.target.value)}
-                                        />
+                                    <Row gap="12" vertical="end" style={{flexWrap: "wrap"}}>
+                                        <div style={{width: "12rem", maxWidth: "100%"}}>
+                                            <Input
+                                                id="vault-limit"
+                                                name="vault-limit"
+                                                type="number"
+                                                label="Initial batch size"
+                                                value={limit}
+                                                onChange={(event) => setLimit(event.target.value)}
+                                            />
+                                        </div>
                                         <Button variant="secondary" disabled={documentsLoading}
                                                 onClick={() => void loadDocuments(collection, limit)}>
                                             {documentsLoading ? "Loading..." : "Load documents"}
@@ -3171,31 +3241,59 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 )}
                                 {documentsError && <Text onBackground="danger-strong"
                                                          variant="body-default-xs">{documentsError}</Text>}
-                                {documentsLoading && sortedDocuments.length === 0 && (
-                                    <Row fillWidth horizontal="center" paddingY="16">
-                                        <Spinner/>
-                                    </Row>
-                                )}
-                                {collection && sortedDocuments.length === 0 && !documentsLoading && !documentsError && (
-                                    <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        No documents were returned for this collection.
-                                    </Text>
-                                )}
-                                {sortedDocuments.length > 0 && (
+                                {collection && (
                                     <Column gap="8">
                                         <Text onBackground="neutral-weak" variant="body-default-xs">
                                             Showing {sortedDocuments.length} document{sortedDocuments.length === 1 ? "" : "s"}
                                             {documentsHasMore ? " with more available as you scroll." : "."}
                                         </Text>
-                                        <InfiniteScroll
+                                        <Column
                                             fillWidth
-                                            direction="column"
                                             gap="8"
-                                            items={sortedDocuments}
-                                            loading={documentsLoading}
-                                            loadMore={loadMoreDocuments}
-                                            renderItem={renderDocumentCard}
-                                        />
+                                            background={BG_NEUTRAL_ALPHA_WEAK}
+                                            padding="m"
+                                            radius="l"
+                                            border="neutral-alpha-weak"
+                                            style={{
+                                                height: DATABASE_DOCUMENT_VIEWER_HEIGHT,
+                                                minHeight: DATABASE_DOCUMENT_VIEWER_HEIGHT,
+                                                overflowY: "auto",
+                                                overflowX: "hidden",
+                                                paddingRight: 12,
+                                            }}
+                                        >
+                                            {documentsLoading && sortedDocuments.length === 0 && (
+                                                <Row
+                                                    fillWidth
+                                                    horizontal="center"
+                                                    vertical="center"
+                                                    style={{height: "100%"}}
+                                                >
+                                                    <Spinner/>
+                                                </Row>
+                                            )}
+                                            {sortedDocuments.length === 0 && !documentsLoading && !documentsError && (
+                                                <Row
+                                                    fillWidth
+                                                    horizontal="center"
+                                                    vertical="center"
+                                                    style={{height: "100%"}}
+                                                >
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        No documents were returned for this collection.
+                                                    </Text>
+                                                </Row>
+                                            )}
+                                            {sortedDocuments.length > 0 && (
+                                                <InfiniteScroll
+                                                    items={sortedDocuments}
+                                                    loading={documentsLoading}
+                                                    loadMore={loadMoreDocuments}
+                                                    threshold={160}
+                                                    renderItem={renderDocumentCard}
+                                                />
+                                            )}
+                                        </Column>
                                     </Column>
                                 )}
                             </Column>

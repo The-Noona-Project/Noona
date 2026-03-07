@@ -116,6 +116,10 @@ mode.
 - The managed `noona-moon` descriptor now also exposes `MOON_EXTERNAL_URL`. When set, Warden publishes that URL as
   Moon's `hostServiceUrl`, so downstream services (including Portal recommendation DMs) can send publicly reachable
   Moon links instead of local LAN links.
+- Managed `noona-kavita` now derives its default `NOONA_MOON_BASE_URL` from Moon's effective host URL at runtime.
+  That means the Kavita `Log in with Noona` button follows Moon `WEBGUI_PORT` and `MOON_EXTERNAL_URL` changes
+  automatically, and empty Noona-login overrides on managed Kavita fall back to the live Moon/Portal defaults instead
+  of disabling the button.
 - The managed `noona-portal` descriptor now exposes `KAVITA_EXTERNAL_URL` so Portal can emit public Kavita links in
   Moon UI button payloads and recommendation-related Discord messages.
 - The managed `noona-kavita` descriptor now also exposes `NOONA_MOON_BASE_URL` and `NOONA_PORTAL_BASE_URL`. Kavita
@@ -158,6 +162,8 @@ mode.
   and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab. Managed
   installs default those values to `*,-admin` and `*`, and Warden injects Portal's Vault credential through the
   generated `VAULT_API_TOKEN` field instead of asking users to type a Vault token during setup.
+- The same Portal descriptor also publishes `REQUIRED_GUILD_ID` and `REQUIRED_ROLE_<COMMAND>` fields so Moon can edit
+  per-command Discord access for `/ding`, `/join`, `/scan`, `/search`, and `/recommend`.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under
   `services.config.*` keys, and Warden reloads them during full boot before launching the rest of the managed stack.
 - Warden also reads a setup JSON snapshot from `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` during startup.
