@@ -41,6 +41,12 @@ export const allRoles = [
   Role.Promote,
 ]
 
+export type NoonaLoginConfig = {
+  enabled: boolean;
+  moonBaseUrl: string;
+  disablePasswordLogin: boolean;
+};
+
 @Injectable({
   providedIn: 'root'
 })
@@ -237,6 +243,21 @@ export class AccountService {
         }
       })
     );
+  }
+
+  noonaLogin(token: string) {
+    return this.httpClient.post<User>(this.baseUrl + 'account/noona-login', {token}).pipe(
+      tap((response: User) => {
+        const user = response;
+        if (user) {
+          this.setCurrentUser(user);
+        }
+      })
+    );
+  }
+
+  getNoonaConfig() {
+    return this.httpClient.get<NoonaLoginConfig>(this.baseUrl + 'account/noona-config');
   }
 
   getAccount() {

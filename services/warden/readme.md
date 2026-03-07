@@ -118,6 +118,12 @@ mode.
   Moon links instead of local LAN links.
 - The managed `noona-portal` descriptor now exposes `KAVITA_EXTERNAL_URL` so Portal can emit public Kavita links in
   Moon UI button payloads and recommendation-related Discord messages.
+- The managed `noona-kavita` descriptor now also exposes `NOONA_MOON_BASE_URL` and `NOONA_PORTAL_BASE_URL`. Kavita
+  uses the Moon URL for the public `Log in with Noona` button and the Portal URL for the internal one-time token
+  redemption call that completes the Noona-to-Kavita login handoff.
+- Managed `noona-kavita` also exposes `NOONA_SOCIAL_LOGIN_ONLY`, which now defaults to `true`. When that flag remains
+  enabled and `NOONA_MOON_BASE_URL` is set, Kavita hides the local username/password form and rejects direct password
+  logins so users must authenticate through the `Log in with Noona` handoff.
 - Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
   remain the always-on platform services around that managed stack.
 - Managed Noona images now default to `docker.darkmatterservers.com/the-noona-project/*`, including managed Kavita at

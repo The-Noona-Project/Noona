@@ -56,6 +56,11 @@ default Discord roles.
 - `POST /api/portal/kavita/title-match/apply` - apply a selected Kavita metadata candidate to a series and, when Moon
   supplies the Raven `titleUuid`, immediately lock Kavita to the same Noona cover art through the `title-cover`
   proxy route. Managed Komf / Kavita server failures return the same compact operator-facing `500` guidance.
+- `POST /api/portal/kavita/noona-login` - create or update a Kavita account for a signed-in Noona Discord user,
+  generate a fresh managed password, store the Noona-to-Kavita mapping in Vault, and mint a short-lived one-time
+  login token for Kavita's Noona handoff flow.
+- `POST /api/portal/kavita/login-tokens/consume` - redeem a short-lived one-time Kavita login token issued by the
+  Noona handoff flow.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
   picker.
 - `POST /api/portal/onboard` - create a Kavita user, store an onboarding token, and optionally persist the credential.
@@ -79,7 +84,9 @@ default Discord roles.
 - Recommendation follow-up DMs: Portal polls Vault recommendations and sends direct messages to the original requester
   when a manager approves the recommendation (including approver name), then sends a second DM once the title appears
   in Raven and a Kavita series link can be resolved (preferring `KAVITA_EXTERNAL_URL`). It also sends a DM when an
-  admin adds a recommendation timeline comment, including a direct Moon link to `/myrecommendations/<id>`.
+  admin adds a recommendation timeline comment, including a direct Moon link to `/myrecommendations/<id>`. The same
+  poller now mirrors Raven download activity into each recommendation timeline by appending
+  `download-started` and `download-completed` system events before Kavita completion DMs go out.
 - Boot behavior: on Discord login, Portal clears current-app global commands, clears the guild command list, then
   re-registers all current slash command definitions for the configured guild.
 

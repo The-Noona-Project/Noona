@@ -2,7 +2,19 @@
 
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Badge, Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
+import {
+    Badge,
+    Button,
+    Card,
+    Column,
+    Heading,
+    Input,
+    Row,
+    SmartLink,
+    Spinner,
+    Text,
+    Timeline
+} from "@once-ui-system/core";
 import {AuthGate} from "./AuthGate";
 import {SetupModeGate} from "./SetupModeGate";
 import {
@@ -36,7 +48,17 @@ const timelineEventLabel = (event: RecommendationTimelineEvent): string => {
     if (type === "approved") return "Approved";
     if (type === "denied") return "Denied";
     if (type === "comment") return "Comment";
+    if (type === "download-started") return "Chapters download";
+    if (type === "download-completed") return "Download complete";
     return "Update";
+};
+
+const timelineEventState = (event: RecommendationTimelineEvent): "default" | "active" | "success" | "danger" => {
+    const type = normalizeString(event.type).toLowerCase();
+    if (type === "approved" || type === "download-completed") return "success";
+    if (type === "denied") return "danger";
+    if (type === "comment" || type === "download-started") return "active";
+    return "default";
 };
 
 export function RecommendationDetailPage({recommendationId, scope}: RecommendationDetailPageProps) {
@@ -189,6 +211,26 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
         () => (Array.isArray(recommendation?.timeline) ? recommendation.timeline : []),
         [recommendation?.timeline],
     );
+    const timelineItems = useMemo(
+        () => timelineRows.map((event) => {
+            const actor = timelineActorLabel(event);
+            const createdAt = formatTimestamp(event.createdAt);
+            const body = normalizeString(event.body);
+            const meta = [actor, createdAt].filter(Boolean).join(" • ");
+
+            return {
+                label: timelineEventLabel(event),
+                description: meta || undefined,
+                state: timelineEventState(event),
+                children: body ? (
+                    <Text onBackground="neutral-weak" wrap="balance">
+                        {body}
+                    </Text>
+                ) : undefined,
+            };
+        }),
+        [timelineRows],
+    );
 
     const status = normalizeStatus(recommendation?.status);
     const canTransition = isPendingRecommendation(status);
@@ -338,43 +380,13 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
                                         </Text>
                                     )}
 
-                                    {timelineRows.map((event) => {
-                                        const key = normalizeString(event.id) || `${normalizeString(event.type)}:${normalizeString(event.createdAt)}`;
-                                        const actor = timelineActorLabel(event);
-                                        const createdAt = formatTimestamp(event.createdAt);
-                                        const body = normalizeString(event.body);
-
-                                        return (
-                                            <Card
-                                                key={key}
-                                                fillWidth
-                                                background="surface"
-                                                border="neutral-alpha-weak"
-                                                padding="m"
-                                                radius="m"
-                                            >
-                                                <Column gap="8">
-                                                    <Row fillWidth horizontal="between" vertical="center" gap="8"
-                                                         s={{direction: "column"}}>
-                                                        <Badge background="neutral-alpha-weak">
-                                                            {timelineEventLabel(event)}
-                                                        </Badge>
-                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                            {createdAt || "Unknown time"}
-                                                        </Text>
-                                                    </Row>
-                                                    <Text variant="body-default-xs" onBackground="neutral-weak">
-                                                        {actor}
-                                                    </Text>
-                                                    {body && (
-                                                        <Text wrap="balance">
-                                                            {body}
-                                                        </Text>
-                                                    )}
-                                                </Column>
-                                            </Card>
-                                        );
-                                    })}
+                                    {timelineItems.length > 0 && (
+                                        <Timeline
+                                            fillWidth
+                                            size="m"
+                                            items={timelineItems}
+                                        />
+                                    )}
                                 </Column>
                             </Card>
                         </>

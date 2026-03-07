@@ -1,8 +1,10 @@
 // services/portal/routes/registerPortalRoutes.mjs
 
+import crypto from 'node:crypto';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 
 const DEFAULT_PROXY_TIMEOUT_MS = 10000;
+const NOONA_KAVITA_LOGIN_TOKEN_TYPE = 'noona-kavita-login';
 const buildError = (status, message, details) => ({status, message, details});
 
 const normalizeError = (error, fallbackStatus = 500) => {
@@ -93,6 +95,45 @@ const normalizeDistinctStrings = (...values) => {
     }
 
     return normalized;
+};
+
+const buildGeneratedPassword = () => `Noona-${crypto.randomBytes(24).toString('base64url')}`;
+
+const normalizeKavitaUsername = (...candidates) => {
+    for (const candidate of candidates) {
+        const normalized = normalizeString(candidate);
+        if (!normalized) {
+            continue;
+        }
+
+        const sanitized = normalized
+            .replace(/\s+/g, '_')
+            .replace(/[^A-Za-z0-9._@+-]+/g, '')
+            .replace(/^[._@+-]+/, '')
+            .slice(0, 64);
+
+        if (sanitized.length >= 3) {
+            return sanitized;
+        }
+    }
+
+    return '';
+};
+
+const readStoredPortalCredential = async (vault, discordId) => {
+    if (!vault?.readSecret || !discordId) {
+        return null;
+    }
+
+    try {
+        return await vault.readSecret(`portal/${discordId}`);
+    } catch (error) {
+        if (Number(error?.status) === 404) {
+            return null;
+        }
+
+        throw error;
+    }
 };
 
 const toKavitaSeriesUrl = (baseUrl, series = {}) => {
@@ -551,6 +592,136 @@ export const registerPortalRoutes = ({
         } catch (error) {
             const normalized = normalizeError(error);
             errMSG(`[Portal] Failed to load join options: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/noona-login', async (req, res) => {
+        const discordId = normalizeString(req.body?.discordId);
+        const email = normalizeString(req.body?.email);
+        const requestedUsername = normalizeString(req.body?.username);
+        const discordUsername = normalizeString(req.body?.discordUsername);
+        const displayName = normalizeString(req.body?.displayName);
+
+        if (!discordId || !email) {
+            res.status(400).json({error: 'discordId and email are required.'});
+            return;
+        }
+
+        if (!onboardingStore?.setToken || !onboardingStore?.getToken || !onboardingStore?.consumeToken) {
+            res.status(503).json({error: 'Portal login token storage is not configured.'});
+            return;
+        }
+
+        if (!kavita?.createOrUpdateUser) {
+            res.status(503).json({error: 'Kavita provisioning is not configured.'});
+            return;
+        }
+
+        try {
+            const storedCredential = await readStoredPortalCredential(vault, discordId);
+            const normalizedUsername = normalizeKavitaUsername(
+                normalizeString(storedCredential?.username),
+                discordUsername,
+                requestedUsername,
+                displayName,
+                normalizeString(email).split('@')[0],
+                `noona_${discordId.slice(-8)}`,
+            );
+
+            if (!normalizedUsername) {
+                res.status(400).json({error: 'Unable to derive a valid Kavita username from the Noona account.'});
+                return;
+            }
+
+            const generatedPassword = buildGeneratedPassword();
+            const defaultRoles = Array.isArray(config.join?.defaultRoles) ? config.join.defaultRoles : [];
+            const defaultLibraries = Array.isArray(config.join?.defaultLibraries) ? config.join.defaultLibraries : [];
+
+            const provisionedUser = await kavita.createOrUpdateUser({
+                username: normalizedUsername,
+                email,
+                password: generatedPassword,
+                roles: defaultRoles,
+                libraries: defaultLibraries,
+                matchUsernames: normalizeDistinctStrings(
+                    storedCredential?.username,
+                    requestedUsername,
+                    discordUsername,
+                ),
+                matchEmails: normalizeDistinctStrings(
+                    storedCredential?.email,
+                    email,
+                ),
+            });
+
+            const loginToken = await onboardingStore.setToken(discordId, {
+                type: NOONA_KAVITA_LOGIN_TOKEN_TYPE,
+                username: provisionedUser.username,
+                email: provisionedUser.email,
+                password: generatedPassword,
+            });
+
+            if (vault?.storePortalCredential) {
+                await vault.storePortalCredential(discordId, {
+                    username: provisionedUser.username,
+                    email: provisionedUser.email,
+                    roles: provisionedUser.roles,
+                    libraries: provisionedUser.libraries,
+                    issuedAt: new Date().toISOString(),
+                });
+            }
+
+            res.status(provisionedUser.created === true ? 201 : 200).json({
+                token: loginToken?.token,
+                username: provisionedUser.username,
+                email: provisionedUser.email,
+                created: provisionedUser.created === true,
+                baseUrl: kavitaLinkBaseUrl,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to provision Noona Kavita login for ${discordId}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/login-tokens/consume', async (req, res) => {
+        const token = normalizeString(req.body?.token);
+        if (!token) {
+            res.status(400).json({error: 'token is required.'});
+            return;
+        }
+
+        if (!onboardingStore?.getToken || !onboardingStore?.consumeToken) {
+            res.status(503).json({error: 'Portal login token storage is not configured.'});
+            return;
+        }
+
+        try {
+            const record = await onboardingStore.getToken(token);
+            if (!record || record.type !== NOONA_KAVITA_LOGIN_TOKEN_TYPE) {
+                res.status(404).json({error: 'Token not found or expired.'});
+                return;
+            }
+
+            const consumed = await onboardingStore.consumeToken(token);
+            if (!consumed) {
+                res.status(404).json({error: 'Token not found or expired.'});
+                return;
+            }
+
+            res.json({
+                success: true,
+                record: {
+                    username: consumed.username,
+                    email: consumed.email,
+                    password: consumed.password,
+                },
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to consume Kavita login token: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }
     });

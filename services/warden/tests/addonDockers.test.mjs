@@ -26,6 +26,19 @@ test('noona-kavita addon descriptor exposes optional first-admin bootstrap field
     }
 })
 
+test('noona-kavita addon descriptor exposes Noona login bridge URLs and social-login-only mode', () => {
+    const kavita = addonDockers['noona-kavita']
+    assert.ok(kavita)
+
+    const envKeys = new Set((Array.isArray(kavita.env) ? kavita.env : []).map((entry) => String(entry).split('=')[0]))
+    const configKeys = new Set((Array.isArray(kavita.envConfig) ? kavita.envConfig : []).map((entry) => entry?.key))
+
+    for (const key of ['NOONA_MOON_BASE_URL', 'NOONA_PORTAL_BASE_URL', 'NOONA_SOCIAL_LOGIN_ONLY']) {
+        assert.ok(envKeys.has(key), `${key} should be exported in the managed Kavita env.`)
+        assert.ok(configKeys.has(key), `${key} should be documented in managed Kavita envConfig.`)
+    }
+})
+
 test('noona-komf addon descriptor only exposes Kavita-specific configuration fields', () => {
     const komf = addonDockers['noona-komf']
     assert.ok(komf)

@@ -1813,6 +1813,105 @@ test('GET /api/recommendations returns Vault recommendation records sorted by re
     assert.deepEqual(calls, [['portal_recommendations', {}]])
 })
 
+test('GET /api/recommendations preserves Raven download timeline event types', async (t) => {
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return [
+                {
+                    _id: 'rec-raven-timeline-1',
+                    source: 'discord',
+                    status: 'approved',
+                    requestedAt: '2025-02-01T00:00:00.000Z',
+                    approvedAt: '2025-02-01T00:05:00.000Z',
+                    query: 'Solo Leveling',
+                    title: 'Solo Leveling',
+                    requestedBy: {
+                        discordId: '111',
+                        tag: 'requester',
+                    },
+                    timeline: [
+                        {
+                            id: 'event-created',
+                            type: 'created',
+                            createdAt: '2025-02-01T00:00:00.000Z',
+                            actor: {
+                                role: 'user',
+                                discordId: '111',
+                                tag: 'requester',
+                            },
+                        },
+                        {
+                            id: 'event-download-started',
+                            type: 'download-started',
+                            createdAt: '2025-02-01T00:06:00.000Z',
+                            actor: {
+                                role: 'system',
+                                username: 'Raven',
+                            },
+                            body: 'Raven started downloading 12 chapters.',
+                        },
+                        {
+                            id: 'event-download-completed',
+                            type: 'download-completed',
+                            createdAt: '2025-02-01T00:09:00.000Z',
+                            actor: {
+                                role: 'system',
+                                username: 'Raven',
+                            },
+                            body: 'Raven finished downloading 12 chapters.',
+                        },
+                    ],
+                },
+            ]
+        }
+
+        return originalFindMany(collection, query)
+    }
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.equal(payload.recommendations.length, 1)
+    assert.deepEqual(
+        payload.recommendations[0]?.timeline?.map((event) => event?.type),
+        ['created', 'approved', 'download-started', 'download-completed'],
+    )
+    assert.equal(payload.recommendations[0]?.timeline?.[2]?.actor?.username, 'Raven')
+    assert.equal(payload.recommendations[0]?.timeline?.[3]?.body, 'Raven finished downloading 12 chapters.')
+})
+
 test('GET /api/myrecommendations allows myRecommendations users and marks non-managers', async (t) => {
     const vault = createVaultAuthStub()
     await vault.client.users.create({

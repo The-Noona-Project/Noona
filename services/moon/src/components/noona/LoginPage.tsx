@@ -1,7 +1,7 @@
 "use client";
 
 import {useEffect, useState} from "react";
-import {useRouter} from "next/navigation";
+import {useRouter, useSearchParams} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
 
 type SetupStatus = {
@@ -22,10 +22,15 @@ const normalizeString = (value: unknown): string => (typeof value === "string" ?
 
 export function LoginPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [checking, setChecking] = useState(true);
     const [configured, setConfigured] = useState(false);
     const [loggingIn, setLoggingIn] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const returnTo = (() => {
+        const candidate = normalizeString(searchParams.get("returnTo")).trim();
+        return candidate.startsWith("/") ? candidate : "/";
+    })();
 
     useEffect(() => {
         let cancelled = false;
@@ -39,7 +44,7 @@ export function LoginPage() {
                 const authRes = await fetch("/api/noona/auth/status", {cache: "no-store"});
                 if (cancelled) return;
                 if (authRes.ok) {
-                    router.replace(setupCompleted ? "/" : "/setupwizard/summary");
+                    router.replace(setupCompleted ? returnTo : "/setupwizard/summary");
                     return;
                 }
 
@@ -69,7 +74,7 @@ export function LoginPage() {
         return () => {
             cancelled = true;
         };
-    }, [router]);
+    }, [router, returnTo]);
 
     const startDiscordLogin = async () => {
         if (loggingIn) return;
@@ -83,7 +88,7 @@ export function LoginPage() {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     mode: "login",
-                    returnTo: "/",
+                    returnTo,
                 }),
             });
             const payload = (await response.json().catch(() => null)) as DiscordStartResponse | null;

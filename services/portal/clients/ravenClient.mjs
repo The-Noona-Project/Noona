@@ -120,6 +120,14 @@ export const createPortalRavenClient = ({
     };
 
     return {
+        getDownloadStatus: async () => {
+            const payload = await request('/v1/download/status');
+            return Array.isArray(payload) ? payload : [];
+        },
+        getDownloadHistory: async () => {
+            const payload = await request('/v1/download/status/history');
+            return Array.isArray(payload) ? payload : [];
+        },
         getDownloadSummary: async () => await request('/v1/download/status/summary'),
         getLibrary: async () => {
             const payload = await request('/v1/library/getall');

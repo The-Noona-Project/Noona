@@ -63,6 +63,66 @@ test('getLibrary requests the Raven library endpoint and returns titles', async 
     assert.equal(new URL(calls[0].url).pathname, '/v1/library/getall');
 });
 
+test('getDownloadStatus requests the Raven download status endpoint and returns tasks', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify([
+                {
+                    title: 'Solo Leveling',
+                    status: 'downloading',
+                },
+            ]), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const tasks = await raven.getDownloadStatus();
+
+    assert.equal(Array.isArray(tasks), true);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].status, 'downloading');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'GET');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/download/status');
+});
+
+test('getDownloadHistory requests the Raven download history endpoint and returns tasks', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify([
+                {
+                    title: 'Solo Leveling',
+                    status: 'completed',
+                },
+            ]), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const tasks = await raven.getDownloadHistory();
+
+    assert.equal(Array.isArray(tasks), true);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].status, 'completed');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'GET');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/download/status/history');
+});
+
 test('getTitle requests the Raven title endpoint and returns the payload', async () => {
     const calls = [];
     const raven = createPortalRavenClient({

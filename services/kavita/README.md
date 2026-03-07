@@ -29,6 +29,7 @@ your reading collection with your friends and family!
 - [Container entrypoint](entrypoint.sh)
 - [Noona bootstrap helper](noona-bootstrap-admin.sh)
 - [First-admin API controller](API/Controllers/AccountController.cs)
+- [Login UI component](UI/Web/src/app/registration/user-login/user-login.component.ts)
 - [Default config template](API/config/appsettings.json)
 
 ## Noona Integration
@@ -40,6 +41,17 @@ Kavita admin/API-key provisioning, so the web UI wizard is not required for the 
 The image still ships the `noona-bootstrap-admin.sh` helper for standalone troubleshooting, but it is now disabled by
 default to avoid racing Warden during managed installs. Set `NOONA_BOOTSTRAP_ADMIN_ON_START=true` only when you
 explicitly want the container to attempt first-admin registration on its own.
+
+Managed `noona-kavita` also supports a Noona login handoff flow. When `NOONA_MOON_BASE_URL` points at the public Moon
+login URL, Kavita shows a `Log in with Noona` button on `/login`. Moon signs the user into Noona with Discord if
+needed, Portal creates or refreshes the matching Kavita account with a generated password, then Kavita redeems the
+short-lived handoff token through `NOONA_PORTAL_BASE_URL` and completes a normal Kavita JWT login without exposing the
+generated password in the browser.
+
+Managed installs now default `NOONA_SOCIAL_LOGIN_ONLY=true`. When that flag stays enabled and `NOONA_MOON_BASE_URL` is
+set, Kavita hides the legacy username/password form on `/login` and rejects direct password logins on
+`POST /api/account/login`, forcing users through the Noona handoff button instead. Set
+`NOONA_SOCIAL_LOGIN_ONLY=false` only if you intentionally need to restore local Kavita password logins.
 
 ## What Kavita Provides
 

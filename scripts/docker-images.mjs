@@ -21,12 +21,31 @@ function hasExplicitRegistryHost(value) {
     return typeof value === 'string' && (value.includes('.') || value.includes(':') || value === 'localhost');
 }
 
+function normalizeProgressMode(value) {
+    if (typeof value !== 'string') return '';
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'auto' || normalized === 'plain' || normalized === 'tty' || normalized === 'rawjson') {
+        return normalized;
+    }
+    return '';
+}
+
+function formatDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '0s';
+    const totalSeconds = Math.round(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes === 0) return `${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+}
+
 const DEFAULT_REGISTRY = process.env.NOONA_DOCKER_REGISTRY || 'docker.darkmatterservers.com';
 const DEFAULT_PROJECT = process.env.NOONA_DOCKER_PROJECT || 'the-noona-project';
 const DEFAULT_NAMESPACE = normalizeNamespace(
     process.env.NOONA_DOCKER_NAMESPACE || `${DEFAULT_REGISTRY}/${DEFAULT_PROJECT}`,
 );
 const DEFAULT_TAG = process.env.NOONA_DOCKER_TAG || 'latest';
+const DEFAULT_PROGRESS = normalizeProgressMode(process.env.NOONA_DOCKER_PROGRESS) || 'plain';
 const DEFAULT_AUTO_LOGIN = process.env.NOONA_DOCKER_AUTO_LOGIN == null
     ? true
     : isTruthyFlag(process.env.NOONA_DOCKER_AUTO_LOGIN);
@@ -66,9 +85,9 @@ const usage = () => {
             '',
             'Usage:',
             '  node docker-images.mjs list',
-            '  node docker-images.mjs build [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache]',
+            '  node docker-images.mjs build [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache] [--progress plain]',
             '  node docker-images.mjs push  [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--skip-login]',
-            '  node docker-images.mjs publish [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache] [--skip-login]',
+            '  node docker-images.mjs publish [--services moon,sage,kavita,komf] [--tag latest] [--namespace docker.darkmatterservers.com/the-noona-project] [--no-cache] [--skip-login] [--progress plain]',
             '',
             'Env:',
             `  NOONA_DOCKER_NAMESPACE   Full namespace override (default: ${DEFAULT_NAMESPACE})`,
@@ -78,6 +97,7 @@ const usage = () => {
             `  NOONA_DOCKER_USERNAME    Registry username override for automatic docker login (default: ${DEFAULT_LOGIN_USERNAME})`,
             '  NOONA_DOCKER_PASSWORD    Registry password/token override for automatic docker login',
             '  NOONA_DOCKER_TAG         Default tag (default: latest)',
+            `  NOONA_DOCKER_PROGRESS    BuildKit progress mode for build/publish (default: ${DEFAULT_PROGRESS})`,
         ].join('\n'),
     );
 };
@@ -217,7 +237,7 @@ const canBuildService = (service) => {
     return {ok: true};
 };
 
-const buildService = async (service, {namespace, tag, noCache, push = false}) => {
+const buildService = async (service, {namespace, tag, noCache, push = false, progress = DEFAULT_PROGRESS}) => {
     const preflight = canBuildService(service);
     if (!preflight.ok) {
         console.warn(`[skip] ${service.name}: ${preflight.reason}`);
@@ -225,13 +245,15 @@ const buildService = async (service, {namespace, tag, noCache, push = false}) =>
     }
 
     const image = resolveImageTag(service.name, {namespace, tag});
-    const dockerArgs = ['buildx', 'build', '-f', service.dockerfile, '-t', image];
+    const dockerArgs = ['buildx', 'build', '--progress', progress, '-f', service.dockerfile, '-t', image];
     if (noCache) dockerArgs.push('--no-cache');
     dockerArgs.push(push ? '--push' : '--load');
     dockerArgs.push('.');
 
-    console.log(`[${push ? 'publish' : 'build'}] ${service.name} -> ${image}`);
+    const startedAt = Date.now();
+    console.log(`[${push ? 'publish' : 'build'}] ${service.name} -> ${image} (progress=${progress})`);
     await runDocker(dockerArgs);
+    console.log(`[${push ? 'publish' : 'build'}] ${service.name} complete in ${formatDuration(Date.now() - startedAt)}`);
     return {ok: true, image};
 };
 
@@ -262,6 +284,7 @@ const main = async () => {
     const namespace = normalizeNamespace(String(args.namespace || DEFAULT_NAMESPACE));
     const tag = String(args.tag || DEFAULT_TAG).trim();
     const noCache = args['no-cache'] === true || String(args['no-cache'] || '').toLowerCase() === 'true';
+    const progress = normalizeProgressMode(String(args.progress || DEFAULT_PROGRESS));
 
     if (!namespace) {
         console.error('Docker namespace cannot be empty.');
@@ -284,6 +307,12 @@ const main = async () => {
         return;
     }
 
+    if ((command === 'build' || command === 'publish') && !progress) {
+        console.error('Docker progress must be one of: auto, plain, tty, rawjson.');
+        process.exitCode = 2;
+        return;
+    }
+
     if (command === 'push' || command === 'publish') {
         await ensureRegistryLogin({
             namespace,
@@ -293,7 +322,7 @@ const main = async () => {
 
     if (command === 'build' || command === 'publish') {
         for (const svc of selected) {
-            await buildService(svc, {namespace, tag, noCache, push: command === 'publish'});
+            await buildService(svc, {namespace, tag, noCache, push: command === 'publish', progress});
         }
     }
 

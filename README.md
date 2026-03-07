@@ -76,6 +76,9 @@ Set `SERVER_IP` on Warden when Moon should advertise LAN URLs like `http://192.1
 - Set `NOONA_DOCKER_USERNAME` and `NOONA_DOCKER_PASSWORD` only if you need to override the built-in Harbor login
 - Pass `--skip-login` after `--` if you want to rely on an existing Docker login session instead
 - Pass docker helper flags after `--`, for example `npm run docker:publish -- --no-cache`
+- Build and publish default to `--progress=plain` so long-running layers such as Kavita's `dotnet publish` keep printing
+  logs
+- Override progress with `NOONA_DOCKER_PROGRESS` or `npm run docker:publish -- --progress=tty`
 
 ## Repo Map
 

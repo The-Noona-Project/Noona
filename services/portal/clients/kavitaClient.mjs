@@ -768,6 +768,94 @@ export const createKavitaClient = ({
         };
     };
 
+    const createOrUpdateUser = async ({
+                                          username,
+                                          email,
+                                          password,
+                                          roles = [],
+                                          libraries = [],
+                                          matchUsernames = [],
+                                          matchEmails = [],
+                                      } = {}) => {
+        const normalizedUsername = normalizeString(username);
+        const normalizedEmail = normalizeString(email);
+
+        if (!normalizedUsername || !normalizedEmail || !password) {
+            throw buildValidationError('Username, password, and email are required to create a Kavita user.');
+        }
+
+        if (password.length < 6) {
+            throw buildValidationError('Kavita passwords must be at least 6 characters long.');
+        }
+
+        const resolvedRoles = await resolveConfiguredRoles(roles);
+        const resolvedLibraries = await resolveConfiguredLibraries(libraries);
+        const users = await fetchUsers({includePending: true});
+        const usernameKeys = new Set(
+            normalizeStringList([normalizedUsername, ...matchUsernames]).map(value => value.toLowerCase()),
+        );
+        const emailKeys = new Set(
+            normalizeStringList([normalizedEmail, ...matchEmails]).map(value => value.toLowerCase()),
+        );
+
+        const existingUser = users.find(user => {
+            const existingUsername = normalizeString(user?.username).toLowerCase();
+            const existingEmail = normalizeString(user?.email).toLowerCase();
+            return usernameKeys.has(existingUsername) || emailKeys.has(existingEmail);
+        }) ?? null;
+
+        if (!existingUser) {
+            const createdUser = await createUser({
+                username: normalizedUsername,
+                email: normalizedEmail,
+                password,
+                roles: resolvedRoles,
+                libraries: resolvedLibraries,
+            });
+
+            return {
+                ...createdUser,
+                created: true,
+            };
+        }
+
+        const conflictingUser = users.find(user => {
+            if (String(user?.id) === String(existingUser.id)) {
+                return false;
+            }
+
+            const existingUsername = normalizeString(user?.username).toLowerCase();
+            const existingEmail = normalizeString(user?.email).toLowerCase();
+            return existingUsername === normalizedUsername.toLowerCase() || existingEmail === normalizedEmail.toLowerCase();
+        });
+        if (conflictingUser) {
+            throw buildValidationError('A Kavita user already exists with that username or email.', 409);
+        }
+
+        await updateUser({
+            userId: existingUser.id,
+            username: normalizedUsername,
+            email: normalizedEmail,
+            roles: resolvedRoles,
+            libraries: resolvedLibraries,
+        });
+
+        await resetUserPassword({
+            username: normalizedUsername,
+            password,
+        });
+
+        log(`[Portal/Kavita] Updated user ${normalizedUsername}.`);
+        return {
+            id: existingUser.id,
+            username: normalizedUsername,
+            email: normalizedEmail,
+            roles: resolvedRoles,
+            libraries: resolvedLibraries,
+            created: false,
+        };
+    };
+
     const assignLibraries = async (username, libraries = []) => {
         const user = await fetchUser(username);
         if (!user?.id) {
@@ -788,7 +876,7 @@ export const createKavitaClient = ({
         getBaseUrl: () => normalizedBaseUrl,
         request,
         createUser,
-        createOrUpdateUser: createUser,
+        createOrUpdateUser,
         fetchRoles,
         fetchUsers,
         fetchLibraries,

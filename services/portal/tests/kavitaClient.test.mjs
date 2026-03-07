@@ -195,6 +195,88 @@ test('createUser rejects duplicate usernames or emails before inviting', async (
     );
 });
 
+test('createOrUpdateUser updates an existing Kavita account and resets the password', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url);
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                body: options.body ? JSON.parse(options.body) : null,
+            });
+
+            if (requestUrl.pathname === '/api/Account/roles') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify(['Pleb', 'Login', 'Admin']),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Library/libraries') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 1, name: 'Manga'},
+                    ]),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Users') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 9, username: 'legacy.reader', email: 'reader@example.com'},
+                    ]),
+                };
+            }
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => '',
+            };
+        },
+    });
+
+    const updated = await kavita.createOrUpdateUser({
+        username: 'reader.discord',
+        email: 'reader@example.com',
+        password: 'Noona-password-123',
+        roles: ['Pleb', 'Login'],
+        libraries: ['Manga'],
+        matchUsernames: ['legacy.reader'],
+    });
+
+    assert.equal(updated.id, 9);
+    assert.equal(updated.created, false);
+    assert.deepEqual(updated.roles, ['Pleb', 'Login']);
+    assert.deepEqual(updated.libraries, [1]);
+    assert.deepEqual(calls.map(call => call.pathname), [
+        '/api/Account/roles',
+        '/api/Library/libraries',
+        '/api/Users',
+        '/api/Account/update',
+        '/api/Account/reset-password',
+    ]);
+    assert.deepEqual(calls[3].body, {
+        userId: 9,
+        username: 'reader.discord',
+        email: 'reader@example.com',
+        roles: ['Pleb', 'Login'],
+        libraries: [1],
+    });
+    assert.deepEqual(calls[4].body, {
+        userName: 'reader.discord',
+        password: 'Noona-password-123',
+    });
+});
+
 test('fetchLibraries uses Kavita libraries endpoint', async () => {
     const calls = [];
     const kavita = createKavitaClient({

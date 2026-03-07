@@ -1,7 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Json;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading.Tasks;
 using API.Constants;
 using API.Data;
@@ -45,6 +49,7 @@ public class AccountController : BaseApiController
 {
     // Hardcoded to avoid localization multiple enumeration: https://github.com/Kareadita/Kavita/issues/2829
     private const string BadCredentialsMessage = "Your credentials are not correct";
+    private const string NoonaPasswordDisabledMessage = "Password authentication is disabled. Use Log in with Noona.";
 
     private readonly UserManager<AppUser> _userManager;
     private readonly SignInManager<AppUser> _signInManager;
@@ -58,6 +63,11 @@ public class AccountController : BaseApiController
     private readonly ILocalizationService _localizationService;
     private readonly IAuthenticationSchemeProvider _authenticationSchemeProvider;
     private readonly IAuthKeyCacheInvalidator _authKeyCacheInvalidator;
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    private sealed record NoonaPortalConsumedTokenRecord(string? Username, string? Email, string? Password);
+    private sealed record NoonaPortalConsumedTokenResponse(bool Success, NoonaPortalConsumedTokenRecord? Record);
+    private sealed record NoonaPortalConsumeResult(int StatusCode, string? ErrorMessage, NoonaPortalConsumedTokenRecord? Record);
 
     /// <inheritdoc />
     public AccountController(UserManager<AppUser> userManager,
@@ -68,7 +78,8 @@ public class AccountController : BaseApiController
         IEmailService emailService, IEventHub eventHub,
         ILocalizationService localizationService,
         IAuthenticationSchemeProvider authenticationSchemeProvider,
-        IAuthKeyCacheInvalidator authKeyCacheInvalidator)
+        IAuthKeyCacheInvalidator authKeyCacheInvalidator,
+        IHttpClientFactory httpClientFactory)
     {
         _userManager = userManager;
         _signInManager = signInManager;
@@ -82,6 +93,105 @@ public class AccountController : BaseApiController
         _localizationService = localizationService;
         _authenticationSchemeProvider = authenticationSchemeProvider;
         _authKeyCacheInvalidator = authKeyCacheInvalidator;
+        _httpClientFactory = httpClientFactory;
+    }
+
+    private static string NormalizeAbsoluteHttpUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+
+        return Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)
+               && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            ? uri.ToString().TrimEnd('/')
+            : string.Empty;
+    }
+
+    private static bool IsTruthyFlag(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "1" => true,
+            "true" => true,
+            "yes" => true,
+            "on" => true,
+            _ => false
+        };
+    }
+
+    private static string GetNoonaMoonBaseUrl() =>
+        NormalizeAbsoluteHttpUrl(Environment.GetEnvironmentVariable("NOONA_MOON_BASE_URL"));
+
+    private static bool IsNoonaSocialLoginOnlyEnabled()
+    {
+        var moonBaseUrl = GetNoonaMoonBaseUrl();
+        if (string.IsNullOrEmpty(moonBaseUrl)) return false;
+
+        return IsTruthyFlag(Environment.GetEnvironmentVariable("NOONA_SOCIAL_LOGIN_ONLY"));
+    }
+
+    private static string GetNoonaPortalBaseUrl()
+    {
+        var configured = NormalizeAbsoluteHttpUrl(Environment.GetEnvironmentVariable("NOONA_PORTAL_BASE_URL"));
+        return string.IsNullOrEmpty(configured) ? "http://noona-portal:3003" : configured;
+    }
+
+    private static async Task<string?> ReadNoonaPortalErrorAsync(HttpResponseMessage response)
+    {
+        try
+        {
+            var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+            if (payload.ValueKind == JsonValueKind.Object &&
+                payload.TryGetProperty("error", out var errorProp) &&
+                errorProp.ValueKind == JsonValueKind.String)
+            {
+                return errorProp.GetString();
+            }
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return null;
+    }
+
+    private async Task<NoonaPortalConsumeResult> ConsumeNoonaLoginTokenAsync(string token)
+    {
+        var portalBaseUrl = GetNoonaPortalBaseUrl();
+        if (string.IsNullOrEmpty(portalBaseUrl))
+        {
+            return new NoonaPortalConsumeResult((int) HttpStatusCode.ServiceUnavailable, "Noona Portal login bridge is not configured.", null);
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(10);
+
+        try
+        {
+            using var response = await client.PostAsJsonAsync($"{portalBaseUrl}/api/portal/kavita/login-tokens/consume",
+                new {token});
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorMessage = await ReadNoonaPortalErrorAsync(response);
+                return new NoonaPortalConsumeResult((int) response.StatusCode, errorMessage, null);
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<NoonaPortalConsumedTokenResponse>();
+            if (payload is not {Success: true, Record: not null} || string.IsNullOrWhiteSpace(payload.Record.Username))
+            {
+                return new NoonaPortalConsumeResult((int) HttpStatusCode.BadGateway, "Noona Portal returned an invalid login token response.", null);
+            }
+
+            return new NoonaPortalConsumeResult((int) HttpStatusCode.OK, null, payload.Record);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to consume Noona login token from Portal");
+            return new NoonaPortalConsumeResult((int) HttpStatusCode.BadGateway, "Unable to reach Noona Portal for login handoff.", null);
+        }
     }
 
     /// <summary>
@@ -96,6 +206,23 @@ public class AccountController : BaseApiController
     {
         var oidcScheme = await _authenticationSchemeProvider.GetSchemeAsync(IdentityServiceExtensions.OpenIdConnect);
         return Ok(oidcScheme != null && HttpContext.Request.Cookies.ContainsKey(OidcService.CookieName));
+    }
+
+    /// <summary>
+    /// Returns public Noona login settings for the login page.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpGet("noona-config")]
+    public ActionResult<NoonaLoginConfigDto> GetNoonaConfig()
+    {
+        var moonBaseUrl = GetNoonaMoonBaseUrl();
+        var enabled = !string.IsNullOrEmpty(moonBaseUrl);
+        return Ok(new NoonaLoginConfigDto
+        {
+            Enabled = enabled,
+            MoonBaseUrl = moonBaseUrl,
+            DisablePasswordLogin = enabled && IsNoonaSocialLoginOnlyEnabled()
+        });
     }
 
     /// <summary>
@@ -241,6 +368,13 @@ public class AccountController : BaseApiController
     [HttpPost("login")]
     public async Task<ActionResult<UserDto>> Login(LoginDto loginDto)
     {
+        if (string.IsNullOrEmpty(loginDto.ApiKey) && IsNoonaSocialLoginOnlyEnabled())
+        {
+            _logger.LogWarning("Rejected local password login for {UserName} because Noona social-login-only mode is enabled",
+                loginDto.Username);
+            return Unauthorized(NoonaPasswordDisabledMessage);
+        }
+
         AppUser? user;
         if (!string.IsNullOrEmpty(loginDto.ApiKey))
         {
@@ -299,6 +433,57 @@ public class AccountController : BaseApiController
 
         _logger.LogInformation("{UserName} logged in at {Time}", user.UserName, user.LastActive);
 
+        return Ok(await ConstructUserDto(user, roles));
+    }
+
+    /// <summary>
+    /// Complete a Noona login handoff using a one-time token issued by Portal.
+    /// </summary>
+    [AllowAnonymous]
+    [EnableRateLimiting("Authentication")]
+    [HttpPost("noona-login")]
+    public async Task<ActionResult<UserDto>> NoonaLogin(NoonaLoginTokenRequestDto dto)
+    {
+        if (dto == null || string.IsNullOrWhiteSpace(dto.Token))
+        {
+            return BadRequest("token is required.");
+        }
+
+        var consumeResult = await ConsumeNoonaLoginTokenAsync(dto.Token.Trim());
+        if (consumeResult.Record == null)
+        {
+            if (consumeResult.StatusCode == (int) HttpStatusCode.NotFound)
+            {
+                return Unauthorized("Noona login token is invalid or expired.");
+            }
+
+            return StatusCode(consumeResult.StatusCode >= 400 ? consumeResult.StatusCode : 502,
+                consumeResult.ErrorMessage ?? "Unable to complete Noona login.");
+        }
+
+        var lookupUsername = consumeResult.Record.Username!.Trim();
+        var user = await _userManager.Users
+            .Include(u => u.UserPreferences)
+            .Include(u => u.AuthKeys)
+            .AsSplitQuery()
+            .SingleOrDefaultAsync(x => x.NormalizedUserName == lookupUsername.ToUpperInvariant());
+
+        if (user == null)
+        {
+            _logger.LogWarning("Noona login token resolved to unknown Kavita user {UserName}", lookupUsername);
+            return Unauthorized(BadCredentialsMessage);
+        }
+
+        var roles = await _userManager.GetRolesAsync(user);
+        if (!roles.Contains(PolicyConstants.LoginRole) && !roles.Contains(PolicyConstants.AdminRole))
+        {
+            return Unauthorized(await _localizationService.Translate(user.Id, "disabled-account"));
+        }
+
+        _unitOfWork.UserRepository.Update(user);
+        await _unitOfWork.CommitAsync();
+
+        _logger.LogInformation("{UserName} logged in via Noona handoff at {Time}", user.UserName, user.LastActive);
         return Ok(await ConstructUserDto(user, roles));
     }
 

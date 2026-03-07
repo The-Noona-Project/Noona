@@ -40,8 +40,9 @@
 ## HTTP and persistence modules
 
 - `app/createPortalApp.mjs` assembles the Express app and server wrapper.
-- `routes/registerPortalRoutes.mjs` exposes `/health`, `/api/portal/join-options`, `/api/portal/onboard`, and
-  `/api/portal/tokens/consume`.
+- `routes/registerPortalRoutes.mjs` exposes `/health`, the `/api/portal/kavita/*` bridge routes,
+  `/api/portal/join-options`,
+  `/api/portal/onboard`, and `/api/portal/tokens/consume`.
 - `storage/onboardingStore.mjs` manages token storage and redemption.
 - `clients/vaultClient.mjs` handles Vault secret read/write/delete and portal credential storage.
 - `clients/kavitaClient.mjs` handles Kavita invite/update/reset-password user flows plus library and title operations.

@@ -140,6 +140,153 @@ test('GET /api/portal/kavita/info prefers configured external Kavita URL for Moo
     }
 });
 
+test('POST /api/portal/kavita/noona-login provisions a Kavita account and returns a one-time login token', async () => {
+    const kavitaCalls = [];
+    const storedCredentials = [];
+    const tokens = new Map();
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            kavita: {
+                baseUrl: 'http://noona-kavita:5000/',
+                externalUrl: 'https://kavita.example.com',
+            },
+            join: {
+                defaultRoles: ['Pleb', 'Login'],
+                defaultLibraries: ['Manga'],
+            },
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            createOrUpdateUser: async (payload) => {
+                kavitaCalls.push(payload);
+                return {
+                    id: 42,
+                    username: payload.username,
+                    email: payload.email,
+                    roles: ['Pleb', 'Login'],
+                    libraries: ['Manga'],
+                    created: true,
+                };
+            },
+        },
+        vault: {
+            readSecret: async () => null,
+            storePortalCredential: async (discordId, credential) => {
+                storedCredentials.push({discordId, credential});
+            },
+        },
+        onboardingStore: {
+            setToken: async (discordId, payload) => {
+                const record = {token: 'login-token-1', discordId, ...payload};
+                tokens.set(record.token, record);
+                return record;
+            },
+            getToken: async (token) => tokens.get(token) ?? null,
+            consumeToken: async (token) => {
+                const record = tokens.get(token) ?? null;
+                tokens.delete(token);
+                return record;
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/noona-login`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                discordId: '123456789012345678',
+                email: 'reader@example.com',
+                username: 'Reader Display',
+                discordUsername: 'reader.discord',
+                displayName: 'Reader Display',
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 201);
+        assert.equal(payload.token, 'login-token-1');
+        assert.equal(payload.baseUrl, 'https://kavita.example.com/');
+        assert.equal(payload.username, 'reader.discord');
+        assert.equal(kavitaCalls.length, 1);
+        assert.equal(kavitaCalls[0].username, 'reader.discord');
+        assert.equal(kavitaCalls[0].email, 'reader@example.com');
+        assert.deepEqual(kavitaCalls[0].roles, ['Pleb', 'Login']);
+        assert.deepEqual(kavitaCalls[0].libraries, ['Manga']);
+        assert.match(kavitaCalls[0].password, /^Noona-/);
+        assert.deepEqual(storedCredentials, [{
+            discordId: '123456789012345678',
+            credential: {
+                username: 'reader.discord',
+                email: 'reader@example.com',
+                roles: ['Pleb', 'Login'],
+                libraries: ['Manga'],
+                issuedAt: storedCredentials[0].credential.issuedAt,
+            },
+        }]);
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('POST /api/portal/kavita/login-tokens/consume redeems one-time Noona Kavita login tokens', async () => {
+    const tokens = new Map([
+        ['login-token-2', {
+            token: 'login-token-2',
+            type: 'noona-kavita-login',
+            username: 'reader.discord',
+            email: 'reader@example.com',
+            password: 'Noona-secret-password',
+        }],
+    ]);
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        onboardingStore: {
+            setToken: async () => {
+                throw new Error('setToken should not be called');
+            },
+            getToken: async (token) => tokens.get(token) ?? null,
+            consumeToken: async (token) => {
+                const record = tokens.get(token) ?? null;
+                tokens.delete(token);
+                return record;
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/login-tokens/consume`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token: 'login-token-2'}),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.deepEqual(payload, {
+            success: true,
+            record: {
+                username: 'reader.discord',
+                email: 'reader@example.com',
+                password: 'Noona-secret-password',
+            },
+        });
+        assert.equal(tokens.size, 0);
+    } finally {
+        await stopServer(server);
+    }
+});
+
 test('GET /api/portal/kavita/title-search returns Kavita series links for Moon title pages', async () => {
     const app = createPortalApp({
         config: {

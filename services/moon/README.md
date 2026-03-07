@@ -34,12 +34,14 @@ frontend.
 - [Setup wizard route](src/app/setupwizard/page.tsx)
 - [Setup summary route](src/app/setupwizard/summary/page.tsx)
 - [Discord callback route](src/app/discord/callback/page.tsx)
+- [Kavita handoff route](src/app/kavita/complete/page.tsx)
 - [Noona page components](src/components/noona/)
 - [Rebooting page component](src/components/noona/RebootingPage.tsx)
 - [Setup wizard component](src/components/noona/SetupWizard.tsx)
 - [Shared config editor styles](src/components/noona/ConfigEditor.module.scss)
 - [Setup summary component](src/components/noona/SetupSummaryPage.tsx)
 - [Discord callback component](src/components/noona/DiscordCallbackPage.tsx)
+- [Kavita handoff component](src/components/noona/KavitaLoginBridgePage.tsx)
 - [Shared Raven title card](src/components/noona/RavenTitleCard.tsx)
 - [Title detail page component](src/components/noona/TitleDetailPage.tsx)
 - [App shell](src/components/AppShell.tsx)
@@ -61,6 +63,7 @@ frontend.
 - [Discord auth config proxy](src/app/api/noona/auth/discord/config/route.ts)
 - [Discord auth start proxy](src/app/api/noona/auth/discord/start/route.ts)
 - [Discord auth callback proxy](src/app/api/noona/auth/discord/callback/route.ts)
+- [Noona-to-Kavita login proxy](src/app/api/noona/kavita/login/route.ts)
 - [Managed Kavita key proxy](src/app/api/noona/setup/kavita/service-key/route.ts)
 - [Web GUI helpers](src/utils/webGui.ts)
 - [Permission helpers](src/utils/moonPermissions.ts)
@@ -84,7 +87,8 @@ frontend.
 - `/recommendations` and `/recommendations/[id]` - admin-only recommendation management and detail timeline routes.
   They require `manageRecommendations` and expose approve, deny, close, and admin-comment actions.
 - `/myrecommendations` and `/myrecommendations/[id]` - user recommendation routes that require `myRecommendations` and
-  show only the signed-in user's records plus a PR-style timeline (created, approved/denied, and threaded comments).
+  show only the signed-in user's records plus a Once UI timeline for created/approved/denied/comment events and the
+  Raven download lifecycle (`download-started`, `download-completed`).
 - `/recommendation` and `/recommendation/[id]` - legacy compatibility redirects into the user timeline routes
   (`/myrecommendations` and `/myrecommendations/[id]`) so older links from Discord messages do not 404.
 - `/rebooting` - Internal transition screen used by Warden `Update all`. The settings page now forces a fresh image
@@ -140,7 +144,11 @@ frontend.
   login.
 - `/login` and `/signup` - Auth entry points for the Discord-first Moon flow. Both now render the same
   sign-in-or-create-account screen, the main tab bar is hidden there, and first-time Discord sign-in creates the user
-  from Sage's default permission template.
+  from Sage's default permission template. When Kavita sends users into Moon with a `returnTo`, the login page now
+  preserves that internal return path so Discord sign-in can bounce directly into Moon's Kavita handoff screen.
+- `/kavita/complete` - Internal Moon bridge route used by Kavita's `Log in with Noona` button. It requires a valid
+  Noona session, asks Portal to provision or refresh the user's Kavita account, and immediately redirects the browser
+  back to Kavita with a short-lived one-time login token.
 - Title detail pages now surface Kavita series links plus metadata match actions, and the footer/title Kavita buttons
   now prefer Portal's configured external Kavita URL (`KAVITA_EXTERNAL_URL`) before falling back to the managed
   host-facing URL from Warden. The title-page
@@ -172,6 +180,9 @@ frontend.
 - `src/app/api/noona/myrecommendations/*` - user recommendation proxies for own list/detail plus timeline comment
   replies.
 - `src/app/api/noona/portal/kavita/*` - Portal-backed Kavita info, title search, and metadata-match proxies.
+- `src/app/api/noona/kavita/login` - signed-in Noona session proxy that forwards the current Discord-backed account to
+  Portal's Kavita provisioning route and returns a short-lived Kavita handoff token for the Moon `/kavita/complete`
+  bridge.
 - `src/app/api/noona/settings/*` - service settings, Portal join option helpers, vault, ecosystem, and debug operations.
 - `src/app/api/noona/settings/downloads/workers` - proxy for Raven per-thread speed-limit settings stored by Sage.
   Moon accepts plain KB/s numbers plus `mb` / `gb` suffixes here, and uses `-1` for unlimited workers.

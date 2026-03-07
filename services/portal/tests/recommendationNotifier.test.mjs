@@ -308,3 +308,81 @@ test('recommendation notifier DMs users when admins add timeline comments and st
     assert.ok(typeof recommendations[0]?.timeline?.[0]?.notifications?.adminCommentDmSentAt === 'string');
     assert.equal(recommendations[0]?.timeline?.[0]?.notifications?.adminCommentDmMessageId, 'dm-1');
 });
+
+test('recommendation notifier appends Raven download timeline events for approved recommendations', async () => {
+    const recommendations = [
+        {
+            _id: 'rec-download-1',
+            status: 'approved',
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            approvedAt: '2026-03-07T00:00:00.000Z',
+            requestedBy: {
+                discordId: 'discord-user-4',
+            },
+            notifications: {
+                approvalDmSentAt: '2026-03-07T00:01:00.000Z',
+            },
+        },
+    ];
+
+    const notifier = createRecommendationNotifier({
+        discordClient: {
+            sendDirectMessage: async () => ({id: 'dm-unused'}),
+        },
+        vaultClient: {
+            findRecommendations: async () => recommendations.map((entry) => ({...entry})),
+            updateRecommendation: async ({query, update} = {}) => {
+                const index = recommendations.findIndex((entry) => matchesQuery(entry, query));
+                if (index < 0) {
+                    return {status: 'ok', matched: 0, modified: 0};
+                }
+
+                recommendations[index] = applyUpdate(recommendations[index], update);
+                return {status: 'ok', matched: 1, modified: 1};
+            },
+        },
+        ravenClient: {
+            getLibrary: async () => [],
+            getDownloadStatus: async () => [
+                {
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                    status: 'downloading',
+                    totalChapters: 12,
+                    currentChapter: 'Chapter 5',
+                    startedAt: '2026-03-07T00:03:00.000Z',
+                },
+            ],
+            getDownloadHistory: async () => [
+                {
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                    status: 'completed',
+                    totalChapters: 12,
+                    completedChapters: 12,
+                    completedAt: '2026-03-07T00:08:00.000Z',
+                    latestChapter: 'Chapter 12',
+                },
+            ],
+        },
+        kavitaClient: {},
+        pollMs: 60000,
+        logger: {},
+    });
+
+    notifier.start();
+    await notifier.refresh();
+    await notifier.refresh();
+    notifier.stop();
+
+    const timeline = Array.isArray(recommendations[0]?.timeline) ? recommendations[0].timeline : [];
+    assert.equal(timeline.length, 2);
+    assert.deepEqual(
+        timeline.map((event) => event?.type),
+        ['download-started', 'download-completed'],
+    );
+    assert.equal(timeline[0]?.actor?.username, 'Raven');
+    assert.match(timeline[0]?.body ?? '', /started downloading 12 chapters/i);
+    assert.match(timeline[1]?.body ?? '', /finished downloading 12 chapters/i);
+});

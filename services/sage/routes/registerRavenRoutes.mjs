@@ -16,7 +16,14 @@ export function registerRavenRoutes(context = {}) {
     const APPROVED_RECOMMENDATION_STATUSES = new Set(['approved', 'accepted'])
     const DENIED_RECOMMENDATION_STATUSES = new Set(['denied', 'rejected', 'declined'])
     const PENDING_RECOMMENDATION_STATUSES = new Set(['pending', 'new', 'requested'])
-    const RECOMMENDATION_TIMELINE_EVENT_TYPES = new Set(['created', 'approved', 'denied', 'comment'])
+    const RECOMMENDATION_TIMELINE_EVENT_TYPES = new Set([
+        'created',
+        'approved',
+        'denied',
+        'comment',
+        'download-started',
+        'download-completed',
+    ])
     const MAX_RECOMMENDATION_COMMENT_LENGTH = 2000
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')

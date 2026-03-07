@@ -76,7 +76,8 @@ download/library routes for Moon and other clients.
       completes.
 - Recommendations admin routes: `/api/recommendations*`
     - `GET /api/recommendations` and `GET /api/recommendations/:id` require `manageRecommendations` and return
-      normalized recommendation records (including timeline events).
+      normalized recommendation records (including timeline events such as `created`, `approved`, `denied`,
+      `comment`, `download-started`, and `download-completed`).
     - `POST /api/recommendations/:id/approve` requires `manageRecommendations`, queues Raven download (`searchId` +
       `selectedOptionIndex`), marks the recommendation approved, and records an approval timeline event.
     - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores

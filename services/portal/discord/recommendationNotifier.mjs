@@ -3,6 +3,10 @@ const DEFAULT_POLL_MS = 30000;
 const APPROVED_STATUSES = new Set(['approved', 'accepted']);
 const MOON_SERVICE_NAMES = new Set(['noona-moon', 'moon']);
 const DEFAULT_MOON_RECOMMENDATION_PATH_PREFIX = '/myrecommendations/';
+const ACTIVE_DOWNLOAD_STATUSES = new Set(['queued', 'downloading', 'recovering']);
+const COMPLETED_DOWNLOAD_STATUSES = new Set(['completed']);
+const DOWNLOAD_STARTED_TIMELINE_TYPE = 'download-started';
+const DOWNLOAD_COMPLETED_TIMELINE_TYPE = 'download-completed';
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
 const normalizeTitleKey = value => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -327,6 +331,175 @@ const hasAdminCommentNotification = (event = {}) =>
         normalizeString(event?.notifications?.adminCommentDmSentAt)
         || normalizeString(event?.adminCommentDmSentAt),
     );
+const normalizeTimelineTimestamp = value => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    if (/^\d+$/.test(normalized)) {
+        const parsedNumeric = new Date(Number(normalized));
+        return Number.isNaN(parsedNumeric.getTime()) ? null : parsedNumeric.toISOString();
+    }
+
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+};
+const resolveTimelineTimestampValue = value => {
+    const timestamp = normalizeTimelineTimestamp(value);
+    if (!timestamp) {
+        return 0;
+    }
+
+    const parsed = Date.parse(timestamp);
+    return Number.isFinite(parsed) ? parsed : 0;
+};
+const normalizeTimelineType = (event = {}) =>
+    normalizeString(event?.type || event?.event).toLowerCase();
+const hasTimelineEventType = (entry = {}, type = '') =>
+    recommendationTimelineEvents(entry).some(event => normalizeTimelineType(event) === type);
+const createTimelineEventId = (type = 'event') =>
+    `${type}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10) || 'timeline'}`;
+const createSystemTimelineEvent = ({type, body, createdAt} = {}) => ({
+    id: createTimelineEventId(type),
+    type,
+    createdAt: normalizeTimelineTimestamp(createdAt) || new Date().toISOString(),
+    actor: {
+        role: 'system',
+        username: 'Raven',
+        discordId: null,
+        tag: null,
+    },
+    body: normalizeString(body) || null,
+});
+const sortTimelineEvents = (events = []) =>
+    [...events].sort(
+        (left, right) =>
+            resolveTimelineTimestampValue(left?.createdAt || left?.at)
+            - resolveTimelineTimestampValue(right?.createdAt || right?.at),
+    );
+const normalizeDownloadStatus = (task = {}) => normalizeString(task?.status).toLowerCase();
+const normalizeStringArray = value =>
+    Array.isArray(value)
+        ? value.map(entry => normalizeString(entry)).filter(Boolean)
+        : [];
+const normalizePositiveInteger = value => {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const resolveDownloadTaskTimestamp = (task = {}) =>
+    normalizeTimelineTimestamp(task?.completedAt)
+    || normalizeTimelineTimestamp(task?.startedAt)
+    || normalizeTimelineTimestamp(task?.lastUpdated)
+    || normalizeTimelineTimestamp(task?.queuedAt);
+const resolveDownloadTaskTotalChapters = (task = {}) =>
+    normalizePositiveInteger(task?.totalChapters)
+    || normalizePositiveInteger(normalizeStringArray(task?.queuedChapterNumbers).length)
+    || normalizePositiveInteger(normalizeStringArray(task?.newChapterNumbers).length)
+    || normalizePositiveInteger(task?.sourceChapterCount)
+    || normalizePositiveInteger(task?.completedChapters);
+const resolveDownloadTaskCompletedChapters = (task = {}) =>
+    normalizePositiveInteger(task?.completedChapters)
+    || normalizePositiveInteger(normalizeStringArray(task?.completedChapterNumbers).length);
+const resolveDownloadTaskCurrentChapter = (task = {}) =>
+    normalizeString(task?.currentChapter)
+    || normalizeString(task?.currentChapterNumber);
+const buildDownloadStartedBody = (task = {}) => {
+    const status = normalizeDownloadStatus(task);
+    const totalChapters = resolveDownloadTaskTotalChapters(task);
+    const currentChapter = resolveDownloadTaskCurrentChapter(task);
+    const latestChapter = normalizeString(task?.latestChapter);
+    const message = normalizeString(task?.message);
+    const parts = [
+        status === 'queued'
+            ? totalChapters
+                ? `Raven queued ${totalChapters} chapters for download.`
+                : 'Raven queued the requested chapters for download.'
+            : totalChapters
+                ? `Raven started downloading ${totalChapters} chapters.`
+                : 'Raven started downloading the requested chapters.',
+    ];
+
+    if (currentChapter) {
+        parts.push(`Current chapter: ${currentChapter}.`);
+    } else if (latestChapter) {
+        parts.push(`Latest chapter: ${latestChapter}.`);
+    }
+
+    if (status === 'recovering') {
+        parts.push('The task was recovered and resumed from cache.');
+    }
+
+    if (message) {
+        parts.push(message.endsWith('.') ? message : `${message}.`);
+    }
+
+    return parts.join(' ');
+};
+const buildDownloadCompletedBody = (task = {}) => {
+    const totalChapters = resolveDownloadTaskTotalChapters(task);
+    const completedChapters = resolveDownloadTaskCompletedChapters(task) || totalChapters;
+    const latestChapter = normalizeString(task?.latestChapter);
+    const message = normalizeString(task?.message);
+    const parts = [
+        completedChapters && totalChapters
+            ? completedChapters === totalChapters
+                ? `Raven finished downloading ${completedChapters} chapters.`
+                : `Raven finished downloading ${completedChapters} of ${totalChapters} tracked chapters.`
+            : completedChapters
+                ? `Raven finished downloading ${completedChapters} chapters.`
+                : 'Raven finished downloading the requested chapters.',
+    ];
+
+    if (latestChapter) {
+        parts.push(`Latest chapter: ${latestChapter}.`);
+    }
+
+    if (message) {
+        parts.push(message.endsWith('.') ? message : `${message}.`);
+    }
+
+    return parts.join(' ');
+};
+const recommendationMatchesDownloadTask = (entry = {}, task = {}) => {
+    if (!task || typeof task !== 'object') {
+        return false;
+    }
+
+    const recommendationHref = normalizeUrlForCompare(entry?.href);
+    const taskSourceUrl = normalizeUrlForCompare(task?.sourceUrl);
+    const hrefMatch = Boolean(recommendationHref && taskSourceUrl && recommendationHref === taskSourceUrl);
+
+    const recommendationTitleKey = normalizeTitleKey(entry?.title || entry?.query);
+    const taskTitleKey = normalizeTitleKey(task?.title);
+    const titleMatch = Boolean(recommendationTitleKey && taskTitleKey && recommendationTitleKey === taskTitleKey);
+
+    if (!hrefMatch && !titleMatch) {
+        return false;
+    }
+
+    const approvedAt = resolveTimelineTimestampValue(entry?.approvedAt);
+    const taskTimestamp = resolveTimelineTimestampValue(resolveDownloadTaskTimestamp(task));
+    if (approvedAt > 0 && taskTimestamp > 0 && taskTimestamp + (5 * 60 * 1000) < approvedAt) {
+        return false;
+    }
+
+    return true;
+};
+const selectMatchingDownloadTask = (entry = {}, tasks = [], acceptedStatuses = null) =>
+    (Array.isArray(tasks) ? tasks : [])
+        .filter(task => recommendationMatchesDownloadTask(entry, task))
+        .filter(task => !acceptedStatuses || acceptedStatuses.has(normalizeDownloadStatus(task)))
+        .sort(
+            (left, right) =>
+                resolveTimelineTimestampValue(resolveDownloadTaskTimestamp(right))
+                - resolveTimelineTimestampValue(resolveDownloadTaskTimestamp(left)),
+        )[0] ?? null;
 
 const sendDirectMessage = async ({discordClient, userId, content}) => {
     if (typeof discordClient?.sendDirectMessage === 'function') {
@@ -595,6 +768,71 @@ export const createRecommendationNotifier = ({
             }
         }
     };
+    const syncRecommendationDownloadTimeline = async ({
+                                                          entry,
+                                                          activeDownloads,
+                                                          downloadHistory,
+                                                      } = {}) => {
+        if (!isApprovedStatus(entry?.status)) {
+            return;
+        }
+
+        const hasStartedEvent = hasTimelineEventType(entry, DOWNLOAD_STARTED_TIMELINE_TYPE);
+        const hasCompletedEvent = hasTimelineEventType(entry, DOWNLOAD_COMPLETED_TIMELINE_TYPE);
+        if (hasStartedEvent && hasCompletedEvent) {
+            return;
+        }
+
+        const activeTask = selectMatchingDownloadTask(entry, activeDownloads, ACTIVE_DOWNLOAD_STATUSES);
+        const completedTask =
+            selectMatchingDownloadTask(entry, downloadHistory, COMPLETED_DOWNLOAD_STATUSES)
+            || selectMatchingDownloadTask(entry, activeDownloads, COMPLETED_DOWNLOAD_STATUSES);
+
+        const nextTimeline = recommendationTimelineEvents(entry);
+        let changed = false;
+
+        if (!hasStartedEvent) {
+            const startedTask = activeTask || completedTask;
+            if (startedTask) {
+                nextTimeline.push(createSystemTimelineEvent({
+                    type: DOWNLOAD_STARTED_TIMELINE_TYPE,
+                    body: buildDownloadStartedBody(startedTask),
+                    createdAt:
+                        normalizeTimelineTimestamp(startedTask?.startedAt)
+                        || normalizeTimelineTimestamp(startedTask?.queuedAt)
+                        || normalizeTimelineTimestamp(startedTask?.lastUpdated),
+                }));
+                changed = true;
+            }
+        }
+
+        if (!hasCompletedEvent && completedTask) {
+            nextTimeline.push(createSystemTimelineEvent({
+                type: DOWNLOAD_COMPLETED_TIMELINE_TYPE,
+                body: buildDownloadCompletedBody(completedTask),
+                createdAt:
+                    normalizeTimelineTimestamp(completedTask?.completedAt)
+                    || normalizeTimelineTimestamp(completedTask?.lastUpdated)
+                    || normalizeTimelineTimestamp(completedTask?.queuedAt),
+            }));
+            changed = true;
+        }
+
+        if (!changed) {
+            return;
+        }
+
+        const sortedTimeline = sortTimelineEvents(nextTimeline);
+        const persisted = await persistRecommendationUpdate(entry, {
+            $set: {
+                timeline: sortedTimeline,
+            },
+        });
+
+        if (persisted) {
+            entry.timeline = sortedTimeline;
+        }
+    };
 
     const notifyCompletedRecommendation = async ({entry, library} = {}) => {
         if (!isApprovedStatus(entry?.status) || hasCompletionNotification(entry)) {
@@ -695,10 +933,27 @@ export const createRecommendationNotifier = ({
                 return;
             }
 
-            const library = await ravenClient?.getLibrary?.().catch((error) => {
-                logger.warn?.(`[Portal/Discord] Failed to load Raven library for recommendation completion checks: ${error.message}`);
-                return [];
-            });
+            const library =
+                typeof ravenClient?.getLibrary === 'function'
+                    ? await ravenClient.getLibrary().catch((error) => {
+                        logger.warn?.(`[Portal/Discord] Failed to load Raven library for recommendation completion checks: ${error.message}`);
+                        return [];
+                    })
+                    : [];
+            const activeDownloads =
+                typeof ravenClient?.getDownloadStatus === 'function'
+                    ? await ravenClient.getDownloadStatus().catch((error) => {
+                        logger.warn?.(`[Portal/Discord] Failed to load Raven download status for recommendation timeline checks: ${error.message}`);
+                        return [];
+                    })
+                    : [];
+            const downloadHistory =
+                typeof ravenClient?.getDownloadHistory === 'function'
+                    ? await ravenClient.getDownloadHistory().catch((error) => {
+                        logger.warn?.(`[Portal/Discord] Failed to load Raven download history for recommendation timeline checks: ${error.message}`);
+                        return [];
+                    })
+                    : [];
 
             for (const recommendation of recommendations) {
                 if (!recommendation || typeof recommendation !== 'object') {
@@ -707,6 +962,11 @@ export const createRecommendationNotifier = ({
 
                 await notifyApprovedRecommendation(recommendation);
                 await notifyAdminCommentEvents(recommendation);
+                await syncRecommendationDownloadTimeline({
+                    entry: recommendation,
+                    activeDownloads,
+                    downloadHistory,
+                });
                 await notifyCompletedRecommendation({
                     entry: recommendation,
                     library: Array.isArray(library) ? library : [],
