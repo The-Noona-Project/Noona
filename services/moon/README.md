@@ -10,7 +10,7 @@ frontend.
 - [Service rules](AGENTS.md)
 - [Stack overview](../../README.md)
 - [Docker image](../../dockerfiles/moon.Dockerfile)
-- [Main app router](src/app/)
+- [Main app router](src/app)
 - [Runtime launcher](scripts/runNext.mjs)
 - [ESLint config](eslint.config.mjs)
 - [Home page](src/app/page.tsx)
@@ -30,12 +30,12 @@ frontend.
 - [Rebooting page route](src/app/rebooting/page.tsx)
 - [Settings landing redirect](src/app/settings/page.tsx)
 - [Settings route group](src/app/settings/[...slug]/page.tsx)
-- [Settings navigation components](src/components/noona/settings/)
+- [Settings navigation components](src/components/noona/settings)
 - [Setup wizard route](src/app/setupwizard/page.tsx)
 - [Setup summary route](src/app/setupwizard/summary/page.tsx)
 - [Discord callback route](src/app/discord/callback/page.tsx)
 - [Kavita handoff route](src/app/kavita/complete/page.tsx)
-- [Noona page components](src/components/noona/)
+- [Noona page components](src/components/noona)
 - [Rebooting page component](src/components/noona/RebootingPage.tsx)
 - [Setup wizard component](src/components/noona/SetupWizard.tsx)
 - [Shared config editor styles](src/components/noona/ConfigEditor.module.scss)
@@ -47,7 +47,7 @@ frontend.
 - [App shell](src/components/AppShell.tsx)
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
-- [Noona API routes](src/app/api/noona/)
+- [Noona API routes](src/app/api/noona)
 - [Install history proxy](src/app/api/noona/install/history/route.ts)
 - [Home latest-titles proxy](src/app/api/noona/raven/library/latest/route.ts)
 - [Recommendations admin list proxy](src/app/api/noona/recommendations/route.ts)
@@ -71,6 +71,11 @@ frontend.
 
 ## Primary UI Areas
 
+- Shared app shell - The sticky shell header now uses Once UI `MegaMenu` for desktop navigation groups (`Browse`,
+  `Activity`, `Control`, and setup flows when setup is still in progress), while the slide-out drawer uses
+  `MobileMegaMenu` from the same route model so desktop and mobile navigation stay aligned. The root layout now also
+  layers [public/images/backgrounds/moon-sakura-night.png](public/images/backgrounds/moon-sakura-night.png) behind
+  the Once UI background effect surface for the full-app backdrop.
 - `/` - Home summary and shortcuts into library/download workflows. Recent titles now reuse the same cover-card tiles
   as the main library page so the landing screen and `/libraries` stay visually consistent, and signed-in users
   without `library_management` can still see the latest titles there even though the cards stay non-clickable. The

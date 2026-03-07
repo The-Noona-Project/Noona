@@ -3,9 +3,21 @@
 import {usePathname, useRouter} from "next/navigation";
 import {type CSSProperties, useEffect, useMemo, useState} from "react";
 import {FiMenu, FiX} from "react-icons/fi";
-import {Badge, Button, Card, Column, Heading, Row, Spinner, Text, ToggleButton} from "@once-ui-system/core";
+import {
+    Badge,
+    Button,
+    Card,
+    Column,
+    Heading,
+    MegaMenu,
+    MobileMegaMenu,
+    Row,
+    Spinner,
+    Text,
+} from "@once-ui-system/core";
 import {moonShell} from "@/resources";
 import {hasMoonPermission} from "@/utils/moonPermissions";
+import {SETTINGS_NAV_SECTIONS, SETTINGS_USER_MANAGEMENT_HREF} from "@/components/noona/settings";
 import {Footer} from "./Footer";
 import {type MoonViewMode, MoonViewModeToggle} from "./MoonViewModeToggle";
 import {ThemeToggle} from "./ThemeToggle";
@@ -21,13 +33,6 @@ type ShellAuthUser = {
 
 type ShellAuthStatus = {
     user?: ShellAuthUser | null;
-};
-
-type NavItem = {
-    href: string;
-    label: string;
-    icon: string;
-    selected: boolean;
 };
 
 type ViewModeConfig = {
@@ -82,6 +87,30 @@ const VIEW_MODE_CONFIG: Record<MoonViewMode, ViewModeConfig> = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const BG_SURFACE = "surface" as const;
+const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
+
+type MegaMenuLink = {
+    label: string;
+    href: string;
+    icon?: string;
+    description?: string;
+    selected?: boolean;
+};
+
+type MegaMenuSection = {
+    title?: string;
+    links: MegaMenuLink[];
+};
+
+type MegaMenuGroup = {
+    id: string;
+    label: string;
+    suffixIcon?: string;
+    href?: string;
+    selected?: boolean;
+    sections?: MegaMenuSection[];
+};
 
 const isMoonViewMode = (value: unknown): value is MoonViewMode =>
     value === "desktop" || value === "ultrawide" || value === "mobile";
@@ -102,6 +131,19 @@ const buildPageWidthVariables = (viewMode: MoonViewMode): Record<string, string>
         "--moon-page-max-width-narrow": config.pageMaxWidthNarrow,
         "--moon-page-max-width-wide": config.pageMaxWidthWide,
     };
+};
+
+const isRecommendationsPath = (pathname: string) =>
+    pathname.startsWith("/recommendations")
+    || pathname.startsWith("/myrecommendations")
+    || pathname.startsWith("/recommendation");
+
+const getSettingsItemIcon = (href: string) => {
+    if (href.startsWith("/settings/storage")) return "document";
+    if (href.startsWith("/settings/downloads")) return "document";
+    if (href.startsWith("/settings/external")) return "settings";
+    if (href.startsWith("/settings/users")) return "settings";
+    return "settings";
 };
 
 type TimeDisplayProps = {
@@ -144,13 +186,13 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const permissions = accountUser?.permissions ?? null;
     const canAccessLibrary = hasMoonPermission(permissions, "library_management");
     const canAccessDownloads = hasMoonPermission(permissions, "download_management");
+    const canAccessEcosystemSettings = hasMoonPermission(permissions, "admin");
+    const canManageUsers = hasMoonPermission(permissions, "user_management");
     const canManageRecommendations = hasMoonPermission(permissions, "manageRecommendations");
     const canAccessMyRecommendations = hasMoonPermission(permissions, "myRecommendations");
     const canAccessRecommendations = canManageRecommendations || canAccessMyRecommendations;
-    const recommendationsNavHref = "/myrecommendations";
-    const recommendationsNavLabel = canManageRecommendations ? "Recommendations" : "My Recommendations";
-    const canAccessSettings =
-        hasMoonPermission(permissions, "admin") || hasMoonPermission(permissions, "user_management");
+    const recommendationsNavHref = canManageRecommendations ? "/recommendations" : "/myrecommendations";
+    const canAccessSettings = canAccessEcosystemSettings || canManageUsers;
     const showSetupNav = !shellSuppressed && setupCompleted === false;
     const showMainNav = !shellSuppressed && setupCompleted === true;
     const showShellChrome = !shellSuppressed;
@@ -278,68 +320,198 @@ export function AppShell({children}: { children: React.ReactNode }) {
         }
     };
 
-    const navItems = useMemo<NavItem[]>(() => {
-        const items: NavItem[] = [];
+    const menuGroups = useMemo<MegaMenuGroup[]>(() => {
+        const groups: MegaMenuGroup[] = [];
 
         if (showMainNav) {
-            items.push({
-                href: "/",
-                label: "Home",
-                icon: "home",
-                selected: pathname === "/",
-            });
+            const browseSections: MegaMenuSection[] = [
+                {
+                    title: "Launch",
+                    links: [
+                        {
+                            label: "Home",
+                            href: "/",
+                            icon: "home",
+                            description: "Landing view, recent titles, and quick shortcuts.",
+                            selected: pathname === "/",
+                        },
+                    ],
+                },
+            ];
 
             if (canAccessLibrary) {
-                items.push({
-                    href: "/libraries",
-                    label: "Library",
-                    icon: "book",
-                    selected: pathname.startsWith("/libraries"),
+                browseSections.push({
+                    title: "Library",
+                    links: [
+                        {
+                            label: "Library",
+                            href: "/libraries",
+                            icon: "book",
+                            description: "Browse Raven titles and open series detail pages.",
+                            selected: pathname.startsWith("/libraries"),
+                        },
+                    ],
                 });
             }
 
+            groups.push({
+                id: "browse",
+                label: "Browse",
+                href: "/",
+                suffixIcon: "chevronDown",
+                selected: pathname === "/" || pathname.startsWith("/libraries"),
+                sections: browseSections,
+            });
+
+            const activitySections: MegaMenuSection[] = [];
+
             if (canAccessDownloads) {
-                items.push({
-                    href: "/downloads",
-                    label: "Downloads",
-                    icon: "document",
-                    selected: pathname.startsWith("/downloads"),
+                activitySections.push({
+                    title: "Downloads",
+                    links: [
+                        {
+                            label: "Queue overview",
+                            href: "/downloads",
+                            icon: "document",
+                            description: "Monitor active Raven downloads, workers, and history.",
+                            selected: pathname.startsWith("/downloads") && !pathname.startsWith("/downloads/add"),
+                        },
+                        {
+                            label: "Add download",
+                            href: "/downloads/add",
+                            icon: "document",
+                            description: "Search sources and queue a new title without leaving Moon.",
+                            selected: pathname.startsWith("/downloads/add"),
+                        },
+                    ],
                 });
             }
 
             if (canAccessRecommendations) {
-                items.push({
-                    href: recommendationsNavHref,
-                    label: recommendationsNavLabel,
-                    icon: "document",
-                    selected:
-                        pathname.startsWith("/recommendations")
-                        || pathname.startsWith("/myrecommendations")
-                        || pathname.startsWith("/recommendation"),
+                const recommendationLinks: MegaMenuLink[] = [];
+
+                if (canManageRecommendations) {
+                    recommendationLinks.push({
+                        label: "Manager queue",
+                        href: "/recommendations",
+                        icon: "document",
+                        description: "Approve, deny, and review user-submitted title requests.",
+                        selected: pathname.startsWith("/recommendations"),
+                    });
+                }
+
+                if (canAccessMyRecommendations) {
+                    recommendationLinks.push({
+                        label: "My recommendations",
+                        href: "/myrecommendations",
+                        icon: "document",
+                        description: "Track your own submissions and timeline updates.",
+                        selected: pathname.startsWith("/myrecommendations") || pathname.startsWith("/recommendation"),
+                    });
+                }
+
+                if (recommendationLinks.length > 0) {
+                    activitySections.push({
+                        title: "Recommendations",
+                        links: recommendationLinks,
+                    });
+                }
+            }
+
+            if (activitySections.length > 0) {
+                groups.push({
+                    id: "activity",
+                    label: "Activity",
+                    href: canAccessDownloads ? "/downloads" : recommendationsNavHref,
+                    suffixIcon: "chevronDown",
+                    selected: pathname.startsWith("/downloads") || isRecommendationsPath(pathname),
+                    sections: activitySections,
                 });
             }
 
             if (canAccessSettings) {
-                items.push({
-                    href: "/settings/general",
-                    label: "Settings",
-                    icon: "settings",
-                    selected: pathname.startsWith("/settings"),
+                const controlSections = SETTINGS_NAV_SECTIONS.flatMap<MegaMenuSection>((section) => {
+                    if (section.id === "users") {
+                        if (!canManageUsers) {
+                            return [];
+                        }
+                    } else if (!canAccessEcosystemSettings) {
+                        return [];
+                    }
+
+                    return [
+                        {
+                            title: section.label,
+                            links: section.items.map((item) => ({
+                                label: item.label,
+                                href: item.href,
+                                icon: getSettingsItemIcon(item.href),
+                                description: item.description,
+                                selected: pathname === item.href || pathname.startsWith(`${item.href}/`),
+                            })),
+                        },
+                    ];
                 });
+
+                if (controlSections.length > 0) {
+                    groups.push({
+                        id: "control",
+                        label: "Control",
+                        href: canAccessEcosystemSettings ? "/settings/general" : SETTINGS_USER_MANAGEMENT_HREF,
+                        suffixIcon: "chevronDown",
+                        selected: pathname.startsWith("/settings"),
+                        sections: controlSections,
+                    });
+                }
             }
         }
 
         if (showSetupNav) {
-            items.push({
-                href: "/setupwizard",
+            groups.push({
+                id: "setup",
                 label: "Setup",
-                icon: "rocket",
+                href: "/setupwizard",
+                suffixIcon: "chevronDown",
                 selected: pathname.startsWith("/setupwizard"),
+                sections: [
+                    {
+                        title: "Install",
+                        links: [
+                            {
+                                label: "Setup wizard",
+                                href: "/setupwizard",
+                                icon: "rocket",
+                                description: "Configure storage, integrations, and managed services.",
+                                selected: pathname === "/setupwizard",
+                            },
+                            {
+                                label: "Setup summary",
+                                href: "/setupwizard/summary",
+                                icon: "document",
+                                description: "Review completed setup steps and installed services.",
+                                selected: pathname.startsWith("/setupwizard/summary"),
+                            },
+                        ],
+                    },
+                ],
             });
         }
 
-        return items;
-    }, [canAccessDownloads, canAccessLibrary, canAccessRecommendations, canAccessSettings, pathname, recommendationsNavHref, recommendationsNavLabel, showMainNav, showSetupNav]);
+        return groups;
+    }, [
+        canAccessDownloads,
+        canAccessEcosystemSettings,
+        canAccessLibrary,
+        canAccessRecommendations,
+        canAccessMyRecommendations,
+        canAccessSettings,
+        canManageRecommendations,
+        canManageUsers,
+        pathname,
+        recommendationsNavHref,
+        showMainNav,
+        showSetupNav,
+    ]);
 
     const contentStyle = useMemo(
         () =>
@@ -362,8 +534,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
                 <Column style={{width: `min(100%, ${viewModeConfig.contentMaxWidth})`, minWidth: 0}}>
                     <Card
                         fillWidth
-                        background="surface"
-                        border="neutral-alpha-weak"
+                        background={BG_SURFACE}
+                        border={BG_NEUTRAL_ALPHA_WEAK}
                         padding={viewModeConfig.cardPadding}
                         radius="l"
                     >
@@ -373,27 +545,11 @@ export function AppShell({children}: { children: React.ReactNode }) {
                             gap="12"
                             style={{
                                 display: "grid",
-                                gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+                                gridTemplateColumns: "auto minmax(0, 1fr) auto",
                                 alignItems: "center",
                             }}
                         >
                             <Row style={{minWidth: 0}}>
-                                <Button
-                                    size="s"
-                                    variant="secondary"
-                                    onClick={() => setMenuOpen(true)}
-                                    aria-expanded={menuOpen}
-                                    aria-controls="moon-shell-drawer"
-                                    aria-label="Open navigation menu"
-                                >
-                                    <Row gap="8" vertical="center">
-                                        <FiMenu aria-hidden="true"/>
-                                        <Text variant="label-default-s">Menu</Text>
-                                    </Row>
-                                </Button>
-                            </Row>
-
-                            <Row horizontal="center" style={{minWidth: 0}}>
                                 <Row gap="12" vertical="center" style={{minWidth: 0}}>
                                     <span className={styles.brandMark} aria-hidden="true">NM</span>
                                     <Column gap="2" style={{minWidth: 0}}>
@@ -407,12 +563,35 @@ export function AppShell({children}: { children: React.ReactNode }) {
                                 </Row>
                             </Row>
 
-                            <Row horizontal="end" style={{minWidth: 0}}>
+                            <Row horizontal="center" style={{minWidth: 0, position: "relative"}}>
+                                {!setupLoading && menuGroups.length > 0 && (
+                                    <MegaMenu
+                                        menuGroups={menuGroups}
+                                        m={{hide: true}}
+                                        style={{minHeight: "2.5rem"}}
+                                    />
+                                )}
+                            </Row>
+
+                            <Row horizontal="end" vertical="center" gap="12" style={{minWidth: 0}}>
                                 {moonShell.showTime && (
                                     <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
                                         <TimeDisplay/>
                                     </Badge>
                                 )}
+                                <Button
+                                    size="s"
+                                    variant="secondary"
+                                    onClick={() => setMenuOpen(true)}
+                                    aria-expanded={menuOpen}
+                                    aria-controls="moon-shell-drawer"
+                                    aria-label="Open navigation menu"
+                                >
+                                    <Row gap="8" vertical="center">
+                                        <FiMenu aria-hidden="true"/>
+                                        <Text variant="label-default-s">Menu</Text>
+                                    </Row>
+                                </Button>
                             </Row>
                         </Row>
                     </Card>
@@ -471,8 +650,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
                     {showMainNav && accountUser && (
                         <Card
                             fillWidth
-                            background="surface"
-                            border="neutral-alpha-weak"
+                            background={BG_SURFACE}
+                            border={BG_NEUTRAL_ALPHA_WEAK}
                             padding={viewModeConfig.cardPadding}
                             radius="l"
                         >
@@ -521,8 +700,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
 
                     <Card
                         fillWidth
-                        background="surface"
-                        border="neutral-alpha-weak"
+                        background={BG_SURFACE}
+                        border={BG_NEUTRAL_ALPHA_WEAK}
                         padding={viewModeConfig.cardPadding}
                         radius="l"
                     >
@@ -550,18 +729,14 @@ export function AppShell({children}: { children: React.ReactNode }) {
                                     <Spinner/>
                                 </Row>
                             )}
-                            {!setupLoading && navItems.map((item) => (
-                                <ToggleButton
-                                    key={item.href}
+                            {!setupLoading && menuGroups.length > 0 && (
+                                <MobileMegaMenu
                                     fillWidth
-                                    prefixIcon={item.icon}
-                                    label={item.label}
-                                    href={item.href}
-                                    selected={item.selected}
-                                    onClick={() => setMenuOpen(false)}
+                                    menuGroups={menuGroups}
+                                    onClose={() => setMenuOpen(false)}
                                 />
-                            ))}
-                            {!setupLoading && navItems.length === 0 && (
+                            )}
+                            {!setupLoading && menuGroups.length === 0 && (
                                 <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
                                     Navigation becomes available after setup and sign-in status resolve.
                                 </Text>
@@ -571,8 +746,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
 
                     <Card
                         fillWidth
-                        background="surface"
-                        border="neutral-alpha-weak"
+                        background={BG_SURFACE}
+                        border={BG_NEUTRAL_ALPHA_WEAK}
                         padding={viewModeConfig.cardPadding}
                         radius="l"
                     >

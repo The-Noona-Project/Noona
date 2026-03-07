@@ -9,6 +9,8 @@ import {AppShell, Providers, RouteGuard} from "@/components";
 import {moonDataStyle, moonEffects, moonFonts, moonSite, moonTheme} from "@/resources";
 import {resolveMoonBaseUrl} from "@/utils/webGui";
 
+const BG_PAGE = "page" as const;
+
 export async function generateMetadata() {
     return Meta.generate({
         title: moonSite.title,
@@ -38,6 +40,7 @@ export default async function RootLayout({
             )}
         >
             <head>
+                <title>{moonSite.title}</title>
                 <script
                     id="theme-init"
                     dangerouslySetInnerHTML={{
@@ -105,14 +108,16 @@ export default async function RootLayout({
             <Providers>
                 <Column
                     as="body"
-                    background="page"
+                    background={BG_PAGE}
                     fillWidth
                     style={{minHeight: "100vh"}}
+                    position="relative"
                     margin="0"
                     padding="0"
                     horizontal="center"
                 >
-                    <RevealFx fill position="absolute">
+                    <div className="moon-site-background" aria-hidden="true"/>
+                    <RevealFx fill position="absolute" zIndex={1} style={{pointerEvents: "none"}}>
                         <Background
                             mask={{
                                 x: moonEffects.mask.x,
@@ -154,7 +159,7 @@ export default async function RootLayout({
                             }}
                         />
                     </RevealFx>
-                    <Flex zIndex={0} fillWidth flex={1} minHeight="0">
+                    <Flex zIndex={2} fillWidth flex={1} minHeight="0">
                         <AppShell>
                             <RouteGuard>{children}</RouteGuard>
                         </AppShell>

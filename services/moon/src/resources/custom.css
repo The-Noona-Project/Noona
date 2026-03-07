@@ -67,3 +67,42 @@
 --scheme-neutral-600-50: rgba(137,152,159,0.5);
 /*
 }*/
+
+.moon-site-background {
+    --moon-site-background-url: url("/images/backgrounds/moon-sakura-night.png");
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image: linear-gradient(
+            180deg,
+            rgba(2, 6, 23, 0.84) 0%,
+            rgba(6, 16, 42, 0.62) 36%,
+            rgba(2, 6, 23, 0.9) 100%
+    ),
+    radial-gradient(
+            circle at 82% 28%,
+            rgba(255, 182, 230, 0.24) 0%,
+            rgba(255, 182, 230, 0) 26%
+    ),
+    var(--moon-site-background-url);
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-size: cover;
+    transform: scale(1.02);
+}
+
+[data-theme="light"] .moon-site-background {
+    background-image: linear-gradient(
+            180deg,
+            rgba(245, 248, 255, 0.5) 0%,
+            rgba(235, 241, 255, 0.34) 36%,
+            rgba(243, 247, 255, 0.56) 100%
+    ),
+    radial-gradient(
+            circle at 82% 28%,
+            rgba(255, 182, 230, 0.18) 0%,
+            rgba(255, 182, 230, 0) 26%
+    ),
+    var(--moon-site-background-url);
+}
