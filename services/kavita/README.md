@@ -46,7 +46,8 @@ Managed `noona-kavita` also supports a Noona login handoff flow. When `NOONA_MOO
 login URL, Kavita shows a `Log in with Noona` button on `/login`. Moon signs the user into Noona with Discord if
 needed, Portal creates or refreshes the matching Kavita account with a generated password, then Kavita redeems the
 short-lived handoff token through `NOONA_PORTAL_BASE_URL` and completes a normal Kavita JWT login without exposing the
-generated password in the browser.
+generated password in the browser. The button now sends Moon an explicit public `/kavita/complete` callback URL plus
+the exact public Kavita `/login` target, which avoids proxy-related 404s after Discord auth succeeds on Moon.
 
 When `NOONA_MOON_BASE_URL` is missing, the managed build now falls back to the current host metadata in this order:
 `HOST_SERVICE_URL`, `SERVER_IP`, then the active request host, always targeting Moon's configured/default web port.

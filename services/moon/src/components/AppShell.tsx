@@ -3,18 +3,7 @@
 import {usePathname, useRouter} from "next/navigation";
 import {type CSSProperties, useEffect, useMemo, useState} from "react";
 import {FiMenu, FiX} from "react-icons/fi";
-import {
-    Badge,
-    Button,
-    Card,
-    Column,
-    Heading,
-    MegaMenu,
-    MobileMegaMenu,
-    Row,
-    Spinner,
-    Text,
-} from "@once-ui-system/core";
+import {Badge, Button, Card, Column, MegaMenu, MobileMegaMenu, Row, Spinner, Text,} from "@once-ui-system/core";
 import {moonShell} from "@/resources";
 import {hasMoonPermission} from "@/utils/moonPermissions";
 import {SETTINGS_NAV_SECTIONS, SETTINGS_USER_MANAGEMENT_HREF} from "@/components/noona/settings";
@@ -146,29 +135,25 @@ const getSettingsItemIcon = (href: string) => {
     return "settings";
 };
 
-type TimeDisplayProps = {
-    locale?: string;
-};
-
-const TimeDisplay = ({locale}: TimeDisplayProps) => {
+const TimeDisplay = () => {
     const [currentTime, setCurrentTime] = useState("");
 
     useEffect(() => {
         const updateTime = () => {
             const now = new Date();
             const options: Intl.DateTimeFormatOptions = {
-                hour: "2-digit",
+                hour: "numeric",
                 minute: "2-digit",
                 second: "2-digit",
-                hour12: false,
+                hour12: true,
             };
-            setCurrentTime(new Intl.DateTimeFormat(locale, options).format(now));
+            setCurrentTime(new Intl.DateTimeFormat(undefined, options).format(now));
         };
 
         updateTime();
         const timer = window.setInterval(updateTime, 1000);
         return () => window.clearInterval(timer);
-    }, [locale]);
+    }, []);
 
     return <>{currentTime}</>;
 };
@@ -545,30 +530,16 @@ export function AppShell({children}: { children: React.ReactNode }) {
                             gap="12"
                             style={{
                                 display: "grid",
-                                gridTemplateColumns: "auto minmax(0, 1fr) auto",
+                                gridTemplateColumns: "minmax(0, 1fr) auto",
                                 alignItems: "center",
                             }}
                         >
-                            <Row style={{minWidth: 0}}>
-                                <Row gap="12" vertical="center" style={{minWidth: 0}}>
-                                    <span className={styles.brandMark} aria-hidden="true">NM</span>
-                                    <Column gap="2" style={{minWidth: 0}}>
-                                        <Text variant="label-default-s" onBackground="neutral-weak">
-                                            {showSetupNav ? "Setup mode" : "Noona Stack"}
-                                        </Text>
-                                        <Heading as="h1" variant="heading-strong-l">
-                                            {moonShell.mastheadLabel}
-                                        </Heading>
-                                    </Column>
-                                </Row>
-                            </Row>
-
-                            <Row horizontal="center" style={{minWidth: 0, position: "relative"}}>
+                            <Row horizontal="start" style={{minWidth: 0, position: "relative"}}>
                                 {!setupLoading && menuGroups.length > 0 && (
                                     <MegaMenu
                                         menuGroups={menuGroups}
                                         m={{hide: true}}
-                                        style={{minHeight: "2.5rem"}}
+                                        style={{minHeight: "2.5rem", justifySelf: "start"}}
                                     />
                                 )}
                             </Row>

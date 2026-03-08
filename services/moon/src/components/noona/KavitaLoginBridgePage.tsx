@@ -2,12 +2,13 @@
 
 import {useEffect, useRef, useState} from "react";
 import {useRouter, useSearchParams} from "next/navigation";
-import {Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
+import {Button, Card, Column, dev, Heading, Row, Spinner, Text} from "@once-ui-system/core";
 
 type KavitaLoginResponse = {
     token?: string | null;
     baseUrl?: string | null;
     error?: string;
+    details?: unknown;
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -41,6 +42,18 @@ const buildKavitaLoginUrl = (baseUrl: string, token: string, fallbackTarget = ""
     return nextUrl.toString();
 };
 
+const maskNoonaToken = (value: string): string => {
+    try {
+        const parsed = new URL(value);
+        if (parsed.searchParams.has("noonaToken")) {
+            parsed.searchParams.set("noonaToken", "***");
+        }
+        return parsed.toString();
+    } catch {
+        return value;
+    }
+};
+
 export function KavitaLoginBridgePage() {
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -52,27 +65,41 @@ export function KavitaLoginBridgePage() {
         startedRef.current = true;
 
         const target = normalizeString(searchParams.get("target")).trim();
+        dev.info("[NoonaKavitaBridge] Bridge started", {target});
 
         const complete = async () => {
             try {
+                dev.info("[NoonaKavitaBridge] Requesting Kavita login token from Moon API");
                 const response = await fetch("/api/noona/kavita/login", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
                 });
                 const payload = (await response.json().catch(() => null)) as KavitaLoginResponse | null;
                 if (!response.ok) {
+                    dev.warn("[NoonaKavitaBridge] Moon API rejected Kavita bridge request", {
+                        status: response.status,
+                        error: normalizeString(payload?.error).trim(),
+                        details: payload?.details ?? null,
+                    });
                     throw new Error(normalizeString(payload?.error).trim() || `Kavita login handoff failed (HTTP ${response.status}).`);
                 }
 
                 const token = normalizeString(payload?.token).trim();
                 const baseUrl = normalizeString(payload?.baseUrl).trim();
                 if (!token) {
+                    dev.error("[NoonaKavitaBridge] Missing token in Moon API response");
                     throw new Error("Portal did not return a valid Kavita login token.");
                 }
 
-                window.location.replace(buildKavitaLoginUrl(baseUrl, token, target));
+                const redirectUrl = buildKavitaLoginUrl(baseUrl, token, target);
+                dev.info("[NoonaKavitaBridge] Redirecting back to Kavita", {
+                    baseUrl,
+                    redirectUrl: maskNoonaToken(redirectUrl),
+                });
+                window.location.replace(redirectUrl);
             } catch (error_) {
                 const detail = error_ instanceof Error ? error_.message : String(error_);
+                dev.error("[NoonaKavitaBridge] Bridge failed", detail);
                 setError(detail);
             }
         };

@@ -113,6 +113,40 @@ const normalizePositiveInteger = value => {
     return String(value).trim() === String(parsed) ? parsed : null;
 };
 
+const DEFAULT_AGE_RESTRICTION = Object.freeze({
+    ageRating: -1,
+    includeUnknowns: true,
+});
+
+const normalizeAgeRestriction = value => {
+    if (!value || typeof value !== 'object') {
+        return {...DEFAULT_AGE_RESTRICTION};
+    }
+
+    const source = value;
+    const parsedAgeRating = Number.parseInt(String(source?.ageRating ?? source?.AgeRating), 10);
+    const ageRating = Number.isInteger(parsedAgeRating)
+        ? parsedAgeRating
+        : DEFAULT_AGE_RESTRICTION.ageRating;
+
+    const rawIncludeUnknowns = source?.includeUnknowns ?? source?.IncludeUnknowns;
+    let includeUnknowns = DEFAULT_AGE_RESTRICTION.includeUnknowns;
+    if (typeof rawIncludeUnknowns === 'boolean') {
+        includeUnknowns = rawIncludeUnknowns;
+    } else if (typeof rawIncludeUnknowns === 'number') {
+        includeUnknowns = rawIncludeUnknowns > 0;
+    } else if (typeof rawIncludeUnknowns === 'string') {
+        const normalized = rawIncludeUnknowns.trim().toLowerCase();
+        if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+            includeUnknowns = true;
+        } else if (['0', 'false', 'no', 'off'].includes(normalized)) {
+            includeUnknowns = false;
+        }
+    }
+
+    return {ageRating, includeUnknowns};
+};
+
 const normalizeSelectionExpressions = (values, {allowNumeric = false} = {}) => {
     const expressions = [];
     const seen = new Set();
@@ -209,6 +243,51 @@ const parseResponseBody = async response => {
     }
 };
 
+const extractKavitaErrorMessage = payload => {
+    if (typeof payload === 'string') {
+        const normalized = payload.trim();
+        return normalized || '';
+    }
+
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+
+    const directKeys = ['error', 'message'];
+    for (const key of directKeys) {
+        const normalized = normalizeString(payload?.[key]);
+        if (normalized) {
+            return normalized;
+        }
+    }
+
+    const errors = payload?.errors;
+    if (errors && typeof errors === 'object') {
+        for (const value of Object.values(errors)) {
+            if (Array.isArray(value)) {
+                const first = normalizeString(value[0]);
+                if (first) {
+                    return first;
+                }
+            }
+            const normalized = normalizeString(value);
+            if (normalized) {
+                return normalized;
+            }
+        }
+    }
+
+    const secondaryKeys = ['title', 'detail'];
+    for (const key of secondaryKeys) {
+        const normalized = normalizeString(payload?.[key]);
+        if (normalized) {
+            return normalized;
+        }
+    }
+
+    return '';
+};
+
 const createAbortController = (timeoutMs = DEFAULT_TIMEOUT) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -265,7 +344,12 @@ export const createKavitaClient = ({
             const payload = await parseResponseBody(response);
 
             if (!response.ok) {
-                const error = new Error(`Kavita request failed with status ${response.status}`);
+                const detailMessage = extractKavitaErrorMessage(payload);
+                const error = new Error(
+                    detailMessage
+                        ? `Kavita request failed with status ${response.status}: ${detailMessage}`
+                        : `Kavita request failed with status ${response.status}`,
+                );
                 error.status = response.status;
                 error.body = payload;
                 throw error;
@@ -523,23 +607,25 @@ export const createKavitaClient = ({
         };
     };
 
-    const inviteUser = async ({email, roles = [], libraries = []} = {}) => {
+    const inviteUser = async ({email, roles = [], libraries = [], ageRestriction = null} = {}) => {
         const normalizedEmail = normalizeString(email);
         if (!normalizedEmail) {
             throw buildValidationError('Email is required to invite a Kavita user.');
         }
+        const resolvedAgeRestriction = normalizeAgeRestriction(ageRestriction);
 
         return request('/api/Account/invite', {
             method: 'POST',
             body: {
                 email: normalizedEmail,
                 roles: roles.length ? roles : undefined,
-                libraries: libraries.length ? libraries : undefined,
+                libraries: Array.isArray(libraries) ? libraries : [],
+                ageRestriction: resolvedAgeRestriction,
             },
         });
     };
 
-    const updateUser = async ({userId, username, email, roles = [], libraries = []} = {}) => {
+    const updateUser = async ({userId, username, email, roles = [], libraries = [], ageRestriction = null} = {}) => {
         const parsedUserId = Number.parseInt(String(userId), 10);
         if (!Number.isInteger(parsedUserId) || parsedUserId < 1) {
             throw buildValidationError('A valid Kavita user id is required to update a user.');
@@ -550,6 +636,7 @@ export const createKavitaClient = ({
         if (!normalizedUsername || !normalizedEmail) {
             throw buildValidationError('Username and email are required to update a Kavita user.');
         }
+        const resolvedAgeRestriction = normalizeAgeRestriction(ageRestriction);
 
         return request('/api/Account/update', {
             method: 'POST',
@@ -558,7 +645,8 @@ export const createKavitaClient = ({
                 username: normalizedUsername,
                 email: normalizedEmail,
                 roles: roles.length ? roles : undefined,
-                libraries: libraries.length ? libraries : undefined,
+                libraries: Array.isArray(libraries) ? libraries : [],
+                ageRestriction: resolvedAgeRestriction,
             },
         });
     };
@@ -707,7 +795,7 @@ export const createKavitaClient = ({
         );
     };
 
-    const createUser = async ({username, email, password, roles = [], libraries = []} = {}) => {
+    const createUser = async ({username, email, password, roles = [], libraries = [], ageRestriction = null} = {}) => {
         const normalizedUsername = normalizeString(username);
         const normalizedEmail = normalizeString(email);
 
@@ -732,11 +820,13 @@ export const createKavitaClient = ({
 
         const resolvedRoles = await resolveConfiguredRoles(roles);
         const resolvedLibraries = await resolveConfiguredLibraries(libraries);
+        const resolvedAgeRestriction = normalizeAgeRestriction(ageRestriction);
 
         await inviteUser({
             email: normalizedEmail,
             roles: resolvedRoles,
             libraries: resolvedLibraries,
+            ageRestriction: resolvedAgeRestriction,
         });
 
         const invitedUsers = await fetchUsers({includePending: true});
@@ -751,6 +841,7 @@ export const createKavitaClient = ({
             email: normalizedEmail,
             roles: resolvedRoles,
             libraries: resolvedLibraries,
+            ageRestriction: resolvedAgeRestriction,
         });
 
         await resetUserPassword({
@@ -765,6 +856,7 @@ export const createKavitaClient = ({
             email: normalizedEmail,
             roles: resolvedRoles,
             libraries: resolvedLibraries,
+            passwordUpdated: true,
         };
     };
 
@@ -774,6 +866,8 @@ export const createKavitaClient = ({
                                           password,
                                           roles = [],
                                           libraries = [],
+                                          ageRestriction = null,
+                                          oldPassword = null,
                                           matchUsernames = [],
                                           matchEmails = [],
                                       } = {}) => {
@@ -805,12 +899,14 @@ export const createKavitaClient = ({
         }) ?? null;
 
         if (!existingUser) {
+            const resolvedAgeRestriction = normalizeAgeRestriction(ageRestriction);
             const createdUser = await createUser({
                 username: normalizedUsername,
                 email: normalizedEmail,
                 password,
                 roles: resolvedRoles,
                 libraries: resolvedLibraries,
+                ageRestriction: resolvedAgeRestriction,
             });
 
             return {
@@ -832,18 +928,43 @@ export const createKavitaClient = ({
             throw buildValidationError('A Kavita user already exists with that username or email.', 409);
         }
 
+        const resolvedAgeRestriction = ageRestriction == null
+            ? normalizeAgeRestriction(existingUser?.ageRestriction ?? existingUser?.AgeRestriction)
+            : normalizeAgeRestriction(ageRestriction);
         await updateUser({
             userId: existingUser.id,
             username: normalizedUsername,
             email: normalizedEmail,
             roles: resolvedRoles,
             libraries: resolvedLibraries,
+            ageRestriction: resolvedAgeRestriction,
         });
 
-        await resetUserPassword({
-            username: normalizedUsername,
-            password,
-        });
+        let passwordUpdated = true;
+        try {
+            await resetUserPassword({
+                username: normalizedUsername,
+                password,
+                oldPassword: normalizeString(oldPassword) || undefined,
+            });
+        } catch (error) {
+            const status = Number(error?.status);
+            const message = normalizeString(error?.message).toLowerCase();
+            const canSkipReset =
+                (status === 400 || status === 500)
+                && (
+                    message.includes('providedpassword')
+                    || message.includes('password-required')
+                    || message.includes('password required')
+                );
+
+            if (!canSkipReset) {
+                throw error;
+            }
+
+            passwordUpdated = false;
+            log(`[Portal/Kavita] Skipped password reset for ${normalizedUsername}; continuing Noona handoff with existing account password.`);
+        }
 
         log(`[Portal/Kavita] Updated user ${normalizedUsername}.`);
         return {
@@ -853,6 +974,7 @@ export const createKavitaClient = ({
             roles: resolvedRoles,
             libraries: resolvedLibraries,
             created: false,
+            passwordUpdated,
         };
     };
 
@@ -869,6 +991,7 @@ export const createKavitaClient = ({
             email: user.email,
             roles: Array.isArray(user.roles) ? user.roles : [],
             libraries: resolvedLibraries,
+            ageRestriction: user?.ageRestriction ?? user?.AgeRestriction ?? null,
         });
     };
 

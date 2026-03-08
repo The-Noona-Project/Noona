@@ -4035,7 +4035,7 @@ test('Discord OAuth config, callback test, and bootstrap create the first admin 
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             mode: 'test',
-            redirectUri: 'http://moon.local/discord/callback/',
+            redirectUri: 'http://moon.local/discord/callback',
             returnTo: '/setupwizard/summary?selected=noona-portal',
         }),
     })
@@ -4068,7 +4068,7 @@ test('Discord OAuth config, callback test, and bootstrap create the first admin 
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             mode: 'bootstrap',
-            redirectUri: 'http://moon.local/discord/callback/',
+            redirectUri: 'http://moon.local/discord/callback',
             returnTo: '/setupwizard/summary?selected=noona-portal',
         }),
     })
@@ -4182,7 +4182,7 @@ test('auth user management creates Discord-linked users and Discord login uses O
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             mode: 'login',
-            redirectUri: 'http://moon.local/discord/callback/',
+            redirectUri: 'http://moon.local/discord/callback',
             returnTo: '/',
         }),
     })
@@ -4263,6 +4263,99 @@ test('auth user management routes create, update, list, and delete users through
     })
     assert.equal(deleteResponse.status, 200)
     assert.deepEqual(await deleteResponse.json(), {deleted: true})
+})
+
+test('discord oauth login preserves same-origin absolute return targets and rejects foreign origins', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'same-origin-login': {
+                        id: '123123123123123123',
+                        username: 'MoonReader',
+                        globalName: 'Moon Reader',
+                        email: 'moon-reader@example.com',
+                    },
+                },
+            }),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const startSameOriginResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'login',
+            redirectUri: 'https://moon.local/discord/callback',
+            returnTo: 'https://moon.local/kavita/complete?target=https%3A%2F%2Fbeta.local%2Flogin',
+        }),
+    })
+    assert.equal(startSameOriginResponse.status, 200)
+    const startSameOriginPayload = await startSameOriginResponse.json()
+
+    const callbackSameOriginResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'same-origin-login',
+            state: startSameOriginPayload.state,
+        }),
+    })
+    assert.equal(callbackSameOriginResponse.status, 200)
+    const callbackSameOriginPayload = await callbackSameOriginResponse.json()
+    assert.equal(callbackSameOriginPayload.returnTo, 'https://moon.local/kavita/complete?target=https%3A%2F%2Fbeta.local%2Flogin')
+
+    const startForeignOriginResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'login',
+            redirectUri: 'https://moon.local/discord/callback',
+            returnTo: 'https://evil.local/steal',
+        }),
+    })
+    assert.equal(startForeignOriginResponse.status, 200)
+    const startForeignOriginPayload = await startForeignOriginResponse.json()
+
+    const callbackForeignOriginResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'same-origin-login',
+            state: startForeignOriginPayload.state,
+        }),
+    })
+    assert.equal(callbackForeignOriginResponse.status, 200)
+    const callbackForeignOriginPayload = await callbackForeignOriginResponse.json()
+    assert.equal(callbackForeignOriginPayload.returnTo, '/')
 })
 
 test('auth user management updates legacy Discord users missing authProvider metadata', async (t) => {
@@ -4814,7 +4907,7 @@ test('Discord OAuth login auto-creates a Discord user with configured default pe
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             mode: 'login',
-            redirectUri: 'http://moon.local/discord/callback/',
+            redirectUri: 'http://moon.local/discord/callback',
             returnTo: '/',
         }),
     })
@@ -5009,6 +5102,12 @@ test('settings factory reset route requires valid password and wipes storage bef
                 restartCalls.push(options)
                 return {
                     ok: true,
+                    bootPersistence: {
+                        setupConfig: {deleted: true, entries: []},
+                        runtimeConfig: {deleted: true, path: '/srv/noona/warden/service-runtime-config.json'},
+                        runtimeOverridesCleared: true,
+                        wizardStateCleared: true,
+                    },
                     ravenDownloads: {
                         requested: true,
                         mountCount: 0,
@@ -5077,6 +5176,138 @@ test('settings factory reset route requires valid password and wipes storage bef
     }])
 })
 
+test('settings factory reset route accepts Discord admin confirmation by username', async (t) => {
+    const wipeCalls = []
+    const restartCalls = []
+    const vault = createVaultAuthStub()
+    vault.client.mongo.wipe = async () => {
+        wipeCalls.push('mongo')
+        return {status: 'ok'}
+    }
+    vault.client.redis.wipe = async () => {
+        wipeCalls.push('redis')
+        return {status: 'ok'}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        auth: {
+            fetchImpl: createDiscordOauthFetchStub({
+                identitiesByCode: {
+                    'reset-discord-admin': {
+                        id: '123456789012345678',
+                        username: 'PaxKun',
+                        globalName: 'Pax-kun',
+                        email: 'pax@example.com',
+                    },
+                },
+            }),
+        },
+        setupClient: {
+            async factoryResetEcosystem(options = {}) {
+                restartCalls.push(options)
+                return {
+                    ok: true,
+                    bootPersistence: {
+                        setupConfig: {deleted: true, entries: []},
+                        runtimeConfig: {deleted: true, path: '/srv/noona/warden/service-runtime-config.json'},
+                        runtimeOverridesCleared: true,
+                        wizardStateCleared: true,
+                    },
+                    ravenDownloads: {
+                        requested: false,
+                        mountCount: 0,
+                        entries: [],
+                        deleted: true,
+                    },
+                    dockerCleanup: {
+                        requested: false,
+                        containersRemoved: [],
+                        imagesRemoved: [],
+                        containerErrors: [],
+                        imageErrors: [],
+                    },
+                }
+            },
+        },
+        settings: {
+            baseUrl: 'https://noona.local',
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const configResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(configResponse.status, 200)
+
+    const startBootstrapResponse = await fetch(`${baseUrl}/api/auth/discord/start`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            mode: 'bootstrap',
+            redirectUri: 'http://moon.local/discord/callback',
+            returnTo: '/setupwizard/summary',
+        }),
+    })
+    assert.equal(startBootstrapResponse.status, 200)
+    const startBootstrapPayload = await startBootstrapResponse.json()
+
+    const callbackBootstrapResponse = await fetch(`${baseUrl}/api/auth/discord/callback`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            code: 'reset-discord-admin',
+            state: startBootstrapPayload.state,
+        }),
+    })
+    assert.equal(callbackBootstrapResponse.status, 200)
+    const callbackBootstrapPayload = await callbackBootstrapResponse.json()
+    const token = callbackBootstrapPayload.token
+
+    const badRes = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({confirmation: 'Wrong Name'}),
+    })
+    assert.equal(badRes.status, 401)
+    const badPayload = await badRes.json()
+    assert.equal(badPayload.error, 'Confirmation did not match the current Discord account.')
+
+    const okRes = await fetch(`${baseUrl}/api/settings/factory-reset`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({confirmation: 'Pax-kun'}),
+    })
+    assert.equal(okRes.status, 202)
+    const okPayload = await okRes.json()
+    assert.equal(okPayload.ok, true)
+    assert.equal(okPayload.restartQueued, true)
+    assert.equal(okPayload.redirectTo, 'https://noona.local')
+
+    assert.deepEqual(wipeCalls, ['mongo', 'redis'])
+    assert.deepEqual(restartCalls, [{
+        deleteRavenDownloads: false,
+        deleteDockers: false,
+        setupCompleted: false,
+        forceFull: false,
+    }])
+})
+
 test('settings factory reset route fails when selected cleanup targets are not fully deleted', async (t) => {
     const vault = createVaultAuthStub()
     vault.client.mongo.wipe = async () => ({status: 'ok'})
@@ -5088,6 +5319,12 @@ test('settings factory reset route fails when selected cleanup targets are not f
             async factoryResetEcosystem() {
                 return {
                     ok: true,
+                    bootPersistence: {
+                        setupConfig: {deleted: true, entries: []},
+                        runtimeConfig: {deleted: true, path: '/srv/noona/warden/service-runtime-config.json'},
+                        runtimeOverridesCleared: true,
+                        wizardStateCleared: true,
+                    },
                     ravenDownloads: {
                         requested: true,
                         mountCount: 1,
@@ -5153,6 +5390,12 @@ test('settings factory reset route falls back to SERVER_IP for redirect URLs', a
                 async factoryResetEcosystem() {
                     return {
                         ok: true,
+                        bootPersistence: {
+                            setupConfig: {deleted: true, entries: []},
+                            runtimeConfig: {deleted: true, path: '/srv/noona/warden/service-runtime-config.json'},
+                            runtimeOverridesCleared: true,
+                            wizardStateCleared: true,
+                        },
                         ravenDownloads: {
                             requested: false,
                             mountCount: 0,

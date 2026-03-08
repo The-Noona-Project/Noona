@@ -4,18 +4,17 @@
 
 1. **Configuration** - `safeLoadPortalConfig` merges process environment variables with overrides and validates required
    values before boot.
-2. **Client wiring** - Kavita and Vault clients are built from config, the onboarding token store is initialized, and
-   slash command handlers are assembled.
-3. **Discord bootstrap** - `createDiscordClient` is created with guild metadata, command handlers, and role settings.
-   `discord.login()` authenticates, clears current-app global commands, clears guild slash commands, and registers the
-   current guild command list.
+2. **Client wiring** - Kavita and Vault clients are built from config, and the onboarding token store is initialized.
+3. **Discord bootstrap (conditional)** - when all Discord env vars are present, `createDiscordClient` is created with
+   guild metadata, command handlers, and role settings. `discord.login()` authenticates, clears current-app global
+   commands, clears guild slash commands, and registers the current guild command list.
 4. **Server start** - `startPortalServer` creates the Express app and listens on `config.port`.
 5. **Shutdown path** - `stopPortal` closes HTTP, destroys Discord, and clears runtime references.
 
 ## Configuration and environment (`config/portalConfig.mjs`)
 
-- Required values: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`, `KAVITA_BASE_URL`, `KAVITA_API_KEY`,
-  `VAULT_BASE_URL`, and either `VAULT_ACCESS_TOKEN` or `VAULT_API_TOKEN`.
+- Required values: `KAVITA_API_KEY`, `VAULT_BASE_URL`, and either `VAULT_ACCESS_TOKEN` or `VAULT_API_TOKEN`.
+- Optional Discord values (all-or-none): `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`.
 - Optional tunables: `SERVICE_NAME`, `PORTAL_PORT`/`API_PORT`, `DISCORD_GUILD_ROLE_ID` or `DISCORD_DEFAULT_ROLE_ID`,
   `PORTAL_JOIN_DEFAULT_ROLES`, `PORTAL_JOIN_DEFAULT_LIBRARIES`, `PORTAL_REDIS_NAMESPACE`, `PORTAL_TOKEN_TTL`,
   `PORTAL_HTTP_TIMEOUT`.

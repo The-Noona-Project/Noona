@@ -242,6 +242,16 @@ export const createWizardStateClient = ({
     }
 
     const replaceState = async (state) => writeState(state)
+    const resetState = async (state = null) => {
+        if (state == null) {
+            localState = null
+            return null
+        }
+
+        const stamped = stampState(state)
+        localState = stamped
+        return stamped
+    }
 
     const appendHistoryEntries = async ({ step, entries, entry, limit } = {}) => {
         const current = await loadState({ fallbackToDefault: true })
@@ -258,6 +268,7 @@ export const createWizardStateClient = ({
     return {
         loadState,
         writeState: replaceState,
+        resetState,
         applyUpdates: applyUpdatesOnState,
         appendHistory: appendHistoryEntries,
         resolveOperation: resolveWizardStateOperation,

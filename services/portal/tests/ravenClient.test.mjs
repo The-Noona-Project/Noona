@@ -166,3 +166,36 @@ test('getTitle returns null when Raven responds with 404', async () => {
 
     assert.equal(title, null);
 });
+
+test('updateTitle patches Raven title cover metadata', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                uuid: 'title-1',
+                coverUrl: 'https://covers.example/solo-leveling.jpg',
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const title = await raven.updateTitle('title-1', {
+        coverUrl: 'https://covers.example/solo-leveling.jpg',
+    });
+
+    assert.equal(title.uuid, 'title-1');
+    assert.equal(title.coverUrl, 'https://covers.example/solo-leveling.jpg');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'PATCH');
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/library/title/title-1');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        coverUrl: 'https://covers.example/solo-leveling.jpg',
+    });
+});

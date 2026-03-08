@@ -1,5 +1,7 @@
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
+const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+
 const sendInteractionReply = async (interaction, payload) => {
     if (interaction.deferred || interaction.replied) {
         await interaction.editReply?.(payload);
@@ -78,6 +80,14 @@ export const createInteractionHandler = ({
     }
 
     if (!handler?.execute) {
+        const safeCommandName = normalizeString(commandName) || 'this';
+        errMSG(`[Portal/Discord] Missing handler for /${safeCommandName}.`);
+        await sendInteractionReply(interaction, {
+            content: `/${safeCommandName} is not available right now. Please try again in a moment.`,
+            ephemeral: true,
+        }).catch(responseError => {
+            errMSG(`[Portal/Discord] Failed to send unavailable-command response: ${responseError.message}`);
+        });
         return;
     }
 

@@ -7,6 +7,7 @@ import {
 } from '../docker/komfConfigTemplate.mjs';
 
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
+const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
 const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
 const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
@@ -665,6 +666,34 @@ export function registerServiceManagementApi(context = {}) {
         }
     };
 
+    const resolveManagedKavitaNoonaMoonBaseUrl = () => {
+        if (!serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
+            return '';
+        }
+
+        try {
+            const config = api.getServiceConfig(MANAGED_KAVITA_SERVICE_NAME);
+            return normalizeAbsoluteHttpUrl(config?.env?.NOONA_MOON_BASE_URL) || normalizeString(config?.env?.NOONA_MOON_BASE_URL);
+        } catch {
+            return '';
+        }
+    };
+
+    const isManagedServiceInstalled = async (targetServiceName) => {
+        const normalizedName = normalizeString(targetServiceName);
+        if (!normalizedName) {
+            return false;
+        }
+
+        try {
+            const dockerClient = await ensureDockerConnection();
+            return await dockerUtils.containerExists(normalizedName, {dockerInstance: dockerClient});
+        } catch (error) {
+            markDockerConnectionStale(error);
+            return false;
+        }
+    };
+
     api.startService = async function startService(service, healthUrl = null, options = {}) {
         if (!service) {
             throw new Error('Service descriptor is required.');
@@ -690,6 +719,7 @@ export function registerServiceManagementApi(context = {}) {
         });
         const hostServiceUrl = api.resolveHostServiceUrl(effectiveService);
         const recreate = options?.recreate === true;
+        const reuseStoppedContainer = options?.reuseStoppedContainer === true;
         let alreadyRunning = false;
         let existingContainer = {exists: false, running: false};
 
@@ -715,7 +745,7 @@ export function registerServiceManagementApi(context = {}) {
             throw error;
         }
 
-        if (existingContainer.exists && (recreate || !alreadyRunning)) {
+        if (existingContainer.exists && (recreate || (!alreadyRunning && !reuseStoppedContainer))) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'recreating',
@@ -747,106 +777,143 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         if (!alreadyRunning) {
-            appendHistoryEntry(serviceName, {
-                type: 'status',
-                status: 'pulling',
-                message: `Checking Docker image ${effectiveService.image}`,
-                detail: effectiveService.image,
-            });
-
-            try {
-                await dockerUtils.pullImageIfNeeded(effectiveService.image, {
-                    dockerInstance: dockerClient,
-                    onProgress: (event = {}) => {
-                        const explicitLayerId =
-                            event.layerId != null ? String(event.layerId).trim() : '';
-                        const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
-                        const layerId = explicitLayerId || fallbackLayerId || null;
-                        const phase =
-                            typeof event.phase === 'string' && event.phase.trim()
-                                ? event.phase.trim()
-                                : null;
-                        const rawStatus = event.status || phase || 'progress';
-                        const status =
-                            typeof rawStatus === 'string'
-                                ? rawStatus.trim() || 'progress'
-                                : String(rawStatus ?? 'progress');
-                        const detail = event.detail != null ? String(event.detail).trim() : '';
-                        const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
-                        const message =
-                            explicitMessage ||
-                            formatDockerProgressMessage({
-                                layerId,
-                                phase,
-                                status,
-                                detail,
-                            }) ||
-                            status;
-
-                        const meta = {};
-
-                        if (layerId) {
-                            meta.layerId = layerId;
-                        }
-
-                        if (phase) {
-                            meta.phase = phase;
-                        }
-
-                        if (event.progressDetail && typeof event.progressDetail === 'object') {
-                            meta.progressDetail = cloneMeta(event.progressDetail);
-                        }
-
-                        if (explicitMessage) {
-                            meta.message = explicitMessage;
-                        }
-
-                        const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
-                        appendHistoryEntry(serviceName, {
-                            type: 'progress',
-                            status,
-                            message,
-                            detail: detail || null,
-                            ...(metaPayload ? {meta: metaPayload} : {}),
-                        });
-                    },
+            if (existingContainer.exists && reuseStoppedContainer && !recreate) {
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'starting',
+                    message: 'Starting existing stopped container',
+                    detail: null,
                 });
-            } catch (error) {
-                markDockerConnectionStale(error);
-                throw error;
-            }
 
-            appendHistoryEntry(serviceName, {
-                type: 'status',
-                status: 'starting',
-                message: 'Starting container',
-                detail: null,
-            });
+                try {
+                    await dockerClient.getContainer(serviceName).start();
+                    trackedContainers.add(serviceName);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    const statusCode = Number.parseInt(String(error?.statusCode ?? error?.status ?? ''), 10);
+                    const alreadyStarted = statusCode === 304 || /already started/i.test(message);
 
-            try {
-                await dockerUtils.runContainerWithLogs(
-                    effectiveService,
-                    networkName,
-                    trackedContainers,
-                    runtimeDebugState.value,
-                    {
+                    if (!alreadyStarted) {
+                        markDockerConnectionStale(error);
+                        appendHistoryEntry(serviceName, {
+                            type: 'error',
+                            status: 'error',
+                            message: 'Failed to start existing container',
+                            detail: message,
+                            error: message,
+                        });
+                        throw error;
+                    }
+                }
+
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'started',
+                    message: 'Existing container start initiated',
+                    detail: null,
+                });
+            } else {
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'pulling',
+                    message: `Checking Docker image ${effectiveService.image}`,
+                    detail: effectiveService.image,
+                });
+
+                try {
+                    await dockerUtils.pullImageIfNeeded(effectiveService.image, {
                         dockerInstance: dockerClient,
-                        onLog: (raw, context = {}) => {
-                            recordContainerOutput(serviceName, raw, context);
-                        },
-                    },
-                );
-            } catch (error) {
-                markDockerConnectionStale(error);
-                throw error;
-            }
+                        onProgress: (event = {}) => {
+                            const explicitLayerId =
+                                event.layerId != null ? String(event.layerId).trim() : '';
+                            const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
+                            const layerId = explicitLayerId || fallbackLayerId || null;
+                            const phase =
+                                typeof event.phase === 'string' && event.phase.trim()
+                                    ? event.phase.trim()
+                                    : null;
+                            const rawStatus = event.status || phase || 'progress';
+                            const status =
+                                typeof rawStatus === 'string'
+                                    ? rawStatus.trim() || 'progress'
+                                    : String(rawStatus ?? 'progress');
+                            const detail = event.detail != null ? String(event.detail).trim() : '';
+                            const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
+                            const message =
+                                explicitMessage ||
+                                formatDockerProgressMessage({
+                                    layerId,
+                                    phase,
+                                    status,
+                                    detail,
+                                }) ||
+                                status;
 
-            appendHistoryEntry(serviceName, {
-                type: 'status',
-                status: 'started',
-                message: 'Container start initiated',
-                detail: null,
-            });
+                            const meta = {};
+
+                            if (layerId) {
+                                meta.layerId = layerId;
+                            }
+
+                            if (phase) {
+                                meta.phase = phase;
+                            }
+
+                            if (event.progressDetail && typeof event.progressDetail === 'object') {
+                                meta.progressDetail = cloneMeta(event.progressDetail);
+                            }
+
+                            if (explicitMessage) {
+                                meta.message = explicitMessage;
+                            }
+
+                            const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
+                            appendHistoryEntry(serviceName, {
+                                type: 'progress',
+                                status,
+                                message,
+                                detail: detail || null,
+                                ...(metaPayload ? {meta: metaPayload} : {}),
+                            });
+                        },
+                    });
+                } catch (error) {
+                    markDockerConnectionStale(error);
+                    throw error;
+                }
+
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'starting',
+                    message: 'Starting container',
+                    detail: null,
+                });
+
+                try {
+                    await dockerUtils.runContainerWithLogs(
+                        effectiveService,
+                        networkName,
+                        trackedContainers,
+                        runtimeDebugState.value,
+                        {
+                            dockerInstance: dockerClient,
+                            onLog: (raw, context = {}) => {
+                                recordContainerOutput(serviceName, raw, context);
+                            },
+                        },
+                    );
+                } catch (error) {
+                    markDockerConnectionStale(error);
+                    throw error;
+                }
+
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'started',
+                    message: 'Container start initiated',
+                    detail: null,
+                });
+            }
         } else {
             logger.log(`${serviceName} already running.`);
             appendHistoryEntry(serviceName, {
@@ -1665,6 +1732,10 @@ export function registerServiceManagementApi(context = {}) {
             hostServiceUrl: api.resolveHostServiceUrl(descriptor),
             description: descriptor.description ?? null,
             health: descriptor.health ?? null,
+            restartPolicy:
+                descriptor.restartPolicy && typeof descriptor.restartPolicy === 'object'
+                    ? {...descriptor.restartPolicy}
+                    : null,
             env,
             envConfig: cloneEnvConfig(descriptor.envConfig),
             runtimeConfig: {
@@ -1717,6 +1788,10 @@ export function registerServiceManagementApi(context = {}) {
             env: {...runtime.env},
             hostPort: runtime.hostPort,
         };
+        const previousManagedKavitaMoonBaseUrl =
+            trimmedName === MANAGED_MOON_SERVICE_NAME
+                ? resolveManagedKavitaNoonaMoonBaseUrl()
+                : '';
 
         if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
             nextRuntime.env = normalizeEnvOverrideMap(updates?.env);
@@ -1735,13 +1810,34 @@ export function registerServiceManagementApi(context = {}) {
 
         const restart = updates?.restart === true;
         let restartResult = null;
+        const linkedRestarts = [];
+        const warnings = [];
         if (restart) {
             restartResult = await api.restartService(trimmedName);
+        }
+
+        if (restart && trimmedName === MANAGED_MOON_SERVICE_NAME && serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
+            const nextManagedKavitaMoonBaseUrl = resolveManagedKavitaNoonaMoonBaseUrl();
+            const moonLoginTargetChanged = previousManagedKavitaMoonBaseUrl !== nextManagedKavitaMoonBaseUrl;
+
+            if (moonLoginTargetChanged && await isManagedServiceInstalled(MANAGED_KAVITA_SERVICE_NAME)) {
+                try {
+                    await api.restartService(MANAGED_KAVITA_SERVICE_NAME);
+                    linkedRestarts.push(MANAGED_KAVITA_SERVICE_NAME);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    warnings.push(
+                        `Saved ${MANAGED_MOON_SERVICE_NAME}, but failed to restart ${MANAGED_KAVITA_SERVICE_NAME} to sync Kavita's Log in with Noona redirect: ${message}`,
+                    );
+                }
+            }
         }
 
         return {
             service: api.getServiceConfig(trimmedName),
             restarted: Boolean(restartResult),
+            ...(linkedRestarts.length > 0 ? {linkedRestarts} : {}),
+            ...(warnings.length > 0 ? {warnings} : {}),
         };
     };
 
@@ -1952,6 +2048,11 @@ export function registerServiceManagementApi(context = {}) {
                 imageErrors: [],
             };
 
+        const bootPersistence =
+            typeof api.clearPersistedBootState === 'function'
+                ? await api.clearPersistedBootState()
+                : null;
+
         const started = await api.startEcosystem({
             setupCompleted: false,
             forceFull: false,
@@ -1962,6 +2063,7 @@ export function registerServiceManagementApi(context = {}) {
             stopped,
             ravenDownloads,
             dockerCleanup,
+            bootPersistence,
             started,
         };
     };

@@ -445,12 +445,29 @@ export const createSageApp = ({
     const DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY = 'auth.default_member_permissions'
     const DOWNLOAD_WORKER_SETTINGS_KEY = 'downloads.workers'
     const DISCORD_AUTH_SETTINGS_KEY = 'auth.discord'
-    const DISCORD_CALLBACK_PATH = '/discord/callback/'
+    const DISCORD_CALLBACK_PATH = '/discord/callback'
     const LOCAL_AUTH_PROVIDER = 'local'
     const DISCORD_AUTH_PROVIDER = 'discord'
     const USER_DISPLAY_NAME_MAX_LENGTH = 80
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeAbsoluteHttpUrl = (value) => {
+        const normalized = normalizeString(value)
+        if (!normalized) {
+            return ''
+        }
+
+        try {
+            const parsed = new URL(normalized)
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                return ''
+            }
+
+            return parsed.toString()
+        } catch {
+            return ''
+        }
+    }
     const normalizeUsername = (value) => normalizeString(value)
     const normalizeUsernameKey = (value) => normalizeUsername(value).toLowerCase()
     const normalizeRole = (value, fallback = 'member') => {
@@ -1764,12 +1781,27 @@ export const createSageApp = ({
             lastTestedUser: snapshot,
         }
     }
-    const buildOauthRedirectTarget = (value, fallback = '/') => {
+    const buildOauthRedirectTarget = (value, fallback = '/', allowedOrigin = '') => {
         const normalized = normalizeString(value)
-        if (!normalized.startsWith('/')) {
+        if (normalized.startsWith('/')) {
+            return normalized
+        }
+
+        const absoluteTarget = normalizeAbsoluteHttpUrl(normalized)
+        if (!absoluteTarget || !allowedOrigin) {
             return fallback
         }
-        return normalized
+
+        try {
+            const parsed = new URL(absoluteTarget)
+            if (parsed.origin !== allowedOrigin) {
+                return fallback
+            }
+
+            return parsed.toString()
+        } catch {
+            return fallback
+        }
     }
     const fetchDiscordJson = async (url, init = {}, {expectFormError = false} = {}) => {
         const response = await discordOauthFetch(url, init)
@@ -2116,6 +2148,42 @@ export const createSageApp = ({
     const verifyFactoryResetSelections = ({result, deleteRavenDownloads, deleteDockers}) => {
         const failures = []
 
+        if (!result?.bootPersistence || typeof result.bootPersistence !== 'object') {
+            failures.push('Warden did not report boot-state cleanup.')
+        } else {
+            if (result.bootPersistence?.setupConfig?.deleted !== true) {
+                const details = Array.isArray(result.bootPersistence?.setupConfig?.entries)
+                    ? result.bootPersistence.setupConfig.entries
+                        .filter((entry) => entry?.deleted !== true)
+                        .map((entry) => {
+                            const target = normalizeString(entry?.path).trim() || 'unknown-setup-snapshot'
+                            const reason = normalizeString(entry?.reason).trim() || 'unknown error'
+                            return `${target}: ${reason}`
+                        })
+                        .join(' | ')
+                    : ''
+                failures.push(
+                    details
+                        ? `Warden setup snapshot cleanup failed (${details}).`
+                        : 'Warden setup snapshot cleanup did not report success.',
+                )
+            }
+
+            if (result.bootPersistence?.runtimeConfig?.deleted !== true) {
+                const target = normalizeString(result.bootPersistence?.runtimeConfig?.path).trim() || 'unknown-runtime-snapshot'
+                const reason = normalizeString(result.bootPersistence?.runtimeConfig?.reason).trim() || 'unknown error'
+                failures.push(`Warden runtime config snapshot cleanup failed (${target}: ${reason}).`)
+            }
+
+            if (result.bootPersistence?.runtimeOverridesCleared !== true) {
+                failures.push('Warden runtime override cache was not cleared.')
+            }
+
+            if (result.bootPersistence?.wizardStateCleared !== true) {
+                failures.push('Warden wizard-state cache was not cleared.')
+            }
+        }
+
         if (deleteRavenDownloads) {
             if (result?.ravenDownloads?.requested !== true) {
                 failures.push('Raven download cleanup was not requested by Warden.')
@@ -2183,6 +2251,45 @@ export const createSageApp = ({
 
         const authenticated = await authenticateAuthUser({username, password})
         return authenticated?.authenticated === true
+    }
+    const resolveDangerousActionConfirmation = (session = {}) => {
+        const authProvider = resolveStoredAuthProvider(session, LOCAL_AUTH_PROVIDER)
+        if (authProvider === DISCORD_AUTH_PROVIDER) {
+            const expectedValues = Array.from(new Set([
+                normalizeString(session?.username).trim(),
+                normalizeString(session?.discordGlobalName).trim(),
+                normalizeString(session?.discordUsername).trim(),
+                normalizeString(session?.lookupKey).trim(),
+                normalizeString(session?.usernameNormalized).trim(),
+            ].filter(Boolean)))
+
+            return {
+                authProvider,
+                mode: 'identity',
+                expectedValues,
+            }
+        }
+
+        return {
+            authProvider,
+            mode: 'password',
+            expectedValues: [],
+        }
+    }
+    const verifyDangerousActionConfirmation = async ({session, confirmation}) => {
+        const requirement = resolveDangerousActionConfirmation(session)
+        if (requirement.mode === 'password') {
+            return verifySessionPassword({session, password: confirmation})
+        }
+
+        const normalizedConfirmation = normalizeString(confirmation).trim().toLowerCase()
+        if (!normalizedConfirmation) {
+            return false
+        }
+
+        return requirement.expectedValues.some(
+            (entry) => normalizeString(entry).trim().toLowerCase() === normalizedConfirmation,
+        )
     }
     const writeAdminToVault = async ({username, password}) => {
         if (!hasVaultUserApi()) {
@@ -2615,6 +2722,7 @@ export const createSageApp = ({
         requirePermissionSession,
         requireSession,
         requireSessionIfSetupCompleted,
+        resolveDangerousActionConfirmation,
         resolveBaseRedirectUrl,
         resolveProtectedBootstrapLookupKey,
         resolveStoredAuthProvider,
@@ -2636,6 +2744,7 @@ export const createSageApp = ({
         vaultErrorMessage,
         vaultErrorStatus,
         VERIFICATION_SERVICES,
+        verifyDangerousActionConfirmation,
         verifyFactoryResetSelections,
         verifySessionPassword,
         wizardMetadata,

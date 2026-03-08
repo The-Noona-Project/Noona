@@ -45,6 +45,7 @@ frontend.
 - [Shared Raven title card](src/components/noona/RavenTitleCard.tsx)
 - [Title detail page component](src/components/noona/TitleDetailPage.tsx)
 - [App shell](src/components/AppShell.tsx)
+- [Site weather overlay](src/components/SiteWeatherFx.tsx)
 - [Header](src/components/Header.tsx)
 - [Footer](src/components/Footer.tsx)
 - [Noona API routes](src/app/api/noona)
@@ -64,6 +65,8 @@ frontend.
 - [Discord auth start proxy](src/app/api/noona/auth/discord/start/route.ts)
 - [Discord auth callback proxy](src/app/api/noona/auth/discord/callback/route.ts)
 - [Noona-to-Kavita login proxy](src/app/api/noona/kavita/login/route.ts)
+- [Kavita user-role list proxy](src/app/api/noona/portal/kavita/users/route.ts)
+- [Kavita user-role update proxy](src/app/api/noona/portal/kavita/users/[username]/roles/route.ts)
 - [Managed Kavita key proxy](src/app/api/noona/setup/kavita/service-key/route.ts)
 - [Web GUI helpers](src/utils/webGui.ts)
 - [Permission helpers](src/utils/moonPermissions.ts)
@@ -73,14 +76,15 @@ frontend.
 
 - Shared app shell - The sticky shell header now uses Once UI `MegaMenu` for desktop navigation groups (`Browse`,
   `Activity`, `Control`, and setup flows when setup is still in progress), while the slide-out drawer uses
-  `MobileMegaMenu` from the same route model so desktop and mobile navigation stay aligned. The root layout now also
-  layers [public/images/backgrounds/moon-sakura-night.png](public/images/backgrounds/moon-sakura-night.png) behind
-  the Once UI background effect surface for the full-app backdrop.
+  `MobileMegaMenu` from the same route model so desktop and mobile navigation stay aligned. The desktop menu is now
+  anchored on the left side of the header bar, the old `Noona Stack` brand badge has been removed, and the header
+  clock now renders in the client's local 12-hour format. The root layout now also layers
+  [public/images/backgrounds/moon-sakura-night.png](public/images/backgrounds/moon-sakura-night.png) behind the Once
+  UI background effect surface for the full-app backdrop and mounts a site-wide `WeatherFx` sakura-leaf overlay so
+  the animated leaves render across every route instead of only the home page.
 - `/` - Home summary and shortcuts into library/download workflows. Recent titles now reuse the same cover-card tiles
   as the main library page so the landing screen and `/libraries` stay visually consistent, and signed-in users
-  without `library_management` can still see the latest titles there even though the cards stay non-clickable. The
-  home hero now layers Once UI `WeatherFx` falling leaves behind the page content and a `GlitchFx` treatment inside
-  the hero card background so the landing screen feels more like the rest of Noona's visual identity.
+  without `library_management` can still see the latest titles there even though the cards stay non-clickable.
 - `/libraries` - Library browsing, filtering, and title drill-down. The tab and direct page now require the
   `library_management` permission.
 - `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
@@ -106,24 +110,39 @@ frontend.
 - `/settings/*` - Route-based settings pages now grouped by user-facing tasks instead of internal service names:
   `/settings/general`, `/settings/storage/filesystem`, `/settings/storage/database`,
   `/settings/downloads/downloader`, `/settings/downloads/updater`, `/settings/external/discord`,
+  `/settings/external/kavita`,
   `/settings/external/komf`, and `/settings/users`. These pages cover loaded profile details, ecosystem
   start/stop/restart
   controls, internal and external service links including Moon's public `MOON_EXTERNAL_URL` override, the
+  same Warden setup JSON snapshot download/import actions used by the setup wizard, and a load-and-restart path that
+  posts an imported settings JSON back to Warden before forcing a full ecosystem restart with the imported service
+  selection. That snapshot now maps to Warden's canonical `<NOONA_DATA_ROOT>/noona-settings.json` boot file,
   setup-wizard-style storage tree, editable storage paths, the
   hidden-by-default Vault Mongo URI toggle, a fixed-height sorted Once UI `InfiniteScroll` collection viewer, downloader
   worker/naming
-  controls, the grid-based Noona Docker updater, Discord bot validation plus per-command role fields for `/ding`,
+  controls, the dashboard-style Noona Docker updater with summary cards plus a full-width responsive service grid,
+  and Raven naming templates where `{chapter}` now follows the configured chapter padding width while
+  `{chapter_padded}` remains available as the same padded value,
+  Discord bot validation plus per-command role fields for `/ding`,
   `/join`, `/scan`, `/search`, and `/recommend`, the managed
   Komf `/config/application.yml` editor, Vault-backed persistence for service overrides in `noona_settings`, default
-  permissions for first-time Discord sign-ins, and diagnostics.
+  permissions for first-time Discord sign-ins, Kavita default-role editing for new Portal-created users, per-user
+  Kavita role updates directly from `/settings/users`, and diagnostics.
+  Saving Moon's public `MOON_EXTERNAL_URL` from Service links now also triggers a managed Kavita restart when needed so
+  Kavita's `Log in with Noona` button follows the updated Moon URL immediately instead of waiting for a separate
+  Kavita restart.
   Successful self-permission edits now update the local user-management state first so Moon does not report a false
   save failure when the change intentionally removes that account's `user_management` access. The Moon permission
   editor now exposes the canonical `library_management`, `download_management`, `myRecommendations`, and
   `manageRecommendations` roles while still normalizing the legacy Raven permission names returned by older records.
   Raven worker speed-limit inputs now accept raw KB/s values
   or `mb` / `gb` suffixes, and `-1` means unlimited speed. Moon's Portal-backed Kavita metadata-match proxy now also
+  uses provider-aware danger-zone confirmation: local admins confirm factory reset with their password, while
+  Discord-auth admins confirm with their current Discord-linked username instead of a non-existent local password.
+  Moon's Portal-backed Kavita metadata-match proxy now also
   preserves compact Portal `500` responses for metadata failures instead of collapsing them into a large multi-backend
-  error string.
+  error string. When you apply a Kavita metadata match from a Raven library title, Moon now also sends the selected
+  `coverImageUrl` so Portal can backfill missing Noona title cover art before syncing the linked Kavita series cover.
 - `/setupwizard` - First-run stack configuration flow with storage, integrations, services, and install tabs. It
   previews the shared Noona folder tree, defaults to managed `noona-kavita` and Komf, allows switching either one to
   external URLs, includes a Discord bot login test with client/guild auto-fill for Portal setup, upgrades Portal
@@ -141,19 +160,24 @@ frontend.
   tab now starts installs asynchronously, keeps progress polling even if the original request fails after Warden has
   started, reads the current installation-session history instead of generic `noona-warden` service logs, saves the
   same setup JSON payload to Warden (`/api/setup/config`) that users can download for backup/restore (including Kavita
-  API fields), waits longer for the post-install managed Kavita key provisioning step to finish restarting dependent
+  API fields), automatically writes Warden's canonical `<NOONA_DATA_ROOT>/noona-settings.json` boot snapshot for later
+  restores, waits longer for the post-install managed Kavita key provisioning step to finish restarting dependent
   services, and exposes a manual `Continue to summary` action if the automatic redirect needs to be retried.
 - `/setupwizard/summary` - Dedicated post-install review page that lists installed services, descriptions, service URLs,
   the Discord OAuth callback URL, full callback-loop testing, Discord superuser bootstrap, and final setup
   completion.
-  The setup JSON payload Moon downloads now matches the snapshot it saves to Warden for boot-time restore and includes
+  The setup summary now reads the Discord callback path from the live auth config so the copied redirect URI matches
+  the actual Moon OAuth callback exactly instead of relying on a stale hardcoded path. The setup JSON payload Moon
+  downloads now matches the snapshot it saves to Warden for boot-time restore and includes
   the active Kavita API key field.
 - `/discord/callback` - Browser callback page for the Discord OAuth round-trip used by setup bootstrap and normal Moon
-  login.
+  login. The Discord OAuth redirect path is now normalized to `/discord/callback` without the old trailing slash so
+  the public callback URL matches the real Next.js route exactly.
 - `/login` and `/signup` - Auth entry points for the Discord-first Moon flow. Both now render the same
   sign-in-or-create-account screen, the main tab bar is hidden there, and first-time Discord sign-in creates the user
   from Sage's default permission template. When Kavita sends users into Moon with a `returnTo`, the login page now
-  preserves that internal return path so Discord sign-in can bounce directly into Moon's Kavita handoff screen.
+  preserves the explicit public Moon callback URL for the Kavita handoff instead of collapsing it into a generic Moon
+  path, so Discord sign-in can bounce directly back into `/kavita/complete` on the correct public origin.
 - `/kavita/complete` - Internal Moon bridge route used by Kavita's `Log in with Noona` button. It requires a valid
   Noona session, asks Portal to provision or refresh the user's Kavita account, and immediately redirects the browser
   back to Kavita with a short-lived one-time login token.
@@ -162,14 +186,13 @@ frontend.
   host-facing URL from Warden. The title-page
   `Open in Kavita` action and each inline Kavita search-result `Open` button now rebuild the series link from Portal's
   resolved Kavita link base (external when configured, otherwise Warden's host-facing managed URL). Moon's
-  metadata-match request now also forwards the active title query to Portal/Kavita so Komf-backed lookup does not fail
-  on a null query. The
-  metadata button now opens a centered confirmation modal that lists returned Komf candidates before applying the
-  selected match, and
-  applying a Kavita metadata match from the title page still sends the Raven title UUID so Portal can lock Kavita to
-  the same Noona cover art that Moon is rendering for that title. Title detail pages now also show Raven's stored
-  downloaded-chapter index, the exact latest new/missing chapter plan returned by `Check new/missing`, and the live
-  cached Raven task when that task belongs to the current title.
+  metadata-match request now forwards the active title query and selected series id to Portal, which queries Komf
+  directly instead of Kavita+. The metadata button opens a centered confirmation modal that lists returned Komf
+  candidates with provider source links before applying the selected match, and applying a metadata match from the
+  title page still sends the Raven title UUID so Portal can lock Kavita to the same Noona cover art that Moon is
+  rendering for that title. Title detail pages now also show Raven's stored downloaded-chapter index, the exact latest
+  new/missing chapter plan returned by `Check new/missing`, and the live cached Raven task when that task belongs to
+  the current title.
 - Moon now uses a permission-aware top header plus a slide-out navigation drawer for `Home`, `Library`, `Downloads`,
   `Recommendations`, and `Settings` instead of the old fixed top tab strip. Settings keeps its own nested settings-only
   sub-navigation
@@ -188,6 +211,8 @@ frontend.
 - `src/app/api/noona/myrecommendations/*` - user recommendation proxies for own list/detail plus timeline comment
   replies.
 - `src/app/api/noona/portal/kavita/*` - Portal-backed Kavita info, title search, and metadata-match proxies.
+- `src/app/api/noona/portal/kavita/users` and `src/app/api/noona/portal/kavita/users/[username]/roles` - Moon
+  proxies for loading Kavita user-role data and updating Kavita roles from the user-management page.
 - `src/app/api/noona/kavita/login` - signed-in Noona session proxy that forwards the current Discord-backed account to
   Portal's Kavita provisioning route and returns a short-lived Kavita handoff token for the Moon `/kavita/complete`
   bridge.

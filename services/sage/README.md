@@ -53,10 +53,12 @@ download/library routes for Moon and other clients.
 - Moon auth and Discord OAuth: `/api/auth/*`
     - `/api/auth/discord/config` stores the Discord OAuth client id/secret used by Moon setup and login.
     - `/api/auth/discord/start` creates a full Discord OAuth round-trip for callback testing, setup bootstrap, or normal
-      Moon login.
+      Moon login. It now accepts Moon-relative return targets plus same-origin absolute Moon callback URLs so Kavita's
+      Noona handoff can survive external proxy/public-host setups without turning Sage into a generic open redirect.
     - `/api/auth/discord/callback` exchanges the code with Discord, records callback tests, bootstraps the first admin,
       auto-creates first-time Discord users from the configured default permission template, and signs in
-      Discord-linked Moon users.
+      Discord-linked Moon users. The stored Discord OAuth callback path is normalized to `/discord/callback` to match
+      Moon's real Next.js route exactly.
   - `/api/auth/users/*` now verifies Vault persistence on user edits and infers legacy Discord-linked records from
     stored Discord ids or `discord.<id>` lookup keys so Moon permission saves cannot report false success. Sage now
     emits the canonical `library_management` and `download_management` permissions while still accepting the legacy
@@ -68,6 +70,9 @@ download/library routes for Moon and other clients.
     - `/api/settings/downloads/naming` stores Raven naming templates in Vault.
     - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
       It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write, and normalizes unlimited entries to `-1`.
+  - `/api/settings/factory-reset` and `/api/settings/vault/wipe` now use provider-aware confirmation for dangerous
+    actions: local-auth admins confirm with their password, while Discord-auth admins confirm with their current
+    Discord-linked username.
 - Raven proxy: `/api/raven/*`
     - `/api/raven/library/latest` exposes the Home page latest-title feed to any authenticated Moon session after
       setup, without opening the full library routes.

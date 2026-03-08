@@ -81,6 +81,12 @@ const SERVICE_ORDER_INDEX = new Map<string, number>(
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
 
+const normalizeCallbackPath = (value: unknown): string => {
+    const raw = normalizeString(value).trim();
+    if (!raw) return "/discord/callback";
+    return raw.startsWith("/") ? raw : `/${raw}`;
+};
+
 const parseSelectedServices = (raw: string | null): string[] => {
     const value = normalizeString(raw).trim();
     if (!value) return [];
@@ -161,7 +167,6 @@ export function SetupSummaryPage() {
         const load = async () => {
             setLoading(true);
             setError(null);
-            setCallbackUrl(`${window.location.origin}/discord/callback/`);
             setReturnTo(`${window.location.pathname}${window.location.search}`);
 
             try {
@@ -183,6 +188,7 @@ export function SetupSummaryPage() {
                 setServices(Array.isArray(servicesJson?.services) ? servicesJson.services : []);
                 setConfig(configJson ?? {});
                 setAuthUser(authRes.ok ? (authJson?.user ?? null) : null);
+                setCallbackUrl(`${window.location.origin}${normalizeCallbackPath(configJson?.callbackPath)}`);
 
                 const authNotice = normalizeString(searchParams.get("discordAuth")).trim();
                 const testNotice = normalizeString(searchParams.get("discordTest")).trim();
@@ -197,6 +203,7 @@ export function SetupSummaryPage() {
                 if (cancelled) return;
                 const detail = error_ instanceof Error ? error_.message : String(error_);
                 setError(detail);
+                setCallbackUrl(`${window.location.origin}${normalizeCallbackPath(null)}`);
             } finally {
                 if (!cancelled) setLoading(false);
             }

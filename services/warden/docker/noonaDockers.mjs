@@ -511,6 +511,7 @@ const serviceDefs = rawList.map(name => {
         internalPort,
         env,
         envConfig,
+        restartPolicy: {Name: 'unless-stopped'},
         hostServiceUrl,
         health: healthChecks,
         healthTries,

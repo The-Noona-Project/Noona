@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect, useMemo, useState} from "react";
+import {type ChangeEvent, useEffect, useMemo, useRef, useState} from "react";
 import {useRouter} from "next/navigation";
 import {
     Badge,
@@ -125,6 +125,29 @@ type PortalJoinOptionsResponse = {
     error?: string;
 };
 
+type KavitaUserSummary = {
+    id?: number | null;
+    username?: string | null;
+    email?: string | null;
+    roles?: string[] | null;
+    libraries?: Array<string | number> | null;
+    pending?: boolean | null;
+};
+
+type KavitaUsersResponse = {
+    users?: KavitaUserSummary[] | null;
+    roles?: string[] | null;
+    roleDetails?: PortalJoinRoleDetail[] | null;
+    error?: string;
+};
+
+type KavitaUserRoleUpdateResponse = {
+    ok?: boolean;
+    user?: KavitaUserSummary | null;
+    roles?: string[] | null;
+    error?: string;
+};
+
 type ServiceUpdateSnapshot = {
     service?: string | null;
     image?: string | null;
@@ -149,6 +172,14 @@ type DownloadWorkerSettings = {
     key?: string | null;
     threadRateLimitsKbps?: number[] | null;
     updatedAt?: string | null;
+    error?: string;
+};
+
+type SetupConfigSnapshotResponse = {
+    exists?: boolean;
+    path?: string | null;
+    snapshot?: Record<string, unknown> | null;
+    selected?: string[] | null;
     error?: string;
 };
 
@@ -361,6 +392,20 @@ const STORAGE_LABELS: Record<string, string> = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const normalizeSetupSelection = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const entry of value) {
+        const normalized = normalizeString(entry).trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+        out.push(normalized);
+    }
+
+    return out;
+};
 const parseBooleanEnvFlag = (value: unknown): boolean => {
     const normalized = normalizeString(value).trim().toLowerCase();
     if (!normalized) return false;
@@ -396,6 +441,69 @@ const parseCsvSelections = (value: unknown): string[] => {
     }
 
     return out;
+};
+const normalizeDistinctStringList = (value: unknown): string[] => {
+    if (Array.isArray(value)) {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const entry of value) {
+            const normalized = normalizeString(entry).trim();
+            if (!normalized) continue;
+            const key = normalized.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(normalized);
+        }
+        return out;
+    }
+
+    return parseCsvSelections(value);
+};
+const pushIdentityKey = (
+    out: string[],
+    seen: Set<string>,
+    type: "email" | "username",
+    value: unknown,
+) => {
+    const normalized = normalizeString(value).trim().toLowerCase();
+    if (!normalized) return;
+    const key = `${type}:${normalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(key);
+};
+const getManagedUserIdentityKeys = (user: ManagedUser): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    pushIdentityKey(out, seen, "email", user?.email);
+    pushIdentityKey(out, seen, "username", user?.discordUsername);
+    pushIdentityKey(out, seen, "username", user?.discordGlobalName);
+    pushIdentityKey(out, seen, "username", user?.usernameNormalized);
+    pushIdentityKey(out, seen, "username", user?.username);
+    return out;
+};
+const getKavitaUserIdentityKeys = (user: KavitaUserSummary): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    pushIdentityKey(out, seen, "email", user?.email);
+    pushIdentityKey(out, seen, "username", user?.username);
+    return out;
+};
+const getUserLookupKey = (user?: {
+    lookupKey?: string | null;
+    usernameNormalized?: string | null;
+    username?: string | null;
+    authProvider?: string | null;
+    discordUserId?: string | null;
+} | null): string => {
+    const authProvider = normalizeString(user?.authProvider).trim().toLowerCase();
+    const discordUserId = normalizeString(user?.discordUserId).trim();
+    if (authProvider === "discord" && discordUserId) {
+        return `discord.${discordUserId.toLowerCase()}`;
+    }
+    return normalizeString(user?.lookupKey).trim().toLowerCase()
+        || normalizeString(user?.usernameNormalized).trim().toLowerCase()
+        || normalizeString(user?.username).trim().toLowerCase();
 };
 const serializeCsvSelections = (values: string[]): string => values.join(", ");
 const isSecretKey = (key: string) => /TOKEN|PASSWORD|API_KEY|SECRET/i.test(key);
@@ -649,6 +757,7 @@ type SettingsPageProps = {
 
 export function SettingsPage({selection}: SettingsPageProps) {
     const router = useRouter();
+    const setupConfigInputRef = useRef<HTMLInputElement | null>(null);
     const activeTab = selection.tab;
     const activeView: ViewId = selection.view;
     const activeNavSection: NavSectionId = selection.navSection;
@@ -673,6 +782,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [globalMessage, setGlobalMessage] = useState<string | null>(null);
     const [globalError, setGlobalError] = useState<string | null>(null);
     const [ecosystemBusy, setEcosystemBusy] = useState(false);
+    const [setupConfigBusy, setSetupConfigBusy] = useState(false);
+    const [setupConfigMessage, setSetupConfigMessage] = useState<string | null>(null);
+    const [setupConfigError, setSetupConfigError] = useState<string | null>(null);
     const [debugLoading, setDebugLoading] = useState(false);
     const [debugSaving, setDebugSaving] = useState(false);
     const [debugEnabled, setDebugEnabled] = useState(false);
@@ -726,7 +838,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [discordValidating, setDiscordValidating] = useState(false);
     const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
     const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
-    const [factoryResetPassword, setFactoryResetPassword] = useState("");
+    const [factoryResetConfirmation, setFactoryResetConfirmation] = useState("");
     const [factoryResetBusy, setFactoryResetBusy] = useState(false);
     const [factoryResetDeleteRavenDownloads, setFactoryResetDeleteRavenDownloads] = useState(false);
     const [factoryResetDeleteDockers, setFactoryResetDeleteDockers] = useState(false);
@@ -756,6 +868,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
         username: string;
         permissions: MoonPermission[]
     }>>({});
+    const [kavitaUsersLoading, setKavitaUsersLoading] = useState(false);
+    const [kavitaUsersError, setKavitaUsersError] = useState<string | null>(null);
+    const [kavitaUsersMessage, setKavitaUsersMessage] = useState<string | null>(null);
+    const [kavitaUsers, setKavitaUsers] = useState<KavitaUserSummary[]>([]);
+    const [kavitaRoleOptions, setKavitaRoleOptions] = useState<string[]>([]);
+    const [editingKavitaRoles, setEditingKavitaRoles] = useState<Record<string, string[]>>({});
+    const [savingKavitaRoles, setSavingKavitaRoles] = useState<Record<string, boolean>>({});
 
     const catalogByName = useMemo(() => {
         const out = new Map<string, ServiceCatalogEntry>();
@@ -786,10 +905,70 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
         return visible;
     }, [catalogByName, updates]);
+    const updaterSummary = useMemo(() => {
+        let updateAvailable = 0;
+        let upToDate = 0;
+        let unsupported = 0;
+        let errors = 0;
+
+        for (const entry of installedUpdateSnapshots) {
+            if (normalizeString(entry?.error).trim()) {
+                errors += 1;
+            }
+
+            if (entry?.supported === false) {
+                unsupported += 1;
+                continue;
+            }
+
+            if (entry?.updateAvailable === true) {
+                updateAvailable += 1;
+                continue;
+            }
+
+            if (normalizeString(entry?.checkedAt).trim()) {
+                upToDate += 1;
+            }
+        }
+
+        return {
+            total: installedUpdateSnapshots.length,
+            updateAvailable,
+            upToDate,
+            unsupported,
+            errors,
+        };
+    }, [installedUpdateSnapshots]);
+    const factoryResetConfirmationMeta = useMemo(() => {
+        const authProvider = normalizeString(accountUser?.authProvider).trim().toLowerCase();
+        const accountName =
+            normalizeString(accountUser?.username).trim() ||
+            normalizeString(accountUser?.discordGlobalName).trim() ||
+            normalizeString(accountUser?.discordUsername).trim();
+
+        if (authProvider === "discord") {
+            return {
+                mode: "identity",
+                label: "Confirm with Discord username",
+                hint: accountName
+                    ? `Type ${accountName} to confirm this reset.`
+                    : "Type your current Discord username to confirm this reset.",
+                requiredMessage: "Confirmation is required.",
+            } as const;
+        }
+
+        return {
+            mode: "password",
+            label: "Confirm with password",
+            hint: "Enter your current password to confirm this reset.",
+            requiredMessage: "Password is required.",
+        } as const;
+    }, [accountUser]);
     const updatesBusy = updatesApplyingAll || Object.values(updating).some(Boolean);
     const currentService = (() => {
         if (activeView === "downloader") return "noona-raven";
         if (activeView === "discord") return "noona-portal";
+        if (activeView === "kavita") return "noona-portal";
         if (activeView === "komf") return "noona-komf";
         if (activeView === "database") return "noona-vault";
         return activeTab === "portal"
@@ -828,6 +1007,45 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const portalAccessFields = portalEnvConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
     const komfEditor = editors["noona-komf"] ?? defaultEditor();
     const komfEnvConfig = Array.isArray(komfEditor.config?.envConfig) ? komfEditor.config.envConfig : [];
+    const kavitaUsersByIdentity = useMemo(() => {
+        const map = new Map<string, KavitaUserSummary>();
+        for (const user of kavitaUsers) {
+            const identityKeys = getKavitaUserIdentityKeys(user);
+            for (const key of identityKeys) {
+                if (!map.has(key)) {
+                    map.set(key, user);
+                }
+            }
+        }
+        return map;
+    }, [kavitaUsers]);
+    const managedUsersWithKavita = useMemo(() => {
+        return managedUsers.map((entry) => {
+            const identityKeys = getManagedUserIdentityKeys(entry);
+            let linkedKavitaUser: KavitaUserSummary | null = null;
+            for (const key of identityKeys) {
+                const matched = kavitaUsersByIdentity.get(key);
+                if (matched) {
+                    linkedKavitaUser = matched;
+                    break;
+                }
+            }
+
+            return {
+                user: entry,
+                kavitaUser: linkedKavitaUser,
+            };
+        });
+    }, [managedUsers, kavitaUsersByIdentity]);
+    const kavitaUserByManagedLookup = useMemo(() => {
+        const map = new Map<string, KavitaUserSummary | null>();
+        for (const entry of managedUsersWithKavita) {
+            const lookup = getUserLookupKey(entry.user);
+            if (!lookup) continue;
+            map.set(lookup, entry.kavitaUser);
+        }
+        return map;
+    }, [managedUsersWithKavita]);
     const filesystemPreview = useMemo(() => {
         const actualServices = Array.isArray(storageLayoutServices) ? storageLayoutServices.filter((entry) => entry && typeof entry === "object") : [];
         if (actualServices.length > 0) {
@@ -1043,24 +1261,127 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setDiscordValidating(false);
         }
     };
-    const updateEcosystemState = async (action: "start" | "stop" | "restart") => {
+    const updateEcosystemState = async (
+        action: "start" | "stop" | "restart",
+        options: { body?: Record<string, unknown>; successMessage?: string } = {},
+    ): Promise<boolean> => {
         setEcosystemBusy(true);
         setGlobalError(null);
         setGlobalMessage(null);
         try {
-            const res = await fetch(`/api/noona/settings/ecosystem/${action}`, {method: "POST"});
+            const res = await fetch(`/api/noona/settings/ecosystem/${action}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(options.body ?? {}),
+            });
             const json = await res.json().catch(() => null);
             if (!res.ok) {
                 setGlobalError(parseError(json, `Failed to ${action} ecosystem (HTTP ${res.status}).`));
-                return;
+                return false;
             }
-            setGlobalMessage(`${action.charAt(0).toUpperCase()}${action.slice(1)} request sent.`);
+            setGlobalMessage(options.successMessage ?? `${action.charAt(0).toUpperCase()}${action.slice(1)} request sent.`);
             await loadCatalog();
+            return true;
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setGlobalError(msg);
+            return false;
         } finally {
             setEcosystemBusy(false);
+        }
+    };
+    const downloadSetupConfigSnapshot = async () => {
+        setSetupConfigBusy(true);
+        setSetupConfigMessage(null);
+        setSetupConfigError(null);
+
+        try {
+            const response = await fetch("/api/noona/setup/config", {cache: "no-store"});
+            const payload = (await response.json().catch(() => null)) as SetupConfigSnapshotResponse | null;
+            if (!response.ok) {
+                throw new Error(parseError(payload, `Failed to load settings JSON (HTTP ${response.status}).`));
+            }
+
+            const snapshot =
+                payload?.snapshot && typeof payload.snapshot === "object" && !Array.isArray(payload.snapshot)
+                    ? payload.snapshot
+                    : null;
+            if (!snapshot) {
+                throw new Error("No saved Warden settings JSON exists yet.");
+            }
+
+            const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type: "application/json"});
+            const url = URL.createObjectURL(blob);
+            const now = new Date().toISOString().replace(/[:.]/g, "-");
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `noona-settings-${now}.json`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+            setSetupConfigMessage("Downloaded Warden settings JSON file.");
+        } catch (error_) {
+            setSetupConfigError(error_ instanceof Error ? error_.message : String(error_));
+        } finally {
+            setSetupConfigBusy(false);
+        }
+    };
+
+    const openSetupConfigFilePicker = () => {
+        setSetupConfigMessage(null);
+        setSetupConfigError(null);
+        setupConfigInputRef.current?.click();
+    };
+
+    const loadSetupConfigFromFile = async (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        setSetupConfigBusy(true);
+        setSetupConfigMessage(null);
+        setSetupConfigError(null);
+        setGlobalError(null);
+        setGlobalMessage(null);
+
+        try {
+            const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error("Settings JSON file must contain an object.");
+            }
+
+            const version = Number(parsed.version);
+            if (version !== 1 && version !== 2) {
+                throw new Error("Unsupported settings JSON version.");
+            }
+
+            const saveResponse = await fetch("/api/noona/setup/config", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(parsed),
+            });
+            const savePayload = (await saveResponse.json().catch(() => null)) as SetupConfigSnapshotResponse | null;
+            if (!saveResponse.ok) {
+                throw new Error(parseError(savePayload, `Failed to load settings JSON (HTTP ${saveResponse.status}).`));
+            }
+
+            const selectedServices = normalizeSetupSelection(savePayload?.selected ?? parsed.selected);
+            const restarted = await updateEcosystemState("restart", {
+                body: {
+                    forceFull: true,
+                    ...(selectedServices.length > 0 ? {services: selectedServices} : {}),
+                },
+                successMessage: "Loaded settings JSON and sent ecosystem restart.",
+            });
+            if (!restarted) {
+                return;
+            }
+            setSetupConfigMessage(`Loaded Warden settings JSON from ${file.name}.`);
+        } catch (error_) {
+            setSetupConfigError(error_ instanceof Error ? error_.message : String(error_));
+        } finally {
+            setSetupConfigBusy(false);
+            event.target.value = "";
         }
     };
 
@@ -1108,8 +1429,23 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 }
             }
 
+            const responsePayload = json as { warnings?: unknown[]; linkedRestarts?: unknown[] } | null;
+            const responseWarnings = Array.isArray(responsePayload?.warnings)
+                ? responsePayload.warnings
+                    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+                : [];
+            const linkedRestarts = Array.isArray(responsePayload?.linkedRestarts)
+                ? responsePayload.linkedRestarts
+                    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+                : [];
+            const syncMessage = serviceName === "noona-moon" && linkedRestarts.includes("noona-kavita")
+                ? " Managed Kavita was restarted so Kavita's Log in with Noona button uses the updated Moon URL."
+                : "";
+            const warningMessage = responseWarnings.length > 0 ? ` ${responseWarnings.join(" ")}` : "";
+
             patchEditor(serviceName, {
-                message: options.successMessage ?? (shouldRestart ? "Saved and restarted service." : "Saved changes."),
+                message:
+                    `${options.successMessage ?? (shouldRestart ? "Saved and restarted service." : "Saved changes.")}${syncMessage}${warningMessage}`,
             });
             await loadServiceConfig(serviceName);
             if (typeof options.onSuccess === "function") {
@@ -1418,7 +1754,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     };
 
     const beginFactoryResetRecovery = (detail: string) => {
-        setFactoryResetPassword("");
+        setFactoryResetConfirmation("");
         setFactoryResetMessage("Factory reset queued. Monitoring restart progress...");
         setFactoryResetProgress({
             phase: "queued",
@@ -1435,9 +1771,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
         setFactoryResetMessage(null);
         setFactoryResetProgress(null);
 
-        const password = factoryResetPassword.trim();
-        if (!password) {
-            setFactoryResetError("Password is required.");
+        const confirmation = factoryResetConfirmation.trim();
+        if (!confirmation) {
+            setFactoryResetError(factoryResetConfirmationMeta.requiredMessage);
             return;
         }
 
@@ -1458,7 +1794,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
-                    password,
+                    confirmation,
+                    password: factoryResetConfirmationMeta.mode === "password" ? confirmation : undefined,
                     deleteRavenDownloads: factoryResetDeleteRavenDownloads,
                     deleteDockers: factoryResetDeleteDockers,
                 }),
@@ -1488,22 +1825,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
-    const userLookupKey = (user?: {
-        lookupKey?: string | null;
-        usernameNormalized?: string | null;
-        username?: string | null;
-        authProvider?: string | null;
-        discordUserId?: string | null;
-    } | null): string => {
-        const authProvider = normalizeString(user?.authProvider).trim().toLowerCase();
-        const discordUserId = normalizeString(user?.discordUserId).trim();
-        if (authProvider === "discord" && discordUserId) {
-            return `discord.${discordUserId.toLowerCase()}`;
-        }
-        return normalizeString(user?.lookupKey).trim().toLowerCase() ||
-            normalizeString(user?.usernameNormalized).trim().toLowerCase() ||
-            normalizeString(user?.username).trim().toLowerCase();
-    };
+    const userLookupKey = getUserLookupKey;
 
     const loadManagedUsers = async () => {
         setUsersLoading(true);
@@ -1547,6 +1869,52 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
+    const loadKavitaUsers = async () => {
+        setKavitaUsersLoading(true);
+        setKavitaUsersError(null);
+        setKavitaUsersMessage(null);
+        try {
+            const res = await fetch("/api/noona/portal/kavita/users", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as KavitaUsersResponse | null;
+            if (!res.ok) {
+                setKavitaUsersError(parseError(json, `Failed to load Kavita users (HTTP ${res.status}).`));
+                return;
+            }
+
+            const roles = normalizeDistinctStringList(json?.roles);
+            const users = Array.isArray(json?.users)
+                ? json.users
+                    .map((entry) => {
+                        const rawId = typeof entry?.id === "number" ? entry.id : Number(entry?.id);
+                        const id = Number.isFinite(rawId) && rawId > 0 ? Math.floor(rawId) : null;
+                        return {
+                            id,
+                            username: normalizeString(entry?.username).trim(),
+                            email: normalizeString(entry?.email).trim(),
+                            roles: normalizeDistinctStringList(entry?.roles),
+                            libraries: Array.isArray(entry?.libraries)
+                                ? entry.libraries
+                                    .filter((library): library is string | number =>
+                                        typeof library === "string" || typeof library === "number",
+                                    )
+                                : [],
+                            pending: entry?.pending === true,
+                        } satisfies KavitaUserSummary;
+                    })
+                    .filter((entry) => entry.id != null && entry.username)
+                : [];
+
+            setKavitaRoleOptions(roles);
+            setKavitaUsers(users);
+            setKavitaUsersMessage(`Loaded ${users.length} Kavita user${users.length === 1 ? "" : "s"}.`);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setKavitaUsersError(msg);
+        } finally {
+            setKavitaUsersLoading(false);
+        }
+    };
+
     const syncManagedUser = (user: ManagedUser, previousLookup = "") => {
         const nextLookup = userLookupKey(user);
         const targetLookup = previousLookup || nextLookup;
@@ -1572,6 +1940,16 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     permissions: normalizePermissions(user.permissions),
                 };
             }
+            return next;
+        });
+
+        setEditingKavitaRoles((prev) => {
+            if (!previousLookup || previousLookup === nextLookup || !prev[previousLookup]) {
+                return prev;
+            }
+            const next = {...prev};
+            next[nextLookup] = prev[previousLookup];
+            delete next[previousLookup];
             return next;
         });
     };
@@ -1630,6 +2008,100 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 username,
             },
         }));
+    };
+
+    const setEditingKavitaRolesFromCsv = (key: string, csv: string) => {
+        const nextRoles = normalizeDistinctStringList(csv);
+        setEditingKavitaRoles((prev) => ({
+            ...prev,
+            [key]: nextRoles,
+        }));
+    };
+
+    const toggleEditingKavitaRole = (key: string, role: string) => {
+        const normalizedRole = normalizeString(role).trim();
+        if (!normalizedRole) return;
+
+        setEditingKavitaRoles((prev) => {
+            const current = normalizeDistinctStringList(prev[key]);
+            const hasRole = current.some((entry) => entry.toLowerCase() === normalizedRole.toLowerCase());
+            const nextRoles = hasRole
+                ? current.filter((entry) => entry.toLowerCase() !== normalizedRole.toLowerCase())
+                : [...current, normalizedRole];
+            return {
+                ...prev,
+                [key]: nextRoles,
+            };
+        });
+    };
+
+    const saveManagedUserKavitaRoles = async (entry: ManagedUser) => {
+        const lookup = userLookupKey(entry);
+        if (!lookup) return;
+
+        const linkedKavitaUser = kavitaUserByManagedLookup.get(lookup) ?? null;
+        const linkedUsername = normalizeString(linkedKavitaUser?.username).trim();
+        if (!linkedUsername) {
+            setKavitaUsersError("No linked Kavita account was found for this Moon user.");
+            return;
+        }
+
+        const nextRoles = normalizeDistinctStringList(editingKavitaRoles[lookup] ?? linkedKavitaUser?.roles);
+        if (nextRoles.length === 0) {
+            setKavitaUsersError("At least one Kavita role is required.");
+            return;
+        }
+
+        setSavingKavitaRoles((prev) => ({
+            ...prev,
+            [lookup]: true,
+        }));
+        setKavitaUsersError(null);
+        setKavitaUsersMessage(null);
+
+        try {
+            const res = await fetch(`/api/noona/portal/kavita/users/${encodeURIComponent(linkedUsername)}/roles`, {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    roles: nextRoles,
+                }),
+            });
+            const json = (await res.json().catch(() => null)) as KavitaUserRoleUpdateResponse | null;
+            if (!res.ok) {
+                setKavitaUsersError(parseError(json, `Failed to update Kavita roles (HTTP ${res.status}).`));
+                return;
+            }
+
+            const updatedRoles = normalizeDistinctStringList(json?.roles ?? json?.user?.roles ?? nextRoles);
+            const updatedUser = json?.user ?? null;
+            setKavitaUsers((prev) =>
+                prev.map((record) => {
+                    const sameUser = normalizeString(record.username).trim().toLowerCase() === linkedUsername.toLowerCase();
+                    if (!sameUser) return record;
+                    return {
+                        ...record,
+                        ...(updatedUser ?? {}),
+                        username: normalizeString(updatedUser?.username).trim() || record.username,
+                        email: normalizeString(updatedUser?.email).trim() || record.email,
+                        roles: updatedRoles,
+                    };
+                }),
+            );
+            setEditingKavitaRoles((prev) => ({
+                ...prev,
+                [lookup]: updatedRoles,
+            }));
+            setKavitaUsersMessage(`Updated Kavita roles for ${linkedUsername}.`);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setKavitaUsersError(msg);
+        } finally {
+            setSavingKavitaRoles((prev) => ({
+                ...prev,
+                [lookup]: false,
+            }));
+        }
     };
 
     const saveDefaultUserPermissions = async () => {
@@ -2096,7 +2568,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
             void loadUpdates();
             return;
         }
-        if (activeView === "discord") {
+        if (activeView === "discord" || activeView === "kavita") {
             ensureServiceConfigLoaded("noona-portal");
             return;
         }
@@ -2128,8 +2600,24 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
     useEffect(() => {
         if (activeSection !== "users" || !canManageUsers) return;
-        void loadManagedUsers();
+        void Promise.all([loadManagedUsers(), loadKavitaUsers()]);
     }, [activeSection, canManageUsers]);
+
+    useEffect(() => {
+        if (managedUsersWithKavita.length === 0) return;
+        setEditingKavitaRoles((prev) => {
+            let changed = false;
+            const next = {...prev};
+            for (const entry of managedUsersWithKavita) {
+                const lookup = getUserLookupKey(entry.user);
+                if (!lookup || !entry.kavitaUser) continue;
+                if (Array.isArray(next[lookup]) && next[lookup].length > 0) continue;
+                next[lookup] = normalizeDistinctStringList(entry.kavitaUser.roles);
+                changed = true;
+            }
+            return changed ? next : prev;
+        });
+    }, [managedUsersWithKavita]);
 
     useEffect(() => {
         if (!factoryResetProgress) return;
@@ -2257,7 +2745,6 @@ export function SettingsPage({selection}: SettingsPageProps) {
         });
         const portalDiscordFields = envConfig.filter((entry) => PORTAL_DISCORD_KEYS.has(normalizeString(entry?.key).trim()));
         const portalJoinFields = envConfig.filter((entry) => PORTAL_JOIN_DEFAULT_KEYS.has(normalizeString(entry?.key).trim()));
-        const portalAccessFields = envConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
         const komfConfigFields = genericFields.filter((entry) => normalizeString(entry?.key).trim() === KOMF_APPLICATION_YML_KEY);
         const komfRuntimeFields = genericFields.filter((entry) => normalizeString(entry?.key).trim() !== KOMF_APPLICATION_YML_KEY);
 
@@ -2443,12 +2930,6 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     "Portal uses these upstream settings to talk to Kavita, Vault, and Redis-backed onboarding storage.",
                                     "service",
                                 )}
-                                {renderFieldBlock(
-                                    "Command access",
-                                    portalAccessFields,
-                                    "These settings control which Discord guild and roles are allowed to use Portal commands.",
-                                    "access",
-                                )}
                             </Column>
                         )}
                         {!currentEditor.loading && isPortalTab && currentService === "noona-komf" && (
@@ -2625,23 +3106,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     </Card>
                 )}
 
-                {isPortalTab && !currentEditor.loading && portalAccessFields.length > 0 && (
-                    <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
-                        <Column gap="8">
-                            <Heading as="h3" variant="heading-strong-l">Command access</Heading>
-                            <Text onBackground="neutral-weak" variant="body-default-xs">
-                                Restrict Portal slash commands to the configured Discord guild and role IDs.
-                            </Text>
-                            {portalAccessFields.map((field) => renderEditableField(field, "command-access"))}
-                        </Column>
-                    </Card>
-                )}
-
                 {!currentEditor.loading && renderServiceActions()}
             </Column>
         );
     };
-    void renderServiceConfig;
 
     const getServiceLabel = (serviceName: string) => STORAGE_LABELS[serviceName] ?? serviceName;
 
@@ -2877,7 +3345,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 <Column gap="12">
                     <Heading as="h2" variant="heading-strong-l">Ecosystem controls</Heading>
                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                        Start, stop, or restart the managed Noona stack from one place.
+                        Start, stop, or restart the managed Noona stack from one place. You can also download or load
+                        the same Warden settings JSON snapshot used by the setup wizard.
                     </Text>
                     <Row gap="12" style={{flexWrap: "wrap"}}>
                         <Button variant="secondary" disabled={ecosystemBusy}
@@ -2891,7 +3360,39 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 onClick={() => void updateEcosystemState("stop")}>
                             {ecosystemBusy ? "Working..." : "Stop ecosystem"}
                         </Button>
+                        <Button
+                            variant="secondary"
+                            disabled={ecosystemBusy || setupConfigBusy}
+                            onClick={() => void downloadSetupConfigSnapshot()}
+                        >
+                            {setupConfigBusy ? "Working..." : "Save JSON"}
+                        </Button>
+                        <Button
+                            variant="secondary"
+                            disabled={ecosystemBusy || setupConfigBusy}
+                            onClick={() => openSetupConfigFilePicker()}
+                        >
+                            {setupConfigBusy ? "Working..." : "Load JSON"}
+                        </Button>
+                        <input
+                            ref={setupConfigInputRef}
+                            type="file"
+                            accept="application/json,.json"
+                            onChange={(event) => void loadSetupConfigFromFile(event)}
+                            style={{display: "none"}}
+                            aria-label="Load Warden settings JSON file"
+                        />
                     </Row>
+                    {setupConfigMessage && (
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            {setupConfigMessage}
+                        </Text>
+                    )}
+                    {setupConfigError && (
+                        <Text onBackground="danger-strong" variant="body-default-xs">
+                            {setupConfigError}
+                        </Text>
+                    )}
                 </Column>
             </Card>
 
@@ -3310,12 +3811,15 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Input
                             id="vault-factory-reset-password"
                             name="vault-factory-reset-password"
-                            type="password"
-                            label="Confirm with password"
-                            value={factoryResetPassword}
+                            type={factoryResetConfirmationMeta.mode === "password" ? "password" : "text"}
+                            label={factoryResetConfirmationMeta.label}
+                            value={factoryResetConfirmation}
                             disabled={factoryResetBusy}
-                            onChange={(event) => setFactoryResetPassword(event.target.value)}
+                            onChange={(event) => setFactoryResetConfirmation(event.target.value)}
                         />
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            {factoryResetConfirmationMeta.hint}
+                        </Text>
                         <label style={{display: "flex", alignItems: "center", gap: "0.5rem"}}>
                             <input
                                 type="checkbox"
@@ -3433,6 +3937,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         </Row>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
                             Tokens: {TOKENS.join(" ")}
+                        </Text>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            <code>{`{chapter}`}</code> now uses the configured chapter
+                            padding. <code>{`{chapter_padded}`}</code> remains available as the same padded value.
                         </Text>
                         {namingError &&
                             <Text onBackground="danger-strong" variant="body-default-xs">{namingError}</Text>}
@@ -3628,78 +4136,143 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         </Text>
                     )}
                     {!updatesLoading && installedUpdateSnapshots.length > 0 && (
-                        <div style={{
-                            display: "grid",
-                            gridTemplateColumns: "repeat(auto-fit, minmax(18rem, 1fr))",
-                            gap: 12
-                        }}>
-                            {installedUpdateSnapshots.map((entry, index) => {
-                                const service = normalizeString(entry.service).trim();
-                                const updateAvailable = entry.updateAvailable === true;
-                                const unsupported = entry.supported === false;
-                                const checkedAt = formatIso(entry.checkedAt);
-                                const badgeBackground = unsupported
-                                    ? "danger-alpha-weak"
-                                    : updateAvailable
-                                        ? "warning-alpha-weak"
-                                        : checkedAt
-                                            ? "success-alpha-weak"
-                                            : "neutral-alpha-weak";
-                                const badgeLabel = unsupported
-                                    ? "unsupported"
-                                    : updateAvailable
-                                        ? "update available"
-                                        : checkedAt
-                                            ? "up to date"
-                                            : "not checked";
+                        <Column fillWidth gap="12">
+                            <div
+                                style={{
+                                    display: "grid",
+                                    width: "100%",
+                                    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 10rem), 1fr))",
+                                    gap: 12,
+                                }}
+                            >
+                                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="m"
+                                      radius="l">
+                                    <Column gap="4">
+                                        <Text variant="label-default-s" onBackground="neutral-weak">Installed</Text>
+                                        <Heading as="p" variant="display-strong-xs">{updaterSummary.total}</Heading>
+                                    </Column>
+                                </Card>
+                                <Card fillWidth background={BG_SURFACE} border="warning-alpha-medium" padding="m"
+                                      radius="l">
+                                    <Column gap="4">
+                                        <Text variant="label-default-s" onBackground="neutral-weak">Need updates</Text>
+                                        <Heading as="p"
+                                                 variant="display-strong-xs">{updaterSummary.updateAvailable}</Heading>
+                                    </Column>
+                                </Card>
+                                <Card fillWidth background={BG_SURFACE} border="success-alpha-medium" padding="m"
+                                      radius="l">
+                                    <Column gap="4">
+                                        <Text variant="label-default-s" onBackground="neutral-weak">Up to date</Text>
+                                        <Heading as="p" variant="display-strong-xs">{updaterSummary.upToDate}</Heading>
+                                    </Column>
+                                </Card>
+                                <Card fillWidth background={BG_SURFACE} border="danger-alpha-medium" padding="m"
+                                      radius="l">
+                                    <Column gap="4">
+                                        <Text variant="label-default-s" onBackground="neutral-weak">Unsupported /
+                                            errors</Text>
+                                        <Heading as="p" variant="display-strong-xs">
+                                            {updaterSummary.unsupported + updaterSummary.errors}
+                                        </Heading>
+                                    </Column>
+                                </Card>
+                            </div>
 
-                                return (
-                                    <Card
-                                        key={`${service || "unknown"}-${index}`}
-                                        fillWidth
-                                        background={BG_SURFACE}
-                                        border="neutral-alpha-weak"
-                                        padding="m"
-                                        radius="l"
-                                    >
-                                        <Column gap="8">
-                                            <Row horizontal="between" vertical="center" gap="12"
-                                                 style={{flexWrap: "wrap"}}>
-                                                <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
-                                                    <Text
-                                                        variant="heading-default-s">{getServiceLabel(service || "unknown")}</Text>
-                                                    <Badge background={badgeBackground} onBackground="neutral-strong">
-                                                        {badgeLabel}
-                                                    </Badge>
+                            <div
+                                style={{
+                                    display: "grid",
+                                    width: "100%",
+                                    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 15rem), 1fr))",
+                                    gap: 12,
+                                    alignItems: "stretch",
+                                }}
+                            >
+                                {installedUpdateSnapshots.map((entry, index) => {
+                                    const service = normalizeString(entry.service).trim();
+                                    const updateAvailable = entry.updateAvailable === true;
+                                    const unsupported = entry.supported === false;
+                                    const checkedAt = formatIso(entry.checkedAt);
+                                    const image = normalizeString(entry.image).trim();
+                                    const errorMessage = normalizeString(entry.error).trim();
+                                    const badgeBackground = unsupported
+                                        ? "danger-alpha-weak"
+                                        : updateAvailable
+                                            ? "warning-alpha-weak"
+                                            : checkedAt
+                                                ? "success-alpha-weak"
+                                                : "neutral-alpha-weak";
+                                    const badgeLabel = unsupported
+                                        ? "unsupported"
+                                        : updateAvailable
+                                            ? "update available"
+                                            : checkedAt
+                                                ? "up to date"
+                                                : "not checked";
+
+                                    return (
+                                        <Card
+                                            key={`${service || "unknown"}-${index}`}
+                                            fillWidth
+                                            background={BG_SURFACE}
+                                            border="neutral-alpha-weak"
+                                            padding="m"
+                                            radius="l"
+                                        >
+                                            <Column fillWidth gap="12" style={{height: "100%"}}>
+                                                <Row horizontal="between" vertical="start" gap="12"
+                                                     style={{flexWrap: "wrap"}}>
+                                                    <Column gap="8" style={{minWidth: 0, flex: "1 1 12rem"}}>
+                                                        <Text variant="heading-default-s">
+                                                            {getServiceLabel(service || "unknown")}
+                                                        </Text>
+                                                        <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                                            <Badge background={badgeBackground}
+                                                                   onBackground="neutral-strong">
+                                                                {badgeLabel}
+                                                            </Badge>
+                                                            {checkedAt && (
+                                                                <Badge background={BG_NEUTRAL_ALPHA_WEAK}
+                                                                       onBackground="neutral-strong">
+                                                                    {checkedAt}
+                                                                </Badge>
+                                                            )}
+                                                        </Row>
+                                                    </Column>
+                                                    <Button
+                                                        variant={updateAvailable ? "primary" : "secondary"}
+                                                        disabled={!service || unsupported || !updateAvailable || updatesApplyingAll || updating[service]}
+                                                        onClick={() => void updateImage(service)}
+                                                    >
+                                                        {updating[service] ? "Updating..." : "Update"}
+                                                    </Button>
                                                 </Row>
-                                                <Button
-                                                    variant="secondary"
-                                                    disabled={!service || unsupported || !updateAvailable || updatesApplyingAll || updating[service]}
-                                                    onClick={() => void updateImage(service)}
-                                                >
-                                                    {updating[service] ? "Updating..." : "Update service"}
-                                                </Button>
-                                            </Row>
-                                            {normalizeString(entry.image).trim() && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Image: {normalizeString(entry.image).trim()}
-                                                </Text>
-                                            )}
-                                            {checkedAt && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                                    Checked: {checkedAt}
-                                                </Text>
-                                            )}
-                                            {normalizeString(entry.error).trim() && (
-                                                <Text onBackground="danger-strong" variant="body-default-xs">
-                                                    {normalizeString(entry.error).trim()}
-                                                </Text>
-                                            )}
-                                        </Column>
-                                    </Card>
-                                );
-                            })}
-                        </div>
+
+                                                <Column gap="8" style={{marginTop: "auto"}}>
+                                                    {image && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            Image: {image}
+                                                        </Text>
+                                                    )}
+                                                    {!checkedAt && !errorMessage && (
+                                                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                            No update check has been recorded yet for this service.
+                                                        </Text>
+                                                    )}
+                                                    {errorMessage && (
+                                                        <Text onBackground="danger-strong" variant="body-default-xs"
+                                                              wrap="balance">
+                                                            {errorMessage}
+                                                        </Text>
+                                                    )}
+                                                </Column>
+                                            </Column>
+                                        </Card>
+                                    );
+                                })}
+                            </div>
+                        </Column>
                     )}
                 </Column>
             </Card>
@@ -3922,8 +4495,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
             );
         }
 
-        const sortedUsers = [...managedUsers].sort((left, right) =>
-            normalizeString(left.username).localeCompare(normalizeString(right.username)),
+        const sortedUsers = [...managedUsersWithKavita].sort((left, right) =>
+            normalizeString(left.user.username).localeCompare(normalizeString(right.user.username)),
         );
 
         return (
@@ -3976,6 +4549,23 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 </Card>
 
                 <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="8">
+                        <Heading as="h2" variant="heading-strong-l">Moon permission legend</Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Permission descriptions are listed once here to reduce visual noise in each user card.
+                        </Text>
+                        <Column gap={6}>
+                            {MOON_PERMISSION_ORDER.map((permission) => (
+                                <Text key={`permission-legend-${permission}`} onBackground="neutral-weak"
+                                      variant="body-default-xs">
+                                    {MOON_PERMISSION_LABELS[permission]}: {MOON_PERMISSION_DESCRIPTIONS[permission]}
+                                </Text>
+                            ))}
+                        </Column>
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Column gap="12">
                         <Heading as="h2" variant="heading-strong-l">Create Discord user</Heading>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
@@ -4014,14 +4604,6 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     </label>
                                 ))}
                             </Row>
-                            <Column gap="8">
-                                {MOON_PERMISSION_ORDER.map((permission) => (
-                                    <Text key={`new-user-permission-help-${permission}`} onBackground="neutral-weak"
-                                          variant="body-default-xs">
-                                        {MOON_PERMISSION_LABELS[permission]}: {MOON_PERMISSION_DESCRIPTIONS[permission]}
-                                    </Text>
-                                ))}
-                            </Column>
                         </Column>
                         <Button variant="primary" disabled={usersSaving} onClick={() => void createManagedUser()}>
                             {usersSaving ? "Saving..." : "Create Discord user"}
@@ -4031,27 +4613,37 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
                 <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                     <Column gap="12">
-                        <Row horizontal="between" vertical="center">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                             <Heading as="h2" variant="heading-strong-l">Users</Heading>
-                            <Button variant="secondary" disabled={usersLoading || usersSaving}
-                                    onClick={() => void loadManagedUsers()}>
-                                {usersLoading ? "Loading..." : "Refresh users"}
-                            </Button>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button variant="secondary" disabled={usersLoading || usersSaving}
+                                        onClick={() => void loadManagedUsers()}>
+                                    {usersLoading ? "Loading..." : "Refresh Moon users"}
+                                </Button>
+                                <Button variant="secondary" disabled={kavitaUsersLoading}
+                                        onClick={() => void loadKavitaUsers()}>
+                                    {kavitaUsersLoading ? "Loading..." : "Refresh Kavita users"}
+                                </Button>
+                            </Row>
                         </Row>
                         {usersError && <Text onBackground="danger-strong" variant="body-default-xs">{usersError}</Text>}
                         {usersMessage &&
                             <Text onBackground="neutral-weak" variant="body-default-xs">{usersMessage}</Text>}
-                        {usersLoading && (
+                        {kavitaUsersError &&
+                            <Text onBackground="danger-strong" variant="body-default-xs">{kavitaUsersError}</Text>}
+                        {kavitaUsersMessage &&
+                            <Text onBackground="neutral-weak" variant="body-default-xs">{kavitaUsersMessage}</Text>}
+                        {(usersLoading || kavitaUsersLoading) && (
                             <Row fillWidth horizontal="center" paddingY="16">
                                 <Spinner/>
                             </Row>
                         )}
-                        {!usersLoading && sortedUsers.length === 0 && (
+                        {!usersLoading && !kavitaUsersLoading && sortedUsers.length === 0 && (
                             <Text onBackground="neutral-weak" variant="body-default-xs">No users found.</Text>
                         )}
-                        {!usersLoading && sortedUsers.length > 0 && (
+                        {!usersLoading && !kavitaUsersLoading && sortedUsers.length > 0 && (
                             <Column gap="12">
-                                {sortedUsers.map((entry) => {
+                                {sortedUsers.map(({user: entry, kavitaUser}) => {
                                     const key = userLookupKey(entry);
                                     const fallbackUsername = normalizeString(entry.username).trim();
                                     const draft = editingUser[key] ?? {
@@ -4061,6 +4653,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     const isProtected = entry.isBootstrapUser === true;
                                     const authProvider = normalizeString(entry.authProvider).trim() || "local";
                                     const discordUserId = normalizeString(entry.discordUserId).trim();
+                                    const linkedKavitaUsername = normalizeString(kavitaUser?.username).trim();
+                                    const linkedKavitaEmail = normalizeString(kavitaUser?.email).trim();
+                                    const linkedKavitaRoles = normalizeDistinctStringList(kavitaUser?.roles);
+                                    const kavitaRoleDraft = normalizeDistinctStringList(editingKavitaRoles[key] ?? linkedKavitaRoles);
+                                    const hasLinkedKavitaUser = Boolean(linkedKavitaUsername);
+                                    const kavitaSaveBusy = savingKavitaRoles[key] === true;
 
                                     return (
                                         <Card key={key || fallbackUsername} fillWidth background={BG_SURFACE}
@@ -4137,20 +4735,69 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                                             </label>
                                                         ))}
                                                     </Row>
-                                                    <Column gap="8">
-                                                        {MOON_PERMISSION_ORDER.map((permission) => (
-                                                            <Text key={`${key}-permission-help-${permission}`}
-                                                                  onBackground="neutral-weak" variant="body-default-xs">
-                                                                {MOON_PERMISSION_LABELS[permission]}: {MOON_PERMISSION_DESCRIPTIONS[permission]}
+                                                </Column>
+                                                <Column gap="8">
+                                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                        Kavita roles
+                                                    </Text>
+                                                    {!hasLinkedKavitaUser && (
+                                                        <Text onBackground="warning-strong" variant="body-default-xs">
+                                                            No linked Kavita account was found for this user by email or
+                                                            username.
+                                                        </Text>
+                                                    )}
+                                                    {hasLinkedKavitaUser && (
+                                                        <>
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                                Linked Kavita user: {linkedKavitaUsername}
+                                                                {linkedKavitaEmail ? ` (${linkedKavitaEmail})` : ""}
                                                             </Text>
-                                                        ))}
-                                                    </Column>
+                                                            <Input
+                                                                id={`user-kavita-roles-${key}`}
+                                                                name={`user-kavita-roles-${key}`}
+                                                                label="Kavita roles (comma separated)"
+                                                                value={serializeCsvSelections(kavitaRoleDraft)}
+                                                                disabled={isProtected || kavitaSaveBusy}
+                                                                onChange={(event) =>
+                                                                    setEditingKavitaRolesFromCsv(key, event.target.value)
+                                                                }
+                                                            />
+                                                            {kavitaRoleOptions.length > 0 && (
+                                                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                                    {kavitaRoleOptions.map((role) => {
+                                                                        const selected = kavitaRoleDraft.some(
+                                                                            (entryRole) => entryRole.toLowerCase() === role.toLowerCase(),
+                                                                        );
+                                                                        return (
+                                                                            <Button
+                                                                                key={`${key}-kavita-role-${role}`}
+                                                                                variant={selected ? "primary" : "secondary"}
+                                                                                disabled={isProtected || kavitaSaveBusy}
+                                                                                onClick={() => toggleEditingKavitaRole(key, role)}
+                                                                            >
+                                                                                {role}
+                                                                            </Button>
+                                                                        );
+                                                                    })}
+                                                                </Row>
+                                                            )}
+                                                        </>
+                                                    )}
                                                 </Column>
                                                 <Row gap="8" style={{flexWrap: "wrap"}}>
                                                     <Button variant="primary" disabled={isProtected || usersSaving}
                                                             onClick={() => void saveManagedUser(entry)}>
                                                         Save user
                                                     </Button>
+                                                    {hasLinkedKavitaUser && (
+                                                        <Button
+                                                            variant="secondary"
+                                                            disabled={isProtected || kavitaSaveBusy || kavitaRoleDraft.length === 0}
+                                                            onClick={() => void saveManagedUserKavitaRoles(entry)}
+                                                        >
+                                                            {kavitaSaveBusy ? "Saving Kavita roles..." : "Save Kavita roles"}
+                                                        </Button>
+                                                    )}
                                                     <Button variant="secondary" disabled={isProtected || usersSaving}
                                                             onClick={() => void deleteManagedUser(entry)}>
                                                         Delete user
@@ -4233,6 +4880,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     {activeView === "downloader" && renderDownloaderSettings()}
                                     {activeView === "updater" && renderUpdaterSettings()}
                                     {activeView === "discord" && renderDiscordSettings()}
+                                    {activeView === "kavita" && renderServiceConfig()}
                                     {activeView === "komf" && renderKomfSettings()}
                                 </>
                             )}

@@ -9,6 +9,7 @@ export const createPortalApp = ({
                                     config,
                                     discord,
                                     kavita,
+                                    komf,
                                     raven,
                                     vault,
                                     onboardingStore,
@@ -27,6 +28,7 @@ export const createPortalApp = ({
         config,
         discord,
         kavita,
+        komf,
         raven,
         onboardingStore,
         vault,
@@ -36,8 +38,17 @@ export const createPortalApp = ({
     return app;
 };
 
-export const startPortalServer = async ({config, discord, kavita, raven, vault, onboardingStore, fetchImpl} = {}) => {
-    const app = createPortalApp({config, discord, kavita, raven, vault, onboardingStore, fetchImpl});
+export const startPortalServer = async ({
+                                            config,
+                                            discord,
+                                            kavita,
+                                            komf,
+                                            raven,
+                                            vault,
+                                            onboardingStore,
+                                            fetchImpl,
+                                        } = {}) => {
+    const app = createPortalApp({config, discord, kavita, komf, raven, vault, onboardingStore, fetchImpl});
 
     const server = app.listen(config.port, () => {
         log(`[Portal] Service listening on port ${config.port}`);

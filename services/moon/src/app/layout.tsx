@@ -5,7 +5,7 @@ import "@/resources/custom.css";
 import classNames from "classnames";
 
 import {Background, Column, Flex, Meta, opacity, RevealFx, SpacingToken,} from "@once-ui-system/core";
-import {AppShell, Providers, RouteGuard} from "@/components";
+import {AppShell, Providers, RouteGuard, SiteWeatherFx} from "@/components";
 import {moonDataStyle, moonEffects, moonFonts, moonSite, moonTheme} from "@/resources";
 import {resolveMoonBaseUrl} from "@/utils/webGui";
 
@@ -159,7 +159,8 @@ export default async function RootLayout({
                             }}
                         />
                     </RevealFx>
-                    <Flex zIndex={2} fillWidth flex={1} minHeight="0">
+                    <SiteWeatherFx/>
+                    <Flex zIndex={3} fillWidth flex={1} minHeight="0">
                         <AppShell>
                             <RouteGuard>{children}</RouteGuard>
                         </AppShell>

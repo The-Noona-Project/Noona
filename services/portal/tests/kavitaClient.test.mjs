@@ -3,6 +3,28 @@ import test from 'node:test';
 
 import createKavitaClient from '../clients/kavitaClient.mjs';
 
+const DEFAULT_AGE_RESTRICTION = {
+    ageRating: -1,
+    includeUnknowns: true,
+};
+
+test('request surfaces structured Kavita error payload details', async () => {
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async () => ({
+            ok: false,
+            status: 400,
+            text: async () => JSON.stringify({error: 'Email is invalid.'}),
+        }),
+    });
+
+    await assert.rejects(
+        () => kavita.fetchRoles(),
+        /Email is invalid/i,
+    );
+});
+
 test('createUser composes Kavita invite, update, and reset-password calls', async () => {
     const calls = [];
     const fetchImpl = async (url, options) => {
@@ -81,6 +103,7 @@ test('createUser composes Kavita invite, update, and reset-password calls', asyn
         email: 'reader@example.com',
         roles: ['Pleb'],
         libraries: [2],
+        ageRestriction: DEFAULT_AGE_RESTRICTION,
     });
     assert.deepEqual(calls[5].body, {
         userId: 44,
@@ -88,6 +111,7 @@ test('createUser composes Kavita invite, update, and reset-password calls', asyn
         email: 'reader@example.com',
         roles: ['Pleb'],
         libraries: [2],
+        ageRestriction: DEFAULT_AGE_RESTRICTION,
     });
     assert.deepEqual(calls[6].body, {
         userName: 'reader',
@@ -164,6 +188,7 @@ test('createUser expands wildcard role and library defaults before calling Kavit
         email: 'reader@example.com',
         roles: ['Pleb', 'Download'],
         libraries: [1, 3],
+        ageRestriction: DEFAULT_AGE_RESTRICTION,
     });
     assert.deepEqual(calls[5].body, {
         userId: 51,
@@ -171,6 +196,7 @@ test('createUser expands wildcard role and library defaults before calling Kavit
         email: 'reader@example.com',
         roles: ['Pleb', 'Download'],
         libraries: [1, 3],
+        ageRestriction: DEFAULT_AGE_RESTRICTION,
     });
 });
 
@@ -270,11 +296,123 @@ test('createOrUpdateUser updates an existing Kavita account and resets the passw
         email: 'reader@example.com',
         roles: ['Pleb', 'Login'],
         libraries: [1],
+        ageRestriction: DEFAULT_AGE_RESTRICTION,
     });
     assert.deepEqual(calls[4].body, {
         userName: 'reader.discord',
         password: 'Noona-password-123',
     });
+});
+
+test('createOrUpdateUser always sends the libraries field even when empty', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url);
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                body: options.body ? JSON.parse(options.body) : null,
+            });
+
+            if (requestUrl.pathname === '/api/Users') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 12, username: 'reader.discord', email: 'reader@example.com'},
+                    ]),
+                };
+            }
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => '',
+            };
+        },
+    });
+
+    await kavita.createOrUpdateUser({
+        username: 'reader.discord',
+        email: 'reader@example.com',
+        password: 'Noona-password-123',
+        roles: [],
+        libraries: [],
+    });
+
+    assert.deepEqual(calls.map(call => call.pathname), [
+        '/api/Users',
+        '/api/Account/update',
+        '/api/Account/reset-password',
+    ]);
+    assert.deepEqual(calls[1].body, {
+        userId: 12,
+        username: 'reader.discord',
+        email: 'reader@example.com',
+        libraries: [],
+        ageRestriction: DEFAULT_AGE_RESTRICTION,
+    });
+});
+
+test('createOrUpdateUser tolerates Kavita self-reset password errors for existing accounts', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url);
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                body: options.body ? JSON.parse(options.body) : null,
+            });
+
+            if (requestUrl.pathname === '/api/Users') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 9, username: 'reader.discord', email: 'reader@example.com'},
+                    ]),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/reset-password') {
+                return {
+                    ok: false,
+                    status: 500,
+                    text: async () => JSON.stringify({
+                        error: "Value cannot be null. (Parameter 'providedPassword')",
+                    }),
+                };
+            }
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => '',
+            };
+        },
+    });
+
+    const updated = await kavita.createOrUpdateUser({
+        username: 'reader.discord',
+        email: 'reader@example.com',
+        password: 'Noona-password-123',
+        roles: [],
+        libraries: [],
+    });
+
+    assert.equal(updated.created, false);
+    assert.equal(updated.passwordUpdated, false);
+    assert.deepEqual(calls.map(call => call.pathname), [
+        '/api/Users',
+        '/api/Account/update',
+        '/api/Account/reset-password',
+    ]);
 });
 
 test('fetchLibraries uses Kavita libraries endpoint', async () => {

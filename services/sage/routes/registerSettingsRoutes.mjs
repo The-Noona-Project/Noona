@@ -16,6 +16,7 @@ export function registerSettingsRoutes(context = {}) {
         readDebugSetting,
         requireAdminSession,
         requireAdminSessionIfSetupCompleted,
+        resolveDangerousActionConfirmation,
         resolveBaseRedirectUrl,
         serviceName,
         settingsCollection,
@@ -24,8 +25,8 @@ export function registerSettingsRoutes(context = {}) {
         vaultClient,
         vaultErrorMessage,
         vaultErrorStatus,
+        verifyDangerousActionConfirmation,
         verifyFactoryResetSelections,
-        verifySessionPassword,
         writeDownloadWorkerSettings,
     } = context
 
@@ -364,9 +365,20 @@ export function registerSettingsRoutes(context = {}) {
             return
         }
 
-        const password = typeof req.body?.password === 'string' ? req.body.password : ''
-        if (!password) {
-            res.status(400).json({error: 'password is required.'})
+        const confirmationRequirement = resolveDangerousActionConfirmation(session)
+        const confirmation =
+            typeof req.body?.confirmation === 'string'
+                ? req.body.confirmation
+                : typeof req.body?.password === 'string'
+                    ? req.body.password
+                    : ''
+        if (!confirmation.trim()) {
+            res.status(400).json({
+                error:
+                    confirmationRequirement.mode === 'password'
+                        ? 'password is required.'
+                        : 'confirmation is required.',
+            })
             return
         }
 
@@ -374,9 +386,14 @@ export function registerSettingsRoutes(context = {}) {
         const deleteDockers = parseBooleanInput(req.body?.deleteDockers) === true
 
         try {
-            const passwordValid = await verifySessionPassword({session, password})
-            if (!passwordValid) {
-                res.status(401).json({error: 'Invalid password.'})
+            const confirmed = await verifyDangerousActionConfirmation({session, confirmation})
+            if (!confirmed) {
+                res.status(401).json({
+                    error:
+                        confirmationRequirement.mode === 'password'
+                            ? 'Invalid password.'
+                            : 'Confirmation did not match the current Discord account.',
+                })
                 return
             }
 
@@ -485,16 +502,32 @@ export function registerSettingsRoutes(context = {}) {
         const restartRaw = parseBooleanInput(req.body?.restart)
         const shouldRestart = restartRaw == null ? true : restartRaw
 
-        const password = typeof req.body?.password === 'string' ? req.body.password : ''
-        if (!password) {
-            res.status(400).json({error: 'password is required.'})
+        const confirmationRequirement = resolveDangerousActionConfirmation(session)
+        const confirmation =
+            typeof req.body?.confirmation === 'string'
+                ? req.body.confirmation
+                : typeof req.body?.password === 'string'
+                    ? req.body.password
+                    : ''
+        if (!confirmation.trim()) {
+            res.status(400).json({
+                error:
+                    confirmationRequirement.mode === 'password'
+                        ? 'password is required.'
+                        : 'confirmation is required.',
+            })
             return
         }
 
         try {
-            const passwordValid = await verifySessionPassword({session, password})
-            if (!passwordValid) {
-                res.status(401).json({error: 'Invalid password.'})
+            const confirmed = await verifyDangerousActionConfirmation({session, confirmation})
+            if (!confirmed) {
+                res.status(401).json({
+                    error:
+                        confirmationRequirement.mode === 'password'
+                            ? 'Invalid password.'
+                            : 'Confirmation did not match the current Discord account.',
+                })
                 return
             }
 

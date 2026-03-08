@@ -2,7 +2,7 @@
 
 import {useEffect, useState} from "react";
 import {useRouter, useSearchParams} from "next/navigation";
-import {Badge, Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
+import {Badge, Button, Card, Column, dev, Heading, Row, Spinner, Text} from "@once-ui-system/core";
 
 type SetupStatus = {
     completed?: boolean;
@@ -19,6 +19,49 @@ type DiscordStartResponse = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const normalizeAbsoluteHttpUrl = (value: unknown): string => {
+    const normalized = normalizeString(value).trim();
+    if (!normalized) return "";
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            return "";
+        }
+        return parsed.toString();
+    } catch {
+        return "";
+    }
+};
+const normalizeMoonReturnTarget = (value: unknown, currentOrigin: string, fallback = "/"): string => {
+    const candidate = normalizeString(value).trim();
+    if (!candidate) return fallback;
+    if (candidate.startsWith("/")) return candidate;
+
+    const absoluteTarget = normalizeAbsoluteHttpUrl(candidate);
+    if (!absoluteTarget || !currentOrigin) {
+        return fallback;
+    }
+
+    try {
+        const parsed = new URL(absoluteTarget);
+        return parsed.origin === currentOrigin ? parsed.toString() : fallback;
+    } catch {
+        return fallback;
+    }
+};
+const navigateToReturnTarget = (router: { replace: (href: string) => void }, target: string) => {
+    if (target.startsWith("/")) {
+        window.location.replace(new URL(target, window.location.origin).toString());
+        return;
+    }
+    const absoluteTarget = normalizeAbsoluteHttpUrl(target);
+    if (absoluteTarget) {
+        window.location.replace(absoluteTarget);
+        return;
+    }
+    router.replace("/");
+};
 
 export function LoginPage() {
     const router = useRouter();
@@ -27,28 +70,33 @@ export function LoginPage() {
     const [configured, setConfigured] = useState(false);
     const [loggingIn, setLoggingIn] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const returnTo = (() => {
-        const candidate = normalizeString(searchParams.get("returnTo")).trim();
-        return candidate.startsWith("/") ? candidate : "/";
-    })();
 
     useEffect(() => {
         let cancelled = false;
 
         const check = async () => {
             try {
+                const currentOrigin = window.location.origin;
+                const returnTo = normalizeMoonReturnTarget(searchParams.get("returnTo"), currentOrigin, "/");
+                dev.info("[NoonaLogin] Page check started", {returnTo, currentOrigin});
                 const setupRes = await fetch("/api/noona/setup/status", {cache: "no-store"});
                 const setupJson = (await setupRes.json().catch(() => null)) as SetupStatus | null;
                 const setupCompleted = setupJson?.completed === true;
+                dev.debug("[NoonaLogin] Setup status fetched", {setupCompleted, status: setupRes.status});
 
                 const authRes = await fetch("/api/noona/auth/status", {cache: "no-store"});
                 if (cancelled) return;
                 if (authRes.ok) {
-                    router.replace(setupCompleted ? returnTo : "/setupwizard/summary");
+                    dev.info("[NoonaLogin] Existing session found; redirecting", {
+                        destination: setupCompleted ? returnTo : "/setupwizard/summary",
+                    });
+                    navigateToReturnTarget(router, setupCompleted ? returnTo : "/setupwizard/summary");
                     return;
                 }
+                dev.debug("[NoonaLogin] No active session", {status: authRes.status});
 
                 if (!setupCompleted) {
+                    dev.info("[NoonaLogin] Setup incomplete; redirecting to setup wizard");
                     router.replace("/setupwizard");
                     return;
                 }
@@ -58,12 +106,15 @@ export function LoginPage() {
                 if (cancelled) return;
                 if (configRes.ok) {
                     setConfigured(configJson?.configured === true);
+                    dev.info("[NoonaLogin] Discord config loaded", {configured: configJson?.configured === true});
                 } else {
+                    dev.warn("[NoonaLogin] Discord config request failed", {status: configRes.status});
                     setError(normalizeString(configJson?.error).trim() || `Failed to load Discord auth config (HTTP ${configRes.status}).`);
                 }
             } catch (error_) {
                 if (cancelled) return;
                 const detail = error_ instanceof Error ? error_.message : String(error_);
+                dev.error("[NoonaLogin] Page check failed", detail);
                 setError(detail);
             } finally {
                 if (!cancelled) setChecking(false);
@@ -74,7 +125,7 @@ export function LoginPage() {
         return () => {
             cancelled = true;
         };
-    }, [router, returnTo]);
+    }, [router, searchParams]);
 
     const startDiscordLogin = async () => {
         if (loggingIn) return;
@@ -83,6 +134,8 @@ export function LoginPage() {
         setError(null);
 
         try {
+            const returnTo = normalizeMoonReturnTarget(searchParams.get("returnTo"), window.location.origin, "/");
+            dev.info("[NoonaLogin] Starting Discord login", {returnTo});
             const response = await fetch("/api/noona/auth/discord/start", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -93,6 +146,7 @@ export function LoginPage() {
             });
             const payload = (await response.json().catch(() => null)) as DiscordStartResponse | null;
             if (!response.ok) {
+                dev.warn("[NoonaLogin] Discord login start failed", {status: response.status});
                 throw new Error(normalizeString(payload?.error).trim() || `Discord login failed to start (HTTP ${response.status}).`);
             }
 
@@ -101,9 +155,11 @@ export function LoginPage() {
                 throw new Error("Discord login is configured, but no authorize URL was returned.");
             }
 
+            dev.info("[NoonaLogin] Redirecting browser to Discord authorize URL");
             window.location.assign(authorizeUrl);
         } catch (error_) {
             const detail = error_ instanceof Error ? error_.message : String(error_);
+            dev.error("[NoonaLogin] Discord login start threw", detail);
             setError(detail);
             setLoggingIn(false);
         }

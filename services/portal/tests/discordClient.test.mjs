@@ -170,6 +170,38 @@ test('interaction handler executes matching slash command', async () => {
     assert.match(replies[0].content, /Dong/i);
 });
 
+test('interaction handler responds when slash command has no registered handler', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const replies = [];
+    const interaction = {
+        isChatInputCommand: () => true,
+        commandName: 'recommend',
+        reply: async payload => {
+            replies.push(payload);
+        },
+    };
+
+    await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].ephemeral, true);
+    assert.match(replies[0].content, /not available right now/i);
+});
+
 test('interaction handler executes matching autocomplete handler', async () => {
     const fakeClient = new FakeClient();
     fakeClient.user = {tag: 'TestBot#0001'};
@@ -240,6 +272,65 @@ test('createDiscordClient sends direct messages through the Discord user client'
             },
         },
     ]);
+});
+
+test('createDiscordClient serializes queued direct messages per user when Vault Redis is available', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const redisStore = new Map();
+    const vaultClient = {
+        redisSet: async (key, value) => {
+            redisStore.set(key, structuredClone(value));
+            return {status: 'ok'};
+        },
+        redisGet: async key => structuredClone(redisStore.get(key)),
+        redisDel: async key => {
+            const existed = redisStore.delete(key);
+            return {status: 'ok', deleted: existed ? 1 : 0};
+        },
+    };
+
+    let sendCount = 0;
+    fakeClient.users = {
+        fetch: async userId => ({
+            id: userId,
+            send: async payload => {
+                sendCount += 1;
+                const index = sendCount;
+                if (index === 1) {
+                    await new Promise(resolve => setTimeout(resolve, 15));
+                }
+                return {
+                    id: `dm-${index}`,
+                    payload,
+                };
+            },
+        }),
+    };
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+        vaultClient,
+        messageQueueNamespace: 'portal:test:dm',
+        messageQueueTtlSeconds: 60,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const [firstMessage, secondMessage] = await Promise.all([
+        discord.sendDirectMessage('discord-user-1', {content: 'first'}),
+        discord.sendDirectMessage('discord-user-1', {content: 'second'}),
+    ]);
+
+    assert.equal(firstMessage.id, 'dm-1');
+    assert.equal(secondMessage.id, 'dm-2');
 });
 
 test('interaction handler executes matching button component handlers', async () => {

@@ -12,6 +12,35 @@ const REQUIRED_ENV = {
     VAULT_BASE_URL: 'https://vault.example',
 };
 
+const REQUIRED_ENV_WITHOUT_DISCORD = {
+    KAVITA_API_KEY: 'kavita-api-key',
+    VAULT_BASE_URL: 'https://vault.example',
+    VAULT_ACCESS_TOKEN: 'vault-token',
+};
+
+test('safeLoadPortalConfig allows startup without Discord env', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV_WITHOUT_DISCORD,
+    });
+
+    assert.equal(config.discord.enabled, false);
+    assert.equal(config.discord.token, null);
+    assert.equal(config.discord.clientId, null);
+    assert.equal(config.discord.guildId, null);
+});
+
+test('safeLoadPortalConfig throws when Discord env is partially configured', () => {
+    assert.throws(
+        () =>
+            safeLoadPortalConfig({
+                ...REQUIRED_ENV_WITHOUT_DISCORD,
+                DISCORD_BOT_TOKEN: 'bot-token',
+                DISCORD_GUILD_ID: 'guild-id',
+            }),
+        /Missing required environment variables: DISCORD_CLIENT_ID/,
+    );
+});
+
 test('safeLoadPortalConfig uses VAULT_API_TOKEN when override is provided', () => {
     const config = safeLoadPortalConfig({
         ...REQUIRED_ENV,
@@ -62,6 +91,25 @@ test('safeLoadPortalConfig parses optional Kavita external URL override', () => 
     });
 
     assert.equal(config.kavita.externalUrl, 'https://kavita.example.com/');
+});
+
+test('safeLoadPortalConfig defaults Komf base URL to the managed noona-komf service', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+    });
+
+    assert.equal(config.komf.baseUrl, 'http://noona-komf:8085/');
+});
+
+test('safeLoadPortalConfig parses optional Komf base URL override', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        KOMF_BASE_URL: 'https://komf.example.com',
+    });
+
+    assert.equal(config.komf.baseUrl, 'https://komf.example.com/');
 });
 
 test('safeLoadPortalConfig throws when no vault tokens are provided', () => {

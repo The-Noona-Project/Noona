@@ -250,6 +250,39 @@ class LibraryServiceTest {
     }
 
     @Test
+    void updateTitlePersistsCoverUrlWhenProvided() {
+        Map<String, Object> stored = new HashMap<>();
+        stored.put("title", "Solo Leveling");
+        stored.put("uuid", "existing-uuid");
+        stored.put("sourceUrl", "http://solo");
+        stored.put("coverUrl", "");
+        stored.put("lastDownloaded", "7");
+        when(vaultService.findOne("manga_library", Map.of("uuid", "existing-uuid", "deletedAt", Map.of("$exists", false))))
+                .thenReturn(stored);
+
+        NewTitle existing = new NewTitle();
+        existing.setTitleName("Solo Leveling");
+        existing.setUuid("existing-uuid");
+        existing.setSourceUrl("http://solo");
+        existing.setCoverUrl("");
+        existing.setLastDownloaded("7");
+        when(vaultService.parseJson(eq(stored), eq(NewTitle.class))).thenReturn(existing);
+
+        NewTitle updated = libraryService.updateTitle(
+                "existing-uuid",
+                null,
+                null,
+                "https://covers.example/solo-leveling.jpg"
+        );
+
+        assertThat(updated.getCoverUrl()).isEqualTo("https://covers.example/solo-leveling.jpg");
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", "existing-uuid")), mapCaptor.capture(), eq(true));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) mapCaptor.getValue().get("$set");
+        assertThat(set).containsEntry("coverUrl", "https://covers.example/solo-leveling.jpg");
+    }
+
+    @Test
     void getAllTitleObjectsPopulatesTitleNameAndCheckForNewChaptersUsesIt() {
         Map<String, Object> vaultDoc = Map.of(
                 "title", "The Beginning After The End",

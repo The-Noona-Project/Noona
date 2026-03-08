@@ -31,6 +31,11 @@ const parseResponse = async response => {
     }
 };
 
+const isRedisNotFoundError = error => {
+    const bodyError = typeof error?.body?.error === 'string' ? error.body.error : '';
+    return /key not found/i.test(bodyError);
+};
+
 export const createVaultClient = ({
                                       baseUrl,
                                       token,
@@ -189,6 +194,72 @@ export const createVaultClient = ({
         });
     };
 
+    const redisSet = async (key, value, {ttl} = {}) => {
+        const normalizedKey = typeof key === 'string' ? key.trim() : '';
+        if (!normalizedKey) {
+            throw new Error('Redis key must be a non-empty string.');
+        }
+
+        return request('/v1/vault/handle', {
+            method: 'POST',
+            body: {
+                storageType: 'redis',
+                operation: 'set',
+                payload: {
+                    key: normalizedKey,
+                    value,
+                    ttl,
+                },
+            },
+        });
+    };
+
+    const redisGet = async key => {
+        const normalizedKey = typeof key === 'string' ? key.trim() : '';
+        if (!normalizedKey) {
+            return null;
+        }
+
+        try {
+            const payload = await request('/v1/vault/handle', {
+                method: 'POST',
+                body: {
+                    storageType: 'redis',
+                    operation: 'get',
+                    payload: {
+                        key: normalizedKey,
+                    },
+                },
+            });
+
+            return payload?.data ?? null;
+        } catch (error) {
+            if (isRedisNotFoundError(error)) {
+                return null;
+            }
+
+            throw error;
+        }
+    };
+
+    const redisDel = async key => {
+        const normalizedKey = typeof key === 'string' ? key.trim() : '';
+        if (!normalizedKey) {
+            return {status: 'ok', deleted: 0};
+        }
+
+        return request('/v1/vault/handle', {
+            method: 'POST',
+            body: {
+                storageType: 'redis',
+                operation: 'del',
+                payload: {
+                    key: normalizedKey,
+                },
+            },
+        });
+    };
+
     return {
         request,
         writeSecret,
@@ -198,6 +269,9 @@ export const createVaultClient = ({
         storeRecommendation,
         findRecommendations,
         updateRecommendation,
+        redisSet,
+        redisGet,
+        redisDel,
     };
 };
 

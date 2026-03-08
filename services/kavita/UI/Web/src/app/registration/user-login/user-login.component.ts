@@ -186,8 +186,15 @@ export class UserLoginComponent implements OnInit {
     const moonBaseUrl = (this.noonaConfig()?.moonBaseUrl || '').replace(/\/+$/, '');
     if (!moonBaseUrl) return;
 
-    const target = encodeURIComponent(this.baseUrl + 'login');
-    const returnTo = encodeURIComponent(`/kavita/complete?target=${target}`);
-    window.location.href = `${moonBaseUrl}/login?returnTo=${returnTo}`;
+    const moonRoot = `${moonBaseUrl}/`;
+    const kavitaLoginUrl = new URL(window.location.href);
+    kavitaLoginUrl.search = '';
+    kavitaLoginUrl.hash = '';
+    const moonCallbackUrl = new URL('kavita/complete', moonRoot);
+    moonCallbackUrl.searchParams.set('target', kavitaLoginUrl.toString());
+
+    const moonLoginUrl = new URL('login', moonRoot);
+    moonLoginUrl.searchParams.set('returnTo', moonCallbackUrl.toString());
+    window.location.href = moonLoginUrl.toString();
   }
 }

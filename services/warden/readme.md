@@ -52,6 +52,12 @@ mode.
 - `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
 - `GET /api/setup/config` - read Warden's persisted setup JSON snapshot (path + parsed payload when available).
 - `POST /api/setup/config` - persist setup JSON snapshot and hydrate runtime overrides from the saved values.
+  Warden now treats `<NOONA_DATA_ROOT>/noona-settings.json` as the canonical boot snapshot, mirrors that payload to
+  the legacy `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` path for compatibility, and Moon's General settings
+  page uses the same snapshot endpoints for its `Save JSON` / `Load JSON` controls.
+  If Warden itself runs in a container, bind-mount `NOONA_DATA_ROOT` into that container or those snapshot files will
+  only exist inside Warden's container filesystem.
+  Loading a snapshot there follows up with a forced ecosystem restart using the imported service selection.
 - `POST /api/services/install` - install/start one or more services. Add `?async=true` to accept the install in the
   background and return `202` with the current progress snapshot instead of holding the request open.
 - `GET /api/services/install/progress` - current installation timeline.
@@ -118,8 +124,9 @@ mode.
   Moon links instead of local LAN links.
 - Managed `noona-kavita` now derives its default `NOONA_MOON_BASE_URL` from Moon's effective host URL at runtime.
   That means the Kavita `Log in with Noona` button follows Moon `WEBGUI_PORT` and `MOON_EXTERNAL_URL` changes
-  automatically, and empty Noona-login overrides on managed Kavita fall back to the live Moon/Portal defaults instead
-  of disabling the button.
+  automatically. When Moon's URL changes through Warden service-config updates, Warden now also restarts managed
+  `noona-kavita` if the inherited login target changed so Kavita starts using the new redirect immediately, and empty
+  Noona-login overrides on managed Kavita fall back to the live Moon/Portal defaults instead of disabling the button.
 - The managed `noona-portal` descriptor now exposes `KAVITA_EXTERNAL_URL` so Portal can emit public Kavita links in
   Moon UI button payloads and recommendation-related Discord messages.
 - The managed `noona-kavita` descriptor now also exposes `NOONA_MOON_BASE_URL` and `NOONA_PORTAL_BASE_URL`. Kavita
@@ -131,7 +138,8 @@ mode.
 - Full-stack lifecycle order now starts Mongo, Redis, Vault, managed Kavita, Raven, Komf, and Portal. Sage and Moon
   remain the always-on platform services around that managed stack.
 - Managed Noona images now default to `docker.darkmatterservers.com/the-noona-project/*`, including managed Kavita at
-  `docker.darkmatterservers.com/the-noona-project/noona-kavita:latest`. Warden can inject `KAVITA_ADMIN_USERNAME`,
+  `docker.darkmatterservers.com/the-noona-project/noona-kavita:latest` and managed Komf at
+  `docker.darkmatterservers.com/the-noona-project/noona-komf:latest`. Warden can inject `KAVITA_ADMIN_USERNAME`,
   `KAVITA_ADMIN_EMAIL`, and `KAVITA_ADMIN_PASSWORD` so Warden can provision the first admin account and persist the
   reusable managed API key into Portal and Komf startup env without the Kavita web UI wizard. The Kavita image keeps
   its local bootstrap helper available for standalone runs, but that helper is now disabled by default during managed
@@ -166,9 +174,30 @@ mode.
   per-command Discord access for `/ding`, `/join`, `/scan`, `/search`, and `/recommend`.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under
   `services.config.*` keys, and Warden reloads them during full boot before launching the rest of the managed stack.
-- Warden also reads a setup JSON snapshot from `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` during startup.
-  When that file exists, Warden restores runtime env overrides from its `values` payload and can recover full-stack
-  boot selection even if wizard-state or `noona_settings` entries are unavailable.
+- Warden now also mirrors the effective runtime service overrides to
+  `<NOONA_DATA_ROOT>/warden/service-runtime-config.json`. During cold boots it loads that local snapshot first, retries
+  Vault-backed `services.config.*` restore before starting managed services such as Portal, and only falls back to the
+  local snapshot when Vault is still warming up. This prevents managed services from being recreated with blank env on
+  reboot when their persisted settings are available but not ready on the first read.
+- Full-stack startup now reuses existing stopped containers by default instead of recreating them immediately. This
+  keeps container-level env (including Portal Discord settings) intact during cold boot restores; Warden still forces
+  recreation when a config/image update explicitly requires it.
+- Warden now reads a setup JSON snapshot from the canonical `<NOONA_DATA_ROOT>/noona-settings.json` path during
+  startup and falls back to `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` for older installs. When either file
+  exists, Warden restores runtime env overrides from its `values` payload and can recover full-stack boot selection
+  even if wizard-state or `noona_settings` entries are unavailable.
+- Factory reset now also clears Warden's canonical setup snapshot, the legacy setup snapshot, the local runtime-config
+  snapshot, the in-memory runtime override cache, and the in-process wizard-state fallback before restarting. This
+  keeps a reset from immediately restoring the old stack configuration on the next boot.
+- When Warden runs containerized on Linux or Unraid, mount `NOONA_DATA_ROOT` into the Warden container at the same
+  absolute path as the host root. Otherwise direct filesystem writes like `noona-settings.json`,
+  `warden/setup-wizard-state.json`, and `warden/service-runtime-config.json` will not appear on the host share even
+  though Warden reports that they exist.
+- `startEcosystem()` now also treats that persisted setup snapshot selection as enough signal to choose a full-stack
+  boot path even when Docker discovery is temporarily unavailable during a cold start, which helps managed Portal come
+  back after reboot when its saved settings already exist on disk.
+- Warden-managed core services now default to Docker `unless-stopped` restart policies so Sage, Moon, Portal, Vault,
+  Raven, and Oracle come back with the Docker daemon unless they were intentionally stopped.
 - Normal Warden shutdown and ecosystem restart now stop managed Noona services without deleting their containers, and
   full startup brings the configured stack back online; only factory reset uses the destructive remove/wipe path.
 - Service image updates only restart installed services when Docker actually pulls a newer image digest, and Warden now

@@ -97,6 +97,8 @@ type KavitaMetadataMatch = {
     summary?: string | null;
     score?: number | null;
     coverImageUrl?: string | null;
+    sourceUrl?: string | null;
+    providerSeriesId?: string | null;
     aniListId?: number | string | null;
     malId?: number | string | null;
     cbrId?: number | string | null;
@@ -133,6 +135,8 @@ const normalizeKavitaProviderId = (value: unknown): string | null => {
 
 const buildKavitaMetadataMatchKey = (match: KavitaMetadataMatch, index: number): string =>
     [
+        normalizeString(match.provider).trim().toUpperCase(),
+        normalizeKavitaProviderId(match.providerSeriesId),
         normalizeKavitaProviderId(match.aniListId),
         normalizeKavitaProviderId(match.malId),
         normalizeKavitaProviderId(match.cbrId),
@@ -472,7 +476,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             setSelectedKavitaMetadataMatchKey(
                 matches.length > 0 ? buildKavitaMetadataMatchKey(matches[0], 0) : null,
             );
-            setKavitaMetadataMessage("Fetched metadata candidates from Kavita.");
+            setKavitaMetadataMessage("Fetched metadata candidates from Komf.");
         } catch (error_) {
             setKavitaMetadataMatches([]);
             setSelectedKavitaMetadataMatchKey(null);
@@ -488,15 +492,23 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
             return false;
         }
 
+        const provider = normalizeString(match.provider).trim();
+        const providerSeriesId = normalizeKavitaProviderId(match.providerSeriesId);
         const aniListId = normalizeKavitaProviderId(match.aniListId);
         const malId = normalizeKavitaProviderId(match.malId);
         const cbrId = normalizeKavitaProviderId(match.cbrId);
-        if (!aniListId && !malId && !cbrId) {
-            setKavitaMetadataError("The selected metadata candidate does not include any provider ids Kavita can apply.");
+        if (!(provider && providerSeriesId) && !aniListId && !malId && !cbrId) {
+            setKavitaMetadataError("The selected metadata candidate does not include a provider id Noona can apply.");
             return false;
         }
 
-        const applyingId = [aniListId, malId, cbrId].filter(Boolean).join(":");
+        const applyingId = [
+            provider.toUpperCase(),
+            providerSeriesId,
+            aniListId,
+            malId,
+            cbrId,
+        ].filter(Boolean).join(":");
         setKavitaMetadataApplyingId(applyingId);
         setKavitaMetadataError(null);
         setKavitaMetadataMessage(null);
@@ -507,10 +519,14 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     seriesId: selectedKavitaSeriesId,
+                    libraryId: selectedKavitaSeries?.libraryId,
                     titleUuid: normalizedUuid,
+                    provider,
+                    providerSeriesId,
                     aniListId,
                     malId,
                     cbrId,
+                    coverImageUrl: normalizeString(match.coverImageUrl).trim() || null,
                 }),
             });
             const payload = (await response.json().catch(() => null)) as KavitaMetadataApplyResponse | null;
@@ -1212,12 +1228,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                     <Column gap="8">
                                         <Text variant="label-default-s">Metadata candidates</Text>
                                         {kavitaMetadataMatches.map((match, index) => {
-                                            const matchKey = [
-                                                normalizeKavitaProviderId(match.aniListId),
-                                                normalizeKavitaProviderId(match.malId),
-                                                normalizeKavitaProviderId(match.cbrId),
-                                                String(index),
-                                            ].filter(Boolean).join(":");
+                                            const matchKey = buildKavitaMetadataMatchKey(match, index);
                                             const applying = kavitaMetadataApplyingId === matchKey;
                                             return (
                                                 <Row key={matchKey} fillWidth horizontal="between" vertical="center"
@@ -1235,6 +1246,15 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                                             <Text onBackground="neutral-weak" variant="body-default-xs"
                                                                   wrap="balance">
                                                                 {match.summary}
+                                                            </Text>
+                                                        )}
+                                                        {!normalizeString(match.summary).trim() && normalizeString(match.sourceUrl).trim() && (
+                                                            <Text onBackground="neutral-weak" variant="body-default-xs"
+                                                                  wrap="balance">
+                                                                <SmartLink
+                                                                    href={normalizeString(match.sourceUrl).trim()}>
+                                                                    {normalizeString(match.sourceUrl).trim()}
+                                                                </SmartLink>
                                                             </Text>
                                                         )}
                                                     </Column>
@@ -1542,6 +1562,15 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                                                     <Text onBackground="neutral-weak"
                                                                           variant="body-default-xs" wrap="balance">
                                                                         {match.summary}
+                                                                    </Text>
+                                                                )}
+                                                                {!normalizeString(match.summary).trim() && normalizeString(match.sourceUrl).trim() && (
+                                                                    <Text onBackground="neutral-weak"
+                                                                          variant="body-default-xs" wrap="balance">
+                                                                        <SmartLink
+                                                                            href={normalizeString(match.sourceUrl).trim()}>
+                                                                            {normalizeString(match.sourceUrl).trim()}
+                                                                        </SmartLink>
                                                                     </Text>
                                                                 )}
                                                             </Column>

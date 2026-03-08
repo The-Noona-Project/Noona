@@ -77,7 +77,10 @@ const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
 const SETUP_CONFIG_DIRECTORY_NAME = 'warden';
-const SETUP_CONFIG_FILE_NAME = 'setup-wizard-state.json';
+const SETUP_CONFIG_FILE_NAME = 'noona-settings.json';
+const LEGACY_SETUP_CONFIG_FILE_NAME = 'setup-wizard-state.json';
+const RUNTIME_CONFIG_SNAPSHOT_FILE_NAME = 'service-runtime-config.json';
+const RUNTIME_CONFIG_SNAPSHOT_VERSION = 1;
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
@@ -569,7 +572,9 @@ export function createWarden(options = {}) {
         wizardState: wizardStateOption = {},
         settings: settingsOption = {},
         setIntervalImpl = setInterval,
+        setTimeoutImpl = setTimeout,
         clearIntervalImpl = clearInterval,
+        sleepImpl: sleepImplOption,
     } = options;
 
     const services = normalizeServices(servicesOption);
@@ -605,6 +610,16 @@ export function createWarden(options = {}) {
         return 3600000;
     })();
     let serviceUpdateTimer = null;
+    const sleepImpl =
+        typeof sleepImplOption === 'function'
+            ? sleepImplOption
+            : (delayMs = 0) =>
+                new Promise((resolve) => {
+                    const timer = setTimeoutImpl(() => resolve(), delayMs);
+                    if (timer && typeof timer.unref === 'function') {
+                        timer.unref();
+                    }
+                });
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
@@ -2676,7 +2691,16 @@ export function createWarden(options = {}) {
     };
 
     const resolveSetupConfigSnapshotPath = (snapshot = null) =>
-        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
+        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_FILE_NAME);
+
+    const resolveLegacySetupConfigSnapshotPath = (snapshot = null) =>
+        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
+
+    const resolveSetupConfigSnapshotPaths = (snapshot = null) => {
+        const primaryPath = resolveSetupConfigSnapshotPath(snapshot);
+        const legacyPath = resolveLegacySetupConfigSnapshotPath(snapshot);
+        return Array.from(new Set([primaryPath, legacyPath].filter(Boolean)));
+    };
 
     const readSetupConfigSnapshot = ({refresh = false} = {}) => {
         if (!refresh && setupConfigSnapshotCacheLoaded) {
@@ -2687,35 +2711,45 @@ export function createWarden(options = {}) {
             };
         }
 
-        const filePath = resolveSetupConfigSnapshotPath(setupConfigSnapshotCache);
-        setupConfigSnapshotPathCache = filePath;
+        const filePaths = resolveSetupConfigSnapshotPaths(setupConfigSnapshotCache);
+        const primaryPath = filePaths[0] ?? resolveSetupConfigSnapshotPath(setupConfigSnapshotCache);
+        setupConfigSnapshotPathCache = primaryPath;
 
         if (typeof fsModule?.readFileSync !== 'function') {
             setupConfigSnapshotCache = null;
             setupConfigSnapshotCacheLoaded = true;
-            return {snapshot: null, path: filePath, exists: false};
+            return {snapshot: null, path: primaryPath, exists: false};
         }
 
-        try {
-            const raw = fsModule.readFileSync(filePath, 'utf8');
-            const parsed = JSON.parse(raw);
-            const normalized = normalizeSetupConfigSnapshot(parsed);
-            setupConfigSnapshotCache = normalized;
-            setupConfigSnapshotCacheLoaded = true;
-            return {snapshot: normalized, path: filePath, exists: Boolean(normalized)};
-        } catch (error) {
-            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-                setupConfigSnapshotCache = null;
+        let lastError = null;
+        for (const filePath of filePaths) {
+            try {
+                const raw = fsModule.readFileSync(filePath, 'utf8');
+                const parsed = JSON.parse(raw);
+                const normalized = normalizeSetupConfigSnapshot(parsed);
+                if (!normalized) {
+                    lastError = 'Setup config snapshot must be a JSON object.';
+                    logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${lastError}`);
+                    continue;
+                }
+
+                setupConfigSnapshotCache = normalized;
                 setupConfigSnapshotCacheLoaded = true;
-                return {snapshot: null, path: filePath, exists: false};
-            }
+                setupConfigSnapshotPathCache = filePath;
+                return {snapshot: normalized, path: filePath, exists: true};
+            } catch (error) {
+                if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                    continue;
+                }
 
-            const message = error instanceof Error ? error.message : String(error);
-            logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${message}`);
-            setupConfigSnapshotCache = null;
-            setupConfigSnapshotCacheLoaded = true;
-            return {snapshot: null, path: filePath, exists: false, error: message};
+                lastError = error instanceof Error ? error.message : String(error);
+                logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${lastError}`);
+            }
         }
+
+        setupConfigSnapshotCache = null;
+        setupConfigSnapshotCacheLoaded = true;
+        return {snapshot: null, path: primaryPath, exists: false, error: lastError ?? null};
     };
 
     const writeSetupConfigSnapshot = (snapshot = {}) => {
@@ -2724,21 +2758,220 @@ export function createWarden(options = {}) {
             throw new Error('Setup config snapshot must be a JSON object.');
         }
 
-        const filePath = resolveSetupConfigSnapshotPath(prepared);
+        if (typeof fsModule?.writeFileSync !== 'function') {
+            throw new Error('Filesystem write support is not available for setup config snapshots.');
+        }
+
+        const filePaths = resolveSetupConfigSnapshotPaths(prepared);
+        const fileContents = JSON.stringify(prepared, null, 2);
+        const filePath = filePaths[0] ?? resolveSetupConfigSnapshotPath(prepared);
+        const mirroredPaths = [];
+
+        for (const candidatePath of filePaths) {
+            if (typeof fsModule?.mkdirSync === 'function') {
+                fsModule.mkdirSync(path.dirname(candidatePath), {recursive: true});
+            }
+
+            fsModule.writeFileSync(candidatePath, fileContents, 'utf8');
+            mirroredPaths.push(candidatePath);
+        }
+
+        setupConfigSnapshotCache = prepared;
+        setupConfigSnapshotCacheLoaded = true;
+        setupConfigSnapshotPathCache = filePath;
+
+        return {snapshot: prepared, path: filePath, mirroredPaths};
+    };
+
+    const deleteSnapshotPath = async (targetPath) => {
+        if (!targetPath) {
+            return {path: null, deleted: false, reason: 'missing-path'};
+        }
+
+        const rmAsync = fsModule?.promises?.rm;
+        const rmSync = fsModule?.rmSync;
+
+        try {
+            if (typeof rmAsync === 'function') {
+                await rmAsync(targetPath, {recursive: true, force: true});
+            } else if (typeof rmSync === 'function') {
+                rmSync(targetPath, {recursive: true, force: true});
+            } else {
+                return {path: targetPath, deleted: false, reason: 'fs-rm-unavailable'};
+            }
+
+            return {path: targetPath, deleted: true};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return {path: targetPath, deleted: true, missing: true};
+            }
+
+            return {
+                path: targetPath,
+                deleted: false,
+                reason: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const clearSetupConfigSnapshot = async (snapshotHint = null) => {
+        const filePaths = resolveSetupConfigSnapshotPaths(snapshotHint);
+        const entries = [];
+        for (const filePath of filePaths) {
+            entries.push(await deleteSnapshotPath(filePath));
+        }
+
+        setupConfigSnapshotCache = null;
+        setupConfigSnapshotCacheLoaded = false;
+        setupConfigSnapshotPathCache = filePaths[0] ?? null;
+
+        return {
+            path: filePaths[0] ?? null,
+            entries,
+            deleted: entries.every((entry) => entry.deleted === true),
+        };
+    };
+
+    const normalizeRuntimeConfigSnapshotForDisk = (snapshot = {}) => {
+        if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+            return null;
+        }
+
+        const sourceServices =
+            snapshot?.services && typeof snapshot.services === 'object' && !Array.isArray(snapshot.services)
+                ? snapshot.services
+                : {};
+        const services = {};
+
+        for (const [name, runtime] of Object.entries(sourceServices)) {
+            const normalizedName = normalizeManagedServiceName(name);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                continue;
+            }
+
+            const normalizedRuntime = normalizePersistedRuntimeConfig(runtime);
+            if (!hasPersistedRuntimeConfig(normalizedRuntime)) {
+                continue;
+            }
+
+            services[normalizedName] = normalizedRuntime;
+        }
+
+        return {
+            version: Number.isFinite(Number(snapshot?.version))
+                ? Number(snapshot.version)
+                : RUNTIME_CONFIG_SNAPSHOT_VERSION,
+            services,
+            savedAt:
+                typeof snapshot?.savedAt === 'string' && snapshot.savedAt.trim()
+                    ? snapshot.savedAt.trim()
+                    : timestamp(),
+        };
+    };
+
+    const buildRuntimeConfigSnapshotForDisk = () => {
+        const services = {};
+        for (const name of Array.from(serviceRuntimeConfig.keys()).sort()) {
+            const normalizedName = normalizeManagedServiceName(name);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                continue;
+            }
+
+            const runtime = resolveRuntimeConfig(normalizedName);
+            if (!hasPersistedRuntimeConfig(runtime)) {
+                continue;
+            }
+
+            services[normalizedName] = runtime;
+        }
+
+        return {
+            version: RUNTIME_CONFIG_SNAPSHOT_VERSION,
+            services,
+            savedAt: timestamp(),
+        };
+    };
+
+    const resolveRuntimeConfigSnapshotPath = (snapshotHint = undefined) => {
+        const sourceSnapshot = snapshotHint === undefined ? readSetupConfigSnapshot().snapshot : snapshotHint;
+        return path.join(resolveSetupConfigRoot(sourceSnapshot), SETUP_CONFIG_DIRECTORY_NAME, RUNTIME_CONFIG_SNAPSHOT_FILE_NAME);
+    };
+
+    const readRuntimeConfigSnapshot = () => {
+        const filePath = resolveRuntimeConfigSnapshotPath();
+
+        if (typeof fsModule?.readFileSync !== 'function') {
+            return {snapshot: null, path: filePath, exists: false};
+        }
+
+        try {
+            const raw = fsModule.readFileSync(filePath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const normalized = normalizeRuntimeConfigSnapshotForDisk(parsed);
+            return {snapshot: normalized, path: filePath, exists: Boolean(normalized)};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return {snapshot: null, path: filePath, exists: false};
+            }
+
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to read runtime service config snapshot from ${filePath}: ${message}`);
+            return {snapshot: null, path: filePath, exists: false, error: message};
+        }
+    };
+
+    const writeRuntimeConfigSnapshot = () => {
+        const prepared = buildRuntimeConfigSnapshotForDisk();
+        const filePath = resolveRuntimeConfigSnapshotPath();
+
         if (typeof fsModule?.mkdirSync === 'function') {
             fsModule.mkdirSync(path.dirname(filePath), {recursive: true});
         }
 
         if (typeof fsModule?.writeFileSync !== 'function') {
-            throw new Error('Filesystem write support is not available for setup config snapshots.');
+            return {snapshot: prepared, path: filePath, written: false};
         }
 
-        fsModule.writeFileSync(filePath, JSON.stringify(prepared, null, 2), 'utf8');
-        setupConfigSnapshotCache = prepared;
-        setupConfigSnapshotCacheLoaded = true;
-        setupConfigSnapshotPathCache = filePath;
+        try {
+            fsModule.writeFileSync(filePath, JSON.stringify(prepared, null, 2), 'utf8');
+            return {snapshot: prepared, path: filePath, written: true};
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to write runtime service config snapshot to ${filePath}: ${message}`);
+            return {snapshot: prepared, path: filePath, written: false, error: message};
+        }
+    };
 
-        return {snapshot: prepared, path: filePath};
+    const clearRuntimeConfigSnapshot = async (snapshotHint = null) => {
+        const filePath = resolveRuntimeConfigSnapshotPath(snapshotHint);
+        const result = await deleteSnapshotPath(filePath);
+        return {
+            path: filePath,
+            ...result,
+        };
+    };
+
+    const clearPersistedBootState = async () => {
+        const setupState = readSetupConfigSnapshot({refresh: true});
+        const snapshotHint = setupState.snapshot ?? null;
+        const setupConfig = await clearSetupConfigSnapshot(snapshotHint);
+        const runtimeConfig = await clearRuntimeConfigSnapshot(snapshotHint);
+
+        serviceRuntimeConfig.clear();
+        persistedServiceRuntimeConfigLoaded = false;
+
+        let wizardStateCleared = false;
+        if (wizardStateClient && typeof wizardStateClient.resetState === 'function') {
+            await wizardStateClient.resetState();
+            wizardStateCleared = true;
+        }
+
+        return {
+            setupConfig,
+            runtimeConfig,
+            runtimeOverridesCleared: true,
+            wizardStateCleared,
+        };
     };
 
     const applySetupConfigSnapshotRuntimeConfig = async (
@@ -2921,6 +3154,7 @@ export function createWarden(options = {}) {
 
     const persistServiceRuntimeConfig = async (name, runtime = {}) => {
         if (!settingsClient?.mongo?.update) {
+            writeRuntimeConfigSnapshot();
             return {available: false, persisted: false};
         }
 
@@ -2946,6 +3180,7 @@ export function createWarden(options = {}) {
                 );
             }
 
+            writeRuntimeConfigSnapshot();
             return {available: true, persisted: true, deleted: true};
         }
 
@@ -2956,6 +3191,7 @@ export function createWarden(options = {}) {
             {upsert: true},
         );
 
+        writeRuntimeConfigSnapshot();
         return {available: true, persisted: true, deleted: false};
     };
 
@@ -2988,6 +3224,26 @@ export function createWarden(options = {}) {
             });
         };
 
+        const diskSnapshot = readRuntimeConfigSnapshot();
+        const diskServices =
+            diskSnapshot?.snapshot?.services && typeof diskSnapshot.snapshot.services === 'object'
+                ? diskSnapshot.snapshot.services
+                : {};
+        for (const [candidateName, runtime] of Object.entries(diskServices)) {
+            const normalizedName = normalizeManagedServiceName(candidateName);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                continue;
+            }
+
+            const snapshot = writeRuntimeConfig(normalizedName, runtime);
+            recordLoaded({
+                service: normalizedName,
+                ...snapshot,
+            });
+        }
+
+        let settingsLoadFailed = false;
+
         if (settingsClient?.mongo?.findMany) {
             try {
                 const documents = await settingsClient.mongo.findMany(settingsCollection, {
@@ -3011,6 +3267,7 @@ export function createWarden(options = {}) {
                     });
                 }
             } catch (error) {
+                settingsLoadFailed = true;
                 const message = error instanceof Error ? error.message : String(error);
                 logger.warn?.(
                     `[${serviceName}] Failed to load runtime service config from ${settingsCollection}: ${message}`,
@@ -3035,7 +3292,8 @@ export function createWarden(options = {}) {
             logger.warn?.(`[${serviceName}] Failed to apply setup config snapshot runtime: ${message}`);
         }
 
-        persistedServiceRuntimeConfigLoaded = true;
+        writeRuntimeConfigSnapshot();
+        persistedServiceRuntimeConfigLoaded = settingsLoadFailed !== true;
         return Array.from(loadedByService.values());
     };
 
@@ -3503,17 +3761,27 @@ export function createWarden(options = {}) {
         };
     };
 
+    api.clearPersistedBootState = async function clearPersistedBootStateApi() {
+        return clearPersistedBootState();
+    };
+
     api.saveSetupConfig = async function saveSetupConfig(snapshot = {}, options = {}) {
-        const {snapshot: persistedSnapshot, path: persistedPath} = writeSetupConfigSnapshot(snapshot);
+        const {
+            snapshot: persistedSnapshot,
+            path: persistedPath,
+            mirroredPaths = []
+        } = writeSetupConfigSnapshot(snapshot);
         const loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
             preferExisting: options?.replaceRuntime !== true,
             persist: options?.persistRuntime === true,
         });
+        writeRuntimeConfigSnapshot();
         const selected = extractPersistedSetupSelectionFromSetupSnapshot(persistedSnapshot);
 
         return {
             exists: true,
             path: persistedPath,
+            mirroredPaths,
             snapshot: persistedSnapshot,
             selected,
             runtime: loadedRuntimeConfig,
@@ -3643,6 +3911,7 @@ export function createWarden(options = {}) {
         serviceCatalog,
         startServiceUpdateTimer,
         stopServiceUpdateTimer,
+        sleepImpl,
         SUPER_MODE,
         trackedContainers,
     });

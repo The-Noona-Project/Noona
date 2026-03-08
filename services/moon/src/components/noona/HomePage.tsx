@@ -2,7 +2,7 @@
 
 import {useEffect, useMemo, useState} from "react";
 import {useRouter} from "next/navigation";
-import {Button, Card, Column, Flex, GlitchFx, Heading, Row, Spinner, Text, WeatherFx} from "@once-ui-system/core";
+import {Button, Card, Column, Flex, Heading, Row, Spinner, Text} from "@once-ui-system/core";
 import {hasMoonPermission} from "@/utils/moonPermissions";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
@@ -13,18 +13,6 @@ type AuthStatusResponse = {
         permissions?: string[] | null;
     } | null;
 };
-
-const HOME_LEAF_COLORS = [
-    "warning-solid-strong",
-    "danger-solid-medium",
-    "success-solid-medium",
-];
-
-const HOME_GLITCH_LINES = [
-    "RAVEN.FEED",
-    "DOWNLOAD.QUEUE",
-    "STACK.CONTROL",
-];
 
 export function HomePage() {
     const router = useRouter();
@@ -109,22 +97,8 @@ export function HomePage() {
                     fillWidth
                     style={{
                         position: "relative",
-                        overflow: "hidden",
                     }}
                 >
-                    <WeatherFx
-                        fill
-                        position="absolute"
-                        top="0"
-                        left="0"
-                        type="leaves"
-                        colors={HOME_LEAF_COLORS}
-                        intensity={30}
-                        speed={0.65}
-                        angle={-8}
-                        aria-hidden="true"
-                        style={{pointerEvents: "none"}}
-                    />
                     <Column
                         fillWidth
                         horizontal="center"
@@ -150,51 +124,6 @@ export function HomePage() {
                                 minHeight: "19rem",
                             }}
                         >
-                            <GlitchFx
-                                fill
-                                position="absolute"
-                                top="0"
-                                left="0"
-                                speed="slow"
-                                interval={4200}
-                                trigger="instant"
-                                continuous={false}
-                                aria-hidden="true"
-                                style={{
-                                    pointerEvents: "none",
-                                    opacity: 0.28,
-                                }}
-                            >
-                                <Column
-                                    fillWidth
-                                    fillHeight
-                                    padding="xl"
-                                    style={{
-                                        justifyContent: "space-between",
-                                        minHeight: "19rem",
-                                    }}
-                                >
-                                    <Column gap="8" style={{marginLeft: "auto", textAlign: "right"}}>
-                                        {HOME_GLITCH_LINES.map((line) => (
-                                            <Text
-                                                key={line}
-                                                variant="label-default-s"
-                                                onBackground="brand-weak"
-                                            >
-                                                {line}
-                                            </Text>
-                                        ))}
-                                    </Column>
-                                    <Column gap="4" style={{marginLeft: "auto", textAlign: "right"}}>
-                                        <Heading as="p" variant="display-strong-l">
-                                            NOONA
-                                        </Heading>
-                                        <Heading as="p" variant="display-default-l" onBackground="neutral-weak">
-                                            MOON
-                                        </Heading>
-                                    </Column>
-                                </Column>
-                            </GlitchFx>
                             <Column
                                 gap="20"
                                 padding="xl"

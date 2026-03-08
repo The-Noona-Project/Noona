@@ -42,6 +42,7 @@ test('noona-kavita addon descriptor exposes Noona login bridge URLs and social-l
 test('noona-komf addon descriptor only exposes Kavita-specific configuration fields', () => {
     const komf = addonDockers['noona-komf']
     assert.ok(komf)
+    assert.equal(komf.image, 'docker.darkmatterservers.com/the-noona-project/noona-komf:latest')
 
     const envKeys = new Set((Array.isArray(komf.env) ? komf.env : []).map((entry) => String(entry).split('=')[0]))
     const configKeys = new Set((Array.isArray(komf.envConfig) ? komf.envConfig : []).map((entry) => entry?.key))

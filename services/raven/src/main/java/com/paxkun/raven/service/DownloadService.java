@@ -840,7 +840,7 @@ public class DownloadService {
         values.put("title", title);
         values.put("type", normalizedType != null ? normalizedType : "");
         values.put("type_slug", typeSlug != null ? typeSlug : "");
-        values.put("chapter", chapter);
+        values.put("chapter", chapterPadded);
         values.put("chapter_padded", chapterPadded);
         values.put("pages", String.valueOf(pageCount));
         values.put("domain", domain != null ? domain : "");
@@ -884,7 +884,7 @@ public class DownloadService {
         values.put("title", title);
         values.put("type", normalizedType != null ? normalizedType : "");
         values.put("type_slug", typeSlug != null ? typeSlug : "");
-        values.put("chapter", chapter);
+        values.put("chapter", chapterPadded);
         values.put("chapter_padded", chapterPadded);
         values.put("page", String.valueOf(pageIndex));
         values.put("page_padded", pagePadded);

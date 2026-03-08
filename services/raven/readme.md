@@ -35,6 +35,8 @@ Raven is Noona's downloader and library worker service. It searches supported so
 - `GET /v1/library/health`
 - `GET /v1/library/getall`
 - `GET /v1/library/get/{titleName}`
+- `PATCH /v1/library/title/{uuid}` - update stored library metadata for an existing title (`title`, `sourceUrl`, and
+  now `coverUrl`)
 
 ## Build & Test
 ```bash
@@ -63,9 +65,13 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
   comes back after a crash or power loss.
 - Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming plus per-thread
   speed limits without editing container env.
+- In Raven naming templates, `{chapter}` now uses the configured chapter padding width. `{chapter_padded}` remains as a
+  compatible alias for the same padded value.
 - Missing-chapter detection now prefers the stored `downloadedChapterNumbers` index on each library title instead of
   depending only on archive file-name parsing, which avoids false positives for series names that contain digits or
   custom chapter naming templates.
+- Raven title metadata patching now also accepts `coverUrl`, which lets Portal backfill missing Noona library cover
+  art from a selected metadata match before locking that same cover into Kavita.
 - When `KAVITA_LIBRARY_ROOT` is configured, Raven now auto-creates matching Kavita libraries for new media-type
   folders it writes into the shared downloads tree. It prefers Portal's
   `POST /api/portal/kavita/libraries/ensure` flow when `PORTAL_BASE_URL` is available, then falls back to direct

@@ -29,6 +29,8 @@ export const createPortalSlashCommands = ({
         joinDefaults,
     }));
     commands.set('recommend', createRecommendCommand({
+        discord,
+        getDiscord,
         raven,
         kavita,
         vault,

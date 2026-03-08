@@ -26,7 +26,7 @@ export async function POST(request: Request) {
 
     const payload = body && typeof body === "object" ? body as Record<string, unknown> : {};
     const origin = resolveRequestOrigin(request);
-    const redirectUri = normalizeString(payload.redirectUri).trim() || `${origin}/discord/callback/`;
+    const redirectUri = normalizeString(payload.redirectUri).trim() || `${origin}/discord/callback`;
     const returnTo = normalizeString(payload.returnTo).trim();
 
     try {

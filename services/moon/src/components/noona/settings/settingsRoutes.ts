@@ -9,6 +9,7 @@ export type SettingsViewId =
     | "downloader"
     | "updater"
     | "discord"
+    | "kavita"
     | "komf"
     | "users";
 
@@ -51,7 +52,7 @@ export const PORTAL_SETTINGS_SUBTABS: PortalSettingsSubtabRoute[] = [
     {
         id: "kavita",
         label: "Kavita",
-        description: "Legacy Portal/Kavita view. This now resolves to the Discord-facing external settings page.",
+        description: "Configure Kavita defaults used when Portal provisions new users.",
     },
     {
         id: "komf",
@@ -79,6 +80,7 @@ export const VIEW_LABELS: Record<SettingsViewId, string> = {
     downloader: "Downloader",
     updater: "Noona Updater",
     discord: "Discord",
+    kavita: "Kavita",
     komf: "Komf",
     users: "Users",
 };
@@ -100,6 +102,8 @@ export const getSettingsHrefForView = (view: SettingsViewId): string => {
             return "/settings/downloads/updater";
         case "discord":
             return "/settings/external/discord";
+        case "kavita":
+            return "/settings/external/kavita";
         case "komf":
             return "/settings/external/komf";
         case "users":
@@ -110,6 +114,10 @@ export const getSettingsHrefForView = (view: SettingsViewId): string => {
 };
 
 export const getSettingsHrefForPortalSubtab = (subtab: PortalSettingsSubtabId): string => {
+    if (subtab === "kavita") {
+        return getSettingsHrefForView("kavita");
+    }
+
     if (subtab === "komf") {
         return getSettingsHrefForView("komf");
     }
@@ -194,6 +202,12 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
                 label: "Discord",
                 href: getSettingsHrefForView("discord"),
                 description: "Portal Discord bot credentials, validation, and command roles.",
+            },
+            {
+                id: "kavita",
+                label: "Kavita",
+                href: getSettingsHrefForView("kavita"),
+                description: "Kavita account defaults and Portal bridge settings.",
             },
             {
                 id: "komf",
@@ -333,6 +347,17 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 description: "Portal Discord bot credentials, validation, and command roles.",
             });
         }
+        if (secondSegment === "kavita") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "external",
+                view: "kavita",
+                tab: "portal",
+                portalSubtab: "kavita",
+                title: "External Kavita",
+                description: "Kavita account defaults and Portal bridge settings.",
+            });
+        }
         if (secondSegment === "komf") {
             return buildSelection({
                 section: "ecosystem",
@@ -403,15 +428,26 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
     }
 
     if (firstSegment === "portal") {
-        if (!secondSegment || secondSegment === "discord" || secondSegment === "kavita") {
+        if (!secondSegment || secondSegment === "discord") {
             return buildSelection({
                 section: "ecosystem",
                 navSection: "external",
                 view: "discord",
                 tab: "portal",
-                portalSubtab: secondSegment === "kavita" ? "kavita" : "discord",
+                portalSubtab: "discord",
                 title: "External Discord",
                 description: "Portal Discord bot credentials, validation, and command roles.",
+            });
+        }
+        if (secondSegment === "kavita") {
+            return buildSelection({
+                section: "ecosystem",
+                navSection: "external",
+                view: "kavita",
+                tab: "portal",
+                portalSubtab: "kavita",
+                title: "External Kavita",
+                description: "Kavita account defaults and Portal bridge settings.",
             });
         }
         if (secondSegment === "komf") {

@@ -76,7 +76,7 @@ export const createPortalRavenClient = ({
         cachedCandidates = [preferred, ...candidates.filter((entry) => entry !== preferred)];
     };
 
-    const request = async (path, {acceptStatuses = []} = {}) => {
+    const request = async (path, {method = 'GET', headers = {}, body, acceptStatuses = []} = {}) => {
         const candidates = buildCandidates();
         const errors = [];
         const accepted = new Set([200, 201, 202, 204, ...acceptStatuses]);
@@ -86,10 +86,12 @@ export const createPortalRavenClient = ({
             try {
                 const requestUrl = new URL(path, candidate);
                 const response = await fetchImpl(requestUrl.toString(), {
-                    method: 'GET',
+                    method,
                     headers: {
                         Accept: 'application/json',
+                        ...headers,
                     },
+                    ...(body === undefined ? {} : {body}),
                     signal: controller.signal,
                 });
 
@@ -148,6 +150,36 @@ export const createPortalRavenClient = ({
             }
 
             return await request(`/v1/library/title/${encodeURIComponent(normalized)}`, {acceptStatuses: [404]});
+        },
+        updateTitle: async (uuid, {title, sourceUrl, coverUrl} = {}) => {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : '';
+            if (!normalized) {
+                throw new Error('uuid is required.');
+            }
+
+            const payload = {};
+            if (typeof title === 'string' && title.trim()) {
+                payload.title = title.trim();
+            }
+            if (typeof sourceUrl === 'string' && sourceUrl.trim()) {
+                payload.sourceUrl = sourceUrl.trim();
+            }
+            if (typeof coverUrl === 'string' && coverUrl.trim()) {
+                payload.coverUrl = coverUrl.trim();
+            }
+
+            if (!Object.keys(payload).length) {
+                throw new Error('At least one of title/sourceUrl/coverUrl must be provided.');
+            }
+
+            return await request(`/v1/library/title/${encodeURIComponent(normalized)}`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+                acceptStatuses: [404],
+            });
         },
     };
 };

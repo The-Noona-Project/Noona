@@ -9,7 +9,7 @@ import lombok.NoArgsConstructor;
  * <p>
  * Templates support placeholders like:
  * - {title}, {type}
- * - {chapter}, {chapter_padded}
+ * - {chapter}, {chapter_padded} ({chapter} follows the configured chapter padding)
  * - {page}, {page_padded}, {ext}
  * - {pages}, {domain}
  */
@@ -24,4 +24,3 @@ public class DownloadNamingSettings {
     private Integer pagePad;
     private Integer chapterPad;
 }
-

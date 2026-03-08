@@ -3,6 +3,7 @@
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 import {startPortalServer} from './createPortalApp.mjs';
 import createKavitaClient from '../clients/kavitaClient.mjs';
+import createKomfClient from '../clients/komfClient.mjs';
 import createPortalRavenClient from '../clients/ravenClient.mjs';
 import createVaultClient from '../clients/vaultClient.mjs';
 import createPortalWardenClient from '../clients/wardenClient.mjs';
@@ -18,6 +19,7 @@ const runtime = {
     config: null,
     discord: null,
     kavita: null,
+    komf: null,
     onboardingStore: null,
     presenceUpdater: null,
     recommendationNotifier: null,
@@ -37,6 +39,12 @@ export const startPortal = async (overrides = {}) => {
         timeoutMs: config.http.timeoutMs,
     });
     runtime.kavita = kavita;
+
+    const komf = createKomfClient({
+        baseUrl: config.komf.baseUrl,
+        timeoutMs: config.http.timeoutMs,
+    });
+    runtime.komf = komf;
 
     const vault = createVaultClient({
         baseUrl: config.vault.baseUrl,
@@ -63,62 +71,71 @@ export const startPortal = async (overrides = {}) => {
     });
     runtime.warden = warden;
 
-    let discord;
-    const slashCommands = createPortalSlashCommands({
-        getDiscord: () => discord,
-        kavita,
-        raven,
-        warden,
-        vault,
-        moonBaseUrl: config.moon?.baseUrl,
-        kavitaExternalUrl: config.kavita?.externalUrl,
-        onboardingStore,
-        joinDefaults: config.join,
-    });
+    let discord = null;
+    if (config.discord.enabled) {
+        const slashCommands = createPortalSlashCommands({
+            getDiscord: () => discord,
+            kavita,
+            raven,
+            warden,
+            vault,
+            moonBaseUrl: config.moon?.baseUrl,
+            kavitaExternalUrl: config.kavita?.externalUrl,
+            onboardingStore,
+            joinDefaults: config.join,
+        });
 
-    discord = createDiscordClient({
-        token: config.discord.token,
-        guildId: config.discord.guildId,
-        clientId: config.discord.clientId,
-        defaultRoleId: config.discord.defaultRoleId,
-        commands: slashCommands,
-    });
-    runtime.discord = discord;
+        discord = createDiscordClient({
+            token: config.discord.token,
+            guildId: config.discord.guildId,
+            clientId: config.discord.clientId,
+            defaultRoleId: config.discord.defaultRoleId,
+            commands: slashCommands,
+            vaultClient: vault,
+            messageQueueNamespace: `${config.redis.namespace}:discord-dm`,
+            messageQueueTtlSeconds: config.redis.ttlSeconds,
+        });
+        runtime.discord = discord;
 
-    await discord.login();
+        await discord.login();
 
-    const presenceUpdater = createDiscordPresenceUpdater({
-        client: discord.client,
-        ravenClient: raven,
-        wardenClient: warden,
-        pollMs: config.activity.pollMs,
-        logger: {
-            warn: errMSG,
-        },
-    });
-    presenceUpdater.start();
-    runtime.presenceUpdater = presenceUpdater;
+        const presenceUpdater = createDiscordPresenceUpdater({
+            client: discord.client,
+            ravenClient: raven,
+            wardenClient: warden,
+            pollMs: config.activity.pollMs,
+            logger: {
+                warn: errMSG,
+            },
+        });
+        presenceUpdater.start();
+        runtime.presenceUpdater = presenceUpdater;
 
-    const recommendationNotifier = createRecommendationNotifier({
-        discordClient: discord,
-        vaultClient: vault,
-        ravenClient: raven,
-        kavitaClient: kavita,
-        wardenClient: warden,
-        moonBaseUrl: config.moon?.baseUrl,
-        kavitaBaseUrl: config.kavita?.externalUrl,
-        pollMs: config.recommendations?.pollMs,
-        logger: {
-            warn: errMSG,
-        },
-    });
-    recommendationNotifier.start();
-    runtime.recommendationNotifier = recommendationNotifier;
+        const recommendationNotifier = createRecommendationNotifier({
+            discordClient: discord,
+            vaultClient: vault,
+            ravenClient: raven,
+            kavitaClient: kavita,
+            wardenClient: warden,
+            moonBaseUrl: config.moon?.baseUrl,
+            kavitaBaseUrl: config.kavita?.externalUrl,
+            pollMs: config.recommendations?.pollMs,
+            logger: {
+                warn: errMSG,
+            },
+        });
+        recommendationNotifier.start();
+        runtime.recommendationNotifier = recommendationNotifier;
+    } else {
+        runtime.discord = null;
+        log('[Portal] Discord integration is disabled; starting HTTP API routes only.');
+    }
 
     const {server, close} = await startPortalServer({
         config,
         discord,
         kavita,
+        komf,
         raven,
         vault,
         onboardingStore,
@@ -153,6 +170,7 @@ export const stopPortal = async () => {
     runtime.closeServer = null;
     runtime.discord = null;
     runtime.kavita = null;
+    runtime.komf = null;
     runtime.vault = null;
     runtime.onboardingStore = null;
     runtime.presenceUpdater = null;

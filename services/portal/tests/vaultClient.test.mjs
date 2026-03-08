@@ -144,3 +144,59 @@ test('updateRecommendation validates query and update payloads', async () => {
         /update payload must be a non-empty object/i,
     );
 });
+
+test('redisSet, redisGet, and redisDel proxy Redis packets through Vault handle endpoint', async () => {
+    const calls = [];
+    const vault = createVaultClient({
+        baseUrl: 'http://noona-vault:3005',
+        token: 'vault-token',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            const body = JSON.parse(options.body);
+            if (body.operation === 'get') {
+                return new Response(JSON.stringify({status: 'ok', data: [{id: 'queued-1'}]}), {
+                    status: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+            }
+
+            return new Response(JSON.stringify({status: 'ok'}), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    await vault.redisSet('portal:discord:dm:user-1', [{id: 'queued-1'}], {ttl: 120});
+    const queue = await vault.redisGet('portal:discord:dm:user-1');
+    await vault.redisDel('portal:discord:dm:user-1');
+
+    assert.deepEqual(queue, [{id: 'queued-1'}]);
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        storageType: 'redis',
+        operation: 'set',
+        payload: {
+            key: 'portal:discord:dm:user-1',
+            value: [{id: 'queued-1'}],
+            ttl: 120,
+        },
+    });
+    assert.deepEqual(JSON.parse(calls[1].options.body), {
+        storageType: 'redis',
+        operation: 'get',
+        payload: {
+            key: 'portal:discord:dm:user-1',
+        },
+    });
+    assert.deepEqual(JSON.parse(calls[2].options.body), {
+        storageType: 'redis',
+        operation: 'del',
+        payload: {
+            key: 'portal:discord:dm:user-1',
+        },
+    });
+});

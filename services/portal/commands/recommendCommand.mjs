@@ -319,6 +319,8 @@ const resolveKavitaTitleUrl = async ({
 };
 
 export const createRecommendCommand = ({
+                                           discord,
+                                           getDiscord,
                                            raven,
                                            kavita,
                                            vault,
@@ -378,11 +380,11 @@ export const createRecommendCommand = ({
             return null;
         }
     };
+    const resolveDiscordClient = () => discord ?? getDiscord?.() ?? null;
     const sendRecommendationReceiptDm = async ({interaction, title, recommendationId}) => {
+        const discordUserId = resolveDiscordId(interaction);
         const discordUser = interaction?.user;
-        if (!discordUser || typeof discordUser.send !== 'function') {
-            return {sent: false, reason: 'Discord user DM channel is unavailable.'};
-        }
+        const liveDiscordClient = resolveDiscordClient();
 
         const moonRecommendationUrl = await buildMoonRecommendationUrl(recommendationId);
         const normalizedRecommendationId = resolveRecommendationId(recommendationId);
@@ -397,7 +399,14 @@ export const createRecommendCommand = ({
         }
 
         try {
-            await discordUser.send({content: lines.join('\n')});
+            if (discordUserId && typeof liveDiscordClient?.sendDirectMessage === 'function') {
+                await liveDiscordClient.sendDirectMessage(discordUserId, {content: lines.join('\n')});
+            } else if (discordUser && typeof discordUser.send === 'function') {
+                await discordUser.send({content: lines.join('\n')});
+            } else {
+                return {sent: false, reason: 'Discord user DM channel is unavailable.'};
+            }
+
             return {sent: true, moonRecommendationUrl};
         } catch (error) {
             errMSG(`[Portal/Discord] Failed to send initial recommendation DM for "${title}": ${error.message}`);

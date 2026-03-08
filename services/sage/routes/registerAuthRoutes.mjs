@@ -283,10 +283,12 @@ export function registerAuthRoutes(context = {}) {
                 res.status(400).json({error: 'redirectUri must be an absolute http(s) URL.'})
                 return
             }
+            const redirectOrigin = new URL(redirectUri).origin
 
             const returnTo = buildOauthRedirectTarget(
                 req.body?.returnTo,
                 mode === 'login' ? '/' : '/setupwizard/summary',
+                redirectOrigin,
             )
             const config = await readDiscordAuthConfig()
             if (!config.configured || !config.clientId) {
@@ -344,11 +346,16 @@ export function registerAuthRoutes(context = {}) {
 
             const mode = normalizeOauthMode(oauthState.mode)
             const redirectUri = normalizeString(oauthState.redirectUri)
-            const returnTo = buildOauthRedirectTarget(oauthState.returnTo, mode === 'login' ? '/' : '/setupwizard/summary')
             if (!mode || !isAbsoluteHttpUrl(redirectUri)) {
                 res.status(400).json({error: 'OAuth state is invalid. Start the Discord flow again.'})
                 return
             }
+            const redirectOrigin = new URL(redirectUri).origin
+            const returnTo = buildOauthRedirectTarget(
+                oauthState.returnTo,
+                mode === 'login' ? '/' : '/setupwizard/summary',
+                redirectOrigin,
+            )
 
             const oauthPayload = await exchangeDiscordAuthorizationCode({code, redirectUri})
             const accessToken = normalizeString(oauthPayload?.access_token)

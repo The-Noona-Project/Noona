@@ -233,7 +233,8 @@ class DownloadServiceTest {
         try (var stream = Files.list(downloadedTitleFolder)) {
             assertThat(stream.toList())
                     .hasSize(1)
-                    .allSatisfy(path -> assertThat(path.getFileName().toString()).endsWith(".cbz"));
+                    .allSatisfy(path -> assertThat(path.getFileName().toString())
+                            .isEqualTo("Chapter 0001 [Pages 1 example.com - Noona].cbz"));
         }
         assertThat(Files.exists(downloadingTitleFolder)).isFalse();
         assertThat(resolvedTitle.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());

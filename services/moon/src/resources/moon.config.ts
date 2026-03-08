@@ -14,6 +14,7 @@ export const moonSite = {
 export const moonRoutes = {
     "/": true,
     "/discord/callback": true,
+    "/kavita/complete": true,
     "/login": true,
     "/signup": true,
     "/setupwizard": true,

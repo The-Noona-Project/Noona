@@ -107,3 +107,25 @@ test('createWizardStateClient retries the next Vault endpoint after a timeout', 
     assert.ok(calls[0].includes('vault-primary.local'))
     assert.ok(calls[1].includes('vault-secondary.local'))
 })
+
+test('createWizardStateClient resetState clears the local fallback snapshot', async () => {
+    const fetchImpl = () => Promise.reject(new Error('vault offline'))
+    const client = createWizardStateClient({
+        token: 'test-token',
+        fetchImpl,
+        env: {},
+    })
+
+    await client.writeState({
+        ...createDefaultWizardState(),
+        completed: true,
+    })
+
+    const beforeReset = await client.loadState({fallbackToDefault: true})
+    assert.equal(beforeReset.completed, true)
+
+    await client.resetState()
+
+    const afterReset = await client.loadState({fallbackToDefault: true})
+    assert.equal(afterReset.completed, false)
+})

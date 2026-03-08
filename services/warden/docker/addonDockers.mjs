@@ -192,7 +192,7 @@ const rawList = [
     {
         name: 'noona-komf',
         description: 'Managed Komf metadata helper wired to Kavita by default.',
-        image: 'sndxr/komf:latest',
+        image: resolveNoonaImage('noona-komf'),
         port: 8085,
         internalPort: 8085,
         env: [

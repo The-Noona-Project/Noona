@@ -20,11 +20,14 @@ export function registerBootApi(context = {}) {
         resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
         serviceCatalog,
+        sleepImpl,
         startServiceUpdateTimer,
         stopServiceUpdateTimer,
         SUPER_MODE,
         trackedContainers,
     } = context;
+    const PERSISTED_CONFIG_BOOT_RETRY_ATTEMPTS = 6;
+    const PERSISTED_CONFIG_BOOT_RETRY_DELAY_MS = 1500;
 
     const persistedServiceRuntimeConfigLoadedState = {
         get value() {
@@ -60,6 +63,46 @@ export function registerBootApi(context = {}) {
     const shouldRestoreManagedLifecycle = (names = []) =>
         Array.isArray(names) &&
         names.some((name) => typeof name === 'string' && !minimalServiceSet.has(name));
+
+    const waitForPersistedRuntimeConfigLoad = async (managedTargetNames = [], loadedConfigs = []) => {
+        let currentConfigs = Array.isArray(loadedConfigs) ? loadedConfigs : [];
+        if (
+            persistedServiceRuntimeConfigLoadedState.value
+            || !Array.isArray(managedTargetNames)
+            || managedTargetNames.length === 0
+            || typeof loadPersistedServiceRuntimeConfig !== 'function'
+        ) {
+            return currentConfigs;
+        }
+
+        for (let attempt = 1; attempt <= PERSISTED_CONFIG_BOOT_RETRY_ATTEMPTS; attempt += 1) {
+            logger.warn(
+                `[Warden] Persisted service config is not ready after bootstrap startup; retrying ${attempt}/${PERSISTED_CONFIG_BOOT_RETRY_ATTEMPTS} before starting managed services.`,
+            );
+            await Promise.resolve(
+                typeof sleepImpl === 'function'
+                    ? sleepImpl(PERSISTED_CONFIG_BOOT_RETRY_DELAY_MS)
+                    : null,
+            );
+            currentConfigs = await loadPersistedServiceRuntimeConfig();
+            if (persistedServiceRuntimeConfigLoadedState.value) {
+                break;
+            }
+        }
+
+        if (!persistedServiceRuntimeConfigLoadedState.value) {
+            const fallbackServices = currentConfigs
+                .map((entry) => (typeof entry?.service === 'string' ? entry.service.trim() : ''))
+                .filter(Boolean);
+            logger.warn(
+                fallbackServices.length > 0
+                    ? `[Warden] Proceeding with local runtime config fallback for ${fallbackServices.join(', ')} because Vault-backed settings are still unavailable.`
+                    : '[Warden] Proceeding without restored managed runtime config because Vault-backed settings are still unavailable.',
+            );
+        }
+
+        return currentConfigs;
+    };
 
     const runStartupAutoUpdates = async (names = [], options = {}) => {
         const restart = options?.restart !== false;
@@ -142,6 +185,7 @@ export function registerBootApi(context = {}) {
 
         await api.startService(svc, healthUrl, {
             recreate: options?.recreate === true,
+            reuseStoppedContainer: true,
         });
     };
 
@@ -193,7 +237,10 @@ export function registerBootApi(context = {}) {
                 await startServicesForBoot(bootstrapTargetNames);
             }
 
-            const loadedConfigs = await loadPersistedServiceRuntimeConfig();
+            const loadedConfigs = await waitForPersistedRuntimeConfigLoad(
+                bootstrapTargetNames.length > 0 ? managedTargetNames : targetNames,
+                await loadPersistedServiceRuntimeConfig(),
+            );
             const bootstrapConfigOverrides = new Set(
                 loadedConfigs
                     .map((entry) => entry?.service)
@@ -258,10 +305,20 @@ export function registerBootApi(context = {}) {
         let shouldBootFull = options?.forceFull === true || SUPER_MODE || setupCompleted;
 
         if (!shouldBootFull && !Array.isArray(options?.services)) {
-            dockerClient = await ensureDockerConnection().catch(() => null);
-            if (dockerClient) {
-                detectedServices = await resolveInstalledLifecycleServices(dockerClient);
+            if (typeof resolveManagedLifecycleServices === 'function') {
+                detectedServices = await resolveManagedLifecycleServices({
+                    dockerClient: null,
+                    fallbackToAll: false,
+                }).catch(() => []);
                 shouldBootFull = shouldRestoreManagedLifecycle(detectedServices);
+            }
+
+            if (!shouldBootFull) {
+                dockerClient = await ensureDockerConnection().catch(() => null);
+                if (dockerClient) {
+                    detectedServices = await resolveInstalledLifecycleServices(dockerClient);
+                    shouldBootFull = shouldRestoreManagedLifecycle(detectedServices);
+                }
             }
         }
 

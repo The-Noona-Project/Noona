@@ -147,7 +147,7 @@ public class LibraryService {
         return vaultService.parseJson(doc, NewTitle.class);
     }
 
-    public NewTitle updateTitle(String uuid, String titleName, String sourceUrl) {
+    public NewTitle updateTitle(String uuid, String titleName, String sourceUrl, String coverUrl) {
         NewTitle existing = getTitleByUuid(uuid);
         if (existing == null) {
             return null;
@@ -159,6 +159,10 @@ public class LibraryService {
 
         if (sourceUrl != null && !sourceUrl.isBlank()) {
             existing.setSourceUrl(sourceUrl);
+        }
+
+        if (coverUrl != null && !coverUrl.isBlank()) {
+            existing.setCoverUrl(coverUrl);
         }
 
         String chapter = Optional.ofNullable(existing.getLastDownloaded()).orElse("0");
