@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import {ActionRowBuilder, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle,} from 'discord.js';
+import {ActionRowBuilder, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, MessageFlags,} from 'discord.js';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 import {resolveDiscordId, respondWithError} from './utils.mjs';
 
@@ -203,7 +203,7 @@ const updateComponentReply = async (interaction, payload) => {
 
     await interaction.reply?.({
         ...payload,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
     });
 };
 
@@ -428,7 +428,7 @@ export const createRecommendCommand = ({
             ],
         },
         execute: async interaction => {
-            await interaction.deferReply?.({ephemeral: true});
+            await interaction.deferReply?.({flags: MessageFlags.Ephemeral});
 
             if (!raven?.searchTitle) {
                 throw new Error('Raven client is not configured for recommendations.');
@@ -509,7 +509,7 @@ export const createRecommendCommand = ({
             if (session.requestedById && actorId && session.requestedById !== actorId) {
                 await interaction.reply?.({
                     content: 'Only the user who started this recommendation can confirm it.',
-                    ephemeral: true,
+                    flags: MessageFlags.Ephemeral,
                 });
                 return true;
             }
@@ -608,8 +608,15 @@ export const createRecommendCommand = ({
                 });
             } catch (error) {
                 errMSG(`[Portal/Discord] Failed to store recommendation "${selected.title}": ${error.message}`);
+                const errorText = normalizeString(error?.body?.error)
+                    || normalizeString(error?.message);
+                const looksTransient =
+                    /internal server error|timed out|timeout|temporarily unavailable|service unavailable/i.test(errorText);
+                const content = looksTransient
+                    ? `Recommendation storage is still starting. Please try /recommend again in a few seconds.`
+                    : `Failed to save recommendation for **${selected.title}**. Try again.`;
                 await updateComponentReply(interaction, {
-                    content: `Failed to save recommendation for **${selected.title}**. Try again.`,
+                    content,
                     components: buildComponents(sessionId, session.options),
                 });
             }

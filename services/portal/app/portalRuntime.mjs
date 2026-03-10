@@ -12,6 +12,7 @@ import {safeLoadPortalConfig} from '../config/portalConfig.mjs';
 import {createDiscordClient} from '../discord/client.mjs';
 import {createDiscordPresenceUpdater} from '../discord/presenceUpdater.mjs';
 import {createRecommendationNotifier} from '../discord/recommendationNotifier.mjs';
+import {createSubscriptionNotifier} from '../discord/subscriptionNotifier.mjs';
 import {createPortalSlashCommands} from '../commands/index.mjs';
 
 const runtime = {
@@ -23,6 +24,7 @@ const runtime = {
     onboardingStore: null,
     presenceUpdater: null,
     recommendationNotifier: null,
+    subscriptionNotifier: null,
     raven: null,
     server: null,
     vault: null,
@@ -126,6 +128,18 @@ export const startPortal = async (overrides = {}) => {
         });
         recommendationNotifier.start();
         runtime.recommendationNotifier = recommendationNotifier;
+
+        const subscriptionNotifier = createSubscriptionNotifier({
+            discordClient: discord,
+            vaultClient: vault,
+            ravenClient: raven,
+            pollMs: config.recommendations?.pollMs,
+            logger: {
+                warn: errMSG,
+            },
+        });
+        subscriptionNotifier.start();
+        runtime.subscriptionNotifier = subscriptionNotifier;
     } else {
         runtime.discord = null;
         log('[Portal] Discord integration is disabled; starting HTTP API routes only.');
@@ -161,6 +175,9 @@ export const stopPortal = async () => {
     if (runtime.recommendationNotifier) {
         runtime.recommendationNotifier.stop();
     }
+    if (runtime.subscriptionNotifier) {
+        runtime.subscriptionNotifier.stop();
+    }
 
     if (runtime.discord) {
         runtime.discord.destroy();
@@ -175,6 +192,7 @@ export const stopPortal = async () => {
     runtime.onboardingStore = null;
     runtime.presenceUpdater = null;
     runtime.recommendationNotifier = null;
+    runtime.subscriptionNotifier = null;
     runtime.raven = null;
     runtime.config = null;
     runtime.warden = null;

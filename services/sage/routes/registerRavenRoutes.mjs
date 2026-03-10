@@ -6,6 +6,7 @@ export function registerRavenRoutes(context = {}) {
         ensureMoonPermission,
         hasMoonPermission,
         logger,
+        portalClient,
         ravenClient,
         vaultClient,
         requireSessionIfSetupCompleted,
@@ -13,6 +14,7 @@ export function registerRavenRoutes(context = {}) {
     } = context
 
     const RECOMMENDATIONS_COLLECTION = 'portal_recommendations'
+    const SUBSCRIPTIONS_COLLECTION = 'portal_subscriptions'
     const APPROVED_RECOMMENDATION_STATUSES = new Set(['approved', 'accepted'])
     const DENIED_RECOMMENDATION_STATUSES = new Set(['denied', 'rejected', 'declined'])
     const PENDING_RECOMMENDATION_STATUSES = new Set(['pending', 'new', 'requested'])
@@ -22,11 +24,17 @@ export function registerRavenRoutes(context = {}) {
         'denied',
         'comment',
         'download-started',
+        'download-progress',
         'download-completed',
     ])
     const MAX_RECOMMENDATION_COMMENT_LENGTH = 2000
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeLowerTitleKey = (value) => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim()
+    const normalizePositiveInteger = (value) => {
+        const parsed = Number.parseInt(String(value), 10)
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+    }
     const normalizeRecommendationIsoTimestamp = (value) => {
         const iso = normalizeString(value)
         if (!iso) {
@@ -453,16 +461,417 @@ export function registerRavenRoutes(context = {}) {
 
         return false
     }
+    const normalizeSubscriptionIsoTimestamp = (value) => {
+        const iso = normalizeString(value)
+        if (!iso) {
+            return null
+        }
+
+        const parsed = Date.parse(iso)
+        if (!Number.isFinite(parsed)) {
+            return null
+        }
+
+        return new Date(parsed).toISOString()
+    }
+    const resolveSubscriptionTimestamp = (value) => {
+        const iso = normalizeSubscriptionIsoTimestamp(value)
+        if (!iso) {
+            return 0
+        }
+
+        const parsed = Date.parse(iso)
+        return Number.isFinite(parsed) ? parsed : 0
+    }
+    const resolveSubscriptionStatus = (value) => normalizeString(value).toLowerCase()
+    const isActiveSubscriptionStatus = (value) => resolveSubscriptionStatus(value) === 'active'
+    const normalizeSubscriptionDoc = (entry = {}) => {
+        const subscriber = entry?.subscriber && typeof entry.subscriber === 'object' ? entry.subscriber : {}
+        const notifications = entry?.notifications && typeof entry.notifications === 'object' ? entry.notifications : {}
+        const chapterDmCountRaw = Number(notifications?.chapterDmCount)
+
+        return {
+            id: resolveRecommendationId(entry?._id),
+            source: normalizeString(entry?.source) || 'discord',
+            status: normalizeString(entry?.status) || 'active',
+            active: isActiveSubscriptionStatus(entry?.status),
+            subscribedAt: normalizeSubscriptionIsoTimestamp(entry?.subscribedAt) || null,
+            unsubscribedAt: normalizeSubscriptionIsoTimestamp(entry?.unsubscribedAt) || null,
+            title: normalizeString(entry?.title) || null,
+            titleQuery: normalizeString(entry?.titleQuery) || null,
+            titleKey: normalizeString(entry?.titleKey) || null,
+            titleUuid: normalizeString(entry?.titleUuid) || null,
+            sourceUrl: normalizeString(entry?.sourceUrl) || null,
+            subscriber: {
+                discordId: normalizeString(subscriber?.discordId) || null,
+                tag: normalizeString(subscriber?.tag) || null,
+            },
+            notifications: {
+                chapterDmCount: Number.isFinite(chapterDmCountRaw) ? chapterDmCountRaw : 0,
+                lastChapterDmAt: normalizeSubscriptionIsoTimestamp(notifications?.lastChapterDmAt) || null,
+            },
+        }
+    }
+    const buildSubscriptionDocumentQueries = (entry = {}) => {
+        const queries = []
+        const seen = new Set()
+        const pushQuery = (query = {}) => {
+            if (!query || typeof query !== 'object' || Object.keys(query).length === 0) {
+                return
+            }
+
+            const serialized = JSON.stringify(query)
+            if (seen.has(serialized)) {
+                return
+            }
+
+            seen.add(serialized)
+            queries.push(query)
+        }
+
+        if (entry && typeof entry === 'object' && '_id' in entry && entry._id != null) {
+            pushQuery({_id: entry._id})
+        }
+
+        const fallbackQuery = {}
+        const subscriberDiscordId = normalizeString(entry?.subscriber?.discordId)
+        if (subscriberDiscordId) {
+            fallbackQuery['subscriber.discordId'] = subscriberDiscordId
+        }
+
+        const titleUuid = normalizeString(entry?.titleUuid)
+        if (titleUuid) {
+            fallbackQuery.titleUuid = titleUuid
+        }
+
+        const sourceUrl = normalizeString(entry?.sourceUrl)
+        if (sourceUrl) {
+            fallbackQuery.sourceUrl = sourceUrl
+        }
+
+        const titleKey = normalizeString(entry?.titleKey)
+        if (titleKey) {
+            fallbackQuery.titleKey = titleKey
+        }
+
+        const title = normalizeString(entry?.title)
+        if (title) {
+            fallbackQuery.title = title
+        }
+
+        const titleQuery = normalizeString(entry?.titleQuery)
+        if (titleQuery) {
+            fallbackQuery.titleQuery = titleQuery
+        }
+
+        pushQuery(fallbackQuery)
+        return queries
+    }
+    const subscriptionBelongsToSession = (entry = {}, session = {}) => {
+        const sessionDiscordUserId = normalizeString(session?.discordUserId)
+        if (!sessionDiscordUserId) {
+            return false
+        }
+
+        return normalizeString(entry?.subscriber?.discordId) === sessionDiscordUserId
+    }
+    const sortSubscriptions = (entries = []) =>
+        [...entries].sort((left, right) => {
+            const leftActive = isActiveSubscriptionStatus(left?.status)
+            const rightActive = isActiveSubscriptionStatus(right?.status)
+            if (leftActive !== rightActive) {
+                return leftActive ? -1 : 1
+            }
+
+            const leftTimestamp = resolveSubscriptionTimestamp(left?.subscribedAt)
+            const rightTimestamp = resolveSubscriptionTimestamp(right?.subscribedAt)
+            if (leftTimestamp !== rightTimestamp) {
+                return rightTimestamp - leftTimestamp
+            }
+
+            const leftTitle = normalizeString(left?.title) || normalizeString(left?.titleQuery)
+            const rightTitle = normalizeString(right?.title) || normalizeString(right?.titleQuery)
+            return leftTitle.localeCompare(rightTitle)
+        })
+    const findSubscriptionDocumentById = (documents = [], id = '') =>
+        documents.find((entry) => resolveRecommendationId(entry?._id) === id) ?? null
+    const loadSubscriptionDocuments = async () => {
+        const documents = await vaultClient.mongo.findMany(SUBSCRIPTIONS_COLLECTION, {})
+        return Array.isArray(documents) ? documents : []
+    }
+    const persistSubscriptionDocumentUpdate = async (entry = {}, update = {}) => {
+        const queries = buildSubscriptionDocumentQueries(entry)
+        if (!queries.length) {
+            return false
+        }
+
+        for (const query of queries) {
+            const result = await vaultClient.mongo.update(
+                SUBSCRIPTIONS_COLLECTION,
+                query,
+                update,
+            )
+
+            const matchedRaw = Number(result?.matched ?? result?.matchedCount)
+            const modifiedRaw = Number(result?.modified ?? result?.modifiedCount)
+            const matched = Number.isFinite(matchedRaw) ? matchedRaw : 0
+            const modified = Number.isFinite(modifiedRaw) ? modifiedRaw : 0
+            if (matched > 0 || modified > 0) {
+                return true
+            }
+        }
+
+        return false
+    }
     const appendRecommendationTimelineEvent = (entry = {}, timelineEvent = {}) => {
         const timeline = Array.isArray(entry?.timeline)
             ? entry.timeline.filter((event) => event && typeof event === 'object')
             : []
         return [...timeline, timelineEvent]
     }
+    const resolveRecommendationMetadataQuery = (entry = {}) =>
+        normalizeString(entry?.title) || normalizeString(entry?.query) || null
+    const selectPreferredKavitaSeries = (series = [], query = '') => {
+        const candidates = Array.isArray(series)
+            ? series.filter((entry) => entry && typeof entry === 'object')
+            : []
+        if (candidates.length === 0) {
+            return null
+        }
+
+        const queryKey = normalizeLowerTitleKey(query)
+        if (!queryKey) {
+            return candidates[0]
+        }
+
+        const exactMatch = candidates.find((entry) => {
+            const titleKeys = [
+                normalizeLowerTitleKey(entry?.name),
+                normalizeLowerTitleKey(entry?.localizedName),
+                normalizeLowerTitleKey(entry?.originalName),
+            ].filter(Boolean)
+            return titleKeys.includes(queryKey)
+        })
+        return exactMatch || candidates[0]
+    }
+    const resolveMetadataIdentifier = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return value
+        }
+
+        const normalized = normalizeString(value)
+        return normalized || null
+    }
+    const resolveMetadataProviderSeriesId = (match = {}) =>
+        resolveMetadataIdentifier(
+            match?.providerSeriesId
+            ?? match?.ProviderSeriesId
+            ?? match?.resultId
+            ?? match?.ResultId,
+        )
+    const resolveMetadataAniListId = (match = {}) =>
+        resolveMetadataIdentifier(match?.aniListId ?? match?.AniListId)
+    const resolveMetadataMalId = (match = {}) =>
+        resolveMetadataIdentifier(match?.malId ?? match?.MALId ?? match?.MalId)
+    const resolveMetadataCbrId = (match = {}) =>
+        resolveMetadataIdentifier(match?.cbrId ?? match?.CbrId)
+    const metadataMatchIsApplicable = (match = {}) => {
+        const provider = normalizeString(match?.provider)
+        const providerSeriesId = resolveMetadataProviderSeriesId(match)
+        if (provider && providerSeriesId != null && `${providerSeriesId}`.trim()) {
+            return true
+        }
+
+        return (
+            resolveMetadataAniListId(match) != null
+            || resolveMetadataMalId(match) != null
+            || resolveMetadataCbrId(match) != null
+        )
+    }
+    const selectPreferredMetadataMatch = (matches = [], query = '') => {
+        const candidates = Array.isArray(matches)
+            ? matches.filter((entry) => entry && typeof entry === 'object' && metadataMatchIsApplicable(entry))
+            : []
+        if (candidates.length === 0) {
+            return null
+        }
+
+        const queryKey = normalizeLowerTitleKey(query)
+        if (!queryKey) {
+            return candidates[0]
+        }
+
+        const exactTitleMatch = candidates.find((entry) => {
+            const titleKeys = [
+                normalizeLowerTitleKey(entry?.title),
+                normalizeLowerTitleKey(entry?.name),
+            ].filter(Boolean)
+            return titleKeys.includes(queryKey)
+        })
+
+        return exactTitleMatch || candidates[0]
+    }
+    const resolveQueuedRecommendationTitleUuid = (queueResult = {}) => {
+        if (!queueResult || typeof queueResult !== 'object') {
+            return null
+        }
+
+        const candidates = [
+            queueResult?.titleUuid,
+            queueResult?.uuid,
+            queueResult?.title?.uuid,
+            queueResult?.title?.titleUuid,
+            queueResult?.task?.titleUuid,
+        ]
+        for (const candidate of candidates) {
+            const normalized = normalizeString(candidate)
+            if (normalized) {
+                return normalized
+            }
+        }
+
+        return null
+    }
+    const runRecommendationMetadataAutoApply = async ({recommendation = {}, queueResult = null} = {}) => {
+        if (
+            !portalClient?.searchKavitaTitles
+            || !portalClient?.fetchTitleMetadataMatches
+            || !portalClient?.applyTitleMetadataMatch
+        ) {
+            return {
+                status: 'skipped',
+                message: 'Portal metadata client is not configured.',
+            }
+        }
+
+        const metadataQuery = resolveRecommendationMetadataQuery(recommendation)
+        if (!metadataQuery) {
+            return {
+                status: 'skipped',
+                message: 'Recommendation does not have a metadata query.',
+            }
+        }
+
+        try {
+            const titleSearchPayload = await portalClient.searchKavitaTitles(metadataQuery)
+            const selectedSeries = selectPreferredKavitaSeries(titleSearchPayload?.series, metadataQuery)
+            const seriesId = normalizePositiveInteger(selectedSeries?.seriesId)
+            if (!seriesId) {
+                return {
+                    status: 'skipped',
+                    message: 'No matching Kavita series was found for auto metadata apply.',
+                }
+            }
+
+            const metadataMatchesPayload = await portalClient.fetchTitleMetadataMatches({
+                seriesId,
+                query: metadataQuery,
+            })
+            const selectedMatch = selectPreferredMetadataMatch(metadataMatchesPayload?.matches, metadataQuery)
+            if (!selectedMatch) {
+                return {
+                    status: 'skipped',
+                    message: 'No metadata candidates were available for auto apply.',
+                }
+            }
+
+            const provider = normalizeString(selectedMatch?.provider)
+            const providerSeriesId = resolveMetadataProviderSeriesId(selectedMatch)
+            const aniListId = resolveMetadataAniListId(selectedMatch)
+            const malId = resolveMetadataMalId(selectedMatch)
+            const cbrId = resolveMetadataCbrId(selectedMatch)
+            const titleUuid = resolveQueuedRecommendationTitleUuid(queueResult)
+            const libraryId = normalizePositiveInteger(selectedSeries?.libraryId)
+            const coverImageUrl = normalizeString(selectedMatch?.coverImageUrl) || null
+
+            const applyPayload = {
+                seriesId,
+            }
+            if (libraryId) {
+                applyPayload.libraryId = libraryId
+            }
+            if (titleUuid) {
+                applyPayload.titleUuid = titleUuid
+            }
+            if (provider && providerSeriesId != null && `${providerSeriesId}`.trim()) {
+                applyPayload.provider = provider
+                applyPayload.providerSeriesId = `${providerSeriesId}`.trim()
+            }
+            if (aniListId != null && `${aniListId}`.trim()) {
+                applyPayload.aniListId = aniListId
+            }
+            if (malId != null && `${malId}`.trim()) {
+                applyPayload.malId = malId
+            }
+            if (cbrId != null && `${cbrId}`.trim()) {
+                applyPayload.cbrId = cbrId
+            }
+            if (coverImageUrl) {
+                applyPayload.coverImageUrl = coverImageUrl
+            }
+
+            const applyResult = await portalClient.applyTitleMetadataMatch(applyPayload)
+            return {
+                status: 'applied',
+                provider: provider || null,
+                providerSeriesId: providerSeriesId != null ? `${providerSeriesId}` : null,
+                seriesId,
+                libraryId,
+                message: normalizeString(applyResult?.message) || 'Applied metadata match.',
+            }
+        } catch (error) {
+            return {
+                status: 'failed',
+                message: error instanceof Error ? error.message : String(error),
+            }
+        }
+    }
+    const createRecommendationMetadataTimelineEvent = (metadataResult = {}) => {
+        const status = normalizeString(metadataResult?.status).toLowerCase()
+        if (status === 'applied') {
+            const provider = normalizeString(metadataResult?.provider).toUpperCase()
+            const providerSeriesId = normalizeString(metadataResult?.providerSeriesId)
+            const message = normalizeString(metadataResult?.message)
+            const details = provider && providerSeriesId
+                ? `Provider: ${provider} (${providerSeriesId}).`
+                : provider
+                    ? `Provider: ${provider}.`
+                    : ''
+            const body = [
+                'Noona auto-applied metadata after approval.',
+                details,
+                message,
+            ].filter(Boolean).join(' ')
+
+            return createRecommendationTimelineEvent({
+                type: 'comment',
+                actor: {
+                    role: 'system',
+                    username: 'Portal',
+                },
+                body,
+            })
+        }
+
+        if (status === 'failed') {
+            const message = normalizeString(metadataResult?.message) || 'Unknown metadata apply failure.'
+            return createRecommendationTimelineEvent({
+                type: 'comment',
+                actor: {
+                    role: 'system',
+                    username: 'Portal',
+                },
+                body: `Noona could not auto-apply metadata after approval: ${message}`,
+            })
+        }
+
+        return null
+    }
 
     app.use('/api/raven', requireSessionIfSetupCompleted)
     app.use('/api/recommendations', requireSessionIfSetupCompleted)
     app.use('/api/myrecommendations', requireSessionIfSetupCompleted)
+    app.use('/api/mysubscriptions', requireSessionIfSetupCompleted)
 
     app.get('/api/recommendations', async (req, res) => {
         const session = req.user
@@ -540,6 +949,120 @@ export function registerRavenRoutes(context = {}) {
         } catch (error) {
             logger.error(`[${serviceName}] Failed to load my recommendations: ${error.message}`)
             res.status(502).json({error: 'Unable to retrieve recommendation records.'})
+        }
+    })
+
+    app.get('/api/mysubscriptions', async (req, res) => {
+        const session = req.user
+        if (!session) {
+            res.status(401).json({error: 'Unauthorized.'})
+            return
+        }
+
+        if (!hasMoonPermission(session, 'mySubscriptions')) {
+            res.status(403).json({error: 'My subscriptions permission is required.'})
+            return
+        }
+
+        if (!vaultClient?.mongo?.findMany) {
+            res.status(503).json({error: 'Vault subscription storage is not configured.'})
+            return
+        }
+
+        const limit = parseRecommendationLimit(req.query?.limit)
+
+        try {
+            const documents = await loadSubscriptionDocuments()
+            const subscriptions = sortSubscriptions(
+                documents
+                    .filter((entry) => subscriptionBelongsToSession(entry, session))
+                    .map((entry) => normalizeSubscriptionDoc(entry)),
+            )
+
+            res.json({
+                collection: SUBSCRIPTIONS_COLLECTION,
+                limit,
+                total: subscriptions.length,
+                subscriptions: subscriptions.slice(0, limit),
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load my subscriptions: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve subscription records.'})
+        }
+    })
+
+    app.delete('/api/mysubscriptions/:id', async (req, res) => {
+        const session = req.user
+        if (!session) {
+            res.status(401).json({error: 'Unauthorized.'})
+            return
+        }
+
+        if (!hasMoonPermission(session, 'mySubscriptions')) {
+            res.status(403).json({error: 'My subscriptions permission is required.'})
+            return
+        }
+
+        if (!vaultClient?.mongo?.findMany || !vaultClient?.mongo?.update) {
+            res.status(503).json({error: 'Vault subscription storage is not configured.'})
+            return
+        }
+
+        const id = normalizeString(req.params?.id)
+        if (!id) {
+            res.status(400).json({error: 'Subscription id is required.'})
+            return
+        }
+
+        try {
+            const documents = await loadSubscriptionDocuments()
+            const target = findSubscriptionDocumentById(documents, id)
+            if (!target) {
+                res.status(404).json({error: 'Subscription not found.'})
+                return
+            }
+
+            if (!subscriptionBelongsToSession(target, session)) {
+                res.status(404).json({error: 'Subscription not found.'})
+                return
+            }
+
+            if (!isActiveSubscriptionStatus(target?.status)) {
+                res.json({
+                    ok: true,
+                    id,
+                    subscription: normalizeSubscriptionDoc(target),
+                })
+                return
+            }
+
+            const unsubscribedAt = new Date().toISOString()
+            const updatePersisted = await persistSubscriptionDocumentUpdate(target, {
+                $set: {
+                    status: 'inactive',
+                    unsubscribedAt,
+                },
+            })
+            if (!updatePersisted) {
+                res.status(502).json({error: 'Vault did not persist subscription update.'})
+                return
+            }
+
+            const refreshedDocuments = await loadSubscriptionDocuments()
+            const refreshedTarget = findSubscriptionDocumentById(refreshedDocuments, id)
+            if (!refreshedTarget) {
+                res.status(502).json({error: 'Vault did not persist subscription update.'})
+                return
+            }
+
+            res.json({
+                ok: true,
+                id,
+                subscription: normalizeSubscriptionDoc(refreshedTarget),
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to unsubscribe subscription ${id}: ${error.message}`)
+            res.status(502).json({error: 'Unable to update subscription.'})
         }
     })
 
@@ -755,6 +1278,16 @@ export function registerRavenRoutes(context = {}) {
                 return
             }
 
+            const metadataResult = await runRecommendationMetadataAutoApply({
+                recommendation,
+                queueResult,
+            })
+            if (normalizeString(metadataResult?.status).toLowerCase() === 'failed') {
+                logger.warn?.(
+                    `[${serviceName}] Recommendation ${id} metadata auto-apply failed: ${normalizeString(metadataResult?.message) || 'Unknown error'}`,
+                )
+            }
+
             const approvedAt = new Date().toISOString()
             const approvedBy = recommendationActorFromSession(session, 'admin')
             const approvedTimelineEvent = createRecommendationTimelineEvent({
@@ -762,7 +1295,11 @@ export function registerRavenRoutes(context = {}) {
                 actor: approvedBy,
                 createdAt: approvedAt,
             })
-            const nextTimeline = appendRecommendationTimelineEvent(target, approvedTimelineEvent)
+            const metadataTimelineEvent = createRecommendationMetadataTimelineEvent(metadataResult)
+            const nextTimeline = [
+                ...appendRecommendationTimelineEvent(target, approvedTimelineEvent),
+                ...(metadataTimelineEvent ? [metadataTimelineEvent] : []),
+            ]
             const updatePersisted = await persistRecommendationDocumentUpdate(target, {
                 $set: {
                     status: 'approved',
@@ -800,6 +1337,7 @@ export function registerRavenRoutes(context = {}) {
                 ok: true,
                 id,
                 queueResult,
+                metadata: metadataResult,
                 recommendation: persistedRecommendation,
             })
         } catch (error) {
@@ -1346,6 +1884,19 @@ export function registerRavenRoutes(context = {}) {
                 `[${serviceName}] ❌ Failed to queue Raven download for ${searchId}: ${error.message}`,
             )
             res.status(502).json({error: 'Unable to queue Raven download.'})
+        }
+    })
+
+    app.post('/api/raven/downloads/pause', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
+            return
+        }
+        try {
+            const result = await ravenClient.pauseDownloads()
+            res.status(202).json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to pause Raven downloads: ${error.message}`)
+            res.status(502).json({error: 'Unable to pause Raven downloads.'})
         }
     })
 

@@ -3,7 +3,7 @@
 import EventEmitter from 'node:events';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {Events} from 'discord.js';
+import {Events, MessageFlags} from 'discord.js';
 
 import {createDiscordClient} from '../discord/client.mjs';
 import createPortalSlashCommands from '../commands/index.mjs';
@@ -166,7 +166,7 @@ test('interaction handler executes matching slash command', async () => {
     await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
 
     assert.equal(replies.length, 1);
-    assert.equal(replies[0].ephemeral, true);
+    assert.equal(replies[0].flags, MessageFlags.Ephemeral);
     assert.match(replies[0].content, /Dong/i);
 });
 
@@ -198,7 +198,7 @@ test('interaction handler responds when slash command has no registered handler'
     await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
 
     assert.equal(replies.length, 1);
-    assert.equal(replies[0].ephemeral, true);
+    assert.equal(replies[0].flags, MessageFlags.Ephemeral);
     assert.match(replies[0].content, /not available right now/i);
 });
 
@@ -333,6 +333,76 @@ test('createDiscordClient serializes queued direct messages per user when Vault 
     assert.equal(secondMessage.id, 'dm-2');
 });
 
+test('createDiscordClient uses Vault Redis list packets for queued direct messages when available', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const redisLists = new Map();
+    const vaultClient = {
+        redisRPush: async (key, value) => {
+            const queue = redisLists.get(key) ?? [];
+            queue.push(structuredClone(value));
+            redisLists.set(key, queue);
+            return {status: 'ok', length: queue.length};
+        },
+        redisLPop: async key => {
+            const queue = redisLists.get(key) ?? [];
+            if (!queue.length) {
+                return null;
+            }
+
+            const [next, ...remaining] = queue;
+            if (remaining.length) {
+                redisLists.set(key, remaining);
+            } else {
+                redisLists.delete(key);
+            }
+            return structuredClone(next);
+        },
+    };
+
+    let sendCount = 0;
+    fakeClient.users = {
+        fetch: async userId => ({
+            id: userId,
+            send: async payload => {
+                sendCount += 1;
+                const index = sendCount;
+                if (index === 1) {
+                    await new Promise(resolve => setTimeout(resolve, 15));
+                }
+                return {
+                    id: `dm-${index}`,
+                    payload,
+                };
+            },
+        }),
+    };
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+        vaultClient,
+        messageQueueNamespace: 'portal:test:list:dm',
+        messageQueueTtlSeconds: 60,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const [firstMessage, secondMessage] = await Promise.all([
+        discord.sendDirectMessage('discord-user-1', {content: 'first'}),
+        discord.sendDirectMessage('discord-user-1', {content: 'second'}),
+    ]);
+
+    assert.equal(firstMessage.id, 'dm-1');
+    assert.equal(secondMessage.id, 'dm-2');
+});
+
 test('interaction handler executes matching button component handlers', async () => {
     const fakeClient = new FakeClient();
     fakeClient.user = {tag: 'TestBot#0001'};
@@ -427,7 +497,7 @@ test('interaction handler blocks command execution when guild does not match REQ
 
         assert.equal(executed, false);
         assert.equal(replies.length, 1);
-        assert.equal(replies[0].ephemeral, true);
+        assert.equal(replies[0].flags, MessageFlags.Ephemeral);
         assert.match(replies[0].content, /server/i);
     } finally {
         if (previousGuild == null) {
@@ -477,7 +547,7 @@ test('interaction handler blocks command execution when REQUIRED_ROLE_* is not s
 
         assert.equal(executed, false);
         assert.equal(replies.length, 1);
-        assert.equal(replies[0].ephemeral, true);
+        assert.equal(replies[0].flags, MessageFlags.Ephemeral);
         assert.match(replies[0].content, /permission/i);
     } finally {
         if (previousRole == null) {

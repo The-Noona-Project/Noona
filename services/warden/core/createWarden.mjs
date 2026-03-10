@@ -76,11 +76,13 @@ const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
-const SETUP_CONFIG_DIRECTORY_NAME = 'warden';
+const SETUP_CONFIG_DIRECTORY_NAME = 'wardenm';
+const LEGACY_SETUP_CONFIG_DIRECTORY_NAME = 'warden';
 const SETUP_CONFIG_FILE_NAME = 'noona-settings.json';
 const LEGACY_SETUP_CONFIG_FILE_NAME = 'setup-wizard-state.json';
 const RUNTIME_CONFIG_SNAPSHOT_FILE_NAME = 'service-runtime-config.json';
 const RUNTIME_CONFIG_SNAPSHOT_VERSION = 1;
+const RUNTIME_CONFIG_DIRECTORY_NAME = LEGACY_SETUP_CONFIG_DIRECTORY_NAME;
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
@@ -2691,15 +2693,19 @@ export function createWarden(options = {}) {
     };
 
     const resolveSetupConfigSnapshotPath = (snapshot = null) =>
+        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
+
+    const resolveLegacyRootSetupConfigSnapshotPath = (snapshot = null) =>
         path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_FILE_NAME);
 
     const resolveLegacySetupConfigSnapshotPath = (snapshot = null) =>
-        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
+        path.join(resolveSetupConfigRoot(snapshot), LEGACY_SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
 
     const resolveSetupConfigSnapshotPaths = (snapshot = null) => {
         const primaryPath = resolveSetupConfigSnapshotPath(snapshot);
+        const legacyRootPath = resolveLegacyRootSetupConfigSnapshotPath(snapshot);
         const legacyPath = resolveLegacySetupConfigSnapshotPath(snapshot);
-        return Array.from(new Set([primaryPath, legacyPath].filter(Boolean)));
+        return Array.from(new Set([primaryPath, legacyRootPath, legacyPath].filter(Boolean)));
     };
 
     const readSetupConfigSnapshot = ({refresh = false} = {}) => {
@@ -2894,7 +2900,11 @@ export function createWarden(options = {}) {
 
     const resolveRuntimeConfigSnapshotPath = (snapshotHint = undefined) => {
         const sourceSnapshot = snapshotHint === undefined ? readSetupConfigSnapshot().snapshot : snapshotHint;
-        return path.join(resolveSetupConfigRoot(sourceSnapshot), SETUP_CONFIG_DIRECTORY_NAME, RUNTIME_CONFIG_SNAPSHOT_FILE_NAME);
+        return path.join(
+            resolveSetupConfigRoot(sourceSnapshot),
+            RUNTIME_CONFIG_DIRECTORY_NAME,
+            RUNTIME_CONFIG_SNAPSHOT_FILE_NAME,
+        );
     };
 
     const readRuntimeConfigSnapshot = () => {
@@ -3041,6 +3051,16 @@ export function createWarden(options = {}) {
     };
 
     const resolvePersistedSetupServiceNames = async () => {
+        try {
+            const {snapshot} = readSetupConfigSnapshot();
+            const selection = extractPersistedSetupSelectionFromSetupSnapshot(snapshot);
+            if (selection.length > 0) {
+                return selection;
+            }
+        } catch {
+            // Fall through to wizard-state selection.
+        }
+
         if (wizardStateClient && typeof wizardStateClient.loadState === 'function') {
             try {
                 const state = await wizardStateClient.loadState({fallbackToDefault: true});
@@ -3049,16 +3069,11 @@ export function createWarden(options = {}) {
                     return selection;
                 }
             } catch {
-                // Fall through to setup snapshot selection.
+                // Fall through to empty selection.
             }
         }
 
-        try {
-            const {snapshot} = readSetupConfigSnapshot();
-            return extractPersistedSetupSelectionFromSetupSnapshot(snapshot);
-        } catch {
-            return [];
-        }
+        return [];
     };
 
     const listInstalledManagedServiceNames = async (dockerClient) => {
@@ -3224,22 +3239,33 @@ export function createWarden(options = {}) {
             });
         };
 
-        const diskSnapshot = readRuntimeConfigSnapshot();
-        const diskServices =
-            diskSnapshot?.snapshot?.services && typeof diskSnapshot.snapshot.services === 'object'
-                ? diskSnapshot.snapshot.services
-                : {};
-        for (const [candidateName, runtime] of Object.entries(diskServices)) {
-            const normalizedName = normalizeManagedServiceName(candidateName);
-            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
-                continue;
-            }
-
-            const snapshot = writeRuntimeConfig(normalizedName, runtime);
-            recordLoaded({
-                service: normalizedName,
-                ...snapshot,
+        const mergeRuntimeWithExisting = (service, runtime = {}) => {
+            const current = resolveRuntimeConfig(service);
+            const incoming = normalizePersistedRuntimeConfig(runtime);
+            return writeRuntimeConfig(service, {
+                env: {
+                    ...normalizeEnvOverrideMap(incoming.env),
+                    ...normalizeEnvOverrideMap(current.env),
+                },
+                hostPort: current.hostPort != null ? current.hostPort : incoming.hostPort,
             });
+        };
+
+        try {
+            const snapshotLoaded = await applySetupConfigSnapshotRuntimeConfig(readSetupConfigSnapshot().snapshot, {
+                preferExisting: false,
+                persist: false,
+            });
+            for (const entry of snapshotLoaded) {
+                const current = resolveRuntimeConfig(entry.service);
+                recordLoaded({
+                    service: entry.service,
+                    ...current,
+                });
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to apply setup config snapshot runtime: ${message}`);
         }
 
         let settingsLoadFailed = false;
@@ -3256,7 +3282,7 @@ export function createWarden(options = {}) {
                         continue;
                     }
 
-                    const snapshot = writeRuntimeConfig(candidateName, {
+                    const snapshot = mergeRuntimeWithExisting(candidateName, {
                         env: document?.env,
                         hostPort: document?.hostPort,
                     });
@@ -3275,21 +3301,22 @@ export function createWarden(options = {}) {
             }
         }
 
-        try {
-            const snapshotLoaded = await applySetupConfigSnapshotRuntimeConfig(readSetupConfigSnapshot().snapshot, {
-                preferExisting: true,
-                persist: false,
-            });
-            for (const entry of snapshotLoaded) {
-                const current = resolveRuntimeConfig(entry.service);
-                recordLoaded({
-                    service: entry.service,
-                    ...current,
-                });
+        const diskSnapshot = readRuntimeConfigSnapshot();
+        const diskServices =
+            diskSnapshot?.snapshot?.services && typeof diskSnapshot.snapshot.services === 'object'
+                ? diskSnapshot.snapshot.services
+                : {};
+        for (const [candidateName, runtime] of Object.entries(diskServices)) {
+            const normalizedName = normalizeManagedServiceName(candidateName);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                continue;
             }
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            logger.warn?.(`[${serviceName}] Failed to apply setup config snapshot runtime: ${message}`);
+
+            const snapshot = mergeRuntimeWithExisting(normalizedName, runtime);
+            recordLoaded({
+                service: normalizedName,
+                ...snapshot,
+            });
         }
 
         writeRuntimeConfigSnapshot();

@@ -254,6 +254,17 @@ public class DownloadProgress {
         this.lastUpdated = now;
     }
 
+    public synchronized void markPaused(String message) {
+        long now = now();
+        this.status = "paused";
+        this.message = message;
+        this.errorMessage = null;
+        this.currentChapter = null;
+        this.currentChapterNumber = null;
+        this.completedAt = now;
+        this.lastUpdated = now;
+    }
+
     public synchronized void markRecoveredFromCache(String state) {
         this.recoveredFromCache = true;
         this.recoveryState = state;

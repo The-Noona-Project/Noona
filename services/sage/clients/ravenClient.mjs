@@ -396,6 +396,52 @@ export const createRavenClient = ({
             const response = await fetchFromRaven('/v1/download/status/summary')
             return await parseResponsePayload(response)
         },
+
+        async pauseDownloads() {
+            const response = await fetchFromRaven('/v1/download/pause', {
+                method: 'POST',
+                headers: {Accept: 'application/json'},
+            })
+            return await parseResponsePayload(response)
+        },
+        async getVpnStatus() {
+            const response = await fetchFromRaven('/v1/vpn/status')
+            return await parseResponsePayload(response)
+        },
+        async getVpnRegions() {
+            const response = await fetchFromRaven('/v1/vpn/regions')
+            const payload = await parseResponsePayload(response)
+            if (payload && typeof payload === 'object' && Array.isArray(payload.regions)) {
+                return payload.regions
+            }
+            return []
+        },
+        async rotateVpnNow(triggeredBy = 'manual') {
+            const response = await fetchFromRaven('/v1/vpn/rotate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({triggeredBy}),
+            })
+            return await parseResponsePayload(response)
+        },
+        async testVpnLogin({
+                               triggeredBy = 'manual',
+                               region = '',
+                               piaUsername = '',
+                               piaPassword = '',
+                           } = {}) {
+            const response = await fetchFromRaven('/v1/vpn/test-login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({
+                    triggeredBy,
+                    region,
+                    piaUsername,
+                    piaPassword,
+                }),
+            })
+            return await parseResponsePayload(response)
+        },
         async setDebug(enabled) {
             const response = await fetchFromRaven('/v1/debug', {
                 method: 'POST',

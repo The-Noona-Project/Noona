@@ -1,14 +1,27 @@
+import {MessageFlags} from 'discord.js';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
 
 const sendInteractionReply = async (interaction, payload) => {
+    const isEphemeral = payload && typeof payload === 'object' && payload.ephemeral === true;
+    const normalizedReplyPayload = isEphemeral
+        ? (({ephemeral, ...rest}) => ({
+            ...rest,
+            flags: MessageFlags.Ephemeral,
+        }))(payload)
+        : payload;
+    const normalizedEditPayload =
+        payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'ephemeral')
+            ? (({ephemeral, ...rest}) => rest)(payload)
+            : payload;
+
     if (interaction.deferred || interaction.replied) {
-        await interaction.editReply?.(payload);
+        await interaction.editReply?.(normalizedEditPayload);
         return;
     }
 
-    await interaction.reply?.(payload);
+    await interaction.reply?.(normalizedReplyPayload);
 };
 
 const resolveActor = interaction =>

@@ -2828,7 +2828,7 @@ test('bootFull reloads persisted service configs from noona_settings before star
 });
 
 test('bootFull applies setup snapshot runtime values when persisted settings are unavailable', async () => {
-    const snapshotPath = path.join('/srv/noona', 'noona-settings.json');
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const memoryFs = createMemoryFs({
         [snapshotPath]: JSON.stringify({
             version: 2,
@@ -2900,6 +2900,81 @@ test('bootFull applies setup snapshot runtime values when persisted settings are
     assert.ok(portalStart.env.includes('DISCORD_CLIENT_ID=portal-client'));
     assert.ok(portalStart.env.includes('DISCORD_GUILD_ID=portal-guild'));
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=kavita-api'));
+});
+
+test('bootFull prefers setup snapshot runtime values before other persisted config sources', async () => {
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            storageRoot: '/srv/noona',
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'snapshot-token',
+                },
+            },
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis'},
+                'noona-mongo': {name: 'noona-mongo', health: 'http://mongo/health'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', health: 'http://vault/health'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-portal': {
+                    name: 'noona-portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'DISCORD_BOT_TOKEN=',
+                        'DISCORD_CLIENT_ID=',
+                    ],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    findMany: async () => [
+                        {
+                            key: 'services.config.noona-portal',
+                            type: 'service-runtime-config',
+                            service: 'noona-portal',
+                            env: {
+                                DISCORD_BOT_TOKEN: 'mongo-token',
+                                DISCORD_CLIENT_ID: 'mongo-client',
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    warden.startService = async (service) => {
+        starts.push({
+            name: service.name,
+            env: [...(service.env || [])],
+        });
+    };
+
+    await warden.bootFull({
+        services: ['noona-redis', 'noona-mongo', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+    });
+
+    const portalStart = starts.find((entry) => entry.name === 'noona-portal');
+    assert.ok(portalStart, 'Portal should be started');
+    assert.ok(portalStart.env.includes('DISCORD_BOT_TOKEN=snapshot-token'));
+    assert.ok(portalStart.env.includes('DISCORD_CLIENT_ID=mongo-client'));
 });
 
 test('bootFull applies startup auto-updates after loading persisted noona-warden config', async () => {
@@ -3250,7 +3325,7 @@ test('init restores the installed managed stack when setup state is unavailable'
 });
 
 test('init restores full lifecycle from setup snapshot selection when wizard state is unavailable', async () => {
-    const snapshotPath = path.join('/srv/noona', 'noona-settings.json');
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const memoryFs = createMemoryFs({
         [snapshotPath]: JSON.stringify({
             version: 2,
@@ -3477,7 +3552,7 @@ test('startEcosystem restores the installed managed stack when setupCompleted is
 });
 
 test('startEcosystem uses persisted setup snapshot selection when setupCompleted is false and Docker discovery is unavailable', async () => {
-    const snapshotPath = path.join('/srv/noona', 'noona-settings.json');
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const memoryFs = createMemoryFs({
         [snapshotPath]: JSON.stringify({
             version: 2,
@@ -3941,7 +4016,8 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
     };
 
     const result = await warden.saveSetupConfig(payload);
-    const expectedPath = path.join('/srv/noona', 'noona-settings.json');
+    const expectedPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
+    const legacyRootPath = path.join('/srv/noona', 'noona-settings.json');
     const legacyPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
 
     assert.equal(result.exists, true);
@@ -3950,6 +4026,7 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
     assert.equal(result.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
     assert.equal(result.snapshot.values['noona-portal'].KAVITA_API_KEY, 'kavita-api');
     assert.ok(memoryFs.files.has(path.normalize(expectedPath)));
+    assert.ok(memoryFs.files.has(path.normalize(legacyRootPath)));
     assert.ok(memoryFs.files.has(path.normalize(legacyPath)));
 
     const loadedSnapshot = warden.getSetupConfig();
@@ -3969,7 +4046,40 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
     assert.equal(runtimeSnapshot.services['noona-portal'].env.KAVITA_API_KEY, 'kavita-api');
 });
 
-test('getSetupConfig falls back to the legacy Warden snapshot path when the root settings file is missing', () => {
+test('getSetupConfig falls back to the legacy root setup snapshot path when the new WardenM file is missing', () => {
+    const legacyRootPath = path.join('/srv/noona', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [legacyRootPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            storageRoot: '/srv/noona',
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                },
+            },
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const loadedSnapshot = warden.getSetupConfig();
+
+    assert.equal(loadedSnapshot.exists, true);
+    assert.equal(loadedSnapshot.path, legacyRootPath);
+    assert.equal(loadedSnapshot.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
+});
+
+test('getSetupConfig falls back to the legacy Warden snapshot path when newer setup files are missing', () => {
     const legacyPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
     const memoryFs = createMemoryFs({
         [legacyPath]: JSON.stringify({
@@ -4920,6 +5030,7 @@ test('factoryResetEcosystem clears persisted boot snapshots and runtime override
     assert.equal(wizardResetCalls, 1);
     assert.equal(warden.getSetupConfig({refresh: true}).exists, false);
     assert.deepEqual(warden.getServiceConfig('noona-sage').runtimeConfig, {env: {}, hostPort: null});
+    assert.equal(memoryFs.files.has(path.join('/srv/noona', 'wardenm', 'noona-settings.json')), false);
     assert.equal(memoryFs.files.has(path.join('/srv/noona', 'noona-settings.json')), false);
     assert.equal(memoryFs.files.has(path.join('/srv/noona', 'warden', 'setup-wizard-state.json')), false);
     assert.equal(memoryFs.files.has(path.join('/srv/noona', 'warden', 'service-runtime-config.json')), false);

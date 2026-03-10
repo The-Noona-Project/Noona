@@ -27,7 +27,7 @@ download/library routes for Moon and other clients.
 - Own Moon auth state, Discord OAuth config, Discord callback handling, Discord-linked user/session management, and
   the default permission template used when a Discord user signs in for the first time.
 - Proxy Raven search/download/library/status routes.
-- Serve Vault-backed recommendation records for Moon's recommendations page.
+- Serve Vault-backed recommendation and subscription records for Moon user pages.
 - Persist Vault-backed Raven naming and per-thread worker speed-limit settings for Moon.
 - Normalize downstream failures into consistent API responses.
 
@@ -65,11 +65,19 @@ download/library routes for Moon and other clients.
     `lookup_new_title`, `download_new_title`, and `check_download_missing_titles` names on write, and it now updates
     users by stable lookup fields instead of serialized Mongo `_id` values so permission edits persist through Vault.
   - `/api/auth/users/default-permissions` reads and updates the default permission set used for new Discord-linked
-    Moon accounts.
+    Moon accounts. Sage now enforces `moon_login`, `mySubscriptions`, and `myRecommendations` as baseline defaults.
 - Download settings: `/api/settings/downloads/*`
     - `/api/settings/downloads/naming` stores Raven naming templates in Vault.
     - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
       It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write, and normalizes unlimited entries to `-1`.
+  - `/api/settings/downloads/vpn` stores Raven PIA VPN settings in Vault (`downloads.vpn`) while masking
+    the persisted password in responses.
+  - `/api/settings/downloads/vpn/regions` proxies Raven's discovered PIA OpenVPN region options for Moon's picker.
+  - `/api/settings/downloads/vpn/rotate` proxies Raven's immediate VPN rotation action so Moon can trigger
+    pause -> rotate -> resume from the settings page.
+      - `/api/settings/downloads/vpn/test-login` proxies Raven's credential validation endpoint so Moon can test
+        PIA login + region selection before saving or rotating; the response includes Raven's reported public IP for
+        the test session.
   - `/api/settings/factory-reset` and `/api/settings/vault/wipe` now use provider-aware confirmation for dangerous
     actions: local-auth admins confirm with their password, while Discord-auth admins confirm with their current
     Discord-linked username.
@@ -77,14 +85,15 @@ download/library routes for Moon and other clients.
     - `/api/raven/library/latest` exposes the Home page latest-title feed to any authenticated Moon session after
       setup, without opening the full library routes.
     - Library listing/title/file routes require `library_management` after setup completes.
-    - Search, queue, download-status/history, and library-wide sync routes require `download_management` after setup
-      completes.
+  - Search, queue, pause (`POST /api/raven/downloads/pause`), download-status/history, and library-wide sync routes
+    require `download_management` after setup completes.
 - Recommendations admin routes: `/api/recommendations*`
     - `GET /api/recommendations` and `GET /api/recommendations/:id` require `manageRecommendations` and return
       normalized recommendation records (including timeline events such as `created`, `approved`, `denied`,
-      `comment`, `download-started`, and `download-completed`).
+      `comment`, `download-started`, `download-progress`, and `download-completed`).
     - `POST /api/recommendations/:id/approve` requires `manageRecommendations`, queues Raven download (`searchId` +
-      `selectedOptionIndex`), marks the recommendation approved, and records an approval timeline event.
+      `selectedOptionIndex`), marks the recommendation approved, records an approval timeline event, and now
+      best-effort auto-applies a Kavita metadata match through Portal using the recommendation title/query.
     - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores
       optional denial reason, and records a denial timeline event.
     - `POST /api/recommendations/:id/comments` requires `manageRecommendations` and appends an admin comment timeline
@@ -98,6 +107,11 @@ download/library routes for Moon and other clients.
       caller is a manager.
     - `POST /api/myrecommendations/:id/comments` requires `myRecommendations` (or `manageRecommendations`) and appends a
       user/admin timeline reply event.
+- Subscriptions user routes: `/api/mysubscriptions*`
+    - `GET /api/mysubscriptions` requires `mySubscriptions` and returns only subscription documents owned by the
+      signed-in Discord user.
+    - `DELETE /api/mysubscriptions/:id` requires `mySubscriptions`, verifies ownership, and marks the subscription
+      `inactive` with an `unsubscribedAt` timestamp.
 
 ## Key Environment Variables
 

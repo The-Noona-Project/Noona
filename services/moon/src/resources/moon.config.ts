@@ -24,6 +24,7 @@ export const moonRoutes = {
     "/downloads/add": true,
     "/recommendations": true,
     "/myrecommendations": true,
+    "/mysubscriptions": true,
     "/recommendation": true,
     "/rebooting": true,
     "/settings": true,
@@ -33,6 +34,7 @@ export const moonDynamicRoutePrefixes = [
     "/libraries",
     "/recommendations",
     "/myrecommendations",
+    "/mysubscriptions",
     "/recommendation",
     "/settings",
 ] as const;

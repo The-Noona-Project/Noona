@@ -22,8 +22,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -38,6 +40,15 @@ public class DownloadService {
     private static final String DOWNLOADED_FOLDER_NAME = "downloaded";
     private static final String TASK_COLLECTION = "raven_download_tasks";
     private static final String CURRENT_TASK_REDIS_KEY = "raven:download:current-task";
+    private static final long VAULT_SNAPSHOT_WARNING_COOLDOWN_MS = TimeUnit.SECONDS.toMillis(30);
+    private static final Set<String> TERMINAL_STATUSES = Set.of(
+            "completed",
+            "failed",
+            "interrupted",
+            "cancelled",
+            "canceled",
+            "paused"
+    );
 
     @Autowired private TitleScraper titleScraper;
     @Autowired private SourceFinder sourceFinder;
@@ -56,9 +67,12 @@ public class DownloadService {
 
     private ExecutorService executor;
     private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
+    private final Set<String> pauseRequestedDownloads = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean maintenancePauseActive = new AtomicBoolean(false);
     private final Map<String, DownloadProgress> downloadProgress = new ConcurrentHashMap<>();
     private final Deque<DownloadProgress> progressHistory = new ConcurrentLinkedDeque<>();
     private final Map<String, SearchSession> searchSessions = new ConcurrentHashMap<>();
+    private volatile long lastSnapshotWarningAtMs = 0L;
 
     private static final long SEARCH_TTL_MILLIS = TimeUnit.MINUTES.toMillis(10);
     private Supplier<Long> currentTimeSupplier = System::currentTimeMillis;
@@ -212,7 +226,145 @@ public class DownloadService {
         }
 
         String status = Optional.ofNullable(progress.getStatus()).orElse("").trim().toLowerCase(Locale.ROOT);
-        return !Set.of("completed", "failed", "interrupted", "cancelled", "canceled").contains(status);
+        return !isTerminalStatus(status);
+    }
+
+    public PauseRequestResult requestPauseActiveDownloads() {
+        List<String> pausedImmediately = new ArrayList<>();
+        List<String> pausingAfterChapter = new ArrayList<>();
+
+        for (Map.Entry<String, DownloadProgress> entry : downloadProgress.entrySet()) {
+            String titleName = entry.getKey();
+            DownloadProgress progress = entry.getValue();
+            if (titleName == null || titleName.isBlank() || progress == null) {
+                continue;
+            }
+
+            String status = Optional.ofNullable(progress.getStatus()).orElse("").trim().toLowerCase(Locale.ROOT);
+            if (isTerminalStatus(status)) {
+                continue;
+            }
+
+            pauseRequestedDownloads.add(titleName);
+            if ("queued".equals(status)) {
+                Future<?> future = activeDownloads.get(titleName);
+                boolean pausedBeforeStart = future != null && future.cancel(false);
+                if (pausedBeforeStart) {
+                    progress.markPaused("Pause requested before chapter download started. Task saved for later.");
+                    persistTaskSnapshot(progress);
+                    activeDownloads.remove(titleName);
+                    pauseRequestedDownloads.remove(titleName);
+                    finalizeProgress(titleName, progress);
+                    pausedImmediately.add(titleName);
+                    continue;
+                }
+            }
+
+            progress.setMessage("Pause requested. Raven will stop this task after the current chapter finishes.");
+            persistTaskSnapshot(progress);
+            pausingAfterChapter.add(titleName);
+        }
+
+        return new PauseRequestResult(pausedImmediately, pausingAfterChapter);
+    }
+
+    public void beginMaintenancePause(String reason) {
+        maintenancePauseActive.set(true);
+        logger.info("DOWNLOAD_SERVICE", "⏸️ Raven maintenance pause enabled. " + sanitizeForLog(reason));
+    }
+
+    public void endMaintenancePause(String reason) {
+        maintenancePauseActive.set(false);
+        logger.info("DOWNLOAD_SERVICE", "▶️ Raven maintenance pause cleared. " + sanitizeForLog(reason));
+    }
+
+    public boolean isMaintenancePauseActive() {
+        return maintenancePauseActive.get();
+    }
+
+    public boolean waitForNoActiveDownloads(Duration timeout) {
+        long timeoutMs = timeout == null ? TimeUnit.MINUTES.toMillis(20) : Math.max(1L, timeout.toMillis());
+        long deadline = System.currentTimeMillis() + timeoutMs;
+
+        while (System.currentTimeMillis() < deadline) {
+            if (!hasInFlightDownloads()) {
+                return true;
+            }
+
+            try {
+                Thread.sleep(500L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        return !hasInFlightDownloads();
+    }
+
+    public int resumePausedDownloads() {
+        List<Map<String, Object>> docs;
+        try {
+            docs = vaultService.findMany(TASK_COLLECTION, Map.of("status", "paused"));
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to read paused Raven tasks from Vault: " + e.getMessage());
+            return 0;
+        }
+
+        if (docs == null || docs.isEmpty()) {
+            return 0;
+        }
+
+        List<DownloadProgress> pausedTasks = new ArrayList<>();
+        for (Map<String, Object> doc : docs) {
+            DownloadProgress progress = vaultService.parseJson(doc, DownloadProgress.class);
+            if (progress == null) {
+                continue;
+            }
+
+            String titleName = progress.getTitle();
+            String sourceUrl = progress.getSourceUrl();
+            if (titleName == null || titleName.isBlank() || sourceUrl == null || sourceUrl.isBlank()) {
+                continue;
+            }
+            pausedTasks.add(progress);
+        }
+
+        pausedTasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+        int resumed = 0;
+        for (DownloadProgress progress : pausedTasks) {
+            String titleName = progress.getTitle();
+            if (titleName == null || titleName.isBlank() || isTaskActive(titleName)) {
+                continue;
+            }
+
+            pauseRequestedDownloads.remove(titleName);
+            progress.markRecoveredFromCache("vpn-rotation-resume");
+            progress.setMessage("Resumed after Raven VPN rotation.");
+            persistTaskSnapshot(progress);
+
+            Map<String, String> selectedTitle = buildSelectedTitle(progress);
+            downloadProgress.put(titleName, progress);
+            Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, selectedTitle, progress));
+            activeDownloads.put(titleName, future);
+            resumed++;
+        }
+
+        return resumed;
+    }
+
+    private boolean hasInFlightDownloads() {
+        if (getActiveDownloadCount() > 0) {
+            return true;
+        }
+
+        for (Future<?> future : activeDownloads.values()) {
+            if (future != null && !future.isDone() && !future.isCancelled()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     DownloadProgress startTrackedTask(
@@ -255,6 +407,10 @@ public class DownloadService {
     }
 
     public String queueDownloadAllChapters(String searchId, int userIndex) {
+        if (maintenancePauseActive.get()) {
+            return "⚠️ Raven is temporarily pausing new downloads while VPN rotation completes.";
+        }
+
         List<Map<String, String>> results = getSearchResults(searchId);
         String sanitizedSearchId = sanitizeForLog(searchId);
         int resultsSize = results == null ? 0 : results.size();
@@ -463,6 +619,11 @@ public class DownloadService {
             );
 
             for (Map<String, String> chapter : plannedChapters) {
+                if (shouldPauseAtChapterBoundary(titleName, progress)) {
+                    result.setStatus("⏸️ Download paused.");
+                    return;
+                }
+
                 String chapterTitle = chapter.get("chapter_title");
                 String chapterNumber = extractChapterNumberFull(chapterTitle);
                 String chapterUrl = chapter.get("href");
@@ -537,7 +698,7 @@ public class DownloadService {
                 progress.setMessage("Download completed.");
                 progress.markCompleted();
             } else {
-                String failureMessage = "Download paused with pending chapters: " + String.join(", ", failedChapters);
+                String failureMessage = "Download interrupted with pending chapters: " + String.join(", ", failedChapters);
                 result.setStatus("⚠️ Download interrupted.");
                 progress.markInterrupted(failureMessage);
             }
@@ -548,6 +709,7 @@ public class DownloadService {
             progress.markFailed(e.getMessage());
             persistTaskSnapshot(progress);
         } finally {
+            pauseRequestedDownloads.remove(titleName);
             activeDownloads.remove(titleName);
             logger.debug(
                     "DOWNLOAD",
@@ -616,6 +778,46 @@ public class DownloadService {
         document.put("missingChapterNumbers", progress.getMissingChapterNumbers());
         document.put("lastUpdated", progress.getLastUpdated());
         return document;
+    }
+
+    private boolean shouldPauseAtChapterBoundary(String titleName, DownloadProgress progress) {
+        if (titleName == null || titleName.isBlank() || progress == null || !pauseRequestedDownloads.contains(titleName)) {
+            return false;
+        }
+
+        List<String> remaining = progress.getRemainingChapterNumbers();
+        if (remaining.isEmpty()) {
+            return false;
+        }
+
+        progress.markPaused(buildPauseMessage(remaining));
+        persistTaskSnapshot(progress);
+        return true;
+    }
+
+    private String buildPauseMessage(List<String> remaining) {
+        if (remaining == null || remaining.isEmpty()) {
+            return "Pause requested. Task saved for later.";
+        }
+
+        int remainingCount = remaining.size();
+        String suffix = remainingCount == 1 ? "chapter" : "chapters";
+        return "Pause requested. Saved " + remainingCount + " pending " + suffix +
+                ": " + formatChapterPreview(remaining) + ".";
+    }
+
+    private String formatChapterPreview(List<String> chapters) {
+        if (chapters == null || chapters.isEmpty()) {
+            return "";
+        }
+
+        int limit = Math.min(8, chapters.size());
+        String joined = String.join(", ", chapters.subList(0, limit));
+        int remaining = chapters.size() - limit;
+        if (remaining > 0) {
+            return joined + " +" + remaining + " more";
+        }
+        return joined;
     }
 
     private List<Map<String, String>> resolvePlannedChapters(List<Map<String, String>> chapters, DownloadProgress progress) {
@@ -1133,7 +1335,7 @@ public class DownloadService {
         int activeCount = 0;
         for (DownloadProgress progress : downloadProgress.values()) {
             String status = Optional.ofNullable(progress.getStatus()).orElse("").trim().toLowerCase(Locale.ROOT);
-            if (!Set.of("completed", "failed", "interrupted", "cancelled", "canceled").contains(status)) {
+            if (!isTerminalStatus(status)) {
                 activeCount++;
             }
         }
@@ -1165,11 +1367,21 @@ public class DownloadService {
                 }
             }
         } catch (Exception e) {
-            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to load cached Raven task snapshot: " + e.getMessage());
+            warnSnapshotLoadFailure(e);
         }
 
         DownloadProgress latestHistory = progressHistory.peekFirst();
         return latestHistory == null ? null : latestHistory.copy();
+    }
+
+    private void warnSnapshotLoadFailure(Exception error) {
+        long now = System.currentTimeMillis();
+        if (now - lastSnapshotWarningAtMs < VAULT_SNAPSHOT_WARNING_COOLDOWN_MS) {
+            return;
+        }
+
+        lastSnapshotWarningAtMs = now;
+        logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to load cached Raven task snapshot: " + error.getMessage());
     }
 
     public List<Integer> getThreadRateLimitsKbps() {
@@ -1177,6 +1389,7 @@ public class DownloadService {
     }
 
     public void clearDownloadStatus(String titleName) {
+        pauseRequestedDownloads.remove(titleName);
         downloadProgress.remove(titleName);
         progressHistory.removeIf(progress -> progress.getTitle().equals(titleName));
         logger.debug("DOWNLOAD_SERVICE", "Cleared progress entry for title=" + sanitizeForLog(titleName));
@@ -1605,6 +1818,10 @@ public class DownloadService {
         this.currentTimeSupplier = Objects.requireNonNull(currentTimeSupplier);
     }
 
+    private boolean isTerminalStatus(String status) {
+        return TERMINAL_STATUSES.contains(status);
+    }
+
     private String sanitizeForLog(String value) {
         if (value == null) {
             return "";
@@ -1631,6 +1848,22 @@ public class DownloadService {
                 copy.add(new HashMap<>(result));
             }
             return copy;
+        }
+    }
+
+    public record PauseRequestResult(
+            List<String> pausedImmediately,
+            List<String> pausingAfterCurrentChapter
+    ) {
+        public PauseRequestResult {
+            pausedImmediately = pausedImmediately == null ? List.of() : List.copyOf(pausedImmediately);
+            pausingAfterCurrentChapter = pausingAfterCurrentChapter == null
+                    ? List.of()
+                    : List.copyOf(pausingAfterCurrentChapter);
+        }
+
+        public int getAffectedTasks() {
+            return pausedImmediately.size() + pausingAfterCurrentChapter.size();
         }
     }
 }

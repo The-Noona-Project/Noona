@@ -137,7 +137,7 @@ test('GET /api/setup/config returns persisted setup snapshot metadata from warde
         async getSetupConfig() {
             return {
                 exists: true,
-                path: '/srv/noona/warden/setup-wizard-state.json',
+                path: '/srv/noona/wardenm/noona-settings.json',
                 snapshot: {
                     version: 2,
                     selected: ['noona-portal'],
@@ -162,7 +162,7 @@ test('GET /api/setup/config returns persisted setup snapshot metadata from warde
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         exists: true,
-        path: '/srv/noona/warden/setup-wizard-state.json',
+        path: '/srv/noona/wardenm/noona-settings.json',
         snapshot: {
             version: 2,
             selected: ['noona-portal'],
@@ -184,7 +184,7 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
             calls.push(payload);
             return {
                 exists: true,
-                path: '/srv/noona/warden/setup-wizard-state.json',
+                path: '/srv/noona/wardenm/noona-settings.json',
                 selected: ['noona-portal'],
                 snapshot: payload,
                 runtime: [
@@ -227,7 +227,7 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
     assert.deepEqual(calls, [payload]);
     assert.deepEqual(await response.json(), {
         exists: true,
-        path: '/srv/noona/warden/setup-wizard-state.json',
+        path: '/srv/noona/wardenm/noona-settings.json',
         selected: ['noona-portal'],
         snapshot: payload,
         runtime: [

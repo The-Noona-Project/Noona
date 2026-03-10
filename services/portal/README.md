@@ -16,9 +16,11 @@ default Discord roles.
 - [Discord runtime modules](discord/)
 - [Discord client](discord/client.mjs)
 - [Recommendation notifier](discord/recommendationNotifier.mjs)
+- [Subscription notifier](discord/subscriptionNotifier.mjs)
 - [Discord command inspector](discord/commandInspector.mjs)
 - [Slash command modules](commands/)
 - [Recommend command](commands/recommendCommand.mjs)
+- [Subscribe command](commands/subscribeCommand.mjs)
 - [Command listing script](scripts/listCommands.mjs)
 - [Onboarding token store](storage/onboardingStore.mjs)
 - [Kavita client](clients/kavitaClient.mjs)
@@ -35,9 +37,14 @@ default Discord roles.
 - Register and execute Discord slash commands for Kavita account creation, library scans, title search workflows, and
   Raven-backed recommendation intake.
 - Poll Raven and Warden so the Discord bot presence reflects active downloads, title checks, and service updates.
-- Persist portal credentials and pending recommendation documents in Vault, assign Discord roles when configured, and
-  DM recommendation requesters when approvals, admin comments, and completed imports are detected.
+- Persist portal credentials plus recommendation/subscription documents in Vault, assign Discord roles when configured,
+  DM recommendation requesters when approvals/admin comments/completed imports are detected, and DM subscribers when
+  Raven finishes new chapters for tracked titles.
 - Queue outbound Discord DMs through Vault Redis packet APIs so per-user recommendation notifications stay in-order.
+  Portal now prefers Redis list packets (`rpush`/`lpop`) for FIFO queueing, with a compatibility fallback to legacy
+  Redis `set`/`get`/`del` packets when needed.
+- Retry transient Vault packet failures for recommendation reads/writes so short startup races do not immediately fail
+  Discord recommendation flows.
 
 ## HTTP Endpoints
 
@@ -96,39 +103,47 @@ default Discord roles.
   when Moon URL discovery succeeds, includes a direct `/myrecommendations/<id>` link. If the confirmed title already
   exists in Raven's library, Portal skips insertion and responds that the title is already on the server plus a Kavita
   title link when one can be resolved (preferring `KAVITA_EXTERNAL_URL`).
+- `/subscribe title:<name>` - subscribe the Discord user to a Raven title and store the subscription in Vault's
+  `portal_subscriptions` collection. Portal sends the subscriber a DM whenever Raven reports newly completed chapter
+  numbers for that title.
 - Command fallback behavior: if Discord still has an old slash definition that no longer maps to a live Portal command
   handler, Portal now replies with an explicit ephemeral unavailable message instead of timing out with
   `The application did not respond`.
 - Recommendation follow-up DMs: Portal polls Vault recommendations and sends direct messages to the original requester
   when a manager approves the recommendation (including approver name), then sends a second DM once the title appears
-  in Raven and a Kavita series link can be resolved (preferring `KAVITA_EXTERNAL_URL`). It also sends a DM when an
-  admin adds a recommendation timeline comment, including a direct Moon link to `/myrecommendations/<id>`. The same
-  poller now mirrors Raven download activity into each recommendation timeline by appending
-  `download-started` and `download-completed` system events before Kavita completion DMs go out.
+  in Raven. When a Kavita series link can be resolved (preferring `KAVITA_EXTERNAL_URL`), that completion DM includes
+  the direct Kavita URL; otherwise Portal still sends the DM after Raven finishes downloading and includes a Moon
+  `/myrecommendations/<id>` link when available so the requester is not left without an update. It also sends a DM
+  when an admin adds a recommendation timeline comment, including a direct Moon link to `/myrecommendations/<id>`.
+  The same poller now mirrors Raven download activity into each recommendation timeline by appending
+  `download-started`, periodic `download-progress` milestones, and `download-completed` system events before
+  completion DMs go out.
+- Subscription follow-up DMs: Portal polls active `portal_subscriptions` documents and DM-notifies each subscriber
+  whenever Raven exposes new `completedChapterNumbers` for a matched title task.
 - Boot behavior: when Discord is configured, Portal logs in, clears current-app global commands, clears the guild
   command list, then re-registers all current slash command definitions for the configured guild. If Discord env vars
   are omitted, Portal starts in HTTP-only mode.
 
 ## Key Environment Variables
 
-| Variable                                                              | Purpose                                                                                              |
-|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                                    |
-| `DISCORD_BOT_TOKEN` / `DISCORD_CLIENT_ID` / `DISCORD_GUILD_ID`        | Optional Discord integration (all-or-none). If omitted, Portal still boots with HTTP routes only.    |
-| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                                       |
-| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`)             |
-| `KAVITA_EXTERNAL_URL`                                                 | Optional public Kavita URL used in Moon buttons and Discord recommendation links                     |
-| `KOMF_BASE_URL`                                                       | Komf metadata helper URL (`http://noona-komf:8085` by default for managed installs)                  |
-| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` (`*,-admin` for roles and `*` for libraries by default)            |
-| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs       |
-| `RAVEN_BASE_URL` / `WARDEN_BASE_URL`                                  | Optional activity-poll targets for Discord bot presence                                              |
-| `MOON_BASE_URL`                                                       | Optional direct Moon URL override for recommendation DMs (fallback uses Warden service URLs)         |
-| `PORTAL_ACTIVITY_POLL_MS`                                             | Poll interval for Discord presence refreshes (default `15000`)                                       |
-| `PORTAL_RECOMMENDATION_POLL_MS`                                       | Poll interval for recommendation approval/completion DM checks (default `30000`)                     |
-| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                                      |
-| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                                       |
-| `REQUIRED_GUILD_ID` / `REQUIRED_ROLE_<COMMAND>`                       | Optional per-command Discord access gates for `/ding`, `/join`, `/scan`, `/search`, and `/recommend` |
-| `NOONA_LOG_DIR`                                                       | Optional directory for Portal's `latest.log`; Warden-managed installs mount `/var/log/noona`         |
+| Variable                                                              | Purpose                                                                                                        |
+|-----------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                                              |
+| `DISCORD_BOT_TOKEN` / `DISCORD_CLIENT_ID` / `DISCORD_GUILD_ID`        | Optional Discord integration (all-or-none). If omitted, Portal still boots with HTTP routes only.              |
+| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                                                 |
+| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`)                       |
+| `KAVITA_EXTERNAL_URL`                                                 | Optional public Kavita URL used in Moon buttons and Discord recommendation links                               |
+| `KOMF_BASE_URL`                                                       | Komf metadata helper URL (`http://noona-komf:8085` by default for managed installs)                            |
+| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` (`*,-admin` for roles and `*` for libraries by default)                      |
+| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs                 |
+| `RAVEN_BASE_URL` / `WARDEN_BASE_URL`                                  | Optional activity-poll targets for Discord bot presence                                                        |
+| `MOON_BASE_URL`                                                       | Optional direct Moon URL override for recommendation DMs (fallback uses Warden service URLs)                   |
+| `PORTAL_ACTIVITY_POLL_MS`                                             | Poll interval for Discord presence refreshes (default `15000`)                                                 |
+| `PORTAL_RECOMMENDATION_POLL_MS`                                       | Poll interval for recommendation and subscription DM checks (default `30000`)                                  |
+| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                                                |
+| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                                                 |
+| `REQUIRED_GUILD_ID` / `REQUIRED_ROLE_<COMMAND>`                       | Optional per-command Discord access gates for `/ding`, `/join`, `/scan`, `/search`, `/recommend`, `/subscribe` |
+| `NOONA_LOG_DIR`                                                       | Optional directory for Portal's `latest.log`; Warden-managed installs mount `/var/log/noona`                   |
 
 ## Local Commands
 

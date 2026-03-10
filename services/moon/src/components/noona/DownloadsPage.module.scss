@@ -122,8 +122,7 @@
 .pageShell {
   position: relative;
   isolation: isolate;
-  --downloads-active-min: 18rem;
-  --downloads-history-min: 18rem;
+  --downloads-queue-min: 19rem;
 }
 
 .pageShell::before {
@@ -152,13 +151,11 @@
 }
 
 :global(html[data-moon-view-mode="ultrawide"]) .pageShell {
-  --downloads-active-min: 21rem;
-  --downloads-history-min: 19rem;
+  --downloads-queue-min: 22rem;
 }
 
 :global(html[data-moon-view-mode="mobile"]) .pageShell {
-  --downloads-active-min: 100%;
-  --downloads-history-min: 100%;
+  --downloads-queue-min: 100%;
 }
 
 .sectionCard {
@@ -193,20 +190,13 @@
   );
 }
 
-.taskDeckViewport {
-  overflow: hidden;
-  border-radius: 1.25rem;
-}
-
-.taskDeckTrack {
-  display: flex;
+.taskCarousel {
   width: 100%;
-  transition: transform 320ms cubic-bezier(0.2, 0.85, 0.2, 1);
-  will-change: transform;
 }
 
-.taskDeckSlide {
-  min-width: 100%;
+.taskCarouselSlide {
+  width: 100%;
+  padding: clamp(0.5rem, 0.8vw, 0.75rem);
 }
 
 .taskSlideGrid {
@@ -233,9 +223,18 @@
   gap: 1rem;
 }
 
+.taskTimelineGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--neutral-border-medium, rgba(255, 255, 255, 0.12));
+  background: color-mix(in srgb, var(--surface-background) 92%, transparent);
+}
+
 .taskInsetCard,
-.downloadCard,
-.historyCard {
+.downloadCard {
   border-color: color-mix(in srgb, var(--brand-background-strong) 10%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
   background: linear-gradient(
                   160deg,
@@ -244,13 +243,11 @@
   );
 }
 
-.downloadCard,
-.historyCard {
+.downloadCard {
   transition: transform 160ms ease, border-color 160ms ease;
 }
 
-.downloadCard:hover,
-.historyCard:hover {
+.downloadCard:hover {
   transform: translateY(-2px);
   border-color: color-mix(in srgb, var(--brand-background-strong) 22%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
 }
@@ -265,19 +262,85 @@
   overflow: hidden;
 }
 
-.activeGrid,
-.historyGrid {
+.queueGrid {
   display: grid;
-  gap: 1rem;
+  gap: 0.95rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--downloads-queue-min)), 1fr));
   align-items: stretch;
 }
 
-.activeGrid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--downloads-active-min)), 1fr));
+.queueCard {
+  min-height: 100%;
 }
 
-.historyGrid {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--downloads-history-min)), 1fr));
+.queueMetaGrid {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.queueMetaCell {
+  min-width: 0;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.8rem;
+  border: 1px solid var(--neutral-border-medium, rgba(255, 255, 255, 0.12));
+  background: color-mix(in srgb, var(--surface-background) 94%, transparent);
+}
+
+.historySheet {
+  display: grid;
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--brand-background-strong) 12%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+  background: linear-gradient(
+                  160deg,
+                  color-mix(in srgb, var(--brand-background-strong) 7%, var(--surface-background)) 0%,
+                  color-mix(in srgb, var(--surface-background) 98%, transparent) 100%
+  );
+}
+
+.historyRow {
+  display: grid;
+  grid-template-columns:
+    minmax(11rem, 1.25fr)
+    minmax(6.5rem, 0.72fr)
+    minmax(8.5rem, 0.92fr)
+    minmax(10rem, 1fr)
+    minmax(11rem, 1.2fr)
+    minmax(8rem, 0.9fr)
+    minmax(11rem, 1.15fr);
+  gap: 0.9rem;
+  align-items: start;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--brand-background-strong) 10%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+}
+
+.historyRow:last-child {
+  border-bottom: 0;
+}
+
+.historyHeader {
+  background: color-mix(in srgb, var(--brand-background-strong) 10%, transparent);
+}
+
+.historyHeaderCell {
+  white-space: nowrap;
+}
+
+.historyCell {
+  min-width: 0;
+}
+
+.historyTitleCell {
+  padding-right: 0.35rem;
+}
+
+.historyMobileLabel {
+  display: none;
+}
+
+.historySheet .historyRow:not(.historyHeader):hover {
+  background: color-mix(in srgb, var(--brand-background-strong) 8%, transparent);
 }
 
 @media (max-width: 720px) {
@@ -295,22 +358,61 @@
   }
 
   .pageShell {
-    --downloads-active-min: 100%;
-    --downloads-history-min: 100%;
+    --downloads-queue-min: 100%;
   }
 
-  .taskDeckViewport {
-    border-radius: 1rem;
+  .taskCarouselSlide {
+    padding: 0.45rem;
   }
 
   .taskHeroPanel {
     padding: 1rem;
+  }
+
+  .queueMetaGrid {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 980px) {
   .taskSlideGrid {
     grid-template-columns: 1fr;
+  }
+
+  .taskTimelineGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .historySheet {
+    gap: 0.75rem;
+    border: 0;
+    background: none;
+    overflow: visible;
+  }
+
+  .historyHeader {
+    display: none;
+  }
+
+  .historyRow {
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+    padding: 0.85rem;
+    border: 1px solid color-mix(in srgb, var(--brand-background-strong) 12%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+    border-radius: 0.95rem;
+    background: linear-gradient(
+                    160deg,
+                    color-mix(in srgb, var(--brand-background-strong) 7%, var(--surface-background)) 0%,
+                    color-mix(in srgb, var(--surface-background) 98%, transparent) 100%
+    );
+  }
+
+  .historyRow:last-child {
+    border-bottom: 1px solid color-mix(in srgb, var(--brand-background-strong) 12%, var(--neutral-border-medium, rgba(255, 255, 255, 0.12)));
+  }
+
+  .historyMobileLabel {
+    display: block;
   }
 }
 

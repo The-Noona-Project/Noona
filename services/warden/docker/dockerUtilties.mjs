@@ -334,6 +334,49 @@ export async function pullImageIfNeeded(image, options = {}) {
     onProgress?.(payload);
 }
 
+const normalizeDeviceMappings = (value) => {
+    if (!Array.isArray(value) || value.length === 0) {
+        return undefined;
+    }
+
+    const devices = [];
+    for (const entry of value) {
+        if (!entry) {
+            continue;
+        }
+
+        if (typeof entry === 'string') {
+            const [hostPath = '', containerPath = '', permissions = 'rwm'] = entry.split(':');
+            const normalizedHostPath = hostPath.trim();
+            const normalizedContainerPath = (containerPath || hostPath || '').trim();
+            if (!normalizedHostPath || !normalizedContainerPath) {
+                continue;
+            }
+            devices.push({
+                PathOnHost: normalizedHostPath,
+                PathInContainer: normalizedContainerPath,
+                CgroupPermissions: (permissions || 'rwm').trim() || 'rwm',
+            });
+            continue;
+        }
+
+        if (typeof entry === 'object') {
+            const normalizedHostPath = String(entry.PathOnHost || entry.pathOnHost || '').trim();
+            const normalizedContainerPath = String(entry.PathInContainer || entry.pathInContainer || '').trim();
+            if (!normalizedHostPath || !normalizedContainerPath) {
+                continue;
+            }
+            devices.push({
+                PathOnHost: normalizedHostPath,
+                PathInContainer: normalizedContainerPath,
+                CgroupPermissions: String(entry.CgroupPermissions || entry.cgroupPermissions || 'rwm').trim() || 'rwm',
+            });
+        }
+    }
+
+    return devices.length > 0 ? devices : undefined;
+};
+
 /**
  * Create and start a Docker container for the given service and optionally stream its logs.
  *
@@ -365,6 +408,8 @@ export async function runContainerWithLogs(
 
     const exposed = service.exposed || {};
     const ports = service.ports || {};
+    const capAdd = Array.isArray(service.capAdd) && service.capAdd.length > 0 ? service.capAdd : undefined;
+    const devices = normalizeDeviceMappings(service.devices);
 
     const debugValue = (DEBUG || '').toString().toLowerCase();
     const shouldStreamLogs = ['true', '1', 'yes', 'super'].includes(debugValue);
@@ -378,6 +423,8 @@ export async function runContainerWithLogs(
             PortBindings: ports,
             Binds: binds.length ? binds : undefined,
             RestartPolicy: service.restartPolicy || undefined,
+            CapAdd: capAdd,
+            Devices: devices,
         },
         User: service.user || undefined,
         NetworkingConfig: {

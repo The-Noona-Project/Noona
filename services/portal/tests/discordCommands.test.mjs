@@ -94,6 +94,34 @@ const createSearchInteraction = title => {
     return {interaction, edits};
 };
 
+const createSubscribeInteraction = ({
+                                        title = 'Solo Leveling',
+                                        discordId = 'discord-user-1',
+                                        tag = 'Member#0001',
+                                    } = {}) => {
+    const edits = [];
+    const interaction = {
+        user: {
+            id: discordId,
+            tag,
+        },
+        deferred: false,
+        replied: false,
+        options: {
+            getString: name => (name === 'title' ? title : null),
+        },
+        deferReply: async () => {
+            interaction.deferred = true;
+        },
+        editReply: async payload => {
+            interaction.replied = true;
+            edits.push(payload);
+        },
+    };
+
+    return {interaction, edits};
+};
+
 const createRecommendInteraction = ({
                                         title = 'Solo Leveling',
                                         discordId = 'discord-user-1',
@@ -218,7 +246,7 @@ test('join command rejects mismatched passwords', async () => {
     await command.execute(interaction);
 
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /must match/i);
 });
 
@@ -271,7 +299,7 @@ test('join command creates a Kavita user with configured defaults', async () => 
     assert.deepEqual(vaultWrites[0].credential.roles, ['Pleb']);
     assert.deepEqual(vaultWrites[0].credential.libraries, [2]);
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /Created Kavita account \*\*reader\*\*/);
 });
 
@@ -346,7 +374,7 @@ test('scan command queues a Kavita library scan from an autocompleted id', async
 
     assert.deepEqual(calls, [{libraryId: 12, options: {force: true}}]);
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /Queued a forced Kavita scan for \*\*Light Novels\*\*/i);
 });
 
@@ -368,7 +396,7 @@ test('scan command resolves a typed library name and reports available libraries
     await command.execute(interaction);
 
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /Available libraries: Manga, Light Novels/);
 });
 
@@ -402,7 +430,7 @@ test('search command returns friendly response when Kavita title is missing', as
     await command.execute(interaction);
 
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /No Kavita titles found/i);
 });
 
@@ -437,7 +465,7 @@ test('search command queries Kavita and formats title matches', async () => {
 
     assert.deepEqual(calls, ['one piece']);
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /Found 2 Kavita title matches for "one piece"/i);
     assert.match(edits[0].content, /1\. One Piece \| library: Shonen Jump \| aka: ワンピース/);
     assert.match(edits[0].content, /2\. Frieren: Beyond Journey's End \| library: Fantasy/);
@@ -457,8 +485,204 @@ test('search command rejects blank titles', async () => {
     await command.execute(interaction);
 
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /Provide a title to search/i);
+});
+
+test('subscribe command definition requires a title option', () => {
+    const commands = createPortalSlashCommands();
+    const command = commands.get('subscribe');
+
+    assert.ok(command, 'Expected subscribe command to be registered.');
+    assert.equal(command.definition.description, 'Subscribe to a title and get DMs for newly downloaded chapters.');
+    assert.deepEqual(command.definition.options, [
+        {
+            name: 'title',
+            description: 'Title to subscribe to for chapter download DMs.',
+            type: 3,
+            required: true,
+        },
+    ]);
+});
+
+test('subscribe command rejects blank titles', async () => {
+    const commands = createPortalSlashCommands({
+        raven: {},
+        vault: {
+            findSubscriptions: async () => [],
+            storeSubscription: async () => {
+                throw new Error('storeSubscription should not be called for blank titles');
+            },
+            updateSubscription: async () => {
+                throw new Error('updateSubscription should not be called for blank titles');
+            },
+        },
+    });
+    const command = commands.get('subscribe');
+    const {interaction, edits} = createSubscribeInteraction({title: '   '});
+
+    await command.execute(interaction);
+
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].content, /Provide a title to subscribe/i);
+});
+
+test('subscribe command stores a new active subscription with baseline chapter markers', async () => {
+    const storedSubscriptions = [];
+    const commands = createPortalSlashCommands({
+        raven: {
+            getLibrary: async () => [
+                {
+                    uuid: 'title-uuid-1',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+            getDownloadStatus: async () => [
+                {
+                    titleUuid: 'title-uuid-1',
+                    title: 'Solo Leveling',
+                    completedChapterNumbers: ['1', '2'],
+                },
+            ],
+            getDownloadHistory: async () => [
+                {
+                    titleUuid: 'title-uuid-1',
+                    title: 'Solo Leveling',
+                    completedChapterNumbers: ['2', '3'],
+                },
+            ],
+        },
+        vault: {
+            findSubscriptions: async () => [],
+            storeSubscription: async (payload, options) => {
+                storedSubscriptions.push({payload, options});
+                return {insertedId: 'subscription-1'};
+            },
+            updateSubscription: async () => {
+                throw new Error('updateSubscription should not be called for a new subscription');
+            },
+        },
+    });
+    const command = commands.get('subscribe');
+    const {interaction, edits} = createSubscribeInteraction();
+
+    await command.execute(interaction);
+
+    assert.equal(storedSubscriptions.length, 1);
+    assert.deepEqual(storedSubscriptions[0].options, {collection: 'portal_subscriptions'});
+    assert.equal(storedSubscriptions[0].payload.status, 'active');
+    assert.equal(storedSubscriptions[0].payload.source, 'discord');
+    assert.equal(storedSubscriptions[0].payload.titleQuery, 'Solo Leveling');
+    assert.equal(storedSubscriptions[0].payload.title, 'Solo Leveling');
+    assert.equal(storedSubscriptions[0].payload.titleUuid, 'title-uuid-1');
+    assert.equal(storedSubscriptions[0].payload.sourceUrl, 'https://source.example/solo-leveling');
+    assert.equal(storedSubscriptions[0].payload.subscriber.discordId, 'discord-user-1');
+    assert.deepEqual(
+        storedSubscriptions[0].payload.notifications.sentChapterKeys,
+        [
+            'uuid:title-uuid-1:1',
+            'uuid:title-uuid-1:2',
+            'uuid:title-uuid-1:3',
+        ],
+    );
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].content, /Subscribed to \*\*Solo Leveling\*\*/i);
+});
+
+test('subscribe command reports when an active matching subscription already exists', async () => {
+    const commands = createPortalSlashCommands({
+        raven: {
+            getLibrary: async () => [
+                {
+                    uuid: 'title-uuid-1',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+        },
+        vault: {
+            findSubscriptions: async () => [
+                {
+                    _id: 'sub-1',
+                    status: 'active',
+                    title: 'Solo Leveling',
+                    titleUuid: 'title-uuid-1',
+                    subscriber: {
+                        discordId: 'discord-user-1',
+                    },
+                },
+            ],
+            storeSubscription: async () => {
+                throw new Error('storeSubscription should not be called when subscription is already active');
+            },
+            updateSubscription: async () => {
+                throw new Error('updateSubscription should not be called when subscription is already active');
+            },
+        },
+    });
+    const command = commands.get('subscribe');
+    const {interaction, edits} = createSubscribeInteraction();
+
+    await command.execute(interaction);
+
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].content, /already subscribed/i);
+});
+
+test('subscribe command reactivates an existing inactive subscription', async () => {
+    const updates = [];
+    const commands = createPortalSlashCommands({
+        raven: {
+            getLibrary: async () => [
+                {
+                    uuid: 'title-uuid-1',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+        },
+        vault: {
+            findSubscriptions: async () => [
+                {
+                    _id: 'sub-1',
+                    status: 'paused',
+                    title: 'Solo Leveling',
+                    titleUuid: 'title-uuid-1',
+                    subscriber: {
+                        discordId: 'discord-user-1',
+                    },
+                    notifications: {
+                        chapterDmCount: 4,
+                        sentChapterKeys: ['uuid:title-uuid-1:1'],
+                    },
+                },
+            ],
+            storeSubscription: async () => {
+                throw new Error('storeSubscription should not be called when reactivating existing subscription');
+            },
+            updateSubscription: async payload => {
+                updates.push(payload);
+                return {matched: 1, modified: 1};
+            },
+        },
+    });
+    const command = commands.get('subscribe');
+    const {interaction, edits} = createSubscribeInteraction();
+
+    await command.execute(interaction);
+
+    assert.equal(updates.length, 1);
+    assert.deepEqual(updates[0].query, {_id: 'sub-1'});
+    assert.equal(updates[0].update?.$set?.status, 'active');
+    assert.equal(updates[0].update?.$set?.titleUuid, 'title-uuid-1');
+    assert.equal(updates[0].update?.$set?.notifications?.chapterDmCount, 4);
+    assert.deepEqual(
+        updates[0].update?.$set?.notifications?.sentChapterKeys,
+        ['uuid:title-uuid-1:1'],
+    );
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].content, /Subscribed to \*\*Solo Leveling\*\*/i);
 });
 
 test('recommend command definition requires a title option', () => {
@@ -491,7 +715,7 @@ test('recommend command rejects blank titles', async () => {
     await command.execute(interaction);
 
     assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, true);
+    assert.equal(edits[0].ephemeral, undefined);
     assert.match(edits[0].content, /Provide a title to recommend/i);
 });
 

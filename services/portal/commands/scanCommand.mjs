@@ -1,4 +1,4 @@
-import {ApplicationCommandOptionType} from 'discord.js';
+import {ApplicationCommandOptionType, MessageFlags} from 'discord.js';
 import {respondWithError} from './utils.mjs';
 
 const MAX_AUTOCOMPLETE_RESULTS = 25;
@@ -79,7 +79,7 @@ export const createScanCommand = ({
         await interaction.respond?.(results);
     },
     execute: async interaction => {
-        await interaction.deferReply?.({ephemeral: true});
+        await interaction.deferReply?.({flags: MessageFlags.Ephemeral});
 
         if (!kavita?.fetchLibraries || !kavita?.scanLibrary) {
             throw new Error('Kavita client is not configured.');
@@ -98,7 +98,6 @@ export const createScanCommand = ({
         if (!Array.isArray(libraries) || libraries.length === 0) {
             await interaction.editReply?.({
                 content: 'No Kavita libraries are available to scan.',
-                ephemeral: true,
             });
             return;
         }
@@ -114,7 +113,6 @@ export const createScanCommand = ({
                 content: available
                     ? `Could not find that Kavita library. Available libraries: ${available}`
                     : 'Could not find that Kavita library.',
-                ephemeral: true,
             });
             return;
         }
@@ -123,7 +121,6 @@ export const createScanCommand = ({
 
         await interaction.editReply?.({
             content: `Queued a ${force ? 'forced ' : ''}Kavita scan for **${resolveLibraryName(library)}**.`,
-            ephemeral: true,
         });
     },
 });

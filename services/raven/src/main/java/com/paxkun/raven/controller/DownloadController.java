@@ -146,6 +146,26 @@ public class DownloadController {
         return ResponseEntity.ok(payload);
     }
 
+    @PostMapping("/pause")
+    public ResponseEntity<Map<String, Object>> pauseDownloads() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Pause request received");
+        DownloadService.PauseRequestResult result = downloadService.requestPauseActiveDownloads();
+
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("affectedTasks", result.getAffectedTasks());
+        payload.put("pausedImmediately", result.pausedImmediately());
+        payload.put("pausingAfterCurrentChapter", result.pausingAfterCurrentChapter());
+        if (result.getAffectedTasks() == 0) {
+            payload.put("message", "No active Raven downloads were available to pause.");
+        } else if (result.pausingAfterCurrentChapter().isEmpty()) {
+            payload.put("message", "Paused " + result.getAffectedTasks() + " Raven task(s).");
+        } else {
+            payload.put("message", "Pause queued. Raven will stop " + result.pausingAfterCurrentChapter().size()
+                    + " task(s) after the current chapter completes.");
+        }
+        return ResponseEntity.accepted().body(payload);
+    }
+
     /**
      * Clears an existing progress entry, allowing stale history to be removed.
      *
@@ -201,6 +221,7 @@ public class DownloadController {
             case "completed" -> "Completed " + title;
             case "failed" -> "Failed " + title;
             case "interrupted" -> "Interrupted " + title;
+            case "paused" -> "Paused " + title;
             case "recovering" -> "Recovering " + title;
             case "queued" -> "Queued " + title;
             default -> "Tracking " + title;

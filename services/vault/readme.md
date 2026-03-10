@@ -22,7 +22,8 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 - `GET /v1/vault/health` - service health string.
 - `GET /v1/vault/debug` and `POST /v1/vault/debug` - read/update debug mode (token protected).
 - `POST /v1/vault/handle` - generic packet dispatch to storage handlers (token protected). Thrown packet-handler
-  failures are converted into JSON `500` responses instead of bubbling out as opaque Express errors.
+  failures are converted into JSON `500` responses instead of bubbling out as opaque Express errors. Redis packet
+  support includes key operations (`set`, `get`, `del`, `wipe`) plus list queue operations (`rpush`, `lpop`).
 - `GET /api/users`, `GET /api/users/:username`, `POST /api/users`, `PUT /api/users/:username`,
   `DELETE /api/users/:username` - user management APIs (token protected).
 - `POST /api/users/authenticate` - username/password auth check (token protected).

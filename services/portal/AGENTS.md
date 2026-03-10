@@ -30,7 +30,8 @@
 
 ## Slash command structure
 
-- `commands/` holds one module per command (`ding`, `join`, `scan`, `search`, `recommend`) plus shared helpers in
+- `commands/` holds one module per command (`ding`, `join`, `scan`, `search`, `recommend`, `subscribe`) plus shared
+  helpers in
   `commands/utils.mjs`.
 - Command factories receive dependencies (`discord`, `getDiscord`, `kavita`, `vault`, `onboardingStore`,
   `joinDefaults`) for

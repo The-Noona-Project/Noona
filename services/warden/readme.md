@@ -52,9 +52,10 @@ mode.
 - `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
 - `GET /api/setup/config` - read Warden's persisted setup JSON snapshot (path + parsed payload when available).
 - `POST /api/setup/config` - persist setup JSON snapshot and hydrate runtime overrides from the saved values.
-  Warden now treats `<NOONA_DATA_ROOT>/noona-settings.json` as the canonical boot snapshot, mirrors that payload to
-  the legacy `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` path for compatibility, and Moon's General settings
-  page uses the same snapshot endpoints for its `Save JSON` / `Load JSON` controls.
+  Warden now treats `<NOONA_DATA_ROOT>/wardenm/noona-settings.json` as the canonical boot snapshot, mirrors that
+  payload to the legacy `<NOONA_DATA_ROOT>/noona-settings.json` and
+  `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` paths for compatibility, and Moon's General settings page uses
+  the same snapshot endpoints for its `Save JSON` / `Load JSON` controls.
   If Warden itself runs in a container, bind-mount `NOONA_DATA_ROOT` into that container or those snapshot files will
   only exist inside Warden's container filesystem.
   Loading a snapshot there follows up with a forced ecosystem restart using the imported service selection.
@@ -81,6 +82,7 @@ mode.
 | `NOONA_DATA_ROOT`                                 | Shared host root for Raven, Vault, Kavita, `noona-komf`, and reserved service folders                | `%APPDATA%\noona` on Windows, `/mnt/user/noona` elsewhere |
 | `WEBGUI_PORT`                                     | Moon web GUI port injected into `noona-moon`                                                         | `3000`                                                    |
 | `RAVEN_VAULT_URL`                                 | Vault URL injected into Raven runtime                                                                | `http://noona-vault:3005`                                 |
+| `RAVEN_VPN_ENABLE_TUN`                            | Enables Raven OpenVPN Docker capabilities (`NET_ADMIN`, `/dev/net/tun`) on non-Windows hosts         | `true` (non-Windows), ignored on Windows                  |
 | `KAVITA_ADMIN_*`                                  | Optional managed `noona-kavita` first-admin defaults passed through on install/start                 | unset                                                     |
 | `*_VAULT_TOKEN`                                   | Optional per-service token override                                                                  | generated in descriptors                                  |
 
@@ -159,6 +161,8 @@ mode.
 - Raven descriptors now receive `KAVITA_BASE_URL`, `KAVITA_API_KEY`, and `KAVITA_LIBRARY_ROOT` so Raven can create
   matching Kavita libraries for new Raven media-type folders when Kavita sync is configured, plus `PORTAL_BASE_URL`
   so Raven can ask Portal to ensure those libraries through the managed Kavita API path.
+- Managed Raven now also receives PIA OpenVPN profile/timeout runtime settings and, on supported hosts,
+  Warden applies `NET_ADMIN` plus `/dev/net/tun` so Raven's built-in PIA rotation can establish a tunnel.
 - Portal descriptors now receive `RAVEN_BASE_URL`, `WARDEN_BASE_URL`, and `PORTAL_ACTIVITY_POLL_MS` so the Discord bot
   can publish live Noona activity from Raven downloads/checks and Warden service updates.
 - The managed Komf descriptor is now Kavita-only in setup flows. Warden no longer publishes optional Komga credentials
@@ -171,7 +175,7 @@ mode.
   installs default those values to `*,-admin` and `*`, and Warden injects Portal's Vault credential through the
   generated `VAULT_API_TOKEN` field instead of asking users to type a Vault token during setup.
 - The same Portal descriptor also publishes `REQUIRED_GUILD_ID` and `REQUIRED_ROLE_<COMMAND>` fields so Moon can edit
-  per-command Discord access for `/ding`, `/join`, `/scan`, `/search`, and `/recommend`.
+  per-command Discord access for `/ding`, `/join`, `/scan`, `/search`, `/recommend`, and `/subscribe`.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under
   `services.config.*` keys, and Warden reloads them during full boot before launching the rest of the managed stack.
 - Warden now also mirrors the effective runtime service overrides to
@@ -182,17 +186,18 @@ mode.
 - Full-stack startup now reuses existing stopped containers by default instead of recreating them immediately. This
   keeps container-level env (including Portal Discord settings) intact during cold boot restores; Warden still forces
   recreation when a config/image update explicitly requires it.
-- Warden now reads a setup JSON snapshot from the canonical `<NOONA_DATA_ROOT>/noona-settings.json` path during
-  startup and falls back to `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` for older installs. When either file
-  exists, Warden restores runtime env overrides from its `values` payload and can recover full-stack boot selection
-  even if wizard-state or `noona_settings` entries are unavailable.
+- Warden now reads a setup JSON snapshot from the canonical `<NOONA_DATA_ROOT>/wardenm/noona-settings.json` path
+  first during startup and falls back to `<NOONA_DATA_ROOT>/noona-settings.json`, then
+  `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` for older installs. When any file exists, Warden restores runtime
+  env overrides from its `values` payload before managed-service startup and can recover full-stack boot selection even
+  if wizard-state or `noona_settings` entries are unavailable.
 - Factory reset now also clears Warden's canonical setup snapshot, the legacy setup snapshot, the local runtime-config
   snapshot, the in-memory runtime override cache, and the in-process wizard-state fallback before restarting. This
   keeps a reset from immediately restoring the old stack configuration on the next boot.
 - When Warden runs containerized on Linux or Unraid, mount `NOONA_DATA_ROOT` into the Warden container at the same
-  absolute path as the host root. Otherwise direct filesystem writes like `noona-settings.json`,
-  `warden/setup-wizard-state.json`, and `warden/service-runtime-config.json` will not appear on the host share even
-  though Warden reports that they exist.
+  absolute path as the host root. Otherwise direct filesystem writes like `wardenm/noona-settings.json`,
+  `noona-settings.json`, `warden/setup-wizard-state.json`, and `warden/service-runtime-config.json` will not appear on
+  the host share even though Warden reports that they exist.
 - `startEcosystem()` now also treats that persisted setup snapshot selection as enough signal to choose a full-stack
   boot path even when Docker discovery is temporarily unavailable during a cold start, which helps managed Portal come
   back after reboot when its saved settings already exist on disk.

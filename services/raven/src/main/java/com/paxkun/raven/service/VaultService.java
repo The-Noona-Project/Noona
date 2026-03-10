@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Type;
@@ -24,6 +25,8 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class VaultService {
+    private static final int READ_RETRY_ATTEMPTS = 4;
+    private static final long READ_RETRY_BACKOFF_MS = 250L;
 
     private final WebClient webClient = WebClient.builder().build();
     private final Gson gson = new Gson();
@@ -46,10 +49,41 @@ public class VaultService {
      */
 
     private Map<String, Object> sendPacket(Map<String, Object> packet) {
+        return sendPacket(packet, false);
+    }
+
+    private Map<String, Object> sendPacket(Map<String, Object> packet, boolean retryTransientReadFailures) {
         if (vaultApiToken == null || vaultApiToken.isBlank()) {
             throw new IllegalStateException("VAULT_API_TOKEN is not configured. Set the VAULT_API_TOKEN environment variable or the 'vault.apiToken' property.");
         }
 
+        int maxAttempts = retryTransientReadFailures ? READ_RETRY_ATTEMPTS : 1;
+        RuntimeException lastError = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return sendPacketOnce(packet);
+            } catch (RuntimeException e) {
+                lastError = e;
+                boolean canRetry = retryTransientReadFailures
+                        && attempt < maxAttempts
+                        && isTransientVaultFailure(e);
+                if (!canRetry) {
+                    throw e;
+                }
+
+                try {
+                    Thread.sleep(READ_RETRY_BACKOFF_MS * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while retrying Vault packet.", interrupted);
+                }
+            }
+        }
+
+        throw lastError == null ? new RuntimeException("Vault request failed.") : lastError;
+    }
+
+    private Map<String, Object> sendPacketOnce(Map<String, Object> packet) {
         return webClient.post()
                 .uri(vaultUrl + "/v1/vault/handle")
                 .header("Authorization", "Bearer " + vaultApiToken)
@@ -70,6 +104,29 @@ public class VaultService {
                             return Mono.just(body);
                         }))
                 .block();
+    }
+
+    private boolean isTransientVaultFailure(RuntimeException error) {
+        if (error instanceof WebClientRequestException) {
+            return true;
+        }
+
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+
+        String normalized = message.toLowerCase();
+        return normalized.contains("connection refused")
+                || normalized.contains("failed to connect")
+                || normalized.contains("timed out")
+                || normalized.contains("timeout")
+                || normalized.contains("internal server error")
+                || normalized.contains("service unavailable")
+                || normalized.contains("status 500")
+                || normalized.contains("status 502")
+                || normalized.contains("status 503")
+                || normalized.contains("status 504");
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -104,7 +161,7 @@ public class VaultService {
         );
 
         try {
-            Object data = sendPacket(packet).get("data");
+            Object data = sendPacket(packet, true).get("data");
             if (data instanceof Map) {
                 return (Map<String, Object>) data;
             }
@@ -134,7 +191,7 @@ public class VaultService {
                 "payload", payload
         );
 
-        Map<String, Object> response = sendPacket(packet);
+        Map<String, Object> response = sendPacket(packet, true);
         if (response == null) {
             return List.of();
         }
@@ -210,7 +267,7 @@ public class VaultService {
         );
 
         try {
-            return sendPacket(packet).get("data");
+            return sendPacket(packet, true).get("data");
         } catch (RuntimeException e) {
             if (e.getMessage() != null && e.getMessage().toLowerCase().contains("key not found")) {
                 return null;

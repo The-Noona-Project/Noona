@@ -6,7 +6,9 @@ const DEFAULT_MOON_RECOMMENDATION_PATH_PREFIX = '/myrecommendations/';
 const ACTIVE_DOWNLOAD_STATUSES = new Set(['queued', 'downloading', 'recovering']);
 const COMPLETED_DOWNLOAD_STATUSES = new Set(['completed']);
 const DOWNLOAD_STARTED_TIMELINE_TYPE = 'download-started';
+const DOWNLOAD_PROGRESS_TIMELINE_TYPE = 'download-progress';
 const DOWNLOAD_COMPLETED_TIMELINE_TYPE = 'download-completed';
+const DOWNLOAD_PROGRESS_CHAPTER_INTERVAL = 3;
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
 const normalizeTitleKey = value => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -361,12 +363,20 @@ const resolveTimelineTimestampValue = value => {
 };
 const normalizeTimelineType = (event = {}) =>
     normalizeString(event?.type || event?.event).toLowerCase();
+const hasTimelineEventId = (entry = {}, id = '') => {
+    const normalizedId = normalizeString(id);
+    if (!normalizedId) {
+        return false;
+    }
+
+    return recommendationTimelineEvents(entry).some(event => normalizeString(event?.id) === normalizedId);
+};
 const hasTimelineEventType = (entry = {}, type = '') =>
     recommendationTimelineEvents(entry).some(event => normalizeTimelineType(event) === type);
 const createTimelineEventId = (type = 'event') =>
     `${type}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10) || 'timeline'}`;
-const createSystemTimelineEvent = ({type, body, createdAt} = {}) => ({
-    id: createTimelineEventId(type),
+const createSystemTimelineEvent = ({id, type, body, createdAt} = {}) => ({
+    id: normalizeString(id) || createTimelineEventId(type),
     type,
     createdAt: normalizeTimelineTimestamp(createdAt) || new Date().toISOString(),
     actor: {
@@ -457,6 +467,59 @@ const buildDownloadCompletedBody = (task = {}) => {
     ];
 
     if (latestChapter) {
+        parts.push(`Latest chapter: ${latestChapter}.`);
+    }
+
+    if (message) {
+        parts.push(message.endsWith('.') ? message : `${message}.`);
+    }
+
+    return parts.join(' ');
+};
+const resolveDownloadProgressMilestone = (task = {}, interval = DOWNLOAD_PROGRESS_CHAPTER_INTERVAL) => {
+    const normalizedInterval = Number.isInteger(interval) && interval > 0
+        ? interval
+        : DOWNLOAD_PROGRESS_CHAPTER_INTERVAL;
+    const completedChapters = resolveDownloadTaskCompletedChapters(task);
+    if (!completedChapters || completedChapters < normalizedInterval) {
+        return null;
+    }
+
+    const totalChapters = resolveDownloadTaskTotalChapters(task);
+    if (totalChapters && completedChapters >= totalChapters) {
+        return null;
+    }
+
+    const milestone = Math.floor(completedChapters / normalizedInterval) * normalizedInterval;
+    if (!milestone || milestone < normalizedInterval) {
+        return null;
+    }
+
+    return {
+        milestone,
+        totalChapters,
+    };
+};
+const buildDownloadProgressEventId = ({milestone, totalChapters} = {}) =>
+    `${DOWNLOAD_PROGRESS_TIMELINE_TYPE}:${String(milestone || 0)}:${String(totalChapters || 'unknown')}`;
+const buildDownloadProgressBody = ({task, milestone, totalChapters} = {}) => {
+    const normalizedMilestone = normalizePositiveInteger(milestone);
+    if (!normalizedMilestone) {
+        return null;
+    }
+
+    const currentChapter = resolveDownloadTaskCurrentChapter(task);
+    const latestChapter = normalizeString(task?.latestChapter);
+    const message = normalizeString(task?.message);
+    const parts = [
+        totalChapters
+            ? `Raven downloaded ${normalizedMilestone} of ${totalChapters} chapters so far.`
+            : `Raven downloaded ${normalizedMilestone} chapters so far.`,
+    ];
+
+    if (currentChapter) {
+        parts.push(`Current chapter: ${currentChapter}.`);
+    } else if (latestChapter) {
         parts.push(`Latest chapter: ${latestChapter}.`);
     }
 
@@ -806,6 +869,36 @@ export const createRecommendationNotifier = ({
             }
         }
 
+        if (!hasCompletedEvent && activeTask) {
+            const progressMilestone = resolveDownloadProgressMilestone(activeTask);
+            if (progressMilestone) {
+                const progressEventId = buildDownloadProgressEventId(progressMilestone);
+                const alreadyTracked =
+                    hasTimelineEventId(entry, progressEventId)
+                    || nextTimeline.some(event => normalizeString(event?.id) === progressEventId);
+
+                if (!alreadyTracked) {
+                    const progressBody = buildDownloadProgressBody({
+                        task: activeTask,
+                        milestone: progressMilestone.milestone,
+                        totalChapters: progressMilestone.totalChapters,
+                    });
+                    if (progressBody) {
+                        nextTimeline.push(createSystemTimelineEvent({
+                            id: progressEventId,
+                            type: DOWNLOAD_PROGRESS_TIMELINE_TYPE,
+                            body: progressBody,
+                            createdAt:
+                                normalizeTimelineTimestamp(activeTask?.lastUpdated)
+                                || normalizeTimelineTimestamp(activeTask?.startedAt)
+                                || normalizeTimelineTimestamp(activeTask?.queuedAt),
+                        }));
+                        changed = true;
+                    }
+                }
+            }
+        }
+
         if (!hasCompletedEvent && completedTask) {
             nextTimeline.push(createSystemTimelineEvent({
                 type: DOWNLOAD_COMPLETED_TIMELINE_TYPE,
@@ -844,12 +937,14 @@ export const createRecommendationNotifier = ({
             return;
         }
 
+        const hasCompletedDownload = hasTimelineEventType(entry, DOWNLOAD_COMPLETED_TIMELINE_TYPE);
+
         const existingTitle = resolveExistingLibraryTitle({
             library,
             selectedTitle: entry?.title,
             selectedHref: entry?.href,
         });
-        if (!existingTitle) {
+        if (!existingTitle && !hasCompletedDownload) {
             return;
         }
 
@@ -860,9 +955,7 @@ export const createRecommendationNotifier = ({
             kavitaBaseUrl: configuredKavitaBaseUrl,
             logger,
         });
-        if (!kavitaUrl) {
-            return;
-        }
+        const moonRecommendationUrl = !kavitaUrl ? await buildMoonRecommendationUrl(entry) : null;
 
         const key = recommendationNotificationKey(entry, 'completed');
         if (inFlightNotifications.has(key)) {
@@ -871,21 +964,30 @@ export const createRecommendationNotifier = ({
 
         inFlightNotifications.add(key);
         try {
-            const message = [
-                `Your recommendation for **${titleName}** is now available in Kavita.`,
-                `Open in Kavita: ${kavitaUrl}`,
-            ].join('\n');
+            const messageLines = kavitaUrl
+                ? [
+                    `Your recommendation for **${titleName}** is now available in Kavita.`,
+                    `Open in Kavita: ${kavitaUrl}`,
+                ]
+                : [
+                    `Raven finished downloading your recommendation for **${titleName}**.`,
+                    `Kavita may still be indexing it, so I do not have a direct link yet.`,
+                ];
+            if (moonRecommendationUrl) {
+                messageLines.push(`Track it in Moon: ${moonRecommendationUrl}`);
+            }
             const sentMessage = await sendDirectMessage({
                 discordClient,
                 userId: discordUserId,
-                content: message,
+                content: messageLines.join('\n'),
             });
             const sentAt = new Date().toISOString();
             const persisted = await persistRecommendationUpdate(entry, {
                 $set: {
                     'notifications.completionDmSentAt': sentAt,
                     'notifications.completionDmMessageId': normalizeString(sentMessage?.id) || null,
-                    'notifications.completionKavitaUrl': kavitaUrl,
+                    'notifications.completionKavitaUrl': kavitaUrl || null,
+                    'notifications.completionMoonUrl': moonRecommendationUrl || null,
                     completedAt: sentAt,
                 },
             });
@@ -895,7 +997,8 @@ export const createRecommendationNotifier = ({
                     ...(entry.notifications && typeof entry.notifications === 'object' ? entry.notifications : {}),
                     completionDmSentAt: sentAt,
                     completionDmMessageId: normalizeString(sentMessage?.id) || null,
-                    completionKavitaUrl: kavitaUrl,
+                    completionKavitaUrl: kavitaUrl || null,
+                    completionMoonUrl: moonRecommendationUrl || null,
                 };
                 entry.completedAt = sentAt;
             }

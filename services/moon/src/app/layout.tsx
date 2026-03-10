@@ -93,12 +93,12 @@ export default async function RootLayout({
 
                   const savedViewMode = localStorage.getItem('moon-view-mode');
                   const resolvedViewMode =
-                    savedViewMode === 'ultrawide' || savedViewMode === 'mobile' ? savedViewMode : 'desktop';
+                    savedViewMode === 'desktop' || savedViewMode === 'mobile' ? savedViewMode : 'ultrawide';
                   root.setAttribute('data-moon-view-mode', resolvedViewMode);
                 } catch (e) {
                   console.error('Failed to initialize theme:', e);
                   document.documentElement.setAttribute('data-theme', 'dark');
-                  document.documentElement.setAttribute('data-moon-view-mode', 'desktop');
+                  document.documentElement.setAttribute('data-moon-view-mode', 'ultrawide');
                 }
               })();
             `,

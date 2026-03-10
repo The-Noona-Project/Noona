@@ -35,6 +35,15 @@ const normalizeQueuedDirectMessages = value =>
             && typeof entry.payload === 'object',
         )
         : [];
+const normalizeQueuedDirectMessage = value => {
+    const [first] = normalizeQueuedDirectMessages([value]);
+    return first ?? null;
+};
+const isUnsupportedRedisListOperationError = error => {
+    const bodyError = normalizeString(error?.body?.error);
+    const message = normalizeString(error?.message);
+    return /unsupported operation "(rpush|lpop)" for redis/i.test(bodyError || message);
+};
 
 export const createDiscordClient = ({
                                         token,
@@ -70,13 +79,19 @@ export const createDiscordClient = ({
         messageQueueTtlSeconds,
         DEFAULT_MESSAGE_QUEUE_TTL_SECONDS,
     );
-    const directMessageQueueEnabled =
+    const directMessageListQueueEnabled =
+        typeof vaultClient?.redisRPush === 'function'
+        && typeof vaultClient?.redisLPop === 'function';
+    const directMessageLegacyQueueEnabled =
         typeof vaultClient?.redisSet === 'function'
         && typeof vaultClient?.redisGet === 'function'
         && typeof vaultClient?.redisDel === 'function';
+    const directMessageQueueEnabled = directMessageListQueueEnabled || directMessageLegacyQueueEnabled;
+    let preferListQueue = directMessageListQueueEnabled;
     const queueMutationsByUser = new Map();
     const queueProcessorsByUser = new Map();
     const pendingQueueResolvers = new Map();
+    const inMemoryFallbackByUser = new Map();
 
     let readyResolve;
     let readyReject;
@@ -229,22 +244,72 @@ export const createDiscordClient = ({
         await vaultClient.redisSet(key, normalizedQueue, {ttl: directMessageQueueTtlSeconds});
     };
 
-    const enqueueDirectMessage = async ({userId, payload}) =>
-        withQueueMutation(userId, async () => {
-            const queue = await readQueuedDirectMessages(userId);
+    const enqueueDirectMessage = async ({userId, payload}) => {
             const queueItem = {
                 id: crypto.randomUUID(),
                 userId,
                 payload,
                 queuedAt: new Date().toISOString(),
             };
+        const key = queueKeyForUser(directMessageQueueNamespace, userId);
+
+        if (preferListQueue) {
+            try {
+                await vaultClient.redisRPush(key, queueItem, {ttl: directMessageQueueTtlSeconds});
+                return queueItem;
+            } catch (error) {
+                if (directMessageLegacyQueueEnabled && isUnsupportedRedisListOperationError(error)) {
+                    preferListQueue = false;
+                    log('[Portal/Discord] Falling back to legacy Redis DM queue packets (set/get/del).');
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        if (!directMessageLegacyQueueEnabled) {
+            throw new Error('Vault Redis queue is not configured for direct messages.');
+        }
+
+        return withQueueMutation(userId, async () => {
+            const queue = await readQueuedDirectMessages(userId);
             queue.push(queueItem);
             await writeQueuedDirectMessages(userId, queue);
             return queueItem;
         });
+    };
 
-    const dequeueDirectMessage = async userId =>
-        withQueueMutation(userId, async () => {
+    const dequeueDirectMessage = async userId => {
+        const key = queueKeyForUser(directMessageQueueNamespace, userId);
+
+        if (preferListQueue) {
+            try {
+                for (; ;) {
+                    const nextItem = await vaultClient.redisLPop(key);
+                    if (nextItem == null) {
+                        return null;
+                    }
+
+                    const normalizedItem = normalizeQueuedDirectMessage(nextItem);
+                    if (normalizedItem) {
+                        return normalizedItem;
+                    }
+                }
+            } catch (error) {
+                if (directMessageLegacyQueueEnabled && isUnsupportedRedisListOperationError(error)) {
+                    preferListQueue = false;
+                    log('[Portal/Discord] Falling back to legacy Redis DM queue packets (set/get/del).');
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        if (!directMessageLegacyQueueEnabled) {
+            return null;
+        }
+
+        return withQueueMutation(userId, async () => {
             const queue = await readQueuedDirectMessages(userId);
             if (!queue.length) {
                 await writeQueuedDirectMessages(userId, []);
@@ -255,6 +320,25 @@ export const createDiscordClient = ({
             await writeQueuedDirectMessages(userId, remaining);
             return next;
         });
+    };
+
+    const sendDirectMessageInMemoryFallback = (userId, payload) => {
+        const previous = inMemoryFallbackByUser.get(userId) ?? Promise.resolve();
+        const next = previous
+            .catch(() => undefined)
+            .then(() => sendDirectMessageNow(userId, payload));
+
+        inMemoryFallbackByUser.set(
+            userId,
+            next.finally(() => {
+                if (inMemoryFallbackByUser.get(userId) === next) {
+                    inMemoryFallbackByUser.delete(userId);
+                }
+            }),
+        );
+
+        return next;
+    };
 
     const processDirectMessageQueue = userId => {
         const existingProcessor = queueProcessorsByUser.get(userId);
@@ -313,7 +397,7 @@ export const createDiscordClient = ({
             });
         } catch (error) {
             errMSG(`[Portal/Discord] Failed to queue direct message for ${normalizedUserId}: ${error.message}`);
-            return sendDirectMessageNow(normalizedUserId, contentPayload);
+            return sendDirectMessageInMemoryFallback(normalizedUserId, contentPayload);
         }
 
         const sentMessagePromise = new Promise((resolve, reject) => {
@@ -331,6 +415,7 @@ export const createDiscordClient = ({
         pendingQueueResolvers.clear();
         queueMutationsByUser.clear();
         queueProcessorsByUser.clear();
+        inMemoryFallbackByUser.clear();
         client.destroy();
     };
 

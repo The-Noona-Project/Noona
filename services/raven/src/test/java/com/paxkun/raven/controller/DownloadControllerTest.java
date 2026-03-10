@@ -16,8 +16,7 @@ import java.util.List;
 
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -106,5 +105,22 @@ class DownloadControllerTest {
                 .andExpect(jsonPath("$.currentCheck.title").value("Omniscient Reader"))
                 .andExpect(jsonPath("$.currentCheck.checkedTitles").value(2))
                 .andExpect(jsonPath("$.currentCheck.totalTitles").value(14));
+    }
+
+    @Test
+    void pauseEndpointQueuesGracefulPause() throws Exception {
+        when(downloadService.requestPauseActiveDownloads())
+                .thenReturn(new DownloadService.PauseRequestResult(
+                        List.of("Queued Title"),
+                        List.of("Solo Leveling")
+                ));
+
+        mockMvc.perform(post("/v1/download/pause"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.affectedTasks").value(2))
+                .andExpect(jsonPath("$.pausedImmediately[0]").value("Queued Title"))
+                .andExpect(jsonPath("$.pausingAfterCurrentChapter[0]").value("Solo Leveling"));
+
+        verify(downloadService).requestPauseActiveDownloads();
     }
 }

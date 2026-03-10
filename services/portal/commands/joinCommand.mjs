@@ -1,4 +1,4 @@
-import {ApplicationCommandOptionType} from 'discord.js';
+import {ApplicationCommandOptionType, MessageFlags} from 'discord.js';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 import {assignDefaultRole, resolveDiscordId, respondWithError} from './utils.mjs';
 
@@ -50,7 +50,7 @@ export const createJoinCommand = ({
         ],
     },
     execute: async interaction => {
-        await interaction.deferReply?.({ephemeral: true});
+        await interaction.deferReply?.({flags: MessageFlags.Ephemeral});
 
         if (!kavita?.createUser) {
             throw new Error('Onboarding dependencies are not configured.');
@@ -128,7 +128,6 @@ export const createJoinCommand = ({
                 `Roles: ${formatList(createdUser.roles)}.`,
                 `Libraries: ${formatList(librarySummary)}.`,
             ].join(' '),
-            ephemeral: true,
         });
     },
 });

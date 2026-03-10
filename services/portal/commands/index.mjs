@@ -4,6 +4,7 @@ import createJoinCommand from './joinCommand.mjs';
 import createRecommendCommand from './recommendCommand.mjs';
 import createScanCommand from './scanCommand.mjs';
 import createSearchCommand from './searchCommand.mjs';
+import createSubscribeCommand from './subscribeCommand.mjs';
 
 export const createPortalSlashCommands = ({
                                               discord,
@@ -40,6 +41,10 @@ export const createPortalSlashCommands = ({
     }));
     commands.set('scan', createScanCommand({kavita}));
     commands.set('search', createSearchCommand({kavita, vault}));
+    commands.set('subscribe', createSubscribeCommand({
+        raven,
+        vault,
+    }));
 
     log(`[Portal/Discord] Prepared ${commands.size} slash command handler(s).`);
 

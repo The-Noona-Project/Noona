@@ -37,7 +37,7 @@ type ViewModeConfig = {
 };
 
 const MOON_VIEW_MODE_STORAGE_KEY = "moon-view-mode";
-const DEFAULT_MOON_VIEW_MODE: MoonViewMode = "desktop";
+const DEFAULT_MOON_VIEW_MODE: MoonViewMode = "ultrawide";
 const SHELLLESS_ROUTES = new Set(["/login", "/signup", "/discord/callback", "/rebooting"]);
 const VIEW_MODE_CONFIG: Record<MoonViewMode, ViewModeConfig> = {
     desktop: {
@@ -122,9 +122,10 @@ const buildPageWidthVariables = (viewMode: MoonViewMode): Record<string, string>
     };
 };
 
-const isRecommendationsPath = (pathname: string) =>
+const isActivityPath = (pathname: string) =>
     pathname.startsWith("/recommendations")
     || pathname.startsWith("/myrecommendations")
+    || pathname.startsWith("/mysubscriptions")
     || pathname.startsWith("/recommendation");
 
 const getSettingsItemIcon = (href: string) => {
@@ -175,8 +176,16 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const canManageUsers = hasMoonPermission(permissions, "user_management");
     const canManageRecommendations = hasMoonPermission(permissions, "manageRecommendations");
     const canAccessMyRecommendations = hasMoonPermission(permissions, "myRecommendations");
+    const canAccessMySubscriptions = hasMoonPermission(permissions, "mySubscriptions");
     const canAccessRecommendations = canManageRecommendations || canAccessMyRecommendations;
     const recommendationsNavHref = canManageRecommendations ? "/recommendations" : "/myrecommendations";
+    const activityNavHref = canAccessDownloads
+        ? "/downloads"
+        : canAccessRecommendations
+            ? recommendationsNavHref
+            : canAccessMySubscriptions
+                ? "/mysubscriptions"
+                : "/";
     const canAccessSettings = canAccessEcosystemSettings || canManageUsers;
     const showSetupNav = !shellSuppressed && setupCompleted === false;
     const showMainNav = !shellSuppressed && setupCompleted === true;
@@ -403,13 +412,28 @@ export function AppShell({children}: { children: React.ReactNode }) {
                 }
             }
 
+            if (canAccessMySubscriptions) {
+                activitySections.push({
+                    title: "Subscriptions",
+                    links: [
+                        {
+                            label: "My subscriptions",
+                            href: "/mysubscriptions",
+                            icon: "document",
+                            description: "Review subscribed titles and unsubscribe from chapter notifications.",
+                            selected: pathname.startsWith("/mysubscriptions"),
+                        },
+                    ],
+                });
+            }
+
             if (activitySections.length > 0) {
                 groups.push({
                     id: "activity",
                     label: "Activity",
-                    href: canAccessDownloads ? "/downloads" : recommendationsNavHref,
+                    href: activityNavHref,
                     suffixIcon: "chevronDown",
-                    selected: pathname.startsWith("/downloads") || isRecommendationsPath(pathname),
+                    selected: pathname.startsWith("/downloads") || isActivityPath(pathname),
                     sections: activitySections,
                 });
             }
@@ -487,13 +511,14 @@ export function AppShell({children}: { children: React.ReactNode }) {
         canAccessDownloads,
         canAccessEcosystemSettings,
         canAccessLibrary,
+        canAccessMySubscriptions,
         canAccessRecommendations,
         canAccessMyRecommendations,
         canAccessSettings,
         canManageRecommendations,
         canManageUsers,
         pathname,
-        recommendationsNavHref,
+        activityNavHref,
         showMainNav,
         showSetupNav,
     ]);

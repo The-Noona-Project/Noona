@@ -234,6 +234,86 @@ test('recommendation notifier prefers configured external Kavita URL for complet
     assert.equal(recommendations[0]?.notifications?.completionKavitaUrl, 'https://kavita.example.com/library/4/series/17');
 });
 
+test('recommendation notifier still DMs when Raven finishes downloading but Kavita has no link yet', async () => {
+    const recommendations = [
+        {
+            _id: 'rec-complete-3',
+            status: 'approved',
+            title: 'Omniscient Reader',
+            href: 'https://asura.example/omniscient',
+            approvedAt: '2026-03-07T00:00:00.000Z',
+            requestedBy: {
+                discordId: 'discord-user-2',
+            },
+            notifications: {
+                approvalDmSentAt: '2026-03-07T00:01:00.000Z',
+            },
+        },
+    ];
+    const messages = [];
+
+    const notifier = createRecommendationNotifier({
+        discordClient: {
+            sendDirectMessage: async (userId, payload) => {
+                messages.push({userId, payload});
+                return {id: `dm-${messages.length}`};
+            },
+        },
+        vaultClient: {
+            findRecommendations: async () => recommendations.map((entry) => ({...entry})),
+            updateRecommendation: async ({query, update} = {}) => {
+                const index = recommendations.findIndex((entry) => matchesQuery(entry, query));
+                if (index < 0) {
+                    return {status: 'ok', matched: 0, modified: 0};
+                }
+
+                recommendations[index] = applyUpdate(recommendations[index], update);
+                return {status: 'ok', matched: 1, modified: 1};
+            },
+        },
+        ravenClient: {
+            getLibrary: async () => [],
+            getDownloadStatus: async () => [],
+            getDownloadHistory: async () => [
+                {
+                    title: 'Omniscient Reader',
+                    sourceUrl: 'https://asura.example/omniscient',
+                    status: 'completed',
+                    completedChapters: 12,
+                    completedAt: '2026-03-07T00:08:00.000Z',
+                    latestChapter: 'Chapter 12',
+                },
+            ],
+        },
+        kavitaClient: {
+            getBaseUrl: () => 'http://noona-kavita:5000/',
+            searchTitles: async () => ({
+                series: [],
+            }),
+        },
+        moonBaseUrl: 'http://moon.example:3000',
+        pollMs: 60000,
+        logger: {},
+    });
+
+    notifier.start();
+    await notifier.refresh();
+    notifier.stop();
+
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].userId, 'discord-user-2');
+    assert.match(messages[0].payload.content, /Raven finished downloading your recommendation/i);
+    assert.match(messages[0].payload.content, /Kavita may still be indexing it/i);
+    assert.match(messages[0].payload.content, /Track it in Moon: http:\/\/moon\.example:3000\/myrecommendations\/rec-complete-3/i);
+    assert.ok(Array.isArray(recommendations[0]?.timeline));
+    assert.ok(recommendations[0].timeline.some((event) => event?.type === 'download-completed'));
+    assert.ok(typeof recommendations[0]?.notifications?.completionDmSentAt === 'string');
+    assert.equal(recommendations[0]?.notifications?.completionDmMessageId, 'dm-1');
+    assert.equal(recommendations[0]?.notifications?.completionKavitaUrl, null);
+    assert.equal(recommendations[0]?.notifications?.completionMoonUrl, 'http://moon.example:3000/myrecommendations/rec-complete-3');
+    assert.ok(typeof recommendations[0]?.completedAt === 'string');
+});
+
 test('recommendation notifier DMs users when admins add timeline comments and stores sent markers', async () => {
     const recommendations = [
         {
@@ -350,7 +430,9 @@ test('recommendation notifier appends Raven download timeline events for approve
                     sourceUrl: 'https://source.example/solo-leveling',
                     status: 'downloading',
                     totalChapters: 12,
+                    completedChapters: 8,
                     currentChapter: 'Chapter 5',
+                    lastUpdated: '2026-03-07T00:05:00.000Z',
                     startedAt: '2026-03-07T00:03:00.000Z',
                 },
             ],
@@ -377,12 +459,13 @@ test('recommendation notifier appends Raven download timeline events for approve
     notifier.stop();
 
     const timeline = Array.isArray(recommendations[0]?.timeline) ? recommendations[0].timeline : [];
-    assert.equal(timeline.length, 2);
+    assert.equal(timeline.length, 3);
     assert.deepEqual(
         timeline.map((event) => event?.type),
-        ['download-started', 'download-completed'],
+        ['download-started', 'download-progress', 'download-completed'],
     );
     assert.equal(timeline[0]?.actor?.username, 'Raven');
     assert.match(timeline[0]?.body ?? '', /started downloading 12 chapters/i);
-    assert.match(timeline[1]?.body ?? '', /finished downloading 12 chapters/i);
+    assert.match(timeline[1]?.body ?? '', /downloaded 6 of 12 chapters so far/i);
+    assert.match(timeline[2]?.body ?? '', /finished downloading 12 chapters/i);
 });

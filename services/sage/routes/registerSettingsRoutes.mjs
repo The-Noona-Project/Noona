@@ -6,18 +6,22 @@ export function registerSettingsRoutes(context = {}) {
     const {
         app,
         applyDebugSetting,
+        DEFAULT_DOWNLOAD_VPN_SETTINGS,
         DEFAULT_DOWNLOAD_WORKER_SETTINGS,
         DEFAULT_NAMING_SETTINGS,
         logger,
         normalizeString,
         parseBooleanInput,
         queueEcosystemRestart,
+        ravenClient,
         readDownloadWorkerSettings,
+        readDownloadVpnSettings,
         readDebugSetting,
         requireAdminSession,
         requireAdminSessionIfSetupCompleted,
         resolveDangerousActionConfirmation,
         resolveBaseRedirectUrl,
+        sanitizeDownloadVpnSettingsForResponse,
         serviceName,
         settingsCollection,
         setupClient,
@@ -28,6 +32,7 @@ export function registerSettingsRoutes(context = {}) {
         verifyDangerousActionConfirmation,
         verifyFactoryResetSelections,
         writeDownloadWorkerSettings,
+        writeDownloadVpnSettings,
     } = context
 
     app.use('/api/settings', requireAdminSessionIfSetupCompleted)
@@ -219,6 +224,112 @@ export function registerSettingsRoutes(context = {}) {
         } catch (error) {
             logger.error(`[${serviceName}] Failed to update download worker settings: ${error.message}`)
             res.status(502).json({error: 'Unable to update download worker settings.'})
+        }
+    })
+
+    app.get('/api/settings/downloads/vpn', async (_req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const settings = await readDownloadVpnSettings()
+            const safe = sanitizeDownloadVpnSettingsForResponse(settings)
+
+            let status = null
+            try {
+                if (ravenClient?.getVpnStatus) {
+                    status = await ravenClient.getVpnStatus()
+                }
+            } catch (error) {
+                logger.warn(`[${serviceName}] Failed to fetch Raven VPN status: ${error.message}`)
+            }
+
+            res.json({
+                ...safe,
+                status,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load VPN settings: ${error.message}`)
+            res.status(502).json({error: 'Unable to load VPN settings.'})
+        }
+    })
+
+    app.put('/api/settings/downloads/vpn', async (req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const settings = await writeDownloadVpnSettings(req.body ?? {})
+            res.json(sanitizeDownloadVpnSettingsForResponse(settings))
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unable to update VPN settings.'
+            const status = message.includes('required') ? 400 : 502
+            logger.error(`[${serviceName}] Failed to update VPN settings: ${message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
+    app.get('/api/settings/downloads/vpn/regions', async (_req, res) => {
+        try {
+            if (!ravenClient?.getVpnRegions) {
+                res.json({provider: DEFAULT_DOWNLOAD_VPN_SETTINGS.provider, regions: []})
+                return
+            }
+
+            const regions = await ravenClient.getVpnRegions()
+            res.json({
+                provider: DEFAULT_DOWNLOAD_VPN_SETTINGS.provider,
+                regions: Array.isArray(regions) ? regions : [],
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to fetch VPN regions: ${error.message}`)
+            res.status(502).json({error: 'Unable to load VPN regions.'})
+        }
+    })
+
+    app.post('/api/settings/downloads/vpn/rotate', async (req, res) => {
+        try {
+            if (!ravenClient?.rotateVpnNow) {
+                res.status(503).json({error: 'Raven VPN API is unavailable.'})
+                return
+            }
+
+            const triggeredBy = typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
+                ? req.body.triggeredBy.trim()
+                : 'manual'
+            const result = await ravenClient.rotateVpnNow(triggeredBy)
+            res.status(202).json(result ?? {ok: false, error: 'Raven VPN rotation did not return a payload.'})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to trigger VPN rotation: ${error.message}`)
+            res.status(502).json({error: 'Unable to trigger VPN rotation.'})
+        }
+    })
+
+    app.post('/api/settings/downloads/vpn/test-login', async (req, res) => {
+        try {
+            if (!ravenClient?.testVpnLogin) {
+                res.status(503).json({error: 'Raven VPN API is unavailable.'})
+                return
+            }
+
+            const result = await ravenClient.testVpnLogin({
+                triggeredBy:
+                    typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
+                        ? req.body.triggeredBy.trim()
+                        : 'manual',
+                region: normalizeString(req.body?.region),
+                piaUsername: normalizeString(req.body?.piaUsername),
+                piaPassword: normalizeString(req.body?.piaPassword),
+            })
+
+            res.status(200).json(result ?? {ok: false, message: 'Raven VPN login test did not return a payload.'})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to test VPN login: ${error.message}`)
+            res.status(502).json({error: 'Unable to test VPN login.'})
         }
     })
 

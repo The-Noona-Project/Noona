@@ -23,7 +23,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -270,6 +272,56 @@ class DownloadServiceTest {
         assertThat(title.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
     }
 
+    @Test
+    void pauseRequestFinishesCurrentChapterThenPersistsTaskForLater() throws Exception {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(
+                        Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1"),
+                        Map.of("chapter_title", "Chapter 2", "href", "http://example.com/solo/2")
+                ));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        CountDownLatch chapterDownloadStarted = new CountDownLatch(1);
+        AtomicBoolean firstChapterSignalSent = new AtomicBoolean(false);
+        downloadService.setBeforeSaveImagesHook(() -> {
+            if (firstChapterSignalSent.compareAndSet(false, true)) {
+                chapterDownloadStarted.countDown();
+            }
+        });
+        downloadService.setPerImageDelayMs(300);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        assertThat(chapterDownloadStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        DownloadService.PauseRequestResult pauseResult = downloadService.requestPauseActiveDownloads();
+        assertThat(pauseResult.getAffectedTasks()).isEqualTo(1);
+
+        waitForStatus("Solo Leveling", "paused");
+
+        DownloadProgress paused = downloadService.getDownloadStatuses().stream()
+                .filter(progress -> "Solo Leveling".equals(progress.getTitle()) && "paused".equals(progress.getStatus()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(paused.getCompletedChapterNumbers()).contains("1");
+        assertThat(paused.getRemainingChapterNumbers()).contains("2");
+        assertThat(paused.getMessage()).contains("Pause requested");
+    }
+
     private void waitForStatus(String titleName, String expectedStatus) throws InterruptedException {
         for (int attempt = 0; attempt < 50; attempt++) {
             List<DownloadProgress> statuses = downloadService.getDownloadStatuses();
@@ -285,8 +337,29 @@ class DownloadServiceTest {
     }
 
     static class TestableDownloadService extends DownloadService {
+        private Runnable beforeSaveImagesHook = () -> {
+        };
+        private int perImageDelayMs;
+
+        void setBeforeSaveImagesHook(Runnable beforeSaveImagesHook) {
+            this.beforeSaveImagesHook = beforeSaveImagesHook == null ? () -> {
+            } : beforeSaveImagesHook;
+        }
+
+        void setPerImageDelayMs(int perImageDelayMs) {
+            this.perImageDelayMs = Math.max(0, perImageDelayMs);
+        }
+
         @Override
         protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
+            beforeSaveImagesHook.run();
+            if (perImageDelayMs > 0) {
+                try {
+                    Thread.sleep(perImageDelayMs);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             try {
                 Files.createDirectories(folder);
             } catch (IOException ignored) {

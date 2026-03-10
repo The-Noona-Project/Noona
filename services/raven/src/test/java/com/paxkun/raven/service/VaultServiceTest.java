@@ -15,11 +15,11 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.*;
 
 class VaultServiceTest {
 
@@ -85,5 +85,71 @@ class VaultServiceTest {
 
         assertEquals("mongo", request.get("storageType"));
         assertEquals("findMany", request.get("operation"));
+    }
+
+    @Test
+    void findAllRetriesTransientInternalVaultErrors() {
+        VaultService vaultService = new VaultService();
+        AtomicInteger attempts = new AtomicInteger(0);
+
+        server.createContext("/v1/vault/handle", exchange -> {
+            int attempt = attempts.incrementAndGet();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+
+            byte[] responseBytes;
+            int status;
+            if (attempt < 3) {
+                status = 400;
+                responseBytes = GSON.toJson(Map.of("error", "Internal server error"))
+                        .getBytes(StandardCharsets.UTF_8);
+            } else {
+                status = 200;
+                responseBytes = GSON.toJson(Map.of(
+                        "status", "ok",
+                        "data", List.of(Map.of("title", "Solo Leveling"))
+                )).getBytes(StandardCharsets.UTF_8);
+            }
+
+            exchange.sendResponseHeaders(status, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
+            }
+        });
+        server.start();
+
+        ReflectionTestUtils.setField(vaultService, "vaultUrl", "http://127.0.0.1:" + port);
+        ReflectionTestUtils.setField(vaultService, "vaultApiToken", "test-token");
+
+        List<Map<String, Object>> documents = vaultService.findAll("manga_library");
+
+        assertThat(documents).hasSize(1);
+        assertEquals(3, attempts.get());
+    }
+
+    @Test
+    void insertDoesNotRetryOnTransientErrors() {
+        VaultService vaultService = new VaultService();
+        AtomicInteger attempts = new AtomicInteger(0);
+
+        server.createContext("/v1/vault/handle", exchange -> {
+            attempts.incrementAndGet();
+            byte[] responseBytes = GSON.toJson(Map.of("error", "Service unavailable"))
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(503, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
+            }
+        });
+        server.start();
+
+        ReflectionTestUtils.setField(vaultService, "vaultUrl", "http://127.0.0.1:" + port);
+        ReflectionTestUtils.setField(vaultService, "vaultApiToken", "test-token");
+
+        RuntimeException error = assertThrows(RuntimeException.class,
+                () -> vaultService.insert("manga_library", Map.of("title", "Solo Leveling")));
+
+        assertThat(error.getMessage()).containsIgnoringCase("Service unavailable");
+        assertEquals(1, attempts.get());
     }
 }

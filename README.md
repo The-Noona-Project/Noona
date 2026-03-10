@@ -20,16 +20,16 @@ Noona is a multi-service platform for orchestration, onboarding, library automat
 
 ## Services
 
-| Service | Runtime              | README                                                 | Responsibility                                                                                     |
-|---------|----------------------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------|
-| Warden  | Node.js              | [services/warden/readme.md](services/warden/readme.md) | Container lifecycle, install order, stack orchestration APIs                                       |
-| Moon    | Next.js + Once UI    | [services/moon/README.md](services/moon/README.md)     | Web GUI for `/libraries`, `/downloads`, `/downloads/add`, `/recommendations`, `/settings/*`, setup |
-| Portal  | Node.js + Discord.js | [services/portal/README.md](services/portal/README.md) | Discord onboarding and Kavita/Vault bridging                                                       |
-| Sage    | Node.js + Express    | [services/sage/README.md](services/sage/README.md)     | Warden and Raven proxy APIs for setup and downloads                                                |
-| Raven   | Spring Boot (Java)   | [services/raven/readme.md](services/raven/readme.md)   | Search, scrape, download, library metadata updates                                                 |
-| Vault   | Node.js + Express    | [services/vault/readme.md](services/vault/readme.md)   | Token-authenticated packet handling, users, secrets                                                |
-| Kavita  | .NET 10 + Angular    | [services/kavita/README.md](services/kavita/README.md) | Managed reading server image and first-admin bootstrap flow                                        |
-| Komf    | Kotlin + Ktor        | [services/komf/README.md](services/komf/README.md)     | Managed metadata matching and enrichment for Kavita libraries                                      |
+| Service | Runtime              | README                                                 | Responsibility                                                                                                         |
+|---------|----------------------|--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
+| Warden  | Node.js              | [services/warden/readme.md](services/warden/readme.md) | Container lifecycle, install order, stack orchestration APIs                                                           |
+| Moon    | Next.js + Once UI    | [services/moon/README.md](services/moon/README.md)     | Web GUI for `/libraries`, `/downloads`, `/downloads/add`, `/recommendations`, `/mysubscriptions`, `/settings/*`, setup |
+| Portal  | Node.js + Discord.js | [services/portal/README.md](services/portal/README.md) | Discord onboarding and Kavita/Vault bridging                                                                           |
+| Sage    | Node.js + Express    | [services/sage/README.md](services/sage/README.md)     | Warden and Raven proxy APIs for setup and downloads                                                                    |
+| Raven   | Spring Boot (Java)   | [services/raven/readme.md](services/raven/readme.md)   | Search, scrape, download, library metadata updates                                                                     |
+| Vault   | Node.js + Express    | [services/vault/readme.md](services/vault/readme.md)   | Token-authenticated packet handling, users, secrets                                                                    |
+| Kavita  | .NET 10 + Angular    | [services/kavita/README.md](services/kavita/README.md) | Managed reading server image and first-admin bootstrap flow                                                            |
+| Komf    | Kotlin + Ktor        | [services/komf/README.md](services/komf/README.md)     | Managed metadata matching and enrichment for Kavita libraries                                                          |
 
 ## Stack 2.2 Baseline
 

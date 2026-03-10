@@ -49,6 +49,7 @@ const timelineEventLabel = (event: RecommendationTimelineEvent): string => {
     if (type === "denied") return "Denied";
     if (type === "comment") return "Comment";
     if (type === "download-started") return "Chapters download";
+    if (type === "download-progress") return "Download progress";
     if (type === "download-completed") return "Download complete";
     return "Update";
 };
@@ -57,7 +58,7 @@ const timelineEventState = (event: RecommendationTimelineEvent): "default" | "ac
     const type = normalizeString(event.type).toLowerCase();
     if (type === "approved" || type === "download-completed") return "success";
     if (type === "denied") return "danger";
-    if (type === "comment" || type === "download-started") return "active";
+    if (type === "comment" || type === "download-started" || type === "download-progress") return "active";
     return "default";
 };
 

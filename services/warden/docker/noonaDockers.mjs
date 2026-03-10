@@ -64,6 +64,22 @@ const DEFAULT_KAVITA_BASE_URL =
 const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT =
     process.env.RAVEN_KAVITA_LIBRARY_ROOT
     || '/manga';
+const parseBooleanFlag = (value, fallback = false) => {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (!normalized) {
+        return fallback;
+    }
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+    return fallback;
+};
+const ENABLE_RAVEN_VPN_TUNNEL =
+    process.platform !== 'win32'
+    && parseBooleanFlag(process.env.RAVEN_VPN_ENABLE_TUN, true);
 const DEFAULT_MOON_WEBGUI_PORT = (() => {
     const candidate = Number.parseInt(process.env.WEBGUI_PORT || '3000', 10);
     if (Number.isFinite(candidate) && candidate >= 1 && candidate <= 65535) {
@@ -170,6 +186,9 @@ const serviceDefs = rawList.map(name => {
         env.push(`KAVITA_BASE_URL=${DEFAULT_KAVITA_BASE_URL}`);
         env.push('KAVITA_API_KEY=');
         env.push(`KAVITA_LIBRARY_ROOT=${DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT}`);
+        env.push(`RAVEN_PIA_OPENVPN_ZIP_URL=${process.env.RAVEN_PIA_OPENVPN_ZIP_URL || 'https://www.privateinternetaccess.com/openvpn/openvpn-ip.zip'}`);
+        env.push(`RAVEN_VPN_CONNECT_TIMEOUT_SECONDS=${process.env.RAVEN_VPN_CONNECT_TIMEOUT_SECONDS || '90'}`);
+        env.push(`RAVEN_VPN_PAUSE_TIMEOUT_MINUTES=${process.env.RAVEN_VPN_PAUSE_TIMEOUT_MINUTES || '30'}`);
         envConfig.push(
             createEnvField('APPDATA', '', {
                 label: 'Raven Downloads Root',
@@ -216,6 +235,21 @@ const serviceDefs = rawList.map(name => {
                 label: 'Raven Download Threads',
                 description: 'Maximum concurrent download jobs Raven should run.',
                 warning: 'Changing this value requires restarting noona-raven.',
+                required: false,
+            }),
+            createEnvField('RAVEN_PIA_OPENVPN_ZIP_URL', process.env.RAVEN_PIA_OPENVPN_ZIP_URL || 'https://www.privateinternetaccess.com/openvpn/openvpn-ip.zip', {
+                label: 'PIA OpenVPN Profile URL',
+                description: 'Source URL Raven uses to refresh PIA OpenVPN region profiles.',
+                required: false,
+            }),
+            createEnvField('RAVEN_VPN_CONNECT_TIMEOUT_SECONDS', process.env.RAVEN_VPN_CONNECT_TIMEOUT_SECONDS || '90', {
+                label: 'VPN Connect Timeout (seconds)',
+                description: 'How long Raven waits for OpenVPN to establish a tunnel before failing a rotation.',
+                required: false,
+            }),
+            createEnvField('RAVEN_VPN_PAUSE_TIMEOUT_MINUTES', process.env.RAVEN_VPN_PAUSE_TIMEOUT_MINUTES || '30', {
+                label: 'VPN Pause Timeout (minutes)',
+                description: 'Maximum time Raven waits for active downloads to pause before aborting VPN rotation.',
                 required: false,
             }),
         );
@@ -394,6 +428,12 @@ const serviceDefs = rawList.map(name => {
                 description: 'Discord role ID required to execute the /recommend command.',
                 required: false,
             },
+            {
+                key: 'REQUIRED_ROLE_SUBSCRIBE',
+                label: 'Required Role for /subscribe',
+                description: 'Discord role ID required to execute the /subscribe command.',
+                required: false,
+            },
         ];
 
         portalEnvFields.forEach(field => {
@@ -502,6 +542,10 @@ const serviceDefs = rawList.map(name => {
 
     const healthTries = name === 'noona-portal' ? 90 : undefined;
     const healthDelayMs = name === 'noona-portal' ? 1000 : undefined;
+    const capAdd = name === 'noona-raven' && ENABLE_RAVEN_VPN_TUNNEL ? ['NET_ADMIN'] : undefined;
+    const devices = name === 'noona-raven' && ENABLE_RAVEN_VPN_TUNNEL
+        ? [{PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm'}]
+        : undefined;
 
     return {
         name,
@@ -516,6 +560,8 @@ const serviceDefs = rawList.map(name => {
         health: healthChecks,
         healthTries,
         healthDelayMs,
+        capAdd,
+        devices,
     };
 });
 

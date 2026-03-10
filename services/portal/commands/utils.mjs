@@ -1,3 +1,5 @@
+import {MessageFlags} from 'discord.js';
+
 export const ensureArray = (value) => {
     if (!value) {
         return [];
@@ -41,14 +43,15 @@ export const normalizeDiscordIdCandidate = (value) => {
 };
 
 export const respondWithError = async (interaction, message) => {
-    const payload = {content: message, ephemeral: true};
-
     if (interaction.deferred || interaction.replied) {
-        await interaction.editReply?.(payload);
+        await interaction.editReply?.({content: message});
         return;
     }
 
-    await interaction.reply?.(payload);
+    await interaction.reply?.({
+        content: message,
+        flags: MessageFlags.Ephemeral,
+    });
 };
 
 const resolveDiscordClient = (discord, getDiscord) => discord ?? getDiscord?.() ?? null;
@@ -61,4 +64,3 @@ export const assignDefaultRole = async (discord, getDiscord, discordId) => {
 
     await client.assignDefaultRole(discordId);
 };
-
