@@ -1,5 +1,7 @@
 .pageShell {
-  width: min(100%, 82rem);
+  width: 100%;
+  max-width: 82rem;
+  margin-inline: auto;
   padding-bottom: 2rem;
 }
 

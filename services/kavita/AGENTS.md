@@ -35,7 +35,7 @@
 
 ## Noona-Specific Touchpoints
 
-- Root-level scripts and container files (`Dockerfile`, `entrypoint.sh`, `noona-bootstrap-admin.sh`) are the first places to look for Noona-managed runtime behavior.
+- Root-level runtime scripts (`entrypoint.sh`, `noona-bootstrap-admin.sh`) plus [../../dockerfiles/kavita.Dockerfile](../../dockerfiles/kavita.Dockerfile) are the first places to look for Noona-managed behavior.
 - `API/Controllers/AccountController.cs` and `API/config/appsettings.json` are the main backend touchpoints for first-admin and bootstrap flows.
 - Warden service registration and env injection live in [`../warden/docker/noonaDockers.mjs`](../warden/docker/noonaDockers.mjs).
 - Portal's Kavita API client lives in [`../portal/clients/kavitaClient.mjs`](../portal/clients/kavitaClient.mjs).

@@ -43,6 +43,17 @@
             {{ oidcConfig()?.providerName || t('oidc') }}
           </a>
         }
+
+        @if (showNoonaButton()) {
+          <button
+            (click)="loginWithNoona()"
+            [disabled]="isSubmitting()"
+            class="btn btn-outline-primary mt-2 w-100"
+            type="button"
+          >
+            Log in with Noona
+          </button>
+        }
       }
     </ng-container>
   </app-splash-container>

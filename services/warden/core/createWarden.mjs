@@ -76,8 +76,25 @@ const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
 const DEFAULT_SETTINGS_COLLECTION = 'noona_settings';
 const SERVICE_CONFIG_SETTINGS_TYPE = 'service-runtime-config';
 const SERVICE_CONFIG_SETTINGS_KEY_PREFIX = 'services.config.';
+const SETUP_CONFIG_DIRECTORY_NAME = 'wardenm';
+const LEGACY_SETUP_CONFIG_DIRECTORY_NAME = 'warden';
+const SETUP_CONFIG_FILE_NAME = 'noona-settings.json';
+const LEGACY_SETUP_CONFIG_FILE_NAME = 'setup-wizard-state.json';
+const RUNTIME_CONFIG_SNAPSHOT_FILE_NAME = 'service-runtime-config.json';
+const RUNTIME_CONFIG_SNAPSHOT_VERSION = 1;
+const RUNTIME_CONFIG_DIRECTORY_NAME = LEGACY_SETUP_CONFIG_DIRECTORY_NAME;
+const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
+const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
+const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
+const DEFAULT_NOONA_PORTAL_BASE_URL = 'http://noona-portal:3003';
+const DEFAULT_NOONA_SOCIAL_LOGIN_ONLY = 'true';
+const MANAGED_KAVITA_DEFAULT_ENV_FALLBACK_KEYS = new Set([
+    'NOONA_MOON_BASE_URL',
+    'NOONA_PORTAL_BASE_URL',
+    'NOONA_SOCIAL_LOGIN_ONLY',
+]);
 const LEGACY_SERVICE_NAME_ALIASES = new Map([
     ['kavita', 'noona-kavita'],
 ]);
@@ -253,6 +270,49 @@ function parseEnvEntries(entries = []) {
     return envMap;
 }
 
+function normalizeAbsoluteHttpUrl(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+        return '';
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return '';
+        }
+
+        return parsed.toString().replace(/\/+$/, '');
+    } catch {
+        return '';
+    }
+}
+
+function normalizeBooleanSettingValue(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+        return '';
+    }
+
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return 'true';
+    }
+
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return 'false';
+    }
+
+    return '';
+}
+
 function upsertEnvEntry(entries, key, value) {
     const list = Array.isArray(entries) ? [...entries] : [];
     const prefix = `${key}=`;
@@ -364,8 +424,82 @@ function parseImageReference(image) {
     };
 }
 
+const REGISTRY_MANIFEST_ACCEPT_HEADER = [
+    'application/vnd.docker.distribution.manifest.v2+json',
+    'application/vnd.docker.distribution.manifest.list.v2+json',
+    'application/vnd.oci.image.manifest.v1+json',
+    'application/vnd.oci.image.index.v1+json',
+].join(', ');
+
+const REGISTRY_AUTH_PARAM_PATTERN = /([a-z][a-z0-9_-]*)="([^"]*)"/gi;
+
+function buildRegistryManifestUrl(imageReference) {
+    if (!imageReference) {
+        return null;
+    }
+
+    const baseUrl =
+        imageReference.registry === 'docker.io'
+            ? 'https://registry-1.docker.io'
+            : `https://${imageReference.registry}`;
+    return `${baseUrl}/v2/${imageReference.repository}/manifests/${encodeURIComponent(imageReference.tag)}`;
+}
+
+function parseRegistryAuthChallenge(headerValue) {
+    if (typeof headerValue !== 'string') {
+        return null;
+    }
+
+    const trimmed = headerValue.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const separatorIndex = trimmed.indexOf(' ');
+    const scheme = (separatorIndex >= 0 ? trimmed.slice(0, separatorIndex) : trimmed).trim().toLowerCase();
+    const paramsSource = separatorIndex >= 0 ? trimmed.slice(separatorIndex + 1) : '';
+    const params = {};
+
+    REGISTRY_AUTH_PARAM_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = REGISTRY_AUTH_PARAM_PATTERN.exec(paramsSource)) != null) {
+        params[match[1].toLowerCase()] = match[2];
+    }
+
+    return {scheme, params};
+}
+
+function resolveRegistryCredentials(registry, env = process.env) {
+    const normalizedRegistry = typeof registry === 'string' ? registry.trim().toLowerCase() : '';
+    const configuredRegistry = typeof env?.NOONA_DOCKER_REGISTRY === 'string'
+        ? env.NOONA_DOCKER_REGISTRY.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase()
+        : '';
+    const username = typeof env?.NOONA_DOCKER_USERNAME === 'string' ? env.NOONA_DOCKER_USERNAME.trim() : '';
+    const password = typeof env?.NOONA_DOCKER_PASSWORD === 'string' ? env.NOONA_DOCKER_PASSWORD : '';
+
+    if (!username) {
+        return null;
+    }
+
+    if (configuredRegistry && normalizedRegistry && configuredRegistry !== normalizedRegistry) {
+        return null;
+    }
+
+    return {username, password};
+}
+
+function buildBasicAuthorizationHeader(credentials) {
+    if (!credentials?.username) {
+        return null;
+    }
+
+    return `Basic ${Buffer.from(`${credentials.username}:${credentials.password ?? ''}`).toString('base64')}`;
+}
+
 const timestamp = () => new Date().toISOString();
 
+const TRUTHY_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const FALSY_BOOLEAN_VALUES = new Set(['0', 'false', 'no', 'off']);
 const TRUTHY_DEBUG_VALUES = new Set(['1', 'true', 'yes', 'on', 'super']);
 const NOONA_CONTAINER_NAME_PATTERN = /(^|[._-])noona-[a-z0-9-]+([._-]\d+)?$/i;
 const NOONA_WARDEN_CONTAINER_PATTERN = /(^|[._-])noona-warden([._-]\d+)?$/i;
@@ -392,6 +526,33 @@ const isDebugFlagEnabled = (value) => {
     return false;
 };
 
+const isBooleanFlagEnabled = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number') {
+        return value > 0;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (!normalized) {
+            return false;
+        }
+
+        if (TRUTHY_BOOLEAN_VALUES.has(normalized)) {
+            return true;
+        }
+
+        if (FALSY_BOOLEAN_VALUES.has(normalized)) {
+            return false;
+        }
+    }
+
+    return false;
+};
+
 export function createWarden(options = {}) {
     const {
         dockerInstance = new Docker(),
@@ -413,7 +574,9 @@ export function createWarden(options = {}) {
         wizardState: wizardStateOption = {},
         settings: settingsOption = {},
         setIntervalImpl = setInterval,
+        setTimeoutImpl = setTimeout,
         clearIntervalImpl = clearInterval,
+        sleepImpl: sleepImplOption,
     } = options;
 
     const services = normalizeServices(servicesOption);
@@ -421,8 +584,8 @@ export function createWarden(options = {}) {
     const baseLogger = createDefaultLogger(loggerOption);
     const serviceCatalog = createServiceCatalog(services);
     const fsModule = fsOption || fs;
-    const serviceName = env.SERVICE_NAME || 'noona-warden';
-    const wardenHistoryNames = Array.from(new Set(['noona-warden', serviceName].filter(Boolean)));
+    const serviceName = env.SERVICE_NAME || WARDEN_CONFIG_SERVICE_NAME;
+    const wardenHistoryNames = Array.from(new Set([WARDEN_CONFIG_SERVICE_NAME, serviceName].filter(Boolean)));
     let recordWardenHistoryLog = null;
     const logger = {
         ...baseLogger,
@@ -437,6 +600,9 @@ export function createWarden(options = {}) {
     };
     const serviceRuntimeConfig = new Map();
     let persistedServiceRuntimeConfigLoaded = false;
+    let setupConfigSnapshotCache = null;
+    let setupConfigSnapshotCacheLoaded = false;
+    let setupConfigSnapshotPathCache = null;
     const serviceUpdateSnapshots = new Map();
     const updateCheckIntervalMs = (() => {
         const candidate = Number.parseInt(env.SERVICE_UPDATE_CHECK_INTERVAL_MS ?? '3600000', 10);
@@ -446,6 +612,16 @@ export function createWarden(options = {}) {
         return 3600000;
     })();
     let serviceUpdateTimer = null;
+    const sleepImpl =
+        typeof sleepImplOption === 'function'
+            ? sleepImplOption
+            : (delayMs = 0) =>
+                new Promise((resolve) => {
+                    const timer = setTimeoutImpl(() => resolve(), delayMs);
+                    if (timer && typeof timer.unref === 'function') {
+                        timer.unref();
+                    }
+                });
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
@@ -457,8 +633,6 @@ export function createWarden(options = {}) {
     let runtimeDebug = DEBUG;
     setLoggerDebug(isDebugFlagEnabled(runtimeDebug));
     const hostServiceBase = resolveHostServiceBase(env);
-    const hostServiceHost = resolveHostServiceHost(env);
-    const serverIp = resolveServerIp(env);
     const bootOrder = superBootOrderOption || [
         'noona-mongo',
         'noona-redis',
@@ -1024,6 +1198,30 @@ export function createWarden(options = {}) {
         return directory ? path.join(directory, MANAGED_KOMF_CONFIG_FILE_NAME) : null;
     };
 
+    const parseContainerUserOwnership = (candidate) => {
+        if (typeof candidate !== 'string') {
+            return null;
+        }
+
+        const normalized = candidate.trim();
+        if (!normalized) {
+            return null;
+        }
+
+        const [uidRaw, gidRaw] = normalized.split(':');
+        const uid = Number.parseInt(uidRaw, 10);
+        if (!Number.isInteger(uid) || uid < 0) {
+            return null;
+        }
+
+        const gid = Number.parseInt(gidRaw ?? uidRaw, 10);
+        if (!Number.isInteger(gid) || gid < 0) {
+            return null;
+        }
+
+        return {uid, gid};
+    };
+
     const readManagedKomfConfigFile = (installOverridesByName = null) => {
         const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
         if (!filePath || typeof fsModule?.readFileSync !== 'function') {
@@ -1041,9 +1239,74 @@ export function createWarden(options = {}) {
         }
     };
 
-    const writeManagedKomfConfigFile = (content, installOverridesByName = null) => {
+    const writeManagedKomfConfigFileViaHelperContainer = async ({
+                                                                    dockerClient,
+                                                                    directory,
+                                                                    normalizedContent,
+                                                                    serviceUser,
+                                                                } = {}) => {
+        if (
+            !dockerClient
+            || typeof dockerClient.createContainer !== 'function'
+            || !directory
+            || typeof normalizedContent !== 'string'
+        ) {
+            return null;
+        }
+
+        const helperImage = 'busybox:1.36';
+        const helperName = `noona-komf-config-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+        const ownership = parseContainerUserOwnership(serviceUser);
+        const encodedContent = Buffer.from(normalizedContent, 'utf8').toString('base64');
+        const applyOwnershipCommand = ownership
+            ? `chown -R ${ownership.uid}:${ownership.gid} /target; chmod 775 /target`
+            : 'chmod 777 /target';
+        const helperCommand = [
+            'set -eu',
+            'mkdir -p /target',
+            applyOwnershipCommand,
+            'echo "$NOONA_KOMF_CONFIG_B64" | base64 -d > /target/application.yml',
+            ownership
+                ? `chown ${ownership.uid}:${ownership.gid} /target/application.yml; chmod 664 /target/application.yml`
+                : 'chmod 664 /target/application.yml',
+        ].join('; ');
+
+        try {
+            await dockerUtils.pullImageIfNeeded?.(helperImage, {dockerInstance: dockerClient});
+        } catch {
+            // Keep going when busybox is already available and pull checks fail.
+        }
+
+        const helperContainer = await dockerClient.createContainer({
+            name: helperName,
+            Image: helperImage,
+            Cmd: ['sh', '-lc', helperCommand],
+            Env: [`NOONA_KOMF_CONFIG_B64=${encodedContent}`],
+            HostConfig: {
+                AutoRemove: true,
+                Binds: [`${directory}:/target`],
+            },
+        });
+
+        await helperContainer.start();
+        const result = await helperContainer.wait();
+        if (result?.StatusCode != null && Number(result.StatusCode) !== 0) {
+            throw new Error(`Komf config helper exited with status ${result.StatusCode}.`);
+        }
+
+        return {
+            path: path.join(directory, MANAGED_KOMF_CONFIG_FILE_NAME),
+            via: 'docker-helper',
+        };
+    };
+
+    const writeManagedKomfConfigFile = async (
+        content,
+        installOverridesByName = null,
+        {dockerClient = null, serviceUser = null} = {},
+    ) => {
         const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
-        if (!filePath || typeof fsModule?.writeFileSync !== 'function') {
+        if (!filePath) {
             return null;
         }
 
@@ -1064,14 +1327,28 @@ export function createWarden(options = {}) {
             }
         }
 
-        if (existingContent !== normalizedContent) {
+        if (existingContent !== normalizedContent && typeof fsModule?.writeFileSync === 'function') {
             fsModule.writeFileSync(filePath, normalizedContent, 'utf8');
+        }
+
+        let helperWrite = null;
+        try {
+            helperWrite = await writeManagedKomfConfigFileViaHelperContainer({
+                dockerClient,
+                directory,
+                normalizedContent,
+                serviceUser,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to write managed Komf config on host mount: ${message}`);
         }
 
         return {
             path: filePath,
             content: normalizedContent,
             changed: existingContent !== normalizedContent,
+            hostWrite: helperWrite,
         };
     };
 
@@ -1173,7 +1450,10 @@ export function createWarden(options = {}) {
                 typeof currentEnv[MANAGED_KOMF_CONFIG_ENV_KEY] === 'string'
                     ? currentEnv[MANAGED_KOMF_CONFIG_ENV_KEY]
                     : readManagedKomfConfigFile(installOverridesByName) ?? DEFAULT_MANAGED_KOMF_APPLICATION_YML;
-            writeManagedKomfConfigFile(requestedConfigContent, installOverridesByName);
+            await writeManagedKomfConfigFile(requestedConfigContent, installOverridesByName, {
+                dockerClient,
+                serviceUser: service.user,
+            });
             const envWithDefaults = currentEnv.KOMF_KAVITA_BASE_URI
                 ? service.env
                 : upsertEnvEntry(service.env, 'KOMF_KAVITA_BASE_URI', 'http://noona-kavita:5000');
@@ -2254,6 +2534,504 @@ export function createWarden(options = {}) {
         return names;
     };
 
+    const parsePersistedServiceSelectionFromServiceEntries = (candidate) => {
+        if (!Array.isArray(candidate)) {
+            return [];
+        }
+
+        const names = [];
+        for (const entry of candidate) {
+            if (typeof entry === 'string') {
+                names.push(entry);
+                continue;
+            }
+
+            if (entry && typeof entry === 'object' && typeof entry.name === 'string') {
+                names.push(entry.name);
+            }
+        }
+
+        return parsePersistedServiceSelection(names);
+    };
+
+    const normalizeSetupConfigSnapshotEnvMap = (candidate) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return {};
+        }
+
+        const normalized = {};
+        for (const [rawKey, rawValue] of Object.entries(candidate)) {
+            if (typeof rawKey !== 'string') {
+                continue;
+            }
+
+            const key = rawKey.trim();
+            if (!key) {
+                continue;
+            }
+
+            const value = rawValue == null ? '' : String(rawValue);
+            if (!value.trim()) {
+                continue;
+            }
+
+            normalized[key] = value;
+        }
+
+        return normalized;
+    };
+
+    const normalizeSetupConfigSnapshotValues = (candidate) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return {};
+        }
+
+        const values = {};
+        for (const [rawServiceName, rawEnv] of Object.entries(candidate)) {
+            const service = normalizeManagedServiceName(rawServiceName);
+            if (!service || !supportsRuntimeConfigTarget(service)) {
+                continue;
+            }
+
+            const env = normalizeSetupConfigSnapshotEnvMap(rawEnv);
+            if (Object.keys(env).length === 0) {
+                continue;
+            }
+
+            values[service] = env;
+        }
+
+        return values;
+    };
+
+    const extractPersistedSetupSelectionFromSetupSnapshot = (snapshot) => {
+        const candidates = [
+            snapshot?.selected,
+            snapshot?.selectedServices,
+            snapshot?.services,
+        ];
+
+        for (const candidate of candidates) {
+            const normalized = Array.isArray(candidate)
+            && candidate.some((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+                ? parsePersistedServiceSelectionFromServiceEntries(candidate)
+                : parsePersistedServiceSelection(candidate);
+            if (normalized.length > 0) {
+                return normalized;
+            }
+        }
+
+        return [];
+    };
+
+    const normalizeSetupConfigSnapshot = (candidate) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return null;
+        }
+
+        const normalized = {
+            version: Number.isFinite(Number(candidate.version))
+                ? Math.max(1, Math.floor(Number(candidate.version)))
+                : 2,
+            selected: extractPersistedSetupSelectionFromSetupSnapshot(candidate),
+            values: normalizeSetupConfigSnapshotValues(candidate?.values),
+            storageRoot: normalizePathValue(candidate?.storageRoot) || null,
+            integrations:
+                candidate?.integrations && typeof candidate.integrations === 'object' && !Array.isArray(candidate.integrations)
+                    ? cloneMeta(candidate.integrations)
+                    : null,
+            savedAt: typeof candidate?.savedAt === 'string' && candidate.savedAt.trim()
+                ? candidate.savedAt.trim()
+                : null,
+        };
+
+        return normalized;
+    };
+
+    const buildSetupConfigSnapshotForDisk = (snapshot = {}) => {
+        const normalized = normalizeSetupConfigSnapshot(snapshot);
+        if (!normalized) {
+            return null;
+        }
+
+        return {
+            version: normalized.version,
+            selected: normalized.selected,
+            values: normalized.values,
+            storageRoot: normalized.storageRoot,
+            integrations: normalized.integrations,
+            savedAt: normalized.savedAt || timestamp(),
+        };
+    };
+
+    const resolveSetupConfigRoot = (snapshot = null) => {
+        const candidates = [];
+        const appendCandidate = (value) => {
+            const normalized = normalizePathValue(value);
+            if (normalized) {
+                candidates.push(normalized);
+            }
+        };
+
+        appendCandidate(snapshot?.storageRoot);
+
+        const values = snapshot?.values && typeof snapshot.values === 'object' ? snapshot.values : {};
+        for (const serviceName of ['noona-vault', 'noona-raven', 'noona-kavita', 'noona-komf']) {
+            appendCandidate(values?.[serviceName]?.NOONA_DATA_ROOT);
+        }
+
+        appendCandidate(resolveRuntimeConfig('noona-vault')?.env?.NOONA_DATA_ROOT);
+        appendCandidate(resolveRuntimeConfig('noona-raven')?.env?.NOONA_DATA_ROOT);
+        appendCandidate(resolveRuntimeConfig('noona-kavita')?.env?.NOONA_DATA_ROOT);
+        appendCandidate(resolveRuntimeConfig('noona-komf')?.env?.NOONA_DATA_ROOT);
+
+        return resolveNoonaDataRoot({
+            candidate: candidates[0] ?? null,
+            env,
+            cwd: process.cwd(),
+        });
+    };
+
+    const resolveSetupConfigSnapshotPath = (snapshot = null) =>
+        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
+
+    const resolveLegacyRootSetupConfigSnapshotPath = (snapshot = null) =>
+        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_FILE_NAME);
+
+    const resolveLegacySetupConfigSnapshotPath = (snapshot = null) =>
+        path.join(resolveSetupConfigRoot(snapshot), LEGACY_SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
+
+    const resolveSetupConfigSnapshotPaths = (snapshot = null) => {
+        const primaryPath = resolveSetupConfigSnapshotPath(snapshot);
+        const legacyRootPath = resolveLegacyRootSetupConfigSnapshotPath(snapshot);
+        const legacyPath = resolveLegacySetupConfigSnapshotPath(snapshot);
+        return Array.from(new Set([primaryPath, legacyRootPath, legacyPath].filter(Boolean)));
+    };
+
+    const readSetupConfigSnapshot = ({refresh = false} = {}) => {
+        if (!refresh && setupConfigSnapshotCacheLoaded) {
+            return {
+                snapshot: setupConfigSnapshotCache,
+                path: setupConfigSnapshotPathCache,
+                exists: Boolean(setupConfigSnapshotCache),
+            };
+        }
+
+        const filePaths = resolveSetupConfigSnapshotPaths(setupConfigSnapshotCache);
+        const primaryPath = filePaths[0] ?? resolveSetupConfigSnapshotPath(setupConfigSnapshotCache);
+        setupConfigSnapshotPathCache = primaryPath;
+
+        if (typeof fsModule?.readFileSync !== 'function') {
+            setupConfigSnapshotCache = null;
+            setupConfigSnapshotCacheLoaded = true;
+            return {snapshot: null, path: primaryPath, exists: false};
+        }
+
+        let lastError = null;
+        for (const filePath of filePaths) {
+            try {
+                const raw = fsModule.readFileSync(filePath, 'utf8');
+                const parsed = JSON.parse(raw);
+                const normalized = normalizeSetupConfigSnapshot(parsed);
+                if (!normalized) {
+                    lastError = 'Setup config snapshot must be a JSON object.';
+                    logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${lastError}`);
+                    continue;
+                }
+
+                setupConfigSnapshotCache = normalized;
+                setupConfigSnapshotCacheLoaded = true;
+                setupConfigSnapshotPathCache = filePath;
+                return {snapshot: normalized, path: filePath, exists: true};
+            } catch (error) {
+                if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                    continue;
+                }
+
+                lastError = error instanceof Error ? error.message : String(error);
+                logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${lastError}`);
+            }
+        }
+
+        setupConfigSnapshotCache = null;
+        setupConfigSnapshotCacheLoaded = true;
+        return {snapshot: null, path: primaryPath, exists: false, error: lastError ?? null};
+    };
+
+    const writeSetupConfigSnapshot = (snapshot = {}) => {
+        const prepared = buildSetupConfigSnapshotForDisk(snapshot);
+        if (!prepared) {
+            throw new Error('Setup config snapshot must be a JSON object.');
+        }
+
+        if (typeof fsModule?.writeFileSync !== 'function') {
+            throw new Error('Filesystem write support is not available for setup config snapshots.');
+        }
+
+        const filePaths = resolveSetupConfigSnapshotPaths(prepared);
+        const fileContents = JSON.stringify(prepared, null, 2);
+        const filePath = filePaths[0] ?? resolveSetupConfigSnapshotPath(prepared);
+        const mirroredPaths = [];
+
+        for (const candidatePath of filePaths) {
+            if (typeof fsModule?.mkdirSync === 'function') {
+                fsModule.mkdirSync(path.dirname(candidatePath), {recursive: true});
+            }
+
+            fsModule.writeFileSync(candidatePath, fileContents, 'utf8');
+            mirroredPaths.push(candidatePath);
+        }
+
+        setupConfigSnapshotCache = prepared;
+        setupConfigSnapshotCacheLoaded = true;
+        setupConfigSnapshotPathCache = filePath;
+
+        return {snapshot: prepared, path: filePath, mirroredPaths};
+    };
+
+    const deleteSnapshotPath = async (targetPath) => {
+        if (!targetPath) {
+            return {path: null, deleted: false, reason: 'missing-path'};
+        }
+
+        const rmAsync = fsModule?.promises?.rm;
+        const rmSync = fsModule?.rmSync;
+
+        try {
+            if (typeof rmAsync === 'function') {
+                await rmAsync(targetPath, {recursive: true, force: true});
+            } else if (typeof rmSync === 'function') {
+                rmSync(targetPath, {recursive: true, force: true});
+            } else {
+                return {path: targetPath, deleted: false, reason: 'fs-rm-unavailable'};
+            }
+
+            return {path: targetPath, deleted: true};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return {path: targetPath, deleted: true, missing: true};
+            }
+
+            return {
+                path: targetPath,
+                deleted: false,
+                reason: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const clearSetupConfigSnapshot = async (snapshotHint = null) => {
+        const filePaths = resolveSetupConfigSnapshotPaths(snapshotHint);
+        const entries = [];
+        for (const filePath of filePaths) {
+            entries.push(await deleteSnapshotPath(filePath));
+        }
+
+        setupConfigSnapshotCache = null;
+        setupConfigSnapshotCacheLoaded = false;
+        setupConfigSnapshotPathCache = filePaths[0] ?? null;
+
+        return {
+            path: filePaths[0] ?? null,
+            entries,
+            deleted: entries.every((entry) => entry.deleted === true),
+        };
+    };
+
+    const normalizeRuntimeConfigSnapshotForDisk = (snapshot = {}) => {
+        if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+            return null;
+        }
+
+        const sourceServices =
+            snapshot?.services && typeof snapshot.services === 'object' && !Array.isArray(snapshot.services)
+                ? snapshot.services
+                : {};
+        const services = {};
+
+        for (const [name, runtime] of Object.entries(sourceServices)) {
+            const normalizedName = normalizeManagedServiceName(name);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                continue;
+            }
+
+            const normalizedRuntime = normalizePersistedRuntimeConfig(runtime);
+            if (!hasPersistedRuntimeConfig(normalizedRuntime)) {
+                continue;
+            }
+
+            services[normalizedName] = normalizedRuntime;
+        }
+
+        return {
+            version: Number.isFinite(Number(snapshot?.version))
+                ? Number(snapshot.version)
+                : RUNTIME_CONFIG_SNAPSHOT_VERSION,
+            services,
+            savedAt:
+                typeof snapshot?.savedAt === 'string' && snapshot.savedAt.trim()
+                    ? snapshot.savedAt.trim()
+                    : timestamp(),
+        };
+    };
+
+    const buildRuntimeConfigSnapshotForDisk = () => {
+        const services = {};
+        for (const name of Array.from(serviceRuntimeConfig.keys()).sort()) {
+            const normalizedName = normalizeManagedServiceName(name);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                continue;
+            }
+
+            const runtime = resolveRuntimeConfig(normalizedName);
+            if (!hasPersistedRuntimeConfig(runtime)) {
+                continue;
+            }
+
+            services[normalizedName] = runtime;
+        }
+
+        return {
+            version: RUNTIME_CONFIG_SNAPSHOT_VERSION,
+            services,
+            savedAt: timestamp(),
+        };
+    };
+
+    const resolveRuntimeConfigSnapshotPath = (snapshotHint = undefined) => {
+        const sourceSnapshot = snapshotHint === undefined ? readSetupConfigSnapshot().snapshot : snapshotHint;
+        return path.join(
+            resolveSetupConfigRoot(sourceSnapshot),
+            RUNTIME_CONFIG_DIRECTORY_NAME,
+            RUNTIME_CONFIG_SNAPSHOT_FILE_NAME,
+        );
+    };
+
+    const readRuntimeConfigSnapshot = () => {
+        const filePath = resolveRuntimeConfigSnapshotPath();
+
+        if (typeof fsModule?.readFileSync !== 'function') {
+            return {snapshot: null, path: filePath, exists: false};
+        }
+
+        try {
+            const raw = fsModule.readFileSync(filePath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const normalized = normalizeRuntimeConfigSnapshotForDisk(parsed);
+            return {snapshot: normalized, path: filePath, exists: Boolean(normalized)};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return {snapshot: null, path: filePath, exists: false};
+            }
+
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to read runtime service config snapshot from ${filePath}: ${message}`);
+            return {snapshot: null, path: filePath, exists: false, error: message};
+        }
+    };
+
+    const writeRuntimeConfigSnapshot = () => {
+        const prepared = buildRuntimeConfigSnapshotForDisk();
+        const filePath = resolveRuntimeConfigSnapshotPath();
+
+        if (typeof fsModule?.mkdirSync === 'function') {
+            fsModule.mkdirSync(path.dirname(filePath), {recursive: true});
+        }
+
+        if (typeof fsModule?.writeFileSync !== 'function') {
+            return {snapshot: prepared, path: filePath, written: false};
+        }
+
+        try {
+            fsModule.writeFileSync(filePath, JSON.stringify(prepared, null, 2), 'utf8');
+            return {snapshot: prepared, path: filePath, written: true};
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to write runtime service config snapshot to ${filePath}: ${message}`);
+            return {snapshot: prepared, path: filePath, written: false, error: message};
+        }
+    };
+
+    const clearRuntimeConfigSnapshot = async (snapshotHint = null) => {
+        const filePath = resolveRuntimeConfigSnapshotPath(snapshotHint);
+        const result = await deleteSnapshotPath(filePath);
+        return {
+            path: filePath,
+            ...result,
+        };
+    };
+
+    const clearPersistedBootState = async () => {
+        const setupState = readSetupConfigSnapshot({refresh: true});
+        const snapshotHint = setupState.snapshot ?? null;
+        const setupConfig = await clearSetupConfigSnapshot(snapshotHint);
+        const runtimeConfig = await clearRuntimeConfigSnapshot(snapshotHint);
+
+        serviceRuntimeConfig.clear();
+        persistedServiceRuntimeConfigLoaded = false;
+
+        let wizardStateCleared = false;
+        if (wizardStateClient && typeof wizardStateClient.resetState === 'function') {
+            await wizardStateClient.resetState();
+            wizardStateCleared = true;
+        }
+
+        return {
+            setupConfig,
+            runtimeConfig,
+            runtimeOverridesCleared: true,
+            wizardStateCleared,
+        };
+    };
+
+    const applySetupConfigSnapshotRuntimeConfig = async (
+        snapshot,
+        {preferExisting = true, persist = false} = {},
+    ) => {
+        const normalized = normalizeSetupConfigSnapshot(snapshot);
+        if (!normalized) {
+            return [];
+        }
+
+        const loaded = [];
+        for (const [service, envOverrides] of Object.entries(normalized.values)) {
+            if (!supportsRuntimeConfigTarget(service)) {
+                continue;
+            }
+
+            const current = resolveRuntimeConfig(service);
+            const mergedEnv = preferExisting
+                ? {
+                    ...envOverrides,
+                    ...normalizeEnvOverrideMap(current.env),
+                }
+                : {
+                    ...normalizeEnvOverrideMap(current.env),
+                    ...envOverrides,
+                };
+
+            const nextRuntime = writeRuntimeConfig(service, {
+                env: mergedEnv,
+                hostPort: current.hostPort,
+            });
+
+            if (!hasPersistedRuntimeConfig(nextRuntime)) {
+                continue;
+            }
+
+            if (persist) {
+                await persistServiceRuntimeConfig(service, nextRuntime);
+            }
+
+            loaded.push({
+                service,
+                ...nextRuntime,
+            });
+        }
+
+        return loaded;
+    };
+
     const extractPersistedSetupServiceSelection = (state) => {
         const candidates = [
             state?.verification?.actor?.metadata?.selectedServices,
@@ -2273,16 +3051,29 @@ export function createWarden(options = {}) {
     };
 
     const resolvePersistedSetupServiceNames = async () => {
-        if (!wizardStateClient || typeof wizardStateClient.loadState !== 'function') {
-            return [];
+        try {
+            const {snapshot} = readSetupConfigSnapshot();
+            const selection = extractPersistedSetupSelectionFromSetupSnapshot(snapshot);
+            if (selection.length > 0) {
+                return selection;
+            }
+        } catch {
+            // Fall through to wizard-state selection.
         }
 
-        try {
-            const state = await wizardStateClient.loadState({fallbackToDefault: true});
-            return extractPersistedSetupServiceSelection(state);
-        } catch {
-            return [];
+        if (wizardStateClient && typeof wizardStateClient.loadState === 'function') {
+            try {
+                const state = await wizardStateClient.loadState({fallbackToDefault: true});
+                const selection = extractPersistedSetupServiceSelection(state);
+                if (selection.length > 0) {
+                    return selection;
+                }
+            } catch {
+                // Fall through to empty selection.
+            }
         }
+
+        return [];
     };
 
     const listInstalledManagedServiceNames = async (dockerClient) => {
@@ -2335,6 +3126,10 @@ export function createWarden(options = {}) {
     };
 
     const buildServiceConfigSettingsKey = (name) => `${SERVICE_CONFIG_SETTINGS_KEY_PREFIX}${name}`;
+    const supportsRuntimeConfigTarget = (name) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        return normalizedName === WARDEN_CONFIG_SERVICE_NAME || serviceCatalog.has(normalizedName);
+    };
 
     const parsePersistedServiceConfigName = (document = {}) => {
         const directName = normalizeManagedServiceName(document?.service);
@@ -2374,6 +3169,7 @@ export function createWarden(options = {}) {
 
     const persistServiceRuntimeConfig = async (name, runtime = {}) => {
         if (!settingsClient?.mongo?.update) {
+            writeRuntimeConfigSnapshot();
             return {available: false, persisted: false};
         }
 
@@ -2399,6 +3195,7 @@ export function createWarden(options = {}) {
                 );
             }
 
+            writeRuntimeConfigSnapshot();
             return {available: true, persisted: true, deleted: true};
         }
 
@@ -2409,6 +3206,7 @@ export function createWarden(options = {}) {
             {upsert: true},
         );
 
+        writeRuntimeConfigSnapshot();
         return {available: true, persisted: true, deleted: false};
     };
 
@@ -2423,39 +3221,107 @@ export function createWarden(options = {}) {
             return [];
         }
 
-        if (!settingsClient?.mongo?.findMany) {
-            persistedServiceRuntimeConfigLoaded = true;
-            return [];
+        const loadedByService = new Map();
+        const recordLoaded = (entry = {}) => {
+            const service = normalizeManagedServiceName(entry?.service);
+            if (!service || !supportsRuntimeConfigTarget(service)) {
+                return;
+            }
+
+            const snapshot = normalizePersistedRuntimeConfig(entry);
+            if (!hasPersistedRuntimeConfig(snapshot)) {
+                return;
+            }
+
+            loadedByService.set(service, {
+                service,
+                ...snapshot,
+            });
+        };
+
+        const mergeRuntimeWithExisting = (service, runtime = {}) => {
+            const current = resolveRuntimeConfig(service);
+            const incoming = normalizePersistedRuntimeConfig(runtime);
+            return writeRuntimeConfig(service, {
+                env: {
+                    ...normalizeEnvOverrideMap(incoming.env),
+                    ...normalizeEnvOverrideMap(current.env),
+                },
+                hostPort: current.hostPort != null ? current.hostPort : incoming.hostPort,
+            });
+        };
+
+        try {
+            const snapshotLoaded = await applySetupConfigSnapshotRuntimeConfig(readSetupConfigSnapshot().snapshot, {
+                preferExisting: false,
+                persist: false,
+            });
+            for (const entry of snapshotLoaded) {
+                const current = resolveRuntimeConfig(entry.service);
+                recordLoaded({
+                    service: entry.service,
+                    ...current,
+                });
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn?.(`[${serviceName}] Failed to apply setup config snapshot runtime: ${message}`);
         }
 
-        const documents = await settingsClient.mongo.findMany(settingsCollection, {
-            type: SERVICE_CONFIG_SETTINGS_TYPE,
-        });
+        let settingsLoadFailed = false;
 
-        const loaded = [];
-        for (const document of documents) {
-            const candidateName = parsePersistedServiceConfigName(document);
-            if (!candidateName || !serviceCatalog.has(candidateName)) {
+        if (settingsClient?.mongo?.findMany) {
+            try {
+                const documents = await settingsClient.mongo.findMany(settingsCollection, {
+                    type: SERVICE_CONFIG_SETTINGS_TYPE,
+                });
+
+                for (const document of documents) {
+                    const candidateName = parsePersistedServiceConfigName(document);
+                    if (!candidateName || !supportsRuntimeConfigTarget(candidateName)) {
+                        continue;
+                    }
+
+                    const snapshot = mergeRuntimeWithExisting(candidateName, {
+                        env: document?.env,
+                        hostPort: document?.hostPort,
+                    });
+
+                    recordLoaded({
+                        service: candidateName,
+                        ...snapshot,
+                    });
+                }
+            } catch (error) {
+                settingsLoadFailed = true;
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn?.(
+                    `[${serviceName}] Failed to load runtime service config from ${settingsCollection}: ${message}`,
+                );
+            }
+        }
+
+        const diskSnapshot = readRuntimeConfigSnapshot();
+        const diskServices =
+            diskSnapshot?.snapshot?.services && typeof diskSnapshot.snapshot.services === 'object'
+                ? diskSnapshot.snapshot.services
+                : {};
+        for (const [candidateName, runtime] of Object.entries(diskServices)) {
+            const normalizedName = normalizeManagedServiceName(candidateName);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
                 continue;
             }
 
-            const snapshot = writeRuntimeConfig(candidateName, {
-                env: document?.env,
-                hostPort: document?.hostPort,
-            });
-
-            if (!hasPersistedRuntimeConfig(snapshot)) {
-                continue;
-            }
-
-            loaded.push({
-                service: candidateName,
+            const snapshot = mergeRuntimeWithExisting(normalizedName, runtime);
+            recordLoaded({
+                service: normalizedName,
                 ...snapshot,
             });
         }
 
-        persistedServiceRuntimeConfigLoaded = true;
-        return loaded;
+        writeRuntimeConfigSnapshot();
+        persistedServiceRuntimeConfigLoaded = settingsLoadFailed !== true;
+        return Array.from(loadedByService.values());
     };
 
     const resolveRuntimeConfig = (name) => {
@@ -2471,9 +3337,38 @@ export function createWarden(options = {}) {
         };
     };
 
+    const resolveWardenRuntimeEnv = () => ({
+        ...env,
+        ...resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME).env,
+    });
+    const resolveCurrentHostServiceBase = () => resolveHostServiceBase(resolveWardenRuntimeEnv());
+    const resolveCurrentHostServiceHost = () => resolveHostServiceHost(resolveWardenRuntimeEnv());
+    const resolveCurrentServerIp = () => resolveServerIp(resolveWardenRuntimeEnv());
+    const resolveCurrentAutoUpdatesEnabled = () => isBooleanFlagEnabled(resolveWardenRuntimeEnv().AUTO_UPDATES);
+
+    const sanitizeServiceRuntimeEnvOverrides = (name, envOverrides = {}) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        if (normalizedName !== MANAGED_KAVITA_SERVICE_NAME) {
+            return envOverrides;
+        }
+
+        const sanitized = {...envOverrides};
+        for (const key of MANAGED_KAVITA_DEFAULT_ENV_FALLBACK_KEYS) {
+            if (
+                Object.prototype.hasOwnProperty.call(sanitized, key)
+                && typeof sanitized[key] === 'string'
+                && !sanitized[key].trim()
+            ) {
+                delete sanitized[key];
+            }
+        }
+
+        return sanitized;
+    };
+
     const writeRuntimeConfig = (name, next = {}) => {
         const normalizedName = normalizeManagedServiceName(name);
-        const envOverrides = normalizeEnvOverrideMap(next.env);
+        const envOverrides = sanitizeServiceRuntimeEnvOverrides(normalizedName, normalizeEnvOverrideMap(next.env));
         const hostPort = normalizeHostPort(next.hostPort);
 
         if (Object.keys(envOverrides).length === 0 && hostPort == null) {
@@ -2501,20 +3396,21 @@ export function createWarden(options = {}) {
         const protocol = protocolMatch?.[1]?.toLowerCase() ?? null;
 
         if (protocol && protocol !== 'http' && protocol !== 'https') {
-            return `${protocol}://${hostServiceHost}:${normalizedPort}`;
+            return `${protocol}://${resolveCurrentHostServiceHost()}:${normalizedPort}`;
         }
 
-        return `${hostServiceBase}:${normalizedPort}`;
+        return `${resolveCurrentHostServiceBase()}:${normalizedPort}`;
     };
 
     const applyServerIpEnv = (descriptor) => {
-        if (!descriptor || !serverIp) {
+        const currentServerIp = resolveCurrentServerIp();
+        if (!descriptor || !currentServerIp) {
             return descriptor;
         }
 
         return {
             ...descriptor,
-            env: upsertEnvEntry(descriptor.env, 'SERVER_IP', serverIp),
+            env: upsertEnvEntry(descriptor.env, 'SERVER_IP', currentServerIp),
         };
     };
 
@@ -2534,6 +3430,63 @@ export function createWarden(options = {}) {
         };
     };
 
+    function resolveManagedKavitaMoonBaseUrl() {
+        if (!serviceCatalog.has(MANAGED_MOON_SERVICE_NAME)) {
+            return '';
+        }
+
+        const moonDescriptor = buildEffectiveServiceDescriptor(MANAGED_MOON_SERVICE_NAME).descriptor;
+        const moonEnv = parseEnvEntries(moonDescriptor?.env);
+        const externalUrl = normalizeAbsoluteHttpUrl(moonEnv.MOON_EXTERNAL_URL);
+        if (externalUrl) {
+            return externalUrl;
+        }
+
+        const explicitUrl = normalizeAbsoluteHttpUrl(moonDescriptor?.hostServiceUrl);
+        if (explicitUrl) {
+            return explicitUrl;
+        }
+
+        const port = normalizeHostPort(moonDescriptor?.port ?? moonDescriptor?.internalPort);
+        return port == null ? '' : `${resolveCurrentHostServiceBase()}:${port}`;
+    }
+
+    function applyManagedKavitaNoonaDefaults(descriptor) {
+        if (!descriptor || descriptor.name !== MANAGED_KAVITA_SERVICE_NAME) {
+            return descriptor;
+        }
+
+        const envMap = parseEnvEntries(descriptor.env);
+        const moonBaseUrl =
+            normalizeAbsoluteHttpUrl(envMap.NOONA_MOON_BASE_URL)
+            || resolveManagedKavitaMoonBaseUrl();
+        const portalBaseUrl =
+            normalizeAbsoluteHttpUrl(envMap.NOONA_PORTAL_BASE_URL)
+            || DEFAULT_NOONA_PORTAL_BASE_URL;
+        const socialLoginOnly =
+            normalizeBooleanSettingValue(envMap.NOONA_SOCIAL_LOGIN_ONLY)
+            || DEFAULT_NOONA_SOCIAL_LOGIN_ONLY;
+
+        let nextDescriptor = descriptor;
+        if (moonBaseUrl) {
+            nextDescriptor = {
+                ...nextDescriptor,
+                env: upsertEnvEntry(nextDescriptor.env, 'NOONA_MOON_BASE_URL', moonBaseUrl),
+            };
+        }
+
+        nextDescriptor = {
+            ...nextDescriptor,
+            env: upsertEnvEntry(
+                upsertEnvEntry(nextDescriptor.env, 'NOONA_PORTAL_BASE_URL', portalBaseUrl),
+                'NOONA_SOCIAL_LOGIN_ONLY',
+                socialLoginOnly,
+            ),
+        };
+
+        return nextDescriptor;
+    }
+
     const applyMoonWebGuiPort = (descriptor) => {
         if (!descriptor || descriptor.name !== 'noona-moon') {
             return descriptor;
@@ -2549,7 +3502,7 @@ export function createWarden(options = {}) {
             ...descriptor,
             port: webGuiPort,
             internalPort: webGuiPort,
-            hostServiceUrl: `${hostServiceBase}:${webGuiPort}`,
+            hostServiceUrl: `${resolveCurrentHostServiceBase()}:${webGuiPort}`,
             health: `http://noona-moon:${webGuiPort}/`,
             exposed: {[`${webGuiPort}/tcp`]: {}},
             ports: {[`${webGuiPort}/tcp`]: [{HostPort: String(webGuiPort)}]},
@@ -2574,6 +3527,7 @@ export function createWarden(options = {}) {
         descriptor = applyServerIpEnv(descriptor);
         descriptor = applyMoonWebGuiPort(descriptor);
         descriptor = applyHostServiceBase(descriptor);
+        descriptor = applyManagedKavitaNoonaDefaults(descriptor);
         const internalPort = descriptor.internalPort || descriptor.port || null;
         const hostPort = normalizeHostPort(runtime.hostPort);
 
@@ -2628,45 +3582,72 @@ export function createWarden(options = {}) {
         }
     };
 
-    const fetchDockerHubDigest = async (imageReference) => {
-        if (!imageReference || imageReference.registry !== 'docker.io') {
+    const fetchRegistryDigest = async (imageReference) => {
+        if (!imageReference) {
             return null;
         }
 
-        const scope = `repository:${imageReference.repository}:pull`;
-        const tokenResponse = await fetchImpl(
-            `https://auth.docker.io/token?service=registry.docker.io&scope=${encodeURIComponent(scope)}`,
-            {method: 'GET'},
-        );
-
-        if (!tokenResponse.ok) {
-            throw new Error(`Docker Hub token request failed with status ${tokenResponse.status}`);
+        const manifestUrl = buildRegistryManifestUrl(imageReference);
+        if (!manifestUrl) {
+            return null;
         }
 
-        const tokenPayload = await tokenResponse.json().catch(() => ({}));
-        const token = typeof tokenPayload?.token === 'string' ? tokenPayload.token.trim() : '';
-        if (!token) {
-            throw new Error('Docker Hub token response did not include a token.');
-        }
-
-        const manifestResponse = await fetchImpl(
-            `https://registry-1.docker.io/v2/${imageReference.repository}/manifests/${encodeURIComponent(imageReference.tag)}`,
-            {
+        const credentials = resolveRegistryCredentials(imageReference.registry, env);
+        const basicAuthorization = buildBasicAuthorizationHeader(credentials);
+        const createManifestRequest = (authorization = null) =>
+            fetchImpl(manifestUrl, {
                 method: 'GET',
                 headers: {
-                    Authorization: `Bearer ${token}`,
-                    Accept: [
-                        'application/vnd.docker.distribution.manifest.v2+json',
-                        'application/vnd.docker.distribution.manifest.list.v2+json',
-                        'application/vnd.oci.image.manifest.v1+json',
-                        'application/vnd.oci.image.index.v1+json',
-                    ].join(', '),
+                    ...(authorization ? {Authorization: authorization} : {}),
+                    Accept: REGISTRY_MANIFEST_ACCEPT_HEADER,
                 },
-            },
-        );
+            });
+
+        let manifestResponse = await createManifestRequest(basicAuthorization);
+
+        if (manifestResponse.status === 401) {
+            const challenge = parseRegistryAuthChallenge(manifestResponse.headers.get('www-authenticate'));
+            if (challenge?.scheme === 'bearer' && challenge.params?.realm) {
+                const tokenUrl = new URL(challenge.params.realm);
+                if (challenge.params.service) {
+                    tokenUrl.searchParams.set('service', challenge.params.service);
+                }
+                tokenUrl.searchParams.set(
+                    'scope',
+                    challenge.params.scope || `repository:${imageReference.repository}:pull`,
+                );
+
+                const tokenResponse = await fetchImpl(tokenUrl.toString(), {
+                    method: 'GET',
+                    headers: {
+                        ...(basicAuthorization ? {Authorization: basicAuthorization} : {}),
+                    },
+                });
+
+                if (!tokenResponse.ok) {
+                    throw new Error(
+                        `${imageReference.registry} token request failed with status ${tokenResponse.status}`,
+                    );
+                }
+
+                const tokenPayload = await tokenResponse.json().catch(() => ({}));
+                const token = typeof tokenPayload?.token === 'string'
+                    ? tokenPayload.token.trim()
+                    : typeof tokenPayload?.access_token === 'string'
+                        ? tokenPayload.access_token.trim()
+                        : '';
+                if (!token) {
+                    throw new Error(`${imageReference.registry} token response did not include a token.`);
+                }
+
+                manifestResponse = await createManifestRequest(`Bearer ${token}`);
+            } else if (challenge?.scheme === 'basic' && basicAuthorization) {
+                manifestResponse = await createManifestRequest(basicAuthorization);
+            }
+        }
 
         if (!manifestResponse.ok) {
-            throw new Error(`Docker Hub manifest request failed with status ${manifestResponse.status}`);
+            throw new Error(`${imageReference.registry} manifest request failed with status ${manifestResponse.status}`);
         }
 
         const remoteDigest = manifestResponse.headers.get('docker-content-digest');
@@ -2703,7 +3684,7 @@ export function createWarden(options = {}) {
         }
 
         const resolvedImage = parseImageReference(image);
-        if (!resolvedImage || resolvedImage.registry !== 'docker.io') {
+        if (!resolvedImage) {
             const snapshot = {
                 service: normalizedName,
                 image,
@@ -2713,15 +3694,25 @@ export function createWarden(options = {}) {
                 localDigests: [],
                 installed,
                 supported: false,
-                error: 'Update check currently supports Docker Hub images only.',
+                error: 'Service image reference could not be parsed.',
             };
             serviceUpdateSnapshots.set(normalizedName, snapshot);
             return snapshot;
         }
 
         const localDigests = await getLocalImageDigests(client, image);
-        const remoteDigest = await fetchDockerHubDigest(resolvedImage);
-        const updateAvailable = installed && Boolean(remoteDigest) && !localDigests.includes(remoteDigest);
+        let remoteDigest = null;
+        let supported = true;
+        let error = null;
+
+        try {
+            remoteDigest = await fetchRegistryDigest(resolvedImage);
+        } catch (digestError) {
+            supported = false;
+            error = digestError instanceof Error ? digestError.message : String(digestError);
+        }
+
+        const updateAvailable = supported && installed && Boolean(remoteDigest) && !localDigests.includes(remoteDigest);
 
         const snapshot = {
             service: normalizedName,
@@ -2731,8 +3722,8 @@ export function createWarden(options = {}) {
             remoteDigest,
             localDigests,
             installed,
-            supported: true,
-            error: null,
+            supported,
+            error,
         };
 
         serviceUpdateSnapshots.set(normalizedName, snapshot);
@@ -2785,6 +3776,43 @@ export function createWarden(options = {}) {
         return describeNoonaStorageLayout(resolveSharedStorageRoot(installOverridesByName), {
             vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
         });
+    };
+
+    api.getSetupConfig = function getSetupConfig(options = {}) {
+        const state = readSetupConfigSnapshot({refresh: options?.refresh === true});
+        return {
+            exists: state.exists === true,
+            path: state.path ?? null,
+            snapshot: state.snapshot ?? null,
+            error: state.error ?? null,
+        };
+    };
+
+    api.clearPersistedBootState = async function clearPersistedBootStateApi() {
+        return clearPersistedBootState();
+    };
+
+    api.saveSetupConfig = async function saveSetupConfig(snapshot = {}, options = {}) {
+        const {
+            snapshot: persistedSnapshot,
+            path: persistedPath,
+            mirroredPaths = []
+        } = writeSetupConfigSnapshot(snapshot);
+        const loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
+            preferExisting: options?.replaceRuntime !== true,
+            persist: options?.persistRuntime === true,
+        });
+        writeRuntimeConfigSnapshot();
+        const selected = extractPersistedSetupSelectionFromSetupSnapshot(persistedSnapshot);
+
+        return {
+            exists: true,
+            path: persistedPath,
+            mirroredPaths,
+            snapshot: persistedSnapshot,
+            selected,
+            runtime: loadedRuntimeConfig,
+        };
     };
 
     Object.defineProperty(api, 'DEBUG', {
@@ -2852,6 +3880,9 @@ export function createWarden(options = {}) {
         requiredServices,
         readManagedKomfConfigFile,
         resetInstallationTracking,
+        resolveCurrentHostServiceBase,
+        resolveCurrentAutoUpdatesEnabled,
+        resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
         runtimeDebugState,
@@ -2871,7 +3902,7 @@ export function createWarden(options = {}) {
         detectKavitaDataMount,
         dockerUtils,
         ensureDockerConnection,
-        fetchDockerHubDigest,
+        fetchRegistryDigest,
         fetchImpl,
         getLocalImageDigests,
         invokeWizard,
@@ -2895,16 +3926,19 @@ export function createWarden(options = {}) {
         isPersistedServiceRuntimeConfigLoaded: () => persistedServiceRuntimeConfigLoadedState.value,
         loadPersistedServiceRuntimeConfig,
         logger,
+        minimalServiceNames,
         networkName,
         normalizeHostPort,
         orderServicesForLifecycle,
         parseEnvEntries,
         processExit,
         requiredServiceSet,
+        resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
         serviceCatalog,
         startServiceUpdateTimer,
         stopServiceUpdateTimer,
+        sleepImpl,
         SUPER_MODE,
         trackedContainers,
     });

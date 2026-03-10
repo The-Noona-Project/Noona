@@ -14,17 +14,30 @@ export const moonSite = {
 export const moonRoutes = {
     "/": true,
     "/discord/callback": true,
+    "/kavita/complete": true,
     "/login": true,
     "/signup": true,
     "/setupwizard": true,
     "/setupwizard/summary": true,
     "/libraries": true,
     "/downloads": true,
+    "/downloads/add": true,
+    "/recommendations": true,
+    "/myrecommendations": true,
+    "/mysubscriptions": true,
+    "/recommendation": true,
     "/rebooting": true,
     "/settings": true,
 } as const;
 
-export const moonDynamicRoutePrefixes = ["/libraries"] as const;
+export const moonDynamicRoutePrefixes = [
+    "/libraries",
+    "/recommendations",
+    "/myrecommendations",
+    "/mysubscriptions",
+    "/recommendation",
+    "/settings",
+] as const;
 
 export const moonShell = {
     showTime: true,

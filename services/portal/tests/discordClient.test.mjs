@@ -3,7 +3,7 @@
 import EventEmitter from 'node:events';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {Events} from 'discord.js';
+import {Events, MessageFlags} from 'discord.js';
 
 import {createDiscordClient} from '../discord/client.mjs';
 import createPortalSlashCommands from '../commands/index.mjs';
@@ -13,6 +13,7 @@ class FakeClient extends EventEmitter {
         super();
         this.destroyed = false;
         this.lastLoginToken = null;
+        this.directMessages = [];
         this.application = {
             commands: {
                 calls: [],
@@ -41,6 +42,19 @@ class FakeClient extends EventEmitter {
                             },
                         };
                     },
+                },
+            }),
+        };
+        this.users = {
+            fetch: async userId => ({
+                id: userId,
+                send: async payload => {
+                    const message = {
+                        id: `dm-${this.directMessages.length + 1}`,
+                        payload,
+                    };
+                    this.directMessages.push({userId, payload, message});
+                    return message;
                 },
             }),
         };
@@ -152,8 +166,40 @@ test('interaction handler executes matching slash command', async () => {
     await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
 
     assert.equal(replies.length, 1);
-    assert.equal(replies[0].ephemeral, true);
+    assert.equal(replies[0].flags, MessageFlags.Ephemeral);
     assert.match(replies[0].content, /Dong/i);
+});
+
+test('interaction handler responds when slash command has no registered handler', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const replies = [];
+    const interaction = {
+        isChatInputCommand: () => true,
+        commandName: 'recommend',
+        reply: async payload => {
+            replies.push(payload);
+        },
+    };
+
+    await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].flags, MessageFlags.Ephemeral);
+    assert.match(replies[0].content, /not available right now/i);
 });
 
 test('interaction handler executes matching autocomplete handler', async () => {
@@ -199,6 +245,219 @@ test('interaction handler executes matching autocomplete handler', async () => {
     assert.deepEqual(responses, [[{name: 'Manga', value: '1'}]]);
 });
 
+test('createDiscordClient sends direct messages through the Discord user client', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const message = await discord.sendDirectMessage('discord-user-1', {content: 'Hello from Portal'});
+    assert.equal(message.id, 'dm-1');
+    assert.deepEqual(fakeClient.directMessages, [
+        {
+            userId: 'discord-user-1',
+            payload: {content: 'Hello from Portal'},
+            message: {
+                id: 'dm-1',
+                payload: {content: 'Hello from Portal'},
+            },
+        },
+    ]);
+});
+
+test('createDiscordClient serializes queued direct messages per user when Vault Redis is available', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const redisStore = new Map();
+    const vaultClient = {
+        redisSet: async (key, value) => {
+            redisStore.set(key, structuredClone(value));
+            return {status: 'ok'};
+        },
+        redisGet: async key => structuredClone(redisStore.get(key)),
+        redisDel: async key => {
+            const existed = redisStore.delete(key);
+            return {status: 'ok', deleted: existed ? 1 : 0};
+        },
+    };
+
+    let sendCount = 0;
+    fakeClient.users = {
+        fetch: async userId => ({
+            id: userId,
+            send: async payload => {
+                sendCount += 1;
+                const index = sendCount;
+                if (index === 1) {
+                    await new Promise(resolve => setTimeout(resolve, 15));
+                }
+                return {
+                    id: `dm-${index}`,
+                    payload,
+                };
+            },
+        }),
+    };
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+        vaultClient,
+        messageQueueNamespace: 'portal:test:dm',
+        messageQueueTtlSeconds: 60,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const [firstMessage, secondMessage] = await Promise.all([
+        discord.sendDirectMessage('discord-user-1', {content: 'first'}),
+        discord.sendDirectMessage('discord-user-1', {content: 'second'}),
+    ]);
+
+    assert.equal(firstMessage.id, 'dm-1');
+    assert.equal(secondMessage.id, 'dm-2');
+});
+
+test('createDiscordClient uses Vault Redis list packets for queued direct messages when available', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const redisLists = new Map();
+    const vaultClient = {
+        redisRPush: async (key, value) => {
+            const queue = redisLists.get(key) ?? [];
+            queue.push(structuredClone(value));
+            redisLists.set(key, queue);
+            return {status: 'ok', length: queue.length};
+        },
+        redisLPop: async key => {
+            const queue = redisLists.get(key) ?? [];
+            if (!queue.length) {
+                return null;
+            }
+
+            const [next, ...remaining] = queue;
+            if (remaining.length) {
+                redisLists.set(key, remaining);
+            } else {
+                redisLists.delete(key);
+            }
+            return structuredClone(next);
+        },
+    };
+
+    let sendCount = 0;
+    fakeClient.users = {
+        fetch: async userId => ({
+            id: userId,
+            send: async payload => {
+                sendCount += 1;
+                const index = sendCount;
+                if (index === 1) {
+                    await new Promise(resolve => setTimeout(resolve, 15));
+                }
+                return {
+                    id: `dm-${index}`,
+                    payload,
+                };
+            },
+        }),
+    };
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+        vaultClient,
+        messageQueueNamespace: 'portal:test:list:dm',
+        messageQueueTtlSeconds: 60,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const [firstMessage, secondMessage] = await Promise.all([
+        discord.sendDirectMessage('discord-user-1', {content: 'first'}),
+        discord.sendDirectMessage('discord-user-1', {content: 'second'}),
+    ]);
+
+    assert.equal(firstMessage.id, 'dm-1');
+    assert.equal(secondMessage.id, 'dm-2');
+});
+
+test('interaction handler executes matching button component handlers', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const componentCalls = [];
+    const commands = new Map([
+        ['recommend', {
+            definition: {name: 'recommend', description: 'Recommend title'},
+            handleComponent: async interaction => {
+                if (interaction.customId !== 'recommend:select:abc123:0') {
+                    return false;
+                }
+
+                componentCalls.push(interaction.customId);
+                await interaction.reply({
+                    content: 'Handled recommendation button.',
+                    ephemeral: true,
+                });
+                return true;
+            },
+        }],
+    ]);
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands,
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const replies = [];
+    const interaction = {
+        isAutocomplete: () => false,
+        isChatInputCommand: () => false,
+        isButton: () => true,
+        customId: 'recommend:select:abc123:0',
+        reply: async payload => {
+            replies.push(payload);
+        },
+    };
+
+    await emitAndWait(fakeClient, Events.InteractionCreate, interaction);
+
+    assert.deepEqual(componentCalls, ['recommend:select:abc123:0']);
+    assert.deepEqual(replies, [{
+        content: 'Handled recommendation button.',
+        ephemeral: true,
+    }]);
+});
+
 test('interaction handler blocks command execution when guild does not match REQUIRED_GUILD_ID', async () => {
     const previousGuild = process.env.REQUIRED_GUILD_ID;
     process.env.REQUIRED_GUILD_ID = 'expected-guild';
@@ -238,7 +497,7 @@ test('interaction handler blocks command execution when guild does not match REQ
 
         assert.equal(executed, false);
         assert.equal(replies.length, 1);
-        assert.equal(replies[0].ephemeral, true);
+        assert.equal(replies[0].flags, MessageFlags.Ephemeral);
         assert.match(replies[0].content, /server/i);
     } finally {
         if (previousGuild == null) {
@@ -288,7 +547,7 @@ test('interaction handler blocks command execution when REQUIRED_ROLE_* is not s
 
         assert.equal(executed, false);
         assert.equal(replies.length, 1);
-        assert.equal(replies[0].ephemeral, true);
+        assert.equal(replies[0].flags, MessageFlags.Ephemeral);
         assert.match(replies[0].content, /permission/i);
     } finally {
         if (previousRole == null) {

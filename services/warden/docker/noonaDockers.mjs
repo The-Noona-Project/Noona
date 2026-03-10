@@ -1,37 +1,85 @@
 // services/warden/docker/noonaDockers.mjs
 
 import {resolveHostServiceBase, resolveSharedHostEnvEntries} from './hostServiceUrl.mjs';
+import {resolveNoonaImage} from './imageRegistry.mjs';
 import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
 
 const DEBUG = process.env.DEBUG || 'false';
 const HOST_SERVICE_URL = resolveHostServiceBase();
 const SHARED_HOST_ENV = resolveSharedHostEnvEntries();
 const DOCKER_WARDEN_URL =
-    process.env.WARDEN_DOCKER_URL || process.env.INTERNAL_WARDEN_BASE_URL || 'http://noona-warden:4001';
+    process.env.WARDEN_DOCKER_URL
+    || process.env.INTERNAL_WARDEN_BASE_URL
+    || 'http://noona-warden:4001';
 
-const DEFAULT_MONGO_ROOT_USERNAME = process.env.MONGO_INITDB_ROOT_USERNAME || 'root';
-const DEFAULT_MONGO_ROOT_PASSWORD = process.env.MONGO_INITDB_ROOT_PASSWORD || 'example';
+const DEFAULT_MONGO_ROOT_USERNAME =
+    process.env.MONGO_INITDB_ROOT_USERNAME
+    || 'root';
+const DEFAULT_MONGO_ROOT_PASSWORD =
+    process.env.MONGO_INITDB_ROOT_PASSWORD
+    || 'example';
 const DEFAULT_VAULT_MONGO_URI =
     process.env.MONGO_URI ||
     `mongodb://${encodeURIComponent(DEFAULT_MONGO_ROOT_USERNAME)}:${encodeURIComponent(DEFAULT_MONGO_ROOT_PASSWORD)}@noona-mongo:27017/admin?authSource=admin`;
-const DEFAULT_VAULT_REDIS_HOST = process.env.REDIS_HOST || 'noona-redis';
-const DEFAULT_VAULT_REDIS_PORT = process.env.REDIS_PORT || '6379';
-const DEFAULT_VAULT_DATA_FOLDER = process.env.VAULT_DATA_FOLDER || 'vault';
-const DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH = process.env.VAULT_REDIS_HOST_MOUNT_PATH || '';
-const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH = process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
+const DEFAULT_VAULT_REDIS_HOST =
+    process.env.REDIS_HOST
+    || 'noona-redis';
+const DEFAULT_VAULT_REDIS_PORT =
+    process.env.REDIS_PORT
+    || '6379';
+const DEFAULT_VAULT_DATA_FOLDER =
+    process.env.VAULT_DATA_FOLDER
+    || 'vault';
+const DEFAULT_VAULT_REDIS_HOST_MOUNT_PATH =
+    process.env.VAULT_REDIS_HOST_MOUNT_PATH || '';
+const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH =
+    process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
-    process.env.PORTAL_VAULT_BASE_URL || 'http://noona-vault:3005';
+    process.env.PORTAL_VAULT_BASE_URL
+    || 'http://noona-vault:3005';
 const DEFAULT_PORTAL_RAVEN_BASE_URL =
-    process.env.RAVEN_BASE_URL || process.env.PORTAL_RAVEN_BASE_URL || 'http://noona-raven:8080';
+    process.env.RAVEN_BASE_URL
+    || process.env.PORTAL_RAVEN_BASE_URL
+    || 'http://noona-raven:8080';
 const DEFAULT_PORTAL_WARDEN_BASE_URL =
-    process.env.WARDEN_BASE_URL || process.env.PORTAL_WARDEN_BASE_URL || DOCKER_WARDEN_URL;
-const DEFAULT_PORTAL_ACTIVITY_POLL_MS = process.env.PORTAL_ACTIVITY_POLL_MS || '15000';
-const DEFAULT_RAVEN_VAULT_URL = process.env.RAVEN_VAULT_URL || 'http://noona-vault:3005';
+    process.env.WARDEN_BASE_URL
+    || process.env.PORTAL_WARDEN_BASE_URL
+    || DOCKER_WARDEN_URL;
+const DEFAULT_PORTAL_ACTIVITY_POLL_MS =
+    process.env.PORTAL_ACTIVITY_POLL_MS
+    || '15000';
+const DEFAULT_RAVEN_VAULT_URL =
+    process.env.RAVEN_VAULT_URL
+    || 'http://noona-vault:3005';
 const DEFAULT_RAVEN_PORTAL_BASE_URL =
-    process.env.PORTAL_BASE_URL || process.env.RAVEN_PORTAL_BASE_URL || 'http://noona-portal:3003';
-const DEFAULT_RAVEN_DOWNLOAD_THREADS = process.env.RAVEN_DOWNLOAD_THREADS || '3';
-const DEFAULT_KAVITA_BASE_URL = process.env.KAVITA_BASE_URL || 'http://noona-kavita:5000';
-const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT = process.env.RAVEN_KAVITA_LIBRARY_ROOT || '/manga';
+    process.env.PORTAL_BASE_URL
+    || process.env.RAVEN_PORTAL_BASE_URL
+    || 'http://noona-portal:3003';
+const DEFAULT_RAVEN_DOWNLOAD_THREADS =
+    process.env.RAVEN_DOWNLOAD_THREADS
+    || '3';
+const DEFAULT_KAVITA_BASE_URL =
+    process.env.KAVITA_BASE_URL
+    || 'http://noona-kavita:5000';
+const DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT =
+    process.env.RAVEN_KAVITA_LIBRARY_ROOT
+    || '/manga';
+const parseBooleanFlag = (value, fallback = false) => {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (!normalized) {
+        return fallback;
+    }
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+    return fallback;
+};
+const ENABLE_RAVEN_VPN_TUNNEL =
+    process.platform !== 'win32'
+    && parseBooleanFlag(process.env.RAVEN_VPN_ENABLE_TUN, true);
 const DEFAULT_MOON_WEBGUI_PORT = (() => {
     const candidate = Number.parseInt(process.env.WEBGUI_PORT || '3000', 10);
     if (Number.isFinite(candidate) && candidate >= 1 && candidate <= 65535) {
@@ -138,6 +186,9 @@ const serviceDefs = rawList.map(name => {
         env.push(`KAVITA_BASE_URL=${DEFAULT_KAVITA_BASE_URL}`);
         env.push('KAVITA_API_KEY=');
         env.push(`KAVITA_LIBRARY_ROOT=${DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT}`);
+        env.push(`RAVEN_PIA_OPENVPN_ZIP_URL=${process.env.RAVEN_PIA_OPENVPN_ZIP_URL || 'https://www.privateinternetaccess.com/openvpn/openvpn-ip.zip'}`);
+        env.push(`RAVEN_VPN_CONNECT_TIMEOUT_SECONDS=${process.env.RAVEN_VPN_CONNECT_TIMEOUT_SECONDS || '90'}`);
+        env.push(`RAVEN_VPN_PAUSE_TIMEOUT_MINUTES=${process.env.RAVEN_VPN_PAUSE_TIMEOUT_MINUTES || '30'}`);
         envConfig.push(
             createEnvField('APPDATA', '', {
                 label: 'Raven Downloads Root',
@@ -186,16 +237,40 @@ const serviceDefs = rawList.map(name => {
                 warning: 'Changing this value requires restarting noona-raven.',
                 required: false,
             }),
+            createEnvField('RAVEN_PIA_OPENVPN_ZIP_URL', process.env.RAVEN_PIA_OPENVPN_ZIP_URL || 'https://www.privateinternetaccess.com/openvpn/openvpn-ip.zip', {
+                label: 'PIA OpenVPN Profile URL',
+                description: 'Source URL Raven uses to refresh PIA OpenVPN region profiles.',
+                required: false,
+            }),
+            createEnvField('RAVEN_VPN_CONNECT_TIMEOUT_SECONDS', process.env.RAVEN_VPN_CONNECT_TIMEOUT_SECONDS || '90', {
+                label: 'VPN Connect Timeout (seconds)',
+                description: 'How long Raven waits for OpenVPN to establish a tunnel before failing a rotation.',
+                required: false,
+            }),
+            createEnvField('RAVEN_VPN_PAUSE_TIMEOUT_MINUTES', process.env.RAVEN_VPN_PAUSE_TIMEOUT_MINUTES || '30', {
+                label: 'VPN Pause Timeout (minutes)',
+                description: 'Maximum time Raven waits for active downloads to pause before aborting VPN rotation.',
+                required: false,
+            }),
         );
     }
 
     if (name === 'noona-moon') {
         env.push(`WEBGUI_PORT=${DEFAULT_MOON_WEBGUI_PORT}`);
+        env.push('MOON_EXTERNAL_URL=');
         envConfig.push(
             createEnvField('WEBGUI_PORT', DEFAULT_MOON_WEBGUI_PORT, {
                 label: 'Moon Web GUI Port',
                 description: 'Port Moon listens on for the web interface and the port Warden publishes on the host.',
                 warning: 'Changing this port requires restarting noona-moon and updating any bookmarks or reverse proxies.',
+                required: false,
+            }),
+            createEnvField('MOON_EXTERNAL_URL', '', {
+                label: 'Moon External URL',
+                description:
+                    'Optional public Moon URL used in external links (for example Discord recommendation DMs) instead of local host links.',
+                warning:
+                    'Set a full URL such as https://moon.example.com when users cannot reach the local host_service_url.',
                 required: false,
             }),
         );
@@ -240,6 +315,13 @@ const serviceDefs = rawList.map(name => {
                 label: 'Kavita Base URL',
                 description: 'Base URL of the Kavita instance providing library content.',
                 defaultValue: DEFAULT_KAVITA_BASE_URL,
+            },
+            {
+                key: 'KAVITA_EXTERNAL_URL',
+                label: 'Kavita External URL',
+                description:
+                    'Optional public Kavita URL used in Moon buttons and Discord messages instead of internal Docker-network URLs.',
+                required: false,
             },
             {
                 key: 'KAVITA_API_KEY',
@@ -338,6 +420,18 @@ const serviceDefs = rawList.map(name => {
                 key: 'REQUIRED_ROLE_SEARCH',
                 label: 'Required Role for /search',
                 description: 'Discord role ID required to execute the /search command.',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_ROLE_RECOMMEND',
+                label: 'Required Role for /recommend',
+                description: 'Discord role ID required to execute the /recommend command.',
+                required: false,
+            },
+            {
+                key: 'REQUIRED_ROLE_SUBSCRIBE',
+                label: 'Required Role for /subscribe',
+                description: 'Discord role ID required to execute the /subscribe command.',
                 required: false,
             },
         ];
@@ -448,19 +542,26 @@ const serviceDefs = rawList.map(name => {
 
     const healthTries = name === 'noona-portal' ? 90 : undefined;
     const healthDelayMs = name === 'noona-portal' ? 1000 : undefined;
+    const capAdd = name === 'noona-raven' && ENABLE_RAVEN_VPN_TUNNEL ? ['NET_ADMIN'] : undefined;
+    const devices = name === 'noona-raven' && ENABLE_RAVEN_VPN_TUNNEL
+        ? [{PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm'}]
+        : undefined;
 
     return {
         name,
-        image: `captainpax/${name}:latest`,
+        image: resolveNoonaImage(name),
         description: SERVICE_DESCRIPTIONS[name] ?? null,
         port: portMap[name],
         internalPort,
         env,
         envConfig,
+        restartPolicy: {Name: 'unless-stopped'},
         hostServiceUrl,
         health: healthChecks,
         healthTries,
         healthDelayMs,
+        capAdd,
+        devices,
     };
 });
 

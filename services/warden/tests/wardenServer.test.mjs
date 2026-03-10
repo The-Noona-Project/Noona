@@ -132,6 +132,117 @@ test('GET /api/storage/layout returns the Warden storage layout payload', async 
     });
 });
 
+test('GET /api/setup/config returns persisted setup snapshot metadata from warden', async (t) => {
+    const warden = {
+        async getSetupConfig() {
+            return {
+                exists: true,
+                path: '/srv/noona/wardenm/noona-settings.json',
+                snapshot: {
+                    version: 2,
+                    selected: ['noona-portal'],
+                    values: {
+                        'noona-portal': {
+                            DISCORD_BOT_TOKEN: 'token',
+                            KAVITA_API_KEY: 'k-api',
+                        },
+                    },
+                },
+                error: null,
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/api/setup/config`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        exists: true,
+        path: '/srv/noona/wardenm/noona-settings.json',
+        snapshot: {
+            version: 2,
+            selected: ['noona-portal'],
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'token',
+                    KAVITA_API_KEY: 'k-api',
+                },
+            },
+        },
+        error: null,
+    });
+});
+
+test('POST /api/setup/config persists setup snapshot through warden', async (t) => {
+    const calls = [];
+    const warden = {
+        async saveSetupConfig(payload) {
+            calls.push(payload);
+            return {
+                exists: true,
+                path: '/srv/noona/wardenm/noona-settings.json',
+                selected: ['noona-portal'],
+                snapshot: payload,
+                runtime: [
+                    {
+                        service: 'noona-portal',
+                        env: {
+                            DISCORD_BOT_TOKEN: 'token',
+                            KAVITA_API_KEY: 'k-api',
+                        },
+                        hostPort: null,
+                    },
+                ],
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const payload = {
+        version: 2,
+        selected: ['noona-portal'],
+        values: {
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'token',
+                KAVITA_API_KEY: 'k-api',
+            },
+        },
+    };
+
+    const response = await fetch(`${baseUrl}/api/setup/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls, [payload]);
+    assert.deepEqual(await response.json(), {
+        exists: true,
+        path: '/srv/noona/wardenm/noona-settings.json',
+        selected: ['noona-portal'],
+        snapshot: payload,
+        runtime: [
+            {
+                service: 'noona-portal',
+                env: {
+                    DISCORD_BOT_TOKEN: 'token',
+                    KAVITA_API_KEY: 'k-api',
+                },
+                hostPort: null,
+            },
+        ],
+    });
+});
+
 test('POST /api/services/install returns results and status code for errors', async (t) => {
     const installCalls = [];
     const warden = {

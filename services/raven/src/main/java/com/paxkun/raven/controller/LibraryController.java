@@ -85,12 +85,15 @@ public class LibraryController {
 
         String nextTitle = request != null ? request.title() : null;
         String nextSource = request != null ? request.sourceUrl() : null;
+        String nextCoverUrl = request != null ? request.coverUrl() : null;
 
-        if ((nextTitle == null || nextTitle.isBlank()) && (nextSource == null || nextSource.isBlank())) {
-            return ResponseEntity.badRequest().body(java.util.Map.of("error", "At least one of title/sourceUrl must be provided."));
+        if ((nextTitle == null || nextTitle.isBlank())
+                && (nextSource == null || nextSource.isBlank())
+                && (nextCoverUrl == null || nextCoverUrl.isBlank())) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "At least one of title/sourceUrl/coverUrl must be provided."));
         }
 
-        NewTitle updated = libraryService.updateTitle(uuid.trim(), nextTitle, nextSource);
+        NewTitle updated = libraryService.updateTitle(uuid.trim(), nextTitle, nextSource, nextCoverUrl);
         if (updated == null) {
             return ResponseEntity.notFound().build();
         }
@@ -161,7 +164,7 @@ public class LibraryController {
     public record LibraryTitleRequest(String title, String sourceUrl) {
     }
 
-    public record LibraryTitleUpdateRequest(String title, String sourceUrl) {
+    public record LibraryTitleUpdateRequest(String title, String sourceUrl, String coverUrl) {
     }
 
     public record DeleteTitleFilesRequest(List<String> names) {

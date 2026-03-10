@@ -11,7 +11,7 @@ import {
 import {FormControl, FormGroup, ReactiveFormsModule, Validators} from '@angular/forms';
 import {ActivatedRoute, Router, RouterLink} from '@angular/router';
 import {ToastrService} from 'ngx-toastr';
-import {AccountService} from '../../_services/account.service';
+import {AccountService, NoonaLoginConfig} from '../../_services/account.service';
 import {MemberService} from '../../_services/member.service';
 import {NavService} from '../../_services/nav.service';
 import {SplashContainerComponent} from '../_components/splash-container/splash-container.component';
@@ -20,7 +20,6 @@ import {environment} from "../../../environments/environment";
 import {ImageComponent} from "../../shared/image/image.component";
 import {SettingsService} from 'src/app/admin/settings.service';
 import {OidcPublicConfig} from "../../admin/_models/oidc-config";
-
 
 @Component({
   selector: 'app-user-login',
@@ -57,24 +56,29 @@ export class UserLoginComponent implements OnInit {
    */
   skipAutoLogin = signal<boolean | undefined>(undefined);
   /**
-   * Display the login form, regardless if the password authentication is disabled (admins can still log in)
+   * Display the login form, regardless of OIDC password-authentication settings.
    * Set from query
    */
   forceShowPasswordLogin = signal(false);
   oidcConfig = signal<OidcPublicConfig | undefined>(undefined);
+  noonaConfig = signal<NoonaLoginConfig | undefined>(undefined);
 
   /**
    * Display the login form
    */
   showPasswordLogin = computed(() => {
     const loaded = this.isLoaded();
+    const noonaConfig = this.noonaConfig();
     const config = this.oidcConfig();
     const force = this.forceShowPasswordLogin();
+    if (!loaded) return false;
+    if (noonaConfig?.disablePasswordLogin) return false;
     if (force) return true;
 
-    return loaded && config && !(config.enabled && config.disablePasswordAuthentication);
+    return !!config && !(config.enabled && config.disablePasswordAuthentication);
   });
   showOidcButton = computed(() => this.oidcConfig()?.enabled ?? false);
+  showNoonaButton = computed(() => this.noonaConfig()?.enabled ?? false);
 
   constructor() {
     this.navService.hideNavBar();
@@ -104,6 +108,9 @@ export class UserLoginComponent implements OnInit {
     this.settingsService.getPublicOidcConfig().subscribe(config => {
       this.oidcConfig.set(config);
     });
+    this.accountService.getNoonaConfig().subscribe(config => {
+      this.noonaConfig.set(config);
+    });
 
     this.memberService.adminExists().subscribe(adminExists => {
       if (!adminExists) {
@@ -115,6 +122,12 @@ export class UserLoginComponent implements OnInit {
     });
 
     this.route.queryParamMap.subscribe(params => {
+      const noonaToken = params.get('noonaToken');
+      if (noonaToken != null && noonaToken.length > 0) {
+        this.noonaLogin(noonaToken);
+        return;
+      }
+
       const val = params.get('apiKey');
       if (val != null && val.length > 0) {
         this.login(val);
@@ -152,5 +165,36 @@ export class UserLoginComponent implements OnInit {
         this.isSubmitting.set(false);
       }
     });
+  }
+
+  noonaLogin(token: string) {
+    this.isSubmitting.set(true);
+    this.accountService.noonaLogin(token).subscribe({
+      next: () => {
+        this.loginForm.reset();
+        this.navService.handleLogin();
+        this.isSubmitting.set(false);
+      },
+      error: (err) => {
+        this.toastr.error(err.error);
+        this.isSubmitting.set(false);
+      }
+    });
+  }
+
+  loginWithNoona() {
+    const moonBaseUrl = (this.noonaConfig()?.moonBaseUrl || '').replace(/\/+$/, '');
+    if (!moonBaseUrl) return;
+
+    const moonRoot = `${moonBaseUrl}/`;
+    const kavitaLoginUrl = new URL(window.location.href);
+    kavitaLoginUrl.search = '';
+    kavitaLoginUrl.hash = '';
+    const moonCallbackUrl = new URL('kavita/complete', moonRoot);
+    moonCallbackUrl.searchParams.set('target', kavitaLoginUrl.toString());
+
+    const moonLoginUrl = new URL('login', moonRoot);
+    moonLoginUrl.searchParams.set('returnTo', moonCallbackUrl.toString());
+    window.location.href = moonLoginUrl.toString();
   }
 }

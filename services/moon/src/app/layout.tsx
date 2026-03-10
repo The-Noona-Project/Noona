@@ -5,9 +5,11 @@ import "@/resources/custom.css";
 import classNames from "classnames";
 
 import {Background, Column, Flex, Meta, opacity, RevealFx, SpacingToken,} from "@once-ui-system/core";
-import {Footer, Header, Providers, RouteGuard} from "@/components";
+import {AppShell, Providers, RouteGuard, SiteWeatherFx} from "@/components";
 import {moonDataStyle, moonEffects, moonFonts, moonSite, moonTheme} from "@/resources";
 import {resolveMoonBaseUrl} from "@/utils/webGui";
+
+const BG_PAGE = "page" as const;
 
 export async function generateMetadata() {
     return Meta.generate({
@@ -38,6 +40,7 @@ export default async function RootLayout({
             )}
         >
             <head>
+                <title>{moonSite.title}</title>
                 <script
                     id="theme-init"
                     dangerouslySetInnerHTML={{
@@ -87,9 +90,15 @@ export default async function RootLayout({
                       root.setAttribute('data-' + key, value);
                     }
                   });
+
+                  const savedViewMode = localStorage.getItem('moon-view-mode');
+                  const resolvedViewMode =
+                    savedViewMode === 'desktop' || savedViewMode === 'mobile' ? savedViewMode : 'ultrawide';
+                  root.setAttribute('data-moon-view-mode', resolvedViewMode);
                 } catch (e) {
                   console.error('Failed to initialize theme:', e);
                   document.documentElement.setAttribute('data-theme', 'dark');
+                  document.documentElement.setAttribute('data-moon-view-mode', 'ultrawide');
                 }
               })();
             `,
@@ -99,14 +108,16 @@ export default async function RootLayout({
             <Providers>
                 <Column
                     as="body"
-                    background="page"
+                    background={BG_PAGE}
                     fillWidth
                     style={{minHeight: "100vh"}}
+                    position="relative"
                     margin="0"
                     padding="0"
                     horizontal="center"
                 >
-                    <RevealFx fill position="absolute">
+                    <div className="moon-site-background" aria-hidden="true"/>
+                    <RevealFx fill position="absolute" zIndex={1} style={{pointerEvents: "none"}}>
                         <Background
                             mask={{
                                 x: moonEffects.mask.x,
@@ -148,14 +159,12 @@ export default async function RootLayout({
                             }}
                         />
                     </RevealFx>
-                    <Flex fillWidth minHeight="16" s={{hide: true}}/>
-                    <Header/>
-                    <Flex zIndex={0} fillWidth padding="l" horizontal="center" flex={1}>
-                        <Flex horizontal="center" fillWidth minHeight="0">
+                    <SiteWeatherFx/>
+                    <Flex zIndex={3} fillWidth flex={1} minHeight="0">
+                        <AppShell>
                             <RouteGuard>{children}</RouteGuard>
-                        </Flex>
+                        </AppShell>
                     </Flex>
-                    <Footer/>
                 </Column>
             </Providers>
         </Flex>

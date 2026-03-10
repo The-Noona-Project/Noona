@@ -339,7 +339,7 @@ export const Header = () => {
                                             role="menuitem"
                                             onClick={() => {
                                                 setMenuOpen(false);
-                                                router.push("/settings");
+                                                router.push("/settings/general");
                                             }}
                                         >
                                             <span>Settings</span>

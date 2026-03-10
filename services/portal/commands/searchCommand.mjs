@@ -1,4 +1,4 @@
-import {ApplicationCommandOptionType} from 'discord.js';
+import {ApplicationCommandOptionType, MessageFlags} from 'discord.js';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 import {respondWithError} from './utils.mjs';
 
@@ -68,7 +68,7 @@ export const createSearchCommand = ({
         ],
     },
     execute: async interaction => {
-        await interaction.deferReply?.({ephemeral: true});
+        await interaction.deferReply?.({flags: MessageFlags.Ephemeral});
 
         if (!kavita?.searchTitles) {
             throw new Error('Kavita client is not configured for search.');
@@ -93,7 +93,6 @@ export const createSearchCommand = ({
         if (!seriesMatches.length) {
             await interaction.editReply?.({
                 content: `No Kavita titles found for "${title}".`,
-                ephemeral: true,
             });
             return;
         }
@@ -110,7 +109,7 @@ export const createSearchCommand = ({
             .filter(Boolean)
             .join('\n');
 
-        await interaction.editReply?.({content, ephemeral: true});
+        await interaction.editReply?.({content});
     },
 });
 

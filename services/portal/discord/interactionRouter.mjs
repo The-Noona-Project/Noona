@@ -1,12 +1,27 @@
+import {MessageFlags} from 'discord.js';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
+const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+
 const sendInteractionReply = async (interaction, payload) => {
+    const isEphemeral = payload && typeof payload === 'object' && payload.ephemeral === true;
+    const normalizedReplyPayload = isEphemeral
+        ? (({ephemeral, ...rest}) => ({
+            ...rest,
+            flags: MessageFlags.Ephemeral,
+        }))(payload)
+        : payload;
+    const normalizedEditPayload =
+        payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'ephemeral')
+            ? (({ephemeral, ...rest}) => rest)(payload)
+            : payload;
+
     if (interaction.deferred || interaction.replied) {
-        await interaction.editReply?.(payload);
+        await interaction.editReply?.(normalizedEditPayload);
         return;
     }
 
-    await interaction.reply?.(payload);
+    await interaction.reply?.(normalizedReplyPayload);
 };
 
 const resolveActor = interaction =>
@@ -46,11 +61,46 @@ export const createInteractionHandler = ({
         return;
     }
 
+    if (interaction?.isButton?.()) {
+        for (const [commandName, handler] of commandMap?.entries?.() ?? []) {
+            if (typeof handler?.handleComponent !== 'function') {
+                continue;
+            }
+
+            try {
+                const handled = await handler.handleComponent(interaction);
+                if (handled) {
+                    return;
+                }
+            } catch (error) {
+                errMSG(`[Portal/Discord] Component handler for /${commandName} failed: ${error.message}`);
+                await sendInteractionReply(interaction, {
+                    content: 'Something went wrong while processing that button.',
+                    ephemeral: true,
+                    components: [],
+                }).catch(responseError => {
+                    errMSG(`[Portal/Discord] Failed to send component error response: ${responseError.message}`);
+                });
+                return;
+            }
+        }
+
+        return;
+    }
+
     if (!interaction?.isChatInputCommand?.()) {
         return;
     }
 
     if (!handler?.execute) {
+        const safeCommandName = normalizeString(commandName) || 'this';
+        errMSG(`[Portal/Discord] Missing handler for /${safeCommandName}.`);
+        await sendInteractionReply(interaction, {
+            content: `/${safeCommandName} is not available right now. Please try again in a moment.`,
+            ephemeral: true,
+        }).catch(responseError => {
+            errMSG(`[Portal/Discord] Failed to send unavailable-command response: ${responseError.message}`);
+        });
         return;
     }
 

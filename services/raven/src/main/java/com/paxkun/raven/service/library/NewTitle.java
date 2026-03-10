@@ -7,6 +7,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 /**
  * Represents a manga title stored in the Raven library.
  * Includes title metadata and progress tracking for downloads.
@@ -67,4 +69,9 @@ public class NewTitle {
      * Optional title type scraped from the source site (ex: Manga, Manhwa).
      */
     private String type;
+
+    /**
+     * Canonical downloaded chapter index used for missing-chapter detection.
+     */
+    private List<String> downloadedChapterNumbers;
 }

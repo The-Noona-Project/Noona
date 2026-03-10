@@ -1,7 +1,10 @@
 // services/portal/routes/registerPortalRoutes.mjs
 
+import crypto from 'node:crypto';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 
+const DEFAULT_PROXY_TIMEOUT_MS = 10000;
+const NOONA_KAVITA_LOGIN_TOKEN_TYPE = 'noona-kavita-login';
 const buildError = (status, message, details) => ({status, message, details});
 
 const normalizeError = (error, fallbackStatus = 500) => {
@@ -38,6 +41,39 @@ const describeKavitaRole = (role) => {
 };
 
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
+const normalizeAbsoluteHttpUrl = (value) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return null;
+        }
+
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+};
+const normalizePositiveInteger = (value, fallback = null) => {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        return fallback;
+    }
+
+    return parsed;
+};
+const createAbortController = (timeoutMs = DEFAULT_PROXY_TIMEOUT_MS) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return {
+        controller,
+        cleanup: () => clearTimeout(timer),
+    };
+};
 
 const normalizeDistinctStrings = (...values) => {
     const seen = new Set();
@@ -59,6 +95,125 @@ const normalizeDistinctStrings = (...values) => {
     }
 
     return normalized;
+};
+
+const normalizeDistinctRoleList = (value) => {
+    if (Array.isArray(value)) {
+        return normalizeDistinctStrings(...value);
+    }
+
+    const csv = normalizeString(value);
+    if (!csv) {
+        return [];
+    }
+
+    return normalizeDistinctStrings(
+        ...csv
+            .split(',')
+            .map((entry) => normalizeString(entry)),
+    );
+};
+
+const normalizeKavitaLibrarySelection = (value) => {
+    const out = [];
+    const seen = new Set();
+
+    for (const entry of Array.isArray(value) ? value : []) {
+        if (typeof entry === 'number' && Number.isInteger(entry) && entry > 0) {
+            if (!seen.has(`id:${entry}`)) {
+                seen.add(`id:${entry}`);
+                out.push(entry);
+            }
+            continue;
+        }
+
+        if (typeof entry === 'string') {
+            const normalized = normalizeString(entry);
+            if (!normalized) continue;
+            const key = `name:${normalized.toLowerCase()}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                out.push(normalized);
+            }
+            continue;
+        }
+
+        if (!entry || typeof entry !== 'object') {
+            continue;
+        }
+
+        const id = normalizePositiveInteger(entry.id);
+        if (id != null) {
+            const key = `id:${id}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                out.push(id);
+            }
+            continue;
+        }
+
+        const name = normalizeString(entry.name);
+        if (name) {
+            const key = `name:${name.toLowerCase()}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                out.push(name);
+            }
+        }
+    }
+
+    return out;
+};
+
+const normalizeKavitaUserSummary = (user = {}) => {
+    const id = normalizePositiveInteger(user?.id);
+    return {
+        id,
+        username: normalizeString(user?.username),
+        email: normalizeString(user?.email),
+        roles: normalizeDistinctRoleList(user?.roles),
+        libraries: normalizeKavitaLibrarySelection(user?.libraries),
+        pending: user?.isPending === true,
+    };
+};
+
+const buildGeneratedPassword = () => `Noona-${crypto.randomBytes(24).toString('base64url')}`;
+
+const normalizeKavitaUsername = (...candidates) => {
+    for (const candidate of candidates) {
+        const normalized = normalizeString(candidate);
+        if (!normalized) {
+            continue;
+        }
+
+        const sanitized = normalized
+            .replace(/\s+/g, '_')
+            .replace(/[^A-Za-z0-9._@+-]+/g, '')
+            .replace(/^[._@+-]+/, '')
+            .slice(0, 64);
+
+        if (sanitized.length >= 3) {
+            return sanitized;
+        }
+    }
+
+    return '';
+};
+
+const readStoredPortalCredential = async (vault, discordId) => {
+    if (!vault?.readSecret || !discordId) {
+        return null;
+    }
+
+    try {
+        return await vault.readSecret(`portal/${discordId}`);
+    } catch (error) {
+        if (Number(error?.status) === 404) {
+            return null;
+        }
+
+        throw error;
+    }
 };
 
 const toKavitaSeriesUrl = (baseUrl, series = {}) => {
@@ -87,27 +242,207 @@ const normalizeSeriesSearchResult = (series = {}, baseUrl = null) => ({
     url: toKavitaSeriesUrl(baseUrl, series),
 });
 
-const normalizeMetadataMatch = (match = {}) => ({
-    provider: normalizeString(match?.provider ?? match?.source) || null,
-    title: normalizeString(match?.title ?? match?.name) || null,
-    summary: normalizeString(match?.summary ?? match?.description) || null,
-    score: typeof match?.score === 'number' ? match.score : null,
-    coverImageUrl: normalizeString(match?.coverImageUrl ?? match?.imageUrl) || null,
-    aniListId: match?.aniListId ?? null,
-    malId: match?.malId ?? null,
-    cbrId: match?.cbrId ?? null,
-});
+const normalizeMetadataMatch = (match = {}) => {
+    const series = match?.series && typeof match.series === 'object'
+        ? match.series
+        : match?.Series && typeof match.Series === 'object'
+            ? match.Series
+            : match;
 
-const normalizeMetadataRouteError = (error, action) => {
+    return {
+        provider: normalizeString(series?.provider ?? series?.Provider ?? series?.source) || null,
+        title: normalizeString(series?.title ?? series?.Title ?? series?.name ?? series?.Name) || null,
+        summary: normalizeString(series?.summary ?? series?.Summary ?? series?.description ?? series?.Description) || null,
+        score: typeof match?.matchRating === 'number'
+            ? match.matchRating
+            : typeof match?.MatchRating === 'number'
+                ? match.MatchRating
+                : typeof match?.score === 'number'
+                    ? match.score
+                    : null,
+        coverImageUrl: normalizeString(
+            series?.coverImageUrl
+            ?? series?.CoverImageUrl
+            ?? series?.coverUrl
+            ?? series?.CoverUrl
+            ?? series?.imageUrl
+            ?? series?.ImageUrl
+            ?? series?.thumbnailUrl
+            ?? series?.ThumbnailUrl,
+        ) || null,
+        sourceUrl: normalizeString(
+            series?.url
+            ?? series?.Url
+            ?? series?.sourceUrl
+            ?? series?.SourceUrl,
+        ) || null,
+        providerSeriesId: normalizeString(
+            series?.providerSeriesId
+            ?? series?.ProviderSeriesId
+            ?? series?.resultId
+            ?? series?.ResultId
+            ?? match?.providerSeriesId
+            ?? match?.ProviderSeriesId
+            ?? match?.resultId
+            ?? match?.ResultId,
+        ) || null,
+        aniListId: series?.aniListId ?? series?.AniListId ?? match?.aniListId ?? match?.AniListId ?? null,
+        malId: series?.malId ?? series?.MALId ?? series?.MalId ?? match?.malId ?? match?.MALId ?? match?.MalId ?? null,
+        cbrId: series?.cbrId ?? series?.CbrId ?? match?.cbrId ?? match?.CbrId ?? null,
+    };
+};
+
+const normalizeMetadataRouteError = (error, {action, backend = 'komf'} = {}) => {
     const normalized = normalizeError(error);
     if (normalized.status < 500) {
         return normalized;
     }
 
+    if (backend === 'kavita') {
+        return buildError(
+            normalized.status,
+            `Kavita metadata ${action} failed inside its external metadata service. Check Komf /config/application.yml metadataProviders and restart noona-komf plus noona-kavita.`,
+            null,
+        );
+    }
+
     return buildError(
         normalized.status,
-        `Kavita metadata ${action} failed inside its external metadata service. Check Komf /config/application.yml metadataProviders and restart noona-komf plus noona-kavita.`,
+        `Komf metadata ${action} failed. Check Komf /config/application.yml metadataProviders and restart noona-komf.`,
         null,
+    );
+};
+
+const buildPortalCoverUrl = (config = {}, titleUuid = '') => {
+    const normalizedUuid = normalizeString(titleUuid);
+    if (!normalizedUuid) {
+        return null;
+    }
+
+    const serviceName = normalizeString(config?.serviceName) || 'noona-portal';
+    const port = normalizePositiveInteger(config?.port, 3003);
+    try {
+        return new URL(
+            `/api/portal/kavita/title-cover/${encodeURIComponent(normalizedUuid)}`,
+            `http://${serviceName}:${port}`,
+        ).toString();
+    } catch {
+        return null;
+    }
+};
+
+const buildCoverSync = (status, message, extra = {}) => ({
+    status,
+    message,
+    ...extra,
+});
+
+const syncKavitaTitleCover = async ({
+                                        config,
+                                        kavita,
+                                        raven,
+                                        titleUuid,
+                                        seriesId,
+                                        fallbackCoverUrl = null,
+                                    } = {}) => {
+    const normalizedTitleUuid = normalizeString(titleUuid);
+    if (!normalizedTitleUuid) {
+        return buildCoverSync(
+            'skipped',
+            'Applied the selected Kavita metadata match. Moon did not provide a Noona title id, so the Kavita cover was left unchanged.',
+        );
+    }
+
+    if (typeof raven?.getTitle !== 'function') {
+        return buildCoverSync(
+            'failed',
+            'Applied the selected Kavita metadata match, but Portal cannot reach Raven to resolve the Noona cover art.',
+        );
+    }
+
+    if (typeof kavita?.setSeriesCover !== 'function') {
+        return buildCoverSync(
+            'failed',
+            'Applied the selected Kavita metadata match, but this Portal build does not support Kavita cover-art sync.',
+        );
+    }
+
+    const title = await raven.getTitle(normalizedTitleUuid);
+    if (!title) {
+        return buildCoverSync(
+            'failed',
+            `Applied the selected Kavita metadata match, but Noona title ${normalizedTitleUuid} was not found when resolving cover art.`,
+        );
+    }
+
+    const persistedCoverUrl = normalizeAbsoluteHttpUrl(title?.coverUrl);
+    const selectedMatchCoverUrl = normalizeAbsoluteHttpUrl(fallbackCoverUrl);
+    let sourceUrl = persistedCoverUrl;
+    let syncedCoverUrl = persistedCoverUrl;
+    let usedDirectFallback = false;
+    let backfilledNoonaCover = false;
+
+    if (!syncedCoverUrl && selectedMatchCoverUrl) {
+        if (typeof raven?.updateTitle === 'function') {
+            const updatedTitle = await raven.updateTitle(normalizedTitleUuid, {
+                coverUrl: selectedMatchCoverUrl,
+            });
+            syncedCoverUrl = normalizeAbsoluteHttpUrl(updatedTitle?.coverUrl);
+            if (syncedCoverUrl) {
+                sourceUrl = syncedCoverUrl;
+                backfilledNoonaCover = true;
+            }
+        }
+
+        if (!syncedCoverUrl) {
+            sourceUrl = selectedMatchCoverUrl;
+            usedDirectFallback = true;
+        }
+    }
+
+    if (!sourceUrl) {
+        return buildCoverSync(
+            'skipped',
+            'Applied the selected Kavita metadata match. This Noona title does not currently have stored cover art, so the Kavita cover was left unchanged.',
+            {
+                titleUuid: normalizedTitleUuid,
+            },
+        );
+    }
+
+    const proxiedCoverUrl = syncedCoverUrl ? buildPortalCoverUrl(config, normalizedTitleUuid) : null;
+    const coverUrl = proxiedCoverUrl || sourceUrl;
+    if (!coverUrl) {
+        return buildCoverSync(
+            'failed',
+            'Applied the selected Kavita metadata match, but Portal could not resolve a cover-art URL for Kavita.',
+            {
+                titleUuid: normalizedTitleUuid,
+                sourceUrl,
+            },
+        );
+    }
+
+    await kavita.setSeriesCover({
+        seriesId,
+        url: coverUrl,
+        lockCover: true,
+    });
+
+    return buildCoverSync(
+        'applied',
+        backfilledNoonaCover
+            ? 'Applied the selected Kavita metadata match, backfilled the Noona title cover art, and synced it to Kavita.'
+            : usedDirectFallback
+                ? 'Applied the selected Kavita metadata match and synced the selected metadata cover art to Kavita.'
+                : 'Applied the selected Kavita metadata match and synced the Noona cover art to Kavita.',
+        {
+            titleUuid: normalizedTitleUuid,
+            sourceUrl,
+            url: coverUrl,
+            backfilledNoonaCover,
+            usedDirectFallback,
+        },
     );
 };
 
@@ -116,10 +451,16 @@ export const registerPortalRoutes = ({
                                          config,
                                          discord,
                                          kavita,
+                                         komf,
+                                         raven,
                                          onboardingStore,
                                          vault,
+                                         fetchImpl = fetch,
                                      } = {}) => {
     const kavitaBaseUrl = typeof kavita?.getBaseUrl === 'function' ? kavita.getBaseUrl() : config?.kavita?.baseUrl ?? null;
+    const externalKavitaBaseUrl = normalizeAbsoluteHttpUrl(config?.kavita?.externalUrl);
+    const kavitaLinkBaseUrl = externalKavitaBaseUrl || normalizeAbsoluteHttpUrl(kavitaBaseUrl);
+    const requestTimeoutMs = normalizePositiveInteger(config?.http?.timeoutMs, DEFAULT_PROXY_TIMEOUT_MS);
 
     app.get('/health', (_req, res) => {
         res.json({
@@ -132,9 +473,70 @@ export const registerPortalRoutes = ({
 
     app.get('/api/portal/kavita/info', async (_req, res) => {
         res.json({
-            baseUrl: kavitaBaseUrl,
+            baseUrl: kavitaLinkBaseUrl,
+            externalBaseUrl: externalKavitaBaseUrl,
+            internalBaseUrl: normalizeAbsoluteHttpUrl(kavitaBaseUrl),
             managedService: 'noona-kavita',
         });
+    });
+
+    app.get('/api/portal/kavita/title-cover/:titleUuid', async (req, res) => {
+        const titleUuid = normalizeString(req.params?.titleUuid);
+        if (!titleUuid) {
+            res.status(400).json({error: 'titleUuid is required.'});
+            return;
+        }
+
+        if (typeof raven?.getTitle !== 'function') {
+            res.status(503).json({error: 'Raven cover lookup is not available.'});
+            return;
+        }
+
+        try {
+            const title = await raven.getTitle(titleUuid);
+            if (!title) {
+                res.status(404).json({error: 'Title was not found.'});
+                return;
+            }
+
+            const coverUrl = normalizeAbsoluteHttpUrl(title?.coverUrl);
+            if (!coverUrl) {
+                res.status(404).json({error: 'Title cover art is not available.'});
+                return;
+            }
+
+            const {controller, cleanup} = createAbortController(requestTimeoutMs);
+
+            try {
+                const upstream = await fetchImpl(coverUrl, {
+                    method: 'GET',
+                    headers: {
+                        Accept: 'image/*,*/*;q=0.8',
+                    },
+                    redirect: 'follow',
+                    signal: controller.signal,
+                });
+
+                if (!upstream.ok) {
+                    res.status(502).json({error: `Unable to load Noona cover art (HTTP ${upstream.status}).`});
+                    return;
+                }
+
+                const contentType = normalizeString(upstream.headers?.get?.('content-type')) || 'application/octet-stream';
+                const cacheControl = normalizeString(upstream.headers?.get?.('cache-control')) || 'public, max-age=3600';
+                const payload = Buffer.from(await upstream.arrayBuffer());
+
+                res.set('Content-Type', contentType);
+                res.set('Cache-Control', cacheControl);
+                res.send(payload);
+            } finally {
+                cleanup();
+            }
+        } catch (error) {
+            const normalized = normalizeError(error, 502);
+            errMSG(`[Portal] Failed to proxy Noona cover art for ${titleUuid}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
     });
 
     app.post('/api/portal/kavita/libraries/ensure', async (req, res) => {
@@ -211,11 +613,13 @@ export const registerPortalRoutes = ({
         try {
             const payload = await kavita?.searchTitles?.(query);
             const series = Array.isArray(payload?.series)
-                ? payload.series.map((entry) => normalizeSeriesSearchResult(entry, kavitaBaseUrl))
+                ? payload.series.map((entry) => normalizeSeriesSearchResult(entry, kavitaLinkBaseUrl))
                 : [];
 
             res.json({
-                baseUrl: kavitaBaseUrl,
+                baseUrl: kavitaLinkBaseUrl,
+                externalBaseUrl: externalKavitaBaseUrl,
+                internalBaseUrl: normalizeAbsoluteHttpUrl(kavitaBaseUrl),
                 series,
             });
         } catch (error) {
@@ -232,14 +636,31 @@ export const registerPortalRoutes = ({
             return;
         }
 
+        const query = normalizeString(req.body?.query);
+        if (!query) {
+            res.status(400).json({error: 'query is required.'});
+            return;
+        }
+
+        let backend = 'komf';
         try {
-            const matches = await kavita?.fetchSeriesMetadataMatches?.(parsedSeriesId) ?? [];
+            let matches = [];
+            if (typeof komf?.searchSeriesMetadata === 'function') {
+                matches = await komf.searchSeriesMetadata(query, {seriesId: parsedSeriesId});
+            } else if (typeof kavita?.fetchSeriesMetadataMatches === 'function') {
+                backend = 'kavita';
+                matches = await kavita.fetchSeriesMetadataMatches(parsedSeriesId, {query});
+            } else {
+                res.status(503).json({error: 'Metadata match lookup is not configured.'});
+                return;
+            }
+
             res.json({
                 seriesId: parsedSeriesId,
                 matches: Array.isArray(matches) ? matches.map((entry) => normalizeMetadataMatch(entry)) : [],
             });
         } catch (error) {
-            const normalized = normalizeMetadataRouteError(error, 'lookup');
+            const normalized = normalizeMetadataRouteError(error, {action: 'lookup', backend});
             errMSG(`[Portal] Failed to fetch Kavita metadata matches for series ${parsedSeriesId}: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }
@@ -252,21 +673,81 @@ export const registerPortalRoutes = ({
             return;
         }
 
+        const provider = normalizeString(req.body?.provider);
+        const providerSeriesId = normalizeString(req.body?.providerSeriesId ?? req.body?.resultId);
+        const parsedLibraryId = Number.parseInt(String(req.body?.libraryId), 10);
+        const aniListId = req.body?.aniListId;
+        const malId = req.body?.malId;
+        const cbrId = req.body?.cbrId;
+        let backend = provider && providerSeriesId ? 'komf' : 'kavita';
+
         try {
-            const result = await kavita?.applySeriesMetadataMatch?.({
-                seriesId: parsedSeriesId,
-                aniListId: req.body?.aniListId,
-                malId: req.body?.malId,
-                cbrId: req.body?.cbrId,
-            });
+            let result;
+            if (provider && providerSeriesId) {
+                if (typeof komf?.identifySeriesMetadata !== 'function') {
+                    res.status(503).json({error: 'Komf metadata apply is not configured.'});
+                    return;
+                }
+
+                result = await komf.identifySeriesMetadata({
+                    seriesId: parsedSeriesId,
+                    libraryId: Number.isInteger(parsedLibraryId) && parsedLibraryId > 0 ? parsedLibraryId : null,
+                    provider,
+                    providerSeriesId,
+                });
+            } else if (
+                (aniListId != null && aniListId !== '')
+                || (malId != null && malId !== '')
+                || (cbrId != null && cbrId !== '')
+            ) {
+                if (typeof kavita?.applySeriesMetadataMatch !== 'function') {
+                    res.status(503).json({error: 'Kavita metadata apply is not configured.'});
+                    return;
+                }
+
+                result = await kavita.applySeriesMetadataMatch({
+                    seriesId: parsedSeriesId,
+                    aniListId,
+                    malId,
+                    cbrId,
+                });
+            } else {
+                res.status(400).json({error: 'provider/providerSeriesId or a Kavita metadata provider id is required.'});
+                return;
+            }
+
+            let coverSync = buildCoverSync(
+                'skipped',
+                'Applied the selected Kavita metadata match. Kavita cover art was left unchanged.',
+            );
+
+            try {
+                coverSync = await syncKavitaTitleCover({
+                    config,
+                    kavita,
+                    raven,
+                    titleUuid: req.body?.titleUuid,
+                    seriesId: parsedSeriesId,
+                    fallbackCoverUrl: req.body?.coverImageUrl,
+                });
+            } catch (error) {
+                const normalized = normalizeError(error, 502);
+                errMSG(`[Portal] Failed to sync Kavita cover art for series ${parsedSeriesId}: ${normalized.message}`);
+                coverSync = buildCoverSync(
+                    'failed',
+                    `Applied the selected Kavita metadata match, but Noona cover sync failed: ${normalized.message}`,
+                );
+            }
 
             res.json({
                 success: true,
                 seriesId: parsedSeriesId,
                 result: result ?? null,
+                message: coverSync.message,
+                coverSync,
             });
         } catch (error) {
-            const normalized = normalizeMetadataRouteError(error, 'apply');
+            const normalized = normalizeMetadataRouteError(error, {action: 'apply', backend});
             errMSG(`[Portal] Failed to apply Kavita metadata match for series ${parsedSeriesId}: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }
@@ -298,6 +779,351 @@ export const registerPortalRoutes = ({
         } catch (error) {
             const normalized = normalizeError(error);
             errMSG(`[Portal] Failed to load join options: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.get('/api/portal/kavita/users', async (_req, res) => {
+        if (!kavita?.fetchUsers || !kavita?.fetchRoles) {
+            res.status(503).json({error: 'Kavita user management is not configured.'});
+            return;
+        }
+
+        try {
+            const [users, roles] = await Promise.all([
+                kavita.fetchUsers({includePending: true}),
+                kavita.fetchRoles(),
+            ]);
+
+            const normalizedRoles = normalizeDistinctRoleList(roles);
+            const normalizedUsers = Array.isArray(users)
+                ? users
+                    .map((user) => normalizeKavitaUserSummary(user))
+                    .filter((user) => user.id != null && user.username)
+                : [];
+
+            res.json({
+                users: normalizedUsers,
+                roles: normalizedRoles,
+                roleDetails: normalizedRoles.map((role) => ({
+                    name: role,
+                    description: describeKavitaRole(role),
+                })),
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to load Kavita users: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.put('/api/portal/kavita/users/:username/roles', async (req, res) => {
+        const username = normalizeString(req.params?.username);
+        if (!username) {
+            res.status(400).json({error: 'username is required.'});
+            return;
+        }
+
+        if (!kavita?.fetchUser || !kavita?.updateUser || !kavita?.fetchRoles) {
+            res.status(503).json({error: 'Kavita user role updates are not configured.'});
+            return;
+        }
+
+        const requestedRoles = normalizeDistinctRoleList(req.body?.roles);
+        if (requestedRoles.length === 0) {
+            res.status(400).json({error: 'At least one Kavita role is required.'});
+            return;
+        }
+
+        try {
+            const availableRoles = normalizeDistinctRoleList(await kavita.fetchRoles());
+            const availableByKey = new Map(availableRoles.map((role) => [role.toLowerCase(), role]));
+            const unknownRoles = [];
+            const resolvedRoles = [];
+            const resolvedRoleKeys = new Set();
+
+            for (const requestedRole of requestedRoles) {
+                const available = availableByKey.get(requestedRole.toLowerCase());
+                if (!available && availableRoles.length > 0) {
+                    unknownRoles.push(requestedRole);
+                    continue;
+                }
+
+                const resolved = available || requestedRole;
+                const key = resolved.toLowerCase();
+                if (resolvedRoleKeys.has(key)) {
+                    continue;
+                }
+
+                resolvedRoleKeys.add(key);
+                resolvedRoles.push(resolved);
+            }
+
+            if (unknownRoles.length > 0) {
+                res.status(400).json({
+                    error: `Unknown Kavita role${unknownRoles.length === 1 ? '' : 's'}: ${unknownRoles.join(', ')}`,
+                    availableRoles,
+                });
+                return;
+            }
+
+            const existingUser = await kavita.fetchUser(username);
+            if (!existingUser) {
+                res.status(404).json({error: `Kavita user ${username} was not found.`});
+                return;
+            }
+
+            const userId = normalizePositiveInteger(existingUser?.id);
+            const existingUsername = normalizeString(existingUser?.username) || username;
+            const email = normalizeString(existingUser?.email);
+            if (userId == null || !existingUsername || !email) {
+                res.status(502).json({error: 'Kavita user record is missing required fields for update.'});
+                return;
+            }
+
+            const libraries = normalizeKavitaLibrarySelection(existingUser?.libraries);
+            await kavita.updateUser({
+                userId,
+                username: existingUsername,
+                email,
+                roles: resolvedRoles,
+                libraries,
+                ageRestriction: existingUser?.ageRestriction ?? existingUser?.AgeRestriction ?? null,
+            });
+
+            const updatedUser = await kavita.fetchUser(existingUsername).catch(() => null);
+            const summary = normalizeKavitaUserSummary(updatedUser ?? {
+                ...existingUser,
+                roles: resolvedRoles,
+                libraries,
+            });
+
+            res.json({
+                ok: true,
+                user: summary,
+                roles: summary.roles,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to update Kavita roles for ${username}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/noona-login', async (req, res) => {
+        const discordId = normalizeString(req.body?.discordId);
+        const email = normalizeString(req.body?.email);
+        const requestedUsername = normalizeString(req.body?.username);
+        const discordUsername = normalizeString(req.body?.discordUsername);
+        const displayName = normalizeString(req.body?.displayName);
+
+        if (!discordId || !email) {
+            res.status(400).json({error: 'discordId and email are required.'});
+            return;
+        }
+
+        if (!onboardingStore?.setToken || !onboardingStore?.getToken || !onboardingStore?.consumeToken) {
+            res.status(503).json({error: 'Portal login token storage is not configured.'});
+            return;
+        }
+
+        if (!kavita?.createOrUpdateUser) {
+            res.status(503).json({error: 'Kavita provisioning is not configured.'});
+            return;
+        }
+
+        try {
+            const storedCredential = await readStoredPortalCredential(vault, discordId);
+            const storedPassword = normalizeString(storedCredential?.password);
+            const normalizedUsername = normalizeKavitaUsername(
+                normalizeString(storedCredential?.username),
+                discordUsername,
+                requestedUsername,
+                displayName,
+                normalizeString(email).split('@')[0],
+                `noona_${discordId.slice(-8)}`,
+            );
+
+            if (!normalizedUsername) {
+                res.status(400).json({error: 'Unable to derive a valid Kavita username from the Noona account.'});
+                return;
+            }
+
+            const generatedPassword = buildGeneratedPassword();
+            const defaultRoles = Array.isArray(config.join?.defaultRoles) ? config.join.defaultRoles : [];
+            const defaultLibraries = Array.isArray(config.join?.defaultLibraries) ? config.join.defaultLibraries : [];
+            const matchUsernames = normalizeDistinctStrings(
+                storedCredential?.username,
+                requestedUsername,
+                discordUsername,
+                displayName,
+                normalizeString(email).split('@')[0],
+            );
+            const matchEmails = normalizeDistinctStrings(
+                storedCredential?.email,
+                email,
+            );
+
+            const noonaFallbackRoles = ['Pleb', 'Login'];
+            let provisionedUser;
+            try {
+                provisionedUser = await kavita.createOrUpdateUser({
+                    username: normalizedUsername,
+                    email,
+                    password: generatedPassword,
+                    roles: defaultRoles,
+                    libraries: defaultLibraries,
+                    oldPassword: storedPassword || undefined,
+                    matchUsernames,
+                    matchEmails,
+                });
+            } catch (error) {
+                const normalizedStatus = Number(error?.status);
+                const normalizedMessage = normalizeString(error?.message).toLowerCase();
+                const usernameTaken =
+                    normalizedStatus === 400
+                    && normalizedMessage.includes('username')
+                    && normalizedMessage.includes('taken');
+
+                if (usernameTaken && typeof kavita?.fetchUsers === 'function') {
+                    const existingUsers = await kavita.fetchUsers({includePending: true}).catch(() => []);
+                    const normalizedEmail = email.toLowerCase();
+                    const normalizedDesiredUsername = normalizedUsername.toLowerCase();
+                    const matchedByEmail = existingUsers.find((candidate = {}) =>
+                        normalizeString(candidate?.email).toLowerCase() === normalizedEmail,
+                    ) ?? null;
+                    const matchedByUsername = existingUsers.find((candidate = {}) =>
+                        normalizeString(candidate?.username).toLowerCase() === normalizedDesiredUsername,
+                    ) ?? null;
+                    const matchedUser = matchedByEmail || matchedByUsername;
+
+                    if (matchedUser) {
+                        const matchedUsername = normalizeString(matchedUser?.username);
+                        if (matchedUsername) {
+                            const preservedEmail = normalizeString(matchedUser?.email) || email;
+                            const preservedRoles = normalizeDistinctRoleList(matchedUser?.roles);
+                            const preservedLibraries = normalizeKavitaLibrarySelection(matchedUser?.libraries);
+                            const mergedMatchUsernames = normalizeDistinctStrings(
+                                ...matchUsernames,
+                                matchedUsername,
+                            );
+                            const mergedMatchEmails = normalizeDistinctStrings(
+                                ...matchEmails,
+                                preservedEmail,
+                            );
+
+                            provisionedUser = await kavita.createOrUpdateUser({
+                                username: matchedUsername,
+                                email: preservedEmail,
+                                password: generatedPassword,
+                                roles: preservedRoles.length > 0 ? preservedRoles : defaultRoles,
+                                libraries: preservedLibraries.length > 0 ? preservedLibraries : defaultLibraries,
+                                ageRestriction: matchedUser?.ageRestriction ?? matchedUser?.AgeRestriction ?? null,
+                                oldPassword: storedPassword || undefined,
+                                matchUsernames: mergedMatchUsernames,
+                                matchEmails: mergedMatchEmails,
+                            });
+                        } else {
+                            throw error;
+                        }
+                    } else {
+                        throw error;
+                    }
+                } else {
+                    const shouldRetryWithSafeDefaults = normalizedStatus === 400;
+                    if (!shouldRetryWithSafeDefaults) {
+                        throw error;
+                    }
+
+                    errMSG(
+                        `[Portal] Noona login provisioning for ${discordId} failed with HTTP 400; retrying with safe fallback roles and no library overrides.`,
+                    );
+                    provisionedUser = await kavita.createOrUpdateUser({
+                        username: normalizedUsername,
+                        email,
+                        password: generatedPassword,
+                        roles: noonaFallbackRoles,
+                        libraries: [],
+                        oldPassword: storedPassword || undefined,
+                        matchUsernames,
+                        matchEmails,
+                    });
+                }
+            }
+
+            const effectivePassword =
+                provisionedUser?.passwordUpdated === false
+                    ? (storedPassword || generatedPassword)
+                    : generatedPassword;
+
+            const loginToken = await onboardingStore.setToken(discordId, {
+                type: NOONA_KAVITA_LOGIN_TOKEN_TYPE,
+                username: provisionedUser.username,
+                email: provisionedUser.email,
+                password: effectivePassword,
+            });
+
+            if (vault?.storePortalCredential) {
+                await vault.storePortalCredential(discordId, {
+                    username: provisionedUser.username,
+                    email: provisionedUser.email,
+                    password: effectivePassword,
+                    roles: provisionedUser.roles,
+                    libraries: provisionedUser.libraries,
+                    issuedAt: new Date().toISOString(),
+                });
+            }
+
+            res.status(provisionedUser.created === true ? 201 : 200).json({
+                token: loginToken?.token,
+                username: provisionedUser.username,
+                email: provisionedUser.email,
+                created: provisionedUser.created === true,
+                baseUrl: kavitaLinkBaseUrl,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to provision Noona Kavita login for ${discordId}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/login-tokens/consume', async (req, res) => {
+        const token = normalizeString(req.body?.token);
+        if (!token) {
+            res.status(400).json({error: 'token is required.'});
+            return;
+        }
+
+        if (!onboardingStore?.getToken || !onboardingStore?.consumeToken) {
+            res.status(503).json({error: 'Portal login token storage is not configured.'});
+            return;
+        }
+
+        try {
+            const record = await onboardingStore.getToken(token);
+            if (!record || record.type !== NOONA_KAVITA_LOGIN_TOKEN_TYPE) {
+                res.status(404).json({error: 'Token not found or expired.'});
+                return;
+            }
+
+            const consumed = await onboardingStore.consumeToken(token);
+            if (!consumed) {
+                res.status(404).json({error: 'Token not found or expired.'});
+                return;
+            }
+
+            res.json({
+                success: true,
+                record: {
+                    username: consumed.username,
+                    email: consumed.email,
+                    password: consumed.password,
+                },
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to consume Kavita login token: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }
     });

@@ -23,13 +23,45 @@ test('resolveDiscordPresenceSnapshot reports the current Raven download when act
     const snapshot = resolveDiscordPresenceSnapshot({
         serviceActivity: null,
         ravenSummary: {
-            activeDownloads: 1,
-            currentDownload: {title: 'Solo Leveling'},
+            activeDownloads: 2,
+            currentTask: {
+                title: 'Solo Leveling',
+                status: 'downloading',
+            },
         },
     });
 
-    assert.equal(snapshot.name, 'Downloading Solo Leveling');
+    assert.equal(snapshot.name, 'Downloading Solo Leveling (+1)');
     assert.equal(snapshot.status, 'online');
+});
+
+test('resolveDiscordPresenceSnapshot falls back to the legacy currentDownload payload', () => {
+    const snapshot = resolveDiscordPresenceSnapshot({
+        serviceActivity: null,
+        ravenSummary: {
+            activeDownloads: 1,
+            currentDownload: {title: 'Omniscient Reader'},
+        },
+    });
+
+    assert.equal(snapshot.name, 'Downloading Omniscient Reader');
+    assert.equal(snapshot.status, 'online');
+});
+
+test('resolveDiscordPresenceSnapshot reports recovering Raven work when no active download is running', () => {
+    const snapshot = resolveDiscordPresenceSnapshot({
+        serviceActivity: null,
+        ravenSummary: {
+            activeDownloads: 0,
+            currentTask: {
+                title: 'Dungeon Reset',
+                status: 'recovering',
+            },
+        },
+    });
+
+    assert.equal(snapshot.name, 'Recovering Dungeon Reset');
+    assert.equal(snapshot.status, 'idle');
 });
 
 test('resolveDiscordPresenceSnapshot reports the current Raven title check when idle otherwise', () => {

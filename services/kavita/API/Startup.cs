@@ -125,6 +125,7 @@ public class Startup
                 options.KnownProxies.Add(IPAddress.Parse(proxy.Value!));
             }
         });
+        services.AddHttpClient();
         services.AddCors();
         services.AddIdentityServices(_config, _env);
 

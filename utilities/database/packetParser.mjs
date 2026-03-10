@@ -10,7 +10,7 @@ import {errMSG, log} from '../etc/logger.mjs';
 
 const allowedOps = {
     mongo: ['insert', 'find', 'findMany', 'update', 'delete', 'listCollections', 'wipe'],
-    redis: ['set', 'get', 'del', 'wipe'],
+    redis: ['set', 'get', 'del', 'rpush', 'lpop', 'wipe'],
 };
 
 /**
@@ -135,6 +135,30 @@ export async function handlePacket(packet) {
                     const deleted = await redis.del(key);
                     log(`[Vault] DEL Redis key="${key}"`);
                     return { status: 'ok', deleted };
+                }
+
+                case 'rpush': {
+                    const payloadStr = JSON.stringify(value);
+                    const length = await redis.rpush(key, payloadStr);
+                    const ttlSeconds = Number.parseInt(ttl, 10);
+                    if (Number.isInteger(ttlSeconds) && ttlSeconds > 0) {
+                        await redis.expire(key, ttlSeconds);
+                        log(`[Vault] RPUSH Redis key="${key}" with TTL=${ttlSeconds}s`);
+                    } else {
+                        log(`[Vault] RPUSH Redis key="${key}"`);
+                    }
+                    return {status: 'ok', length};
+                }
+
+                case 'lpop': {
+                    const raw = await redis.lpop(key);
+                    if (raw == null) {
+                        log(`[Vault] LPOP Redis key="${key}" returned no value`);
+                        return {status: 'ok', data: null};
+                    }
+
+                    log(`[Vault] LPOP Redis key="${key}"`);
+                    return {status: 'ok', data: JSON.parse(raw)};
                 }
 
                 case 'wipe': {

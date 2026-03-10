@@ -1,5 +1,7 @@
 package com.paxkun.raven.service.download;
 
+import java.util.*;
+
 /**
  * Thread-safe download progress DTO that captures the current state of an
  * ongoing or recently completed download job.
@@ -9,13 +11,30 @@ public class DownloadProgress {
     private final String title;
     private final long queuedAt;
 
+    private String taskId;
+    private String taskType;
+    private String titleUuid;
+    private String sourceUrl;
+    private String mediaType;
+    private String coverUrl;
+    private String summary;
     private int totalChapters;
+    private int sourceChapterCount;
     private int completedChapters;
     private String currentChapter;
+    private String currentChapterNumber;
     private String status;
+    private String latestChapter;
+    private String message;
     private Long startedAt;
     private Long completedAt;
     private String errorMessage;
+    private boolean recoveredFromCache;
+    private String recoveryState;
+    private List<String> queuedChapterNumbers;
+    private List<String> completedChapterNumbers;
+    private List<String> newChapterNumbers;
+    private List<String> missingChapterNumbers;
     private long lastUpdated;
 
     /**
@@ -28,33 +47,147 @@ public class DownloadProgress {
         this.status = "queued";
         this.queuedAt = now;
         this.lastUpdated = now;
+        this.queuedChapterNumbers = new ArrayList<>();
+        this.completedChapterNumbers = new ArrayList<>();
+        this.newChapterNumbers = new ArrayList<>();
+        this.missingChapterNumbers = new ArrayList<>();
     }
 
     private DownloadProgress(
             String title,
             long queuedAt,
+            String taskId,
+            String taskType,
+            String titleUuid,
+            String sourceUrl,
+            String mediaType,
+            String coverUrl,
+            String summary,
             int totalChapters,
+            int sourceChapterCount,
             int completedChapters,
             String currentChapter,
+            String currentChapterNumber,
             String status,
+            String latestChapter,
+            String message,
             Long startedAt,
             Long completedAt,
             String errorMessage,
+            boolean recoveredFromCache,
+            String recoveryState,
+            List<String> queuedChapterNumbers,
+            List<String> completedChapterNumbers,
+            List<String> newChapterNumbers,
+            List<String> missingChapterNumbers,
             long lastUpdated) {
         this.title = title;
         this.queuedAt = queuedAt;
+        this.taskId = taskId;
+        this.taskType = taskType;
+        this.titleUuid = titleUuid;
+        this.sourceUrl = sourceUrl;
+        this.mediaType = mediaType;
+        this.coverUrl = coverUrl;
+        this.summary = summary;
         this.totalChapters = totalChapters;
+        this.sourceChapterCount = sourceChapterCount;
         this.completedChapters = completedChapters;
         this.currentChapter = currentChapter;
+        this.currentChapterNumber = currentChapterNumber;
         this.status = status;
+        this.latestChapter = latestChapter;
+        this.message = message;
         this.startedAt = startedAt;
         this.completedAt = completedAt;
         this.errorMessage = errorMessage;
+        this.recoveredFromCache = recoveredFromCache;
+        this.recoveryState = recoveryState;
+        this.queuedChapterNumbers = dedupeChapterList(queuedChapterNumbers);
+        this.completedChapterNumbers = dedupeChapterList(completedChapterNumbers);
+        this.newChapterNumbers = dedupeChapterList(newChapterNumbers);
+        this.missingChapterNumbers = dedupeChapterList(missingChapterNumbers);
         this.lastUpdated = lastUpdated;
     }
 
     private long now() {
         return System.currentTimeMillis();
+    }
+
+    private static List<String> dedupeChapterList(Collection<String> chapters) {
+        Set<String> deduped = new LinkedHashSet<>();
+        if (chapters != null) {
+            for (String chapter : chapters) {
+                if (chapter == null) {
+                    continue;
+                }
+
+                String trimmed = chapter.trim();
+                if (!trimmed.isBlank()) {
+                    deduped.add(trimmed);
+                }
+            }
+        }
+
+        return new ArrayList<>(deduped);
+    }
+
+    public synchronized void ensureTaskId(String fallbackTaskId) {
+        if (taskId == null || taskId.isBlank()) {
+            taskId = fallbackTaskId;
+            this.lastUpdated = now();
+        }
+    }
+
+    public synchronized void attachTaskContext(
+            String nextTaskId,
+            String nextTaskType,
+            String nextTitleUuid,
+            String nextSourceUrl,
+            String nextMediaType,
+            String nextCoverUrl,
+            String nextSummary) {
+        if (nextTaskId != null && !nextTaskId.isBlank()) {
+            this.taskId = nextTaskId.trim();
+        }
+        if (nextTaskType != null && !nextTaskType.isBlank()) {
+            this.taskType = nextTaskType.trim();
+        }
+        if (nextTitleUuid != null && !nextTitleUuid.isBlank()) {
+            this.titleUuid = nextTitleUuid.trim();
+        }
+        if (nextSourceUrl != null && !nextSourceUrl.isBlank()) {
+            this.sourceUrl = nextSourceUrl.trim();
+        }
+        if (nextMediaType != null && !nextMediaType.isBlank()) {
+            this.mediaType = nextMediaType.trim();
+        }
+        if (nextCoverUrl != null && !nextCoverUrl.isBlank()) {
+            this.coverUrl = nextCoverUrl.trim();
+        }
+        if (nextSummary != null && !nextSummary.isBlank()) {
+            this.summary = nextSummary.trim();
+        }
+        this.lastUpdated = now();
+    }
+
+    public synchronized void applyChapterPlan(
+            Collection<String> queuedChapters,
+            Collection<String> newChapters,
+            Collection<String> missingChapters,
+            String nextLatestChapter,
+            int nextSourceChapterCount,
+            String nextMessage) {
+        this.queuedChapterNumbers = dedupeChapterList(queuedChapters);
+        this.newChapterNumbers = dedupeChapterList(newChapters);
+        this.missingChapterNumbers = dedupeChapterList(missingChapters);
+        this.totalChapters = this.queuedChapterNumbers.size();
+        this.sourceChapterCount = Math.max(0, nextSourceChapterCount);
+        this.latestChapter = nextLatestChapter;
+        if (nextMessage != null && !nextMessage.isBlank()) {
+            this.message = nextMessage.trim();
+        }
+        this.lastUpdated = now();
     }
 
     public synchronized void markStarted(int totalChapters) {
@@ -65,13 +198,29 @@ public class DownloadProgress {
     }
 
     public synchronized void chapterStarted(String chapterTitle) {
+        chapterStarted(chapterTitle, null);
+    }
+
+    public synchronized void chapterStarted(String chapterTitle, String chapterNumber) {
         this.currentChapter = chapterTitle;
+        this.currentChapterNumber = chapterNumber;
         this.status = "downloading";
         this.lastUpdated = now();
     }
 
     public synchronized void chapterCompleted() {
+        chapterCompleted(null);
+    }
+
+    public synchronized void chapterCompleted(String chapterNumber) {
         this.completedChapters++;
+        if (chapterNumber != null && !chapterNumber.isBlank()) {
+            List<String> nextCompleted = dedupeChapterList(completedChapterNumbers);
+            if (!nextCompleted.contains(chapterNumber.trim())) {
+                nextCompleted.add(chapterNumber.trim());
+            }
+            this.completedChapterNumbers = nextCompleted;
+        }
         this.lastUpdated = now();
     }
 
@@ -79,6 +228,7 @@ public class DownloadProgress {
         long now = now();
         this.status = "completed";
         this.currentChapter = null;
+        this.currentChapterNumber = null;
         this.completedAt = now;
         this.lastUpdated = now;
     }
@@ -88,22 +238,90 @@ public class DownloadProgress {
         this.status = "failed";
         this.errorMessage = message;
         this.currentChapter = null;
+        this.currentChapterNumber = null;
         this.completedAt = now;
         this.lastUpdated = now;
+    }
+
+    public synchronized void markInterrupted(String message) {
+        long now = now();
+        this.status = "interrupted";
+        this.message = message;
+        this.errorMessage = message;
+        this.currentChapter = null;
+        this.currentChapterNumber = null;
+        this.completedAt = now;
+        this.lastUpdated = now;
+    }
+
+    public synchronized void markPaused(String message) {
+        long now = now();
+        this.status = "paused";
+        this.message = message;
+        this.errorMessage = null;
+        this.currentChapter = null;
+        this.currentChapterNumber = null;
+        this.completedAt = now;
+        this.lastUpdated = now;
+    }
+
+    public synchronized void markRecoveredFromCache(String state) {
+        this.recoveredFromCache = true;
+        this.recoveryState = state;
+        this.status = "recovering";
+        this.lastUpdated = now();
+    }
+
+    public synchronized boolean hasCompletedChapter(String chapterNumber) {
+        if (chapterNumber == null || chapterNumber.isBlank()) {
+            return false;
+        }
+        return completedChapterNumbers.contains(chapterNumber.trim());
+    }
+
+    public synchronized List<String> getRemainingChapterNumbers() {
+        List<String> remaining = new ArrayList<>();
+        for (String chapterNumber : queuedChapterNumbers) {
+            if (!completedChapterNumbers.contains(chapterNumber)) {
+                remaining.add(chapterNumber);
+            }
+        }
+        return remaining;
     }
 
     public synchronized DownloadProgress copy() {
         return new DownloadProgress(
                 title,
                 queuedAt,
+                taskId,
+                taskType,
+                titleUuid,
+                sourceUrl,
+                mediaType,
+                coverUrl,
+                summary,
                 totalChapters,
+                sourceChapterCount,
                 completedChapters,
                 currentChapter,
+                currentChapterNumber,
                 status,
+                latestChapter,
+                message,
                 startedAt,
                 completedAt,
                 errorMessage,
+                recoveredFromCache,
+                recoveryState,
+                queuedChapterNumbers,
+                completedChapterNumbers,
+                newChapterNumbers,
+                missingChapterNumbers,
                 lastUpdated);
+    }
+
+    public synchronized String getTaskId() {
+        return taskId;
     }
 
     public String getTitle() {
@@ -114,8 +332,40 @@ public class DownloadProgress {
         return queuedAt;
     }
 
+    public synchronized String getTaskType() {
+        return taskType;
+    }
+
+    public synchronized String getTitleUuid() {
+        return titleUuid;
+    }
+
+    public synchronized String getSourceUrl() {
+        return sourceUrl;
+    }
+
+    public synchronized String getMediaType() {
+        return mediaType;
+    }
+
+    public synchronized String getCoverUrl() {
+        return coverUrl;
+    }
+
+    public synchronized String getSummary() {
+        return summary;
+    }
+
+    public synchronized int getSourceChapterCount() {
+        return sourceChapterCount;
+    }
+
     public synchronized int getTotalChapters() {
         return totalChapters;
+    }
+
+    public synchronized String getCurrentChapterNumber() {
+        return currentChapterNumber;
     }
 
     public synchronized int getCompletedChapters() {
@@ -126,8 +376,21 @@ public class DownloadProgress {
         return currentChapter;
     }
 
+    public synchronized String getLatestChapter() {
+        return latestChapter;
+    }
+
     public synchronized String getStatus() {
         return status;
+    }
+
+    public synchronized String getMessage() {
+        return message;
+    }
+
+    public synchronized void setMessage(String message) {
+        this.message = message;
+        this.lastUpdated = now();
     }
 
     public synchronized Long getStartedAt() {
@@ -140,6 +403,30 @@ public class DownloadProgress {
 
     public synchronized String getErrorMessage() {
         return errorMessage;
+    }
+
+    public synchronized boolean isRecoveredFromCache() {
+        return recoveredFromCache;
+    }
+
+    public synchronized String getRecoveryState() {
+        return recoveryState;
+    }
+
+    public synchronized List<String> getQueuedChapterNumbers() {
+        return new ArrayList<>(queuedChapterNumbers);
+    }
+
+    public synchronized List<String> getCompletedChapterNumbers() {
+        return new ArrayList<>(completedChapterNumbers);
+    }
+
+    public synchronized List<String> getNewChapterNumbers() {
+        return new ArrayList<>(newChapterNumbers);
+    }
+
+    public synchronized List<String> getMissingChapterNumbers() {
+        return new ArrayList<>(missingChapterNumbers);
     }
 
     public synchronized long getLastUpdated() {

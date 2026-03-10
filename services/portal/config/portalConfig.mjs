@@ -6,16 +6,20 @@ import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 const DEFAULT_ENV_PATH = process.env.PORTAL_ENV_FILE || process.env.ENV_FILE || undefined;
 let envLoaded = false;
 const DEFAULT_MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000';
+const DEFAULT_MANAGED_KOMF_BASE_URL = 'http://noona-komf:8085';
 const DEFAULT_RAVEN_BASE_URL = 'http://noona-raven:8080';
 const DEFAULT_WARDEN_BASE_URL = 'http://noona-warden:4001';
 
 const REQUIRED_STRINGS = [
-    'DISCORD_BOT_TOKEN',
-    'DISCORD_CLIENT_ID',
-    'DISCORD_GUILD_ID',
     'KAVITA_API_KEY',
     'VAULT_BASE_URL',
     'VAULT_ACCESS_TOKEN',
+];
+
+const DISCORD_REQUIRED_STRINGS = [
+    'DISCORD_BOT_TOKEN',
+    'DISCORD_CLIENT_ID',
+    'DISCORD_GUILD_ID',
 ];
 
 const numberOrDefault = (value, fallback) => {
@@ -101,6 +105,15 @@ const collectMissing = (env) => {
         }
     }
 
+    const hasAnyDiscordConfig = DISCORD_REQUIRED_STRINGS.some((key) => normalizeString(env[key]));
+    if (hasAnyDiscordConfig) {
+        for (const key of DISCORD_REQUIRED_STRINGS) {
+            if (!normalizeString(env[key])) {
+                missing.push(key);
+            }
+        }
+    }
+
     return missing;
 };
 
@@ -119,20 +132,31 @@ export const loadPortalConfig = (overrides = {}) => {
         throw error;
     }
 
+    const discordToken = normalizeString(env.DISCORD_BOT_TOKEN);
+    const discordClientId = normalizeString(env.DISCORD_CLIENT_ID);
+    const discordGuildId = normalizeString(env.DISCORD_GUILD_ID);
     const discordRole = normalizeString(env.DISCORD_GUILD_ROLE_ID) || normalizeString(env.DISCORD_DEFAULT_ROLE_ID) || null;
+    const discordEnabled = Boolean(discordToken && discordClientId && discordGuildId);
 
     const config = {
         serviceName: normalizeString(env.SERVICE_NAME) || 'noona-portal',
         port: numberOrDefault(env.PORTAL_PORT ?? env.API_PORT, 3003),
         discord: {
-            token: env.DISCORD_BOT_TOKEN,
-            clientId: env.DISCORD_CLIENT_ID,
-            guildId: env.DISCORD_GUILD_ID,
+            enabled: discordEnabled,
+            token: discordToken,
+            clientId: discordClientId,
+            guildId: discordGuildId,
             defaultRoleId: discordRole,
         },
         kavita: {
             baseUrl: normalizeUrl(env.KAVITA_BASE_URL || DEFAULT_MANAGED_KAVITA_BASE_URL),
             apiKey: env.KAVITA_API_KEY,
+            externalUrl: normalizeUrl(env.KAVITA_EXTERNAL_URL),
+        },
+        komf: {
+            baseUrl: normalizeString(env.KOMF_BASE_URL)
+                ? normalizeUrl(env.KOMF_BASE_URL)
+                : normalizeUrl(DEFAULT_MANAGED_KOMF_BASE_URL),
         },
         raven: {
             baseUrl: normalizeUrl(env.RAVEN_BASE_URL || DEFAULT_RAVEN_BASE_URL),
@@ -146,12 +170,18 @@ export const loadPortalConfig = (overrides = {}) => {
         warden: {
             baseUrl: normalizeUrl(env.WARDEN_BASE_URL || DEFAULT_WARDEN_BASE_URL),
         },
+        moon: {
+            baseUrl: normalizeUrl(env.MOON_BASE_URL),
+        },
         join: {
             defaultRoles: splitCsv(env.PORTAL_JOIN_DEFAULT_ROLES ?? '*,-admin'),
             defaultLibraries: splitCsv(env.PORTAL_JOIN_DEFAULT_LIBRARIES ?? '*'),
         },
         activity: {
             pollMs: numberOrDefault(env.PORTAL_ACTIVITY_POLL_MS, 15000),
+        },
+        recommendations: {
+            pollMs: numberOrDefault(env.PORTAL_RECOMMENDATION_POLL_MS, 30000),
         },
         redis: {
             namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',
@@ -166,6 +196,10 @@ export const loadPortalConfig = (overrides = {}) => {
         throw new Error('KAVITA_BASE_URL must be a valid absolute URL.');
     }
 
+    if (!config.komf.baseUrl) {
+        throw new Error('KOMF_BASE_URL must be a valid absolute URL.');
+    }
+
     if (!config.vault.baseUrl) {
         throw new Error('VAULT_BASE_URL must be a valid absolute URL.');
     }
@@ -178,7 +212,11 @@ export const loadPortalConfig = (overrides = {}) => {
         throw new Error('WARDEN_BASE_URL must be a valid absolute URL.');
     }
 
-    log(`[${config.serviceName}] Loaded configuration for Discord guild ${config.discord.guildId}`);
+    if (config.discord.enabled) {
+        log(`[${config.serviceName}] Loaded configuration for Discord guild ${config.discord.guildId}`);
+    } else {
+        log(`[${config.serviceName}] Loaded configuration with Discord integration disabled.`);
+    }
 
     return Object.freeze(config);
 };

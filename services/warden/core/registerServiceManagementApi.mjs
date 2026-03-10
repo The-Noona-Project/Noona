@@ -7,9 +7,11 @@ import {
 } from '../docker/komfConfigTemplate.mjs';
 
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
+const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
 const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
 const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
+const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -17,6 +19,41 @@ const normalizeString = (value) => {
     }
 
     return value.trim();
+};
+
+const normalizeAbsoluteHttpUrl = (value) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return null;
+        }
+
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+};
+
+const normalizeBooleanSettingValue = (value, key) => {
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return '';
+    }
+
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+        return 'true';
+    }
+
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+        return 'false';
+    }
+
+    throw new Error(`${key} must be true or false.`);
 };
 
 const normalizeManagedKavitaAccount = (envMap = {}) => {
@@ -115,6 +152,9 @@ export function registerServiceManagementApi(context = {}) {
         requiredServices,
         readManagedKomfConfigFile,
         resetInstallationTracking,
+        resolveCurrentAutoUpdatesEnabled,
+        resolveCurrentHostServiceBase,
+        resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
         runtimeDebugState,
@@ -165,6 +205,14 @@ export function registerServiceManagementApi(context = {}) {
             return null;
         }
 
+        if (service?.name === 'noona-moon') {
+            const env = parseEnvEntries(service?.env);
+            const externalMoonUrl = normalizeAbsoluteHttpUrl(env?.MOON_EXTERNAL_URL);
+            if (externalMoonUrl) {
+                return externalMoonUrl;
+            }
+        }
+
         const resolveByPort = (candidatePort) => {
             const port = normalizeHostPort(candidatePort);
             if (port == null) {
@@ -194,6 +242,57 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         return null;
+    };
+
+    const isWardenConfigName = (name) => normalizeString(name) === WARDEN_CONFIG_SERVICE_NAME;
+    const buildWardenServiceConfig = () => {
+        const runtime = resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME);
+        const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
+        const effectiveServerIp = normalizeString(resolveCurrentServerIp?.());
+        const effectiveHostServiceBase = normalizeString(resolveCurrentHostServiceBase?.());
+        const envConfig = cloneEnvConfig([
+            {
+                key: 'SERVER_IP',
+                label: 'Server IP / Hostname',
+                defaultValue: effectiveServerIp,
+                description:
+                    'Host IP address or hostname Warden should publish in Noona links such as Kavita buttons and setup summary URLs.',
+                warning:
+                    'If Warden was started with HOST_SERVICE_URL, that explicit URL still takes precedence over SERVER_IP.',
+                required: false,
+                readOnly: false,
+            },
+            {
+                key: 'AUTO_UPDATES',
+                label: 'Auto updates',
+                defaultValue: autoUpdatesEnabled ? 'true' : 'false',
+                description:
+                    'When enabled, Warden pulls newer Docker images during startup and restarts installed services that changed.',
+                warning:
+                    'Startup may take longer, and managed services can restart during boot when a newer image is found.',
+                required: false,
+                readOnly: false,
+            },
+        ]);
+
+        return {
+            name: WARDEN_CONFIG_SERVICE_NAME,
+            image: null,
+            port: null,
+            internalPort: null,
+            hostServiceUrl: effectiveHostServiceBase || null,
+            description: 'Warden publishes host-facing URLs for managed services and can auto-apply newer images during startup.',
+            health: null,
+            env: {
+                SERVER_IP: effectiveServerIp,
+                AUTO_UPDATES: autoUpdatesEnabled ? 'true' : 'false',
+            },
+            envConfig,
+            runtimeConfig: {
+                hostPort: null,
+                env: runtime.env,
+            },
+        };
     };
 
     const mergeManagedServiceRuntimeEnv = async (name, envUpdates = {}, {installOverridesByName = null} = {}) => {
@@ -260,6 +359,96 @@ export function registerServiceManagementApi(context = {}) {
         );
     };
 
+    const recoverManagedKavitaEnvFromContainer = async (name, {
+        fallbackBaseUrl,
+        dockerClient = null,
+    } = {}) => {
+        if (name !== MANAGED_KAVITA_PORTAL_SERVICE_NAME && name !== MANAGED_KAVITA_KOMF_SERVICE_NAME) {
+            return null;
+        }
+
+        let client = dockerClient;
+        if (!client) {
+            try {
+                client = await ensureDockerConnection();
+            } catch {
+                return null;
+            }
+        }
+
+        let matches = [];
+        try {
+            matches = await findMatchingContainersByName(name, client);
+        } catch {
+            return null;
+        }
+
+        if (!Array.isArray(matches) || matches.length === 0) {
+            return null;
+        }
+
+        const sortedMatches = [...matches].sort((left, right) => {
+            const leftRunning = String(left?.State || '').toLowerCase() === 'running' ? 1 : 0;
+            const rightRunning = String(right?.State || '').toLowerCase() === 'running' ? 1 : 0;
+            return rightRunning - leftRunning;
+        });
+
+        const normalizeContainerId = (container = {}) => {
+            const id = normalizeString(container?.Id);
+            if (id) {
+                return id;
+            }
+
+            const names = Array.isArray(container?.Names) ? container.Names : [];
+            for (const entry of names) {
+                const normalized = normalizeString(typeof entry === 'string' ? entry.replace(/^\//, '') : '');
+                if (normalized) {
+                    return normalized;
+                }
+            }
+
+            return '';
+        };
+
+        for (const container of sortedMatches) {
+            const containerId = normalizeContainerId(container);
+            if (!containerId || typeof client.getContainer !== 'function') {
+                continue;
+            }
+
+            let inspection = null;
+            try {
+                inspection = await client.getContainer(containerId).inspect();
+            } catch {
+                inspection = null;
+            }
+
+            const envMap = parseEnvEntries(inspection?.Config?.Env || []);
+            const recoveredApiKey = name === MANAGED_KAVITA_PORTAL_SERVICE_NAME
+                ? normalizeString(envMap.KAVITA_API_KEY)
+                : normalizeString(envMap.KOMF_KAVITA_API_KEY);
+
+            if (!recoveredApiKey) {
+                continue;
+            }
+
+            const recoveredBaseUrlRaw = name === MANAGED_KAVITA_PORTAL_SERVICE_NAME
+                ? envMap.KAVITA_BASE_URL
+                : envMap.KOMF_KAVITA_BASE_URI;
+            const recoveredBaseUrl = normalizeString(recoveredBaseUrlRaw) || normalizeString(fallbackBaseUrl);
+            const nextEnv = buildManagedKavitaServiceEnv(name, {
+                baseUrl: recoveredBaseUrl,
+                apiKey: recoveredApiKey,
+            });
+
+            if (nextEnv) {
+                return nextEnv;
+            }
+        }
+
+        return null;
+    };
+
     api.needsManagedKavitaProvisioning = function needsManagedKavitaProvisioning(name, options = {}) {
         return serviceNeedsManagedKavitaProvisioning(name, options);
     };
@@ -273,10 +462,13 @@ export function registerServiceManagementApi(context = {}) {
             };
         }
 
+        const allowRegister = options?.allowRegister !== false;
+        const failOnError = options?.failOnError !== false;
+        const tryRecoverExistingKeys = options?.tryRecoverExistingKeys !== false;
         const installOverridesByName =
             options?.installOverridesByName instanceof Map ? options.installOverridesByName : null;
         const targetServices = Array.isArray(options?.targetServices) ? options.targetServices : [];
-        const configuredServices = Array.from(
+        let configuredServices = Array.from(
             new Set(
                 targetServices.filter((candidate) =>
                     serviceNeedsManagedKavitaProvisioning(candidate, {
@@ -302,12 +494,86 @@ export function registerServiceManagementApi(context = {}) {
         const envMap = parseEnvEntries(descriptor.env);
         const account = normalizeManagedKavitaAccount(envMap);
 
+        if (configuredServices.length > 0 && tryRecoverExistingKeys) {
+            let dockerClient = null;
+            try {
+                dockerClient = await ensureDockerConnection();
+            } catch {
+                dockerClient = null;
+            }
+
+            for (const targetName of configuredServices) {
+                const recoveredEnv = await recoverManagedKavitaEnvFromContainer(targetName, {
+                    fallbackBaseUrl: baseUrl,
+                    dockerClient,
+                });
+                if (!recoveredEnv) {
+                    continue;
+                }
+
+                await mergeManagedServiceRuntimeEnv(targetName, recoveredEnv, {installOverridesByName});
+                appendHistoryEntry(targetName, {
+                    type: 'status',
+                    status: 'configured',
+                    message: 'Recovered managed Kavita API key from existing container',
+                    detail: normalizeString(
+                        targetName === MANAGED_KAVITA_PORTAL_SERVICE_NAME
+                            ? recoveredEnv.KAVITA_BASE_URL
+                            : recoveredEnv.KOMF_KAVITA_BASE_URI,
+                    ) || normalizeString(baseUrl),
+                    clearError: true,
+                });
+            }
+
+            configuredServices = Array.from(
+                new Set(
+                    targetServices.filter((candidate) =>
+                        serviceNeedsManagedKavitaProvisioning(candidate, {
+                            envOverrides: installOverridesByName?.get(candidate) || null,
+                        }),
+                    ),
+                ),
+            );
+        }
+
+        if (configuredServices.length === 0) {
+            return {
+                configuredServices: [],
+                skipped: false,
+                reason: 'managed-kavita-targets-prepared',
+            };
+        }
+
         appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
             type: 'status',
             status: 'configuring',
             message: 'Provisioning managed Kavita API key for dependent services',
             detail: configuredServices.join(', '),
         });
+
+        if (!account && !allowRegister) {
+            const message =
+                'Managed Kavita API key provisioning skipped because KAVITA_ADMIN_USERNAME, KAVITA_ADMIN_EMAIL, and KAVITA_ADMIN_PASSWORD are not configured.';
+            appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
+                type: 'error',
+                status: 'error',
+                message: 'Managed Kavita API key provisioning skipped',
+                detail: message,
+                error: message,
+            });
+
+            if (!failOnError) {
+                logger?.warn?.(`[${serviceName}] ${message}`);
+                return {
+                    configuredServices,
+                    skipped: true,
+                    reason: 'managed-kavita-account-missing',
+                    error: message,
+                };
+            }
+
+            throw new Error(message);
+        }
 
         try {
             const client = createManagedKavitaSetupClient({
@@ -318,7 +584,7 @@ export function registerServiceManagementApi(context = {}) {
             });
             const provisioning = await client.ensureServiceApiKey({
                 account,
-                allowRegister: true,
+                allowRegister,
             });
             const normalizedBaseUrl = client.getBaseUrl().replace(/\/$/, '');
             const managedApiKey = normalizeString(provisioning?.apiKey);
@@ -383,7 +649,48 @@ export function registerServiceManagementApi(context = {}) {
                 detail: message,
                 error: message,
             });
+
+            if (!failOnError) {
+                logger?.warn?.(
+                    `[${serviceName}] Managed Kavita API key provisioning failed for ${configuredServices.join(', ')}: ${message}`,
+                );
+                return {
+                    configuredServices,
+                    skipped: true,
+                    reason: 'managed-kavita-provisioning-failed',
+                    error: message,
+                };
+            }
+
             throw error;
+        }
+    };
+
+    const resolveManagedKavitaNoonaMoonBaseUrl = () => {
+        if (!serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
+            return '';
+        }
+
+        try {
+            const config = api.getServiceConfig(MANAGED_KAVITA_SERVICE_NAME);
+            return normalizeAbsoluteHttpUrl(config?.env?.NOONA_MOON_BASE_URL) || normalizeString(config?.env?.NOONA_MOON_BASE_URL);
+        } catch {
+            return '';
+        }
+    };
+
+    const isManagedServiceInstalled = async (targetServiceName) => {
+        const normalizedName = normalizeString(targetServiceName);
+        if (!normalizedName) {
+            return false;
+        }
+
+        try {
+            const dockerClient = await ensureDockerConnection();
+            return await dockerUtils.containerExists(normalizedName, {dockerInstance: dockerClient});
+        } catch (error) {
+            markDockerConnectionStale(error);
+            return false;
         }
     };
 
@@ -412,6 +719,7 @@ export function registerServiceManagementApi(context = {}) {
         });
         const hostServiceUrl = api.resolveHostServiceUrl(effectiveService);
         const recreate = options?.recreate === true;
+        const reuseStoppedContainer = options?.reuseStoppedContainer === true;
         let alreadyRunning = false;
         let existingContainer = {exists: false, running: false};
 
@@ -437,7 +745,7 @@ export function registerServiceManagementApi(context = {}) {
             throw error;
         }
 
-        if (existingContainer.exists && (recreate || !alreadyRunning)) {
+        if (existingContainer.exists && (recreate || (!alreadyRunning && !reuseStoppedContainer))) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'recreating',
@@ -469,106 +777,143 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         if (!alreadyRunning) {
-            appendHistoryEntry(serviceName, {
-                type: 'status',
-                status: 'pulling',
-                message: `Checking Docker image ${effectiveService.image}`,
-                detail: effectiveService.image,
-            });
-
-            try {
-                await dockerUtils.pullImageIfNeeded(effectiveService.image, {
-                    dockerInstance: dockerClient,
-                    onProgress: (event = {}) => {
-                        const explicitLayerId =
-                            event.layerId != null ? String(event.layerId).trim() : '';
-                        const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
-                        const layerId = explicitLayerId || fallbackLayerId || null;
-                        const phase =
-                            typeof event.phase === 'string' && event.phase.trim()
-                                ? event.phase.trim()
-                                : null;
-                        const rawStatus = event.status || phase || 'progress';
-                        const status =
-                            typeof rawStatus === 'string'
-                                ? rawStatus.trim() || 'progress'
-                                : String(rawStatus ?? 'progress');
-                        const detail = event.detail != null ? String(event.detail).trim() : '';
-                        const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
-                        const message =
-                            explicitMessage ||
-                            formatDockerProgressMessage({
-                                layerId,
-                                phase,
-                                status,
-                                detail,
-                            }) ||
-                            status;
-
-                        const meta = {};
-
-                        if (layerId) {
-                            meta.layerId = layerId;
-                        }
-
-                        if (phase) {
-                            meta.phase = phase;
-                        }
-
-                        if (event.progressDetail && typeof event.progressDetail === 'object') {
-                            meta.progressDetail = cloneMeta(event.progressDetail);
-                        }
-
-                        if (explicitMessage) {
-                            meta.message = explicitMessage;
-                        }
-
-                        const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
-                        appendHistoryEntry(serviceName, {
-                            type: 'progress',
-                            status,
-                            message,
-                            detail: detail || null,
-                            ...(metaPayload ? {meta: metaPayload} : {}),
-                        });
-                    },
+            if (existingContainer.exists && reuseStoppedContainer && !recreate) {
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'starting',
+                    message: 'Starting existing stopped container',
+                    detail: null,
                 });
-            } catch (error) {
-                markDockerConnectionStale(error);
-                throw error;
-            }
 
-            appendHistoryEntry(serviceName, {
-                type: 'status',
-                status: 'starting',
-                message: 'Starting container',
-                detail: null,
-            });
+                try {
+                    await dockerClient.getContainer(serviceName).start();
+                    trackedContainers.add(serviceName);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    const statusCode = Number.parseInt(String(error?.statusCode ?? error?.status ?? ''), 10);
+                    const alreadyStarted = statusCode === 304 || /already started/i.test(message);
 
-            try {
-                await dockerUtils.runContainerWithLogs(
-                    effectiveService,
-                    networkName,
-                    trackedContainers,
-                    runtimeDebugState.value,
-                    {
+                    if (!alreadyStarted) {
+                        markDockerConnectionStale(error);
+                        appendHistoryEntry(serviceName, {
+                            type: 'error',
+                            status: 'error',
+                            message: 'Failed to start existing container',
+                            detail: message,
+                            error: message,
+                        });
+                        throw error;
+                    }
+                }
+
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'started',
+                    message: 'Existing container start initiated',
+                    detail: null,
+                });
+            } else {
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'pulling',
+                    message: `Checking Docker image ${effectiveService.image}`,
+                    detail: effectiveService.image,
+                });
+
+                try {
+                    await dockerUtils.pullImageIfNeeded(effectiveService.image, {
                         dockerInstance: dockerClient,
-                        onLog: (raw, context = {}) => {
-                            recordContainerOutput(serviceName, raw, context);
-                        },
-                    },
-                );
-            } catch (error) {
-                markDockerConnectionStale(error);
-                throw error;
-            }
+                        onProgress: (event = {}) => {
+                            const explicitLayerId =
+                                event.layerId != null ? String(event.layerId).trim() : '';
+                            const fallbackLayerId = event.id != null ? String(event.id).trim() : '';
+                            const layerId = explicitLayerId || fallbackLayerId || null;
+                            const phase =
+                                typeof event.phase === 'string' && event.phase.trim()
+                                    ? event.phase.trim()
+                                    : null;
+                            const rawStatus = event.status || phase || 'progress';
+                            const status =
+                                typeof rawStatus === 'string'
+                                    ? rawStatus.trim() || 'progress'
+                                    : String(rawStatus ?? 'progress');
+                            const detail = event.detail != null ? String(event.detail).trim() : '';
+                            const explicitMessage = typeof event.message === 'string' ? event.message.trim() : '';
+                            const message =
+                                explicitMessage ||
+                                formatDockerProgressMessage({
+                                    layerId,
+                                    phase,
+                                    status,
+                                    detail,
+                                }) ||
+                                status;
 
-            appendHistoryEntry(serviceName, {
-                type: 'status',
-                status: 'started',
-                message: 'Container start initiated',
-                detail: null,
-            });
+                            const meta = {};
+
+                            if (layerId) {
+                                meta.layerId = layerId;
+                            }
+
+                            if (phase) {
+                                meta.phase = phase;
+                            }
+
+                            if (event.progressDetail && typeof event.progressDetail === 'object') {
+                                meta.progressDetail = cloneMeta(event.progressDetail);
+                            }
+
+                            if (explicitMessage) {
+                                meta.message = explicitMessage;
+                            }
+
+                            const metaPayload = Object.keys(meta).length > 0 ? meta : undefined;
+                            appendHistoryEntry(serviceName, {
+                                type: 'progress',
+                                status,
+                                message,
+                                detail: detail || null,
+                                ...(metaPayload ? {meta: metaPayload} : {}),
+                            });
+                        },
+                    });
+                } catch (error) {
+                    markDockerConnectionStale(error);
+                    throw error;
+                }
+
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'starting',
+                    message: 'Starting container',
+                    detail: null,
+                });
+
+                try {
+                    await dockerUtils.runContainerWithLogs(
+                        effectiveService,
+                        networkName,
+                        trackedContainers,
+                        runtimeDebugState.value,
+                        {
+                            dockerInstance: dockerClient,
+                            onLog: (raw, context = {}) => {
+                                recordContainerOutput(serviceName, raw, context);
+                            },
+                        },
+                    );
+                } catch (error) {
+                    markDockerConnectionStale(error);
+                    throw error;
+                }
+
+                appendHistoryEntry(serviceName, {
+                    type: 'status',
+                    status: 'started',
+                    message: 'Container start initiated',
+                    detail: null,
+                });
+            }
         } else {
             logger.log(`${serviceName} already running.`);
             appendHistoryEntry(serviceName, {
@@ -1361,6 +1706,10 @@ export function registerServiceManagementApi(context = {}) {
             throw new Error('Service name must be a non-empty string.');
         }
 
+        if (isWardenConfigName(trimmedName)) {
+            return buildWardenServiceConfig();
+        }
+
         const entry = serviceCatalog.get(trimmedName);
         if (!entry) {
             throw new Error(`Service ${trimmedName} is not registered with Warden.`);
@@ -1383,6 +1732,10 @@ export function registerServiceManagementApi(context = {}) {
             hostServiceUrl: api.resolveHostServiceUrl(descriptor),
             description: descriptor.description ?? null,
             health: descriptor.health ?? null,
+            restartPolicy:
+                descriptor.restartPolicy && typeof descriptor.restartPolicy === 'object'
+                    ? {...descriptor.restartPolicy}
+                    : null,
             env,
             envConfig: cloneEnvConfig(descriptor.envConfig),
             runtimeConfig: {
@@ -1402,6 +1755,30 @@ export function registerServiceManagementApi(context = {}) {
             throw new Error('Service name must be a non-empty string.');
         }
 
+        if (isWardenConfigName(trimmedName)) {
+            if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort') && updates?.hostPort != null) {
+                throw new Error('noona-warden does not support hostPort overrides.');
+            }
+
+            const envUpdates = normalizeEnvOverrideMap(updates?.env);
+            const nextServerIp = normalizeString(envUpdates.SERVER_IP);
+            const nextAutoUpdates = normalizeBooleanSettingValue(envUpdates.AUTO_UPDATES, 'AUTO_UPDATES');
+            const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, {
+                env: {
+                    ...(nextServerIp ? {SERVER_IP: nextServerIp} : {}),
+                    ...(nextAutoUpdates ? {AUTO_UPDATES: nextAutoUpdates} : {}),
+                },
+                hostPort: null,
+            });
+
+            await persistServiceRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, nextRuntime);
+
+            return {
+                service: api.getServiceConfig(WARDEN_CONFIG_SERVICE_NAME),
+                restarted: false,
+            };
+        }
+
         if (!serviceCatalog.has(trimmedName)) {
             throw new Error(`Service ${trimmedName} is not registered with Warden.`);
         }
@@ -1411,6 +1788,10 @@ export function registerServiceManagementApi(context = {}) {
             env: {...runtime.env},
             hostPort: runtime.hostPort,
         };
+        const previousManagedKavitaMoonBaseUrl =
+            trimmedName === MANAGED_MOON_SERVICE_NAME
+                ? resolveManagedKavitaNoonaMoonBaseUrl()
+                : '';
 
         if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
             nextRuntime.env = normalizeEnvOverrideMap(updates?.env);
@@ -1429,13 +1810,34 @@ export function registerServiceManagementApi(context = {}) {
 
         const restart = updates?.restart === true;
         let restartResult = null;
+        const linkedRestarts = [];
+        const warnings = [];
         if (restart) {
             restartResult = await api.restartService(trimmedName);
+        }
+
+        if (restart && trimmedName === MANAGED_MOON_SERVICE_NAME && serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
+            const nextManagedKavitaMoonBaseUrl = resolveManagedKavitaNoonaMoonBaseUrl();
+            const moonLoginTargetChanged = previousManagedKavitaMoonBaseUrl !== nextManagedKavitaMoonBaseUrl;
+
+            if (moonLoginTargetChanged && await isManagedServiceInstalled(MANAGED_KAVITA_SERVICE_NAME)) {
+                try {
+                    await api.restartService(MANAGED_KAVITA_SERVICE_NAME);
+                    linkedRestarts.push(MANAGED_KAVITA_SERVICE_NAME);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    warnings.push(
+                        `Saved ${MANAGED_MOON_SERVICE_NAME}, but failed to restart ${MANAGED_KAVITA_SERVICE_NAME} to sync Kavita's Log in with Noona redirect: ${message}`,
+                    );
+                }
+            }
         }
 
         return {
             service: api.getServiceConfig(trimmedName),
             restarted: Boolean(restartResult),
+            ...(linkedRestarts.length > 0 ? {linkedRestarts} : {}),
+            ...(warnings.length > 0 ? {warnings} : {}),
         };
     };
 
@@ -1646,6 +2048,11 @@ export function registerServiceManagementApi(context = {}) {
                 imageErrors: [],
             };
 
+        const bootPersistence =
+            typeof api.clearPersistedBootState === 'function'
+                ? await api.clearPersistedBootState()
+                : null;
+
         const started = await api.startEcosystem({
             setupCompleted: false,
             forceFull: false,
@@ -1656,6 +2063,7 @@ export function registerServiceManagementApi(context = {}) {
             stopped,
             ravenDownloads,
             dockerCleanup,
+            bootPersistence,
             started,
         };
     };

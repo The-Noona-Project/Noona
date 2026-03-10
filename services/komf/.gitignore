@@ -1,0 +1,54 @@
+.gradle
+!gradle/wrapper/gradle-wrapper.jar
+build/
+**/build/
+!src/**/build/
+
+### intellij idea ###
+.idea/*
+!/.idea/codeStyles/
+!/.idea/runConfigurations/
+.idea/modules.xml
+.idea/jarrepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springbeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### netbeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### vs code ###
+.vscode/
+
+### mac os ###
+.ds_store
+
+database.sqlite
+
+### kotlin ###
+kls_database.db
+kls-classpath*
+
+### neovim ###
+.nvim.lua

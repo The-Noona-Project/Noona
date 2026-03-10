@@ -76,23 +76,26 @@ export const createPortalRavenClient = ({
         cachedCandidates = [preferred, ...candidates.filter((entry) => entry !== preferred)];
     };
 
-    const request = async (path) => {
+    const request = async (path, {method = 'GET', headers = {}, body, acceptStatuses = []} = {}) => {
         const candidates = buildCandidates();
         const errors = [];
+        const accepted = new Set([200, 201, 202, 204, ...acceptStatuses]);
 
         for (const candidate of candidates) {
             const {controller, cleanup} = createAbortController(timeoutMs);
             try {
                 const requestUrl = new URL(path, candidate);
                 const response = await fetchImpl(requestUrl.toString(), {
-                    method: 'GET',
+                    method,
                     headers: {
                         Accept: 'application/json',
+                        ...headers,
                     },
+                    ...(body === undefined ? {} : {body}),
                     signal: controller.signal,
                 });
 
-                if (!response.ok) {
+                if (!accepted.has(response.status)) {
                     const payload = await parseResponsePayload(response);
                     const error = new Error(`Raven responded with status ${response.status}`);
                     error.status = response.status;
@@ -101,6 +104,10 @@ export const createPortalRavenClient = ({
                 }
 
                 promoteCandidate(candidate, candidates);
+                if (response.status === 404) {
+                    return null;
+                }
+
                 return await parseResponsePayload(response);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -115,7 +122,65 @@ export const createPortalRavenClient = ({
     };
 
     return {
+        getDownloadStatus: async () => {
+            const payload = await request('/v1/download/status');
+            return Array.isArray(payload) ? payload : [];
+        },
+        getDownloadHistory: async () => {
+            const payload = await request('/v1/download/status/history');
+            return Array.isArray(payload) ? payload : [];
+        },
         getDownloadSummary: async () => await request('/v1/download/status/summary'),
+        getLibrary: async () => {
+            const payload = await request('/v1/library/getall');
+            return Array.isArray(payload) ? payload : [];
+        },
+        searchTitle: async (query) => {
+            const normalized = typeof query === 'string' ? query.trim() : '';
+            if (!normalized) {
+                throw new Error('query is required.');
+            }
+
+            return await request(`/v1/download/search/${encodeURIComponent(normalized)}`);
+        },
+        getTitle: async (uuid) => {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : '';
+            if (!normalized) {
+                throw new Error('uuid is required.');
+            }
+
+            return await request(`/v1/library/title/${encodeURIComponent(normalized)}`, {acceptStatuses: [404]});
+        },
+        updateTitle: async (uuid, {title, sourceUrl, coverUrl} = {}) => {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : '';
+            if (!normalized) {
+                throw new Error('uuid is required.');
+            }
+
+            const payload = {};
+            if (typeof title === 'string' && title.trim()) {
+                payload.title = title.trim();
+            }
+            if (typeof sourceUrl === 'string' && sourceUrl.trim()) {
+                payload.sourceUrl = sourceUrl.trim();
+            }
+            if (typeof coverUrl === 'string' && coverUrl.trim()) {
+                payload.coverUrl = coverUrl.trim();
+            }
+
+            if (!Object.keys(payload).length) {
+                throw new Error('At least one of title/sourceUrl/coverUrl must be provided.');
+            }
+
+            return await request(`/v1/library/title/${encodeURIComponent(normalized)}`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+                acceptStatuses: [404],
+            });
+        },
     };
 };
 

@@ -3,6 +3,13 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Row, Text} from "@once-ui-system/core";
 import styles from "./RebootingPage.module.scss";
+import {
+    buildRebootMonitorTargetKey,
+    clearRebootMonitorSession,
+    prioritizeRebootMonitorServices,
+    readRebootMonitorSession,
+    writeRebootMonitorSession,
+} from "./rebootMonitorSession";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -58,24 +65,10 @@ type ServiceMonitorEntry = {
 const POLL_INTERVAL_MS = 2500;
 const REBOOT_TIMEOUT_MS = 12 * 60 * 1000;
 const STABILITY_POLLS_REQUIRED = 2;
-const RETURN_TO_DEFAULT = "/settings?tab=warden";
-const CORE_SERVICES = ["noona-warden", "noona-vault", "noona-moon", "noona-sage"] as const;
+const RETURN_TO_DEFAULT = "/settings/warden";
+const CORE_SERVICES = ["noona-warden", "noona-redis", "noona-vault", "noona-moon", "noona-sage"] as const;
 const CORE_SERVICE_SET = new Set<string>(CORE_SERVICES);
 const DETAIL_PREVIEW_LIMIT = 180;
-const UPDATE_PRIORITY = [
-    "noona-portal",
-    "noona-raven",
-    "noona-kavita",
-    "noona-komf",
-    "noona-mongo",
-    "noona-redis",
-    "noona-vault",
-    "noona-moon",
-    "noona-sage",
-] as const;
-const UPDATE_PRIORITY_INDEX = new Map<string, number>(
-    UPDATE_PRIORITY.map((service, index) => [service, index]),
-);
 const SERVICE_LABELS: Record<string, string> = {
     "noona-warden": "Warden",
     "noona-moon": "Moon",
@@ -91,9 +84,9 @@ const SERVICE_LABELS: Record<string, string> = {
 const SERVICE_DESCRIPTIONS: Record<string, string> = {
     "noona-warden": "Orchestrator and health source for the managed stack.",
     "noona-vault": "Shared storage and settings layer.",
+    "noona-redis": "Session and live-state store required while Sage validates admin requests.",
     "noona-moon": "Primary web console. If this disappears, the monitor waits for the UI to return.",
     "noona-sage": "Auth, setup, and settings proxy layer.",
-    "noona-redis": "Session and live-state store.",
     "noona-mongo": "Document database for Noona state.",
     "noona-portal": "Discord bridge and metadata helpers.",
     "noona-raven": "Downloader and library worker.",
@@ -102,6 +95,7 @@ const SERVICE_DESCRIPTIONS: Record<string, string> = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const targetKeyFor = (services: string[], returnTo: string): string => buildRebootMonitorTargetKey(services, returnTo);
 
 const clampPercent = (value: number): number => {
     if (!Number.isFinite(value)) return 0;
@@ -180,7 +174,11 @@ const shouldPauseForRecovery = (message: string): boolean => {
         || normalized.includes("operation was aborted")
         || normalized.includes("http 502")
         || normalized.includes("http 503")
-        || normalized.includes("http 504");
+        || normalized.includes("http 504")
+        || normalized.includes("http 401")
+        || normalized === "unauthorized."
+        || normalized === "unauthorized"
+        || normalized.includes("unable to validate session");
 };
 
 const serviceLabel = (serviceName: string): string =>
@@ -190,18 +188,6 @@ const serviceDescription = (serviceName: string, catalogByName: Record<string, S
     normalizeString(catalogByName[serviceName]?.description).trim()
     || SERVICE_DESCRIPTIONS[serviceName]
     || "Monitoring service health.";
-
-const prioritizeServices = (services: string[]): string[] =>
-    [...services].sort((left, right) => {
-        const leftPriority = UPDATE_PRIORITY_INDEX.get(left);
-        const rightPriority = UPDATE_PRIORITY_INDEX.get(right);
-        if (leftPriority != null && rightPriority != null) {
-            return leftPriority - rightPriority;
-        }
-        if (leftPriority != null) return -1;
-        if (rightPriority != null) return 1;
-        return left.localeCompare(right);
-    });
 
 const buildMonitorEntry = (service: string, target: boolean): ServiceMonitorEntry => ({
     service,
@@ -380,7 +366,7 @@ type RebootingPageProps = {
 
 export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps) {
     const targetServices = useMemo(
-        () => prioritizeServices(parseServicesParam(servicesParam ?? null)),
+        () => prioritizeRebootMonitorServices(parseServicesParam(servicesParam ?? null)),
         [servicesParam],
     );
     const targetSet = useMemo(() => new Set(targetServices), [targetServices]);
@@ -400,6 +386,10 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
         () => normalizeReturnTo(returnToParam ?? null),
         [returnToParam],
     );
+    const targetKey = useMemo(
+        () => targetKeyFor(targetServices, returnTo),
+        [returnTo, targetServices],
+    );
 
     const [phase, setPhase] = useState<MonitorPhase>("preparing");
     const [phaseDetail, setPhaseDetail] = useState("Preparing reboot monitor...");
@@ -409,6 +399,7 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
     const [pageError, setPageError] = useState<string | null>(null);
     const [lastReachableAt, setLastReachableAt] = useState<number | null>(null);
     const [stableSuccessCount, setStableSuccessCount] = useState(0);
+    const [sessionReady, setSessionReady] = useState(false);
 
     const phaseRef = useRef<MonitorPhase>("preparing");
     const currentIndexRef = useRef(0);
@@ -463,6 +454,7 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
         monitorStartedAtRef.current = Date.now();
         runnerActiveRef.current = false;
         startedRef.current = false;
+        setSessionReady(false);
 
         if (targetServices.length > 0) {
             setPageError(null);
@@ -473,6 +465,83 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
         setPageError("No services were selected for reboot monitoring.");
         setPhaseState("failed", "No services were selected for reboot monitoring.");
     }, [monitoredServices, targetServices, targetSet]);
+
+    useEffect(() => {
+        if (targetServices.length === 0) {
+            clearRebootMonitorSession();
+            setSessionReady(true);
+            return;
+        }
+
+        const persisted = readRebootMonitorSession();
+        if (!persisted || persisted.targetKey !== targetKey) {
+            setSessionReady(true);
+            return;
+        }
+
+        const restoredPhase = (normalizeString(persisted.phase) as MonitorPhase) || "preparing";
+        const restoredStates =
+            persisted.serviceStates && typeof persisted.serviceStates === "object"
+                ? (persisted.serviceStates as Record<string, ServiceMonitorEntry>)
+                : buildInitialMonitorState(monitoredServices, targetSet);
+        const restoredIndex = Math.max(0, Math.min(targetServices.length, Number(persisted.currentIndex) || 0));
+        const restoredStable = Math.max(0, Number(persisted.stableSuccessCount) || 0);
+        const restoredStartedAt = Number(persisted.monitorStartedAt);
+
+        phaseRef.current = restoredPhase;
+        currentIndexRef.current = restoredIndex;
+        stableSuccessCountRef.current = restoredStable;
+        monitorStartedAtRef.current = Number.isFinite(restoredStartedAt) && restoredStartedAt > 0
+            ? restoredStartedAt
+            : monitorStartedAtRef.current;
+        serviceStatesRef.current = restoredStates;
+
+        setPhase(restoredPhase);
+        setPhaseDetail(normalizeString(persisted.phaseDetail) || "Preparing reboot monitor...");
+        setServiceStates(restoredStates);
+        setCurrentIndex(restoredIndex);
+        setPageError(normalizeString(persisted.pageError) || null);
+        setLastReachableAt(
+            Number.isFinite(Number(persisted.lastReachableAt)) && Number(persisted.lastReachableAt) > 0
+                ? Number(persisted.lastReachableAt)
+                : null,
+        );
+        setStableState(restoredStable);
+        setSessionReady(true);
+    }, [monitoredServices, targetKey, targetServices, targetSet]);
+
+    useEffect(() => {
+        if (!sessionReady || targetServices.length === 0) {
+            return;
+        }
+
+        writeRebootMonitorSession({
+            targetServices,
+            returnTo,
+            targetKey,
+            phase,
+            phaseDetail,
+            currentIndex,
+            pageError,
+            lastReachableAt,
+            stableSuccessCount,
+            serviceStates,
+            monitorStartedAt: monitorStartedAtRef.current,
+            updatedAt: Date.now(),
+        });
+    }, [
+        currentIndex,
+        lastReachableAt,
+        pageError,
+        phase,
+        phaseDetail,
+        returnTo,
+        serviceStates,
+        stableSuccessCount,
+        targetKey,
+        targetServices,
+        sessionReady,
+    ]);
 
     const probeNowRef = useRef<() => Promise<boolean>>(async () => false);
     probeNowRef.current = async () => {
@@ -499,12 +568,17 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                         const res = await fetch(`/api/noona/services/${encodeURIComponent(service)}/health`, {cache: "no-store"});
                         const json = (await res.json().catch(() => null)) as ServiceHealthResponse | null;
                         if (!res.ok) {
+                            const supported = typeof json?.supported === "boolean"
+                                ? json.supported
+                                : res.status !== 404;
                             return {
                                 service,
                                 success: false,
-                                supported: true,
-                                detail: parseApiError(json, `Health check failed (HTTP ${res.status}).`),
-                                status: `HTTP ${res.status}`,
+                                supported,
+                                detail: supported
+                                    ? parseApiError(json, `Health check failed (HTTP ${res.status}).`)
+                                    : "No health endpoint is defined for this service.",
+                                status: supported ? `HTTP ${res.status}` : "Not supported",
                             };
                         }
 
@@ -680,6 +754,12 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
         if (targetServices.length === 0 || startedRef.current) {
             return;
         }
+        if (currentIndexRef.current >= targetServices.length || phaseRef.current === "complete" || phaseRef.current === "failed") {
+            return;
+        }
+        if (phaseRef.current === "waiting") {
+            return;
+        }
         startedRef.current = true;
         void runUpdateQueueRef.current();
     }, [targetServices]);
@@ -700,15 +780,16 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                 setPhaseState("failed", "Timed out waiting for Noona to stabilize.");
                 return;
             }
+            if (phaseRef.current === "complete" || phaseRef.current === "failed") {
+                return;
+            }
 
             const reachable = await probeNowRef.current();
             if (cancelled) return;
 
             if (!reachable) {
-                if (phaseRef.current !== "complete" && phaseRef.current !== "failed") {
-                    setStableState(0);
-                    setPhaseState("waiting", "Lost contact with Moon. Waiting for the web UI to return...");
-                }
+                setStableState(0);
+                setPhaseState("waiting", "Lost contact with Moon. Waiting for the web UI to return...");
             } else {
                 const states = serviceStatesRef.current;
                 const queueComplete = currentIndexRef.current >= targetServices.length;
@@ -736,9 +817,7 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                     }
                 } else {
                     setStableState(0);
-                    if (phaseRef.current !== "complete" && phaseRef.current !== "failed") {
-                        setPhaseState("verifying", "Waiting for services to report healthy...");
-                    }
+                    setPhaseState("verifying", "Waiting for services to report healthy...");
                 }
             }
 
@@ -967,7 +1046,13 @@ export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps
                         )}
 
                         <Row gap="12" className={styles.actionRow}>
-                            <Button variant="secondary" onClick={() => window.location.assign(returnTo)}>
+                            <Button
+                                variant="secondary"
+                                onClick={() => {
+                                    clearRebootMonitorSession();
+                                    window.location.assign(returnTo);
+                                }}
+                            >
                                 Back to settings
                             </Button>
                             <Button variant="secondary" onClick={() => window.location.reload()}>

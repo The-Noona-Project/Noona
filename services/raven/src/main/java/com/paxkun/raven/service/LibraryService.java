@@ -1,6 +1,7 @@
 package com.paxkun.raven.service;
 
 import com.google.gson.reflect.TypeToken;
+import com.paxkun.raven.service.download.DownloadProgress;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import lombok.RequiredArgsConstructor;
@@ -41,18 +42,42 @@ public class LibraryService {
     public void addOrUpdateTitle(NewTitle title, NewChapter chapter) {
         Map<String, Object> query = Map.of("uuid", title.getUuid());
         String now = ISO_FORMATTER.format(Instant.now());
+        String effectiveLastDownloaded = normalizeChapterNumber(Optional.ofNullable(title.getLastDownloaded()).orElse("0"));
+        String chapterNumber = normalizeChapterNumber(chapter != null ? chapter.getChapter() : null);
+        if (chapterNumber != null && !chapterNumber.isBlank()) {
+            if (effectiveLastDownloaded == null || effectiveLastDownloaded.isBlank() || compareChapterNumbers(chapterNumber, effectiveLastDownloaded) > 0) {
+                effectiveLastDownloaded = chapterNumber;
+            }
+        }
+        if (effectiveLastDownloaded == null || effectiveLastDownloaded.isBlank()) {
+            effectiveLastDownloaded = "0";
+        }
+
+        List<String> downloadedChapterNumbers = mergeDownloadedChapterNumbers(
+                title.getDownloadedChapterNumbers(),
+                chapterNumber
+        );
+        title.setDownloadedChapterNumbers(downloadedChapterNumbers);
+        title.setLastDownloaded(effectiveLastDownloaded);
 
         Map<String, Object> set = new HashMap<>();
         set.put("uuid", title.getUuid());
         set.put("title", title.getTitleName());
         set.put("sourceUrl", title.getSourceUrl());
-        set.put("lastDownloaded", chapter.getChapter());
+        set.put("lastDownloaded", effectiveLastDownloaded);
         set.put("lastDownloadedAt", now);
 
         if (title.getChapterCount() != null) {
             set.put("chapterCount", title.getChapterCount());
         }
 
+        if (!downloadedChapterNumbers.isEmpty()) {
+            set.put("downloadedChapterNumbers", downloadedChapterNumbers);
+        }
+
+        if (title.getChaptersDownloaded() == null && !downloadedChapterNumbers.isEmpty()) {
+            title.setChaptersDownloaded(downloadedChapterNumbers.size());
+        }
         if (title.getChaptersDownloaded() != null) {
             set.put("chaptersDownloaded", title.getChaptersDownloaded());
         }
@@ -85,7 +110,7 @@ public class LibraryService {
         Map<String, Object> update = Map.of("$set", set);
 
         vaultService.update(COLLECTION, query, update, true);
-        logger.info("LIBRARY", "Updated title [" + title.getTitleName() + "] to chapter " + chapter.getChapter());
+        logger.info("LIBRARY", "Updated title [" + title.getTitleName() + "] to chapter " + effectiveLastDownloaded);
     }
 
     public List<NewTitle> getAllTitleObjects() {
@@ -122,7 +147,7 @@ public class LibraryService {
         return vaultService.parseJson(doc, NewTitle.class);
     }
 
-    public NewTitle updateTitle(String uuid, String titleName, String sourceUrl) {
+    public NewTitle updateTitle(String uuid, String titleName, String sourceUrl, String coverUrl) {
         NewTitle existing = getTitleByUuid(uuid);
         if (existing == null) {
             return null;
@@ -134,6 +159,10 @@ public class LibraryService {
 
         if (sourceUrl != null && !sourceUrl.isBlank()) {
             existing.setSourceUrl(sourceUrl);
+        }
+
+        if (coverUrl != null && !coverUrl.isBlank()) {
+            existing.setCoverUrl(coverUrl);
         }
 
         String chapter = Optional.ofNullable(existing.getLastDownloaded()).orElse("0");
@@ -412,7 +441,7 @@ public class LibraryService {
             return matcher.group(1);
         }
 
-        matcher = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(chapterTitle);
+        matcher = Pattern.compile("(\\d+(\\.\\d+)?)\\s*(?:\\[[^\\]]*\\])?(?:\\.cbz)?$", Pattern.CASE_INSENSITIVE).matcher(chapterTitle);
         if (matcher.find()) {
             return matcher.group(1);
         }
@@ -431,6 +460,27 @@ public class LibraryService {
         }
 
         return normalizeChapterNumber(extractChapterNumberFromTitle(chapter.get("chapter_title")));
+    }
+
+    private List<String> mergeDownloadedChapterNumbers(List<String> existing, String nextChapter) {
+        LinkedHashSet<String> chapters = new LinkedHashSet<>();
+        if (existing != null) {
+            for (String chapterNumber : existing) {
+                String normalized = normalizeChapterNumber(chapterNumber);
+                if (normalized != null && !normalized.isBlank() && !"0".equals(normalized)) {
+                    chapters.add(normalized);
+                }
+            }
+        }
+
+        String normalizedNext = normalizeChapterNumber(nextChapter);
+        if (normalizedNext != null && !normalizedNext.isBlank() && !"0".equals(normalizedNext)) {
+            chapters.add(normalizedNext);
+        }
+
+        List<String> sorted = new ArrayList<>(chapters);
+        sorted.sort(this::compareChapterNumbers);
+        return sorted;
     }
 
     private String normalizeChapterNumber(String chapter) {
@@ -509,6 +559,19 @@ public class LibraryService {
     }
 
     private Set<String> extractDownloadedChapterNumbers(NewTitle title) {
+        if (title != null && title.getDownloadedChapterNumbers() != null && !title.getDownloadedChapterNumbers().isEmpty()) {
+            Set<String> indexed = new LinkedHashSet<>();
+            for (String chapterNumber : title.getDownloadedChapterNumbers()) {
+                String normalized = normalizeChapterNumber(chapterNumber);
+                if (normalized != null && !normalized.isBlank() && !"0".equals(normalized)) {
+                    indexed.add(normalized);
+                }
+            }
+            if (!indexed.isEmpty()) {
+                return indexed;
+            }
+        }
+
         String downloadPath = resolveTitleFolderPath(title);
         if (downloadPath == null || downloadPath.isBlank()) {
             return Set.of();
@@ -562,6 +625,8 @@ public class LibraryService {
         String latestChapter = resolveLatestChapterNumber(chapters);
         Set<String> downloadedChapters = extractDownloadedChapterNumbers(title);
         boolean hasDownloadedIndex = !downloadedChapters.isEmpty();
+        title.setDownloadedChapterNumbers(new ArrayList<>(downloadedChapters));
+        title.setChaptersDownloaded(downloadedChapters.size());
 
         Set<String> newQueue = new LinkedHashSet<>();
         Set<String> missingQueue = new LinkedHashSet<>();
@@ -592,6 +657,8 @@ public class LibraryService {
                 previousLastDownloaded,
                 latestChapter,
                 queuedChapters,
+                new ArrayList<>(newQueue),
+                new ArrayList<>(missingQueue),
                 newQueue.size(),
                 missingQueue.size(),
                 chapters.size()
@@ -611,6 +678,9 @@ public class LibraryService {
                     0,
                     0,
                     0,
+                    List.of(),
+                    List.of(),
+                    List.of(),
                     List.of(),
                     "Unable to sync an empty title."
             );
@@ -637,7 +707,30 @@ public class LibraryService {
                     0,
                     0,
                     List.of(),
+                    List.of(),
+                    List.of(),
+                    Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()),
                     "Title has no source URL configured."
+            );
+        }
+
+        if (downloadService.isTaskActive(titleName)) {
+            return new TitleSyncResult(
+                    uuid,
+                    titleName,
+                    "skipped",
+                    currentLastDownloaded,
+                    currentLastDownloaded,
+                    currentLastDownloaded,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()),
+                    "This title already has an active Raven task."
             );
         }
 
@@ -656,41 +749,90 @@ public class LibraryService {
                         0,
                         0,
                         List.of(),
+                        List.of(),
+                        List.of(),
+                        Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()),
                         "No chapters were returned by the source."
                 );
             }
 
             TitleSyncComputation plan = computeTitleSync(title, chapters);
             String nextLastDownloaded = plan.previousLastDownloaded();
+            List<String> downloadedDuringSync = new ArrayList<>();
+            List<String> failedChapters = new ArrayList<>();
+            DownloadProgress trackedTask = null;
 
             if (!plan.queuedChapters().isEmpty()) {
-                String latestSuccessfulChapter = null;
-                for (String chapter : plan.queuedChapters()) {
-                    if (!downloadService.downloadSingleChapter(title, chapter)) {
-                        continue;
+                trackedTask = downloadService.startTrackedTask(
+                        title,
+                        "title-sync",
+                        plan.queuedChapters(),
+                        plan.newChapterNumbers(),
+                        plan.missingChapterNumbers(),
+                        plan.latestChapter(),
+                        plan.sourceChapterCount(),
+                        buildTitleSyncMessage(plan.queuedChapters().size(), plan.newQueuedCount(), plan.missingQueuedCount())
+                );
+                try {
+                    String latestSuccessfulChapter = null;
+                    for (String chapter : plan.queuedChapters()) {
+                        if (!downloadService.downloadSingleChapter(title, chapter, trackedTask)) {
+                            failedChapters.add(chapter);
+                            continue;
+                        }
+
+                        downloadedDuringSync.add(chapter);
+                        if (latestSuccessfulChapter == null || compareChapterNumbers(chapter, latestSuccessfulChapter) > 0) {
+                            latestSuccessfulChapter = chapter;
+                        }
+
+                        if (compareChapterNumbers(chapter, nextLastDownloaded) > 0) {
+                            nextLastDownloaded = chapter;
+                        }
+
+                        title.setLastDownloaded(nextLastDownloaded);
+                        title.setDownloadedChapterNumbers(mergeDownloadedChapterNumbers(title.getDownloadedChapterNumbers(), chapter));
+                        title.setChaptersDownloaded(Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()).size());
+                        addOrUpdateTitle(title, new NewChapter(chapter));
                     }
 
-                    if (latestSuccessfulChapter == null || compareChapterNumbers(chapter, latestSuccessfulChapter) > 0) {
-                        latestSuccessfulChapter = chapter;
+                    if (latestSuccessfulChapter != null) {
+                        scanKavitaLibraryForType(title.getType());
                     }
-                }
 
-                if (latestSuccessfulChapter != null && compareChapterNumbers(latestSuccessfulChapter, nextLastDownloaded) > 0) {
-                    nextLastDownloaded = latestSuccessfulChapter;
-                }
-
-                if (latestSuccessfulChapter != null) {
-                    scanKavitaLibraryForType(title.getType());
+                    if (failedChapters.isEmpty()) {
+                        trackedTask.setMessage("Title sync completed.");
+                        trackedTask.markCompleted();
+                    } else {
+                        trackedTask.markInterrupted("Title sync paused with pending chapters: " + String.join(", ", failedChapters));
+                    }
+                    downloadService.updateTrackedTask(trackedTask);
+                } finally {
+                    downloadService.finalizeTrackedTask(titleName, trackedTask);
                 }
             }
 
             title.setChapterCount(plan.sourceChapterCount());
             title.setLastDownloaded(nextLastDownloaded);
+            title.setDownloadedChapterNumbers(mergeDownloadedChapterNumbers(title.getDownloadedChapterNumbers(), null));
+            title.setChaptersDownloaded(Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()).size());
             addOrUpdateTitle(title, new NewChapter(nextLastDownloaded));
 
             int totalQueued = plan.queuedChapters().size();
-            String status = totalQueued > 0 ? "updated" : "up-to-date";
+            String status;
+            if (totalQueued <= 0) {
+                status = "up-to-date";
+            } else if (!failedChapters.isEmpty() && !downloadedDuringSync.isEmpty()) {
+                status = "partial";
+            } else if (!failedChapters.isEmpty()) {
+                status = "interrupted";
+            } else {
+                status = "updated";
+            }
             String message = buildTitleSyncMessage(totalQueued, plan.newQueuedCount(), plan.missingQueuedCount());
+            if (!failedChapters.isEmpty()) {
+                message = message + " Pending retry: " + String.join(", ", failedChapters) + ".";
+            }
 
             return new TitleSyncResult(
                     uuid,
@@ -704,6 +846,9 @@ public class LibraryService {
                     plan.newQueuedCount(),
                     plan.missingQueuedCount(),
                     plan.queuedChapters(),
+                    plan.newChapterNumbers(),
+                    plan.missingChapterNumbers(),
+                    Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()),
                     message
             );
         } catch (Exception e) {
@@ -720,6 +865,9 @@ public class LibraryService {
                     0,
                     0,
                     List.of(),
+                    List.of(),
+                    List.of(),
+                    Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()),
                     "Unable to check this title: " + e.getMessage()
             );
         }
@@ -817,6 +965,8 @@ public class LibraryService {
             String previousLastDownloaded,
             String latestChapter,
             List<String> queuedChapters,
+            List<String> newChapterNumbers,
+            List<String> missingChapterNumbers,
             int newQueuedCount,
             int missingQueuedCount,
             int sourceChapterCount
@@ -835,6 +985,9 @@ public class LibraryService {
             int newChaptersQueued,
             int missingChaptersQueued,
             List<String> queuedChapters,
+            List<String> newChapterNumbers,
+            List<String> missingChapterNumbers,
+            List<String> downloadedChapterNumbers,
             String message
     ) {
     }

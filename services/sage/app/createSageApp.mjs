@@ -7,6 +7,7 @@ import express from 'express'
 import {debugMSG, errMSG, isDebugEnabled, log, setDebug} from '../../../utilities/etc/logger.mjs'
 import {createDiscordSetupClient} from '../clients/discordSetupClient.mjs'
 import {createManagedKavitaSetupClient} from '../clients/managedKavitaSetupClient.mjs'
+import {createPortalClient} from '../clients/portalClient.mjs'
 import {createRavenClient} from '../clients/ravenClient.mjs'
 import {createVaultPacketClient, isVaultClientErrorStatus} from '../clients/vaultPacketClient.mjs'
 import {createWizardStateClient} from '../wizard/wizardStateClient.mjs'
@@ -193,8 +194,10 @@ export const createSageApp = ({
                                   setupClient: setupClientOverride,
                                   discordSetupClient: discordSetupClientOverride,
                                   managedKavitaSetupClient: managedKavitaSetupClientOverride,
+                                  portalClient: portalClientOverride,
                                   ravenClient: ravenClientOverride,
                                   setup: setupOptions = {},
+                                  portal: portalOptions = {},
                                   raven: ravenOptions = {},
                                   wizardStateClient: wizardStateClientOverride,
                                   wizard: wizardOptions = {},
@@ -225,6 +228,18 @@ export const createSageApp = ({
         createManagedKavitaSetupClient({
             logger,
             serviceName,
+        })
+    const portalClient =
+        portalClientOverride ||
+        createPortalClient({
+            serviceName,
+            logger,
+            setupClient,
+            baseUrl: portalOptions.baseUrl,
+            baseUrls: portalOptions.baseUrls ?? [],
+            timeoutMs: portalOptions.timeoutMs,
+            fetchImpl: portalOptions.fetchImpl ?? portalOptions.fetch ?? fetch,
+            env: portalOptions.env ?? process.env,
         })
     const ravenClient =
         ravenClientOverride ||
@@ -444,13 +459,31 @@ export const createSageApp = ({
     })
     const DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY = 'auth.default_member_permissions'
     const DOWNLOAD_WORKER_SETTINGS_KEY = 'downloads.workers'
+    const DOWNLOAD_VPN_SETTINGS_KEY = 'downloads.vpn'
     const DISCORD_AUTH_SETTINGS_KEY = 'auth.discord'
-    const DISCORD_CALLBACK_PATH = '/discord/callback/'
+    const DISCORD_CALLBACK_PATH = '/discord/callback'
     const LOCAL_AUTH_PROVIDER = 'local'
     const DISCORD_AUTH_PROVIDER = 'discord'
     const USER_DISPLAY_NAME_MAX_LENGTH = 80
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeAbsoluteHttpUrl = (value) => {
+        const normalized = normalizeString(value)
+        if (!normalized) {
+            return ''
+        }
+
+        try {
+            const parsed = new URL(normalized)
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                return ''
+            }
+
+            return parsed.toString()
+        } catch {
+            return ''
+        }
+    }
     const normalizeUsername = (value) => normalizeString(value)
     const normalizeUsernameKey = (value) => normalizeUsername(value).toLowerCase()
     const normalizeRole = (value, fallback = 'member') => {
@@ -603,11 +636,20 @@ export const createSageApp = ({
         lookup_new_title: 'library_management',
         download_new_title: 'download_management',
         check_download_missing_titles: 'download_management',
+        mysubscriptions: 'mySubscriptions',
+        myrecommendations: 'myRecommendations',
+        managerecommendations: 'manageRecommendations',
+        my_subscriptions: 'mySubscriptions',
+        my_recommendations: 'myRecommendations',
+        manage_recommendations: 'manageRecommendations',
     })
     const SUPPORTED_MOON_PERMISSION_KEYS = Object.freeze([
         'moon_login',
         'library_management',
         'download_management',
+        'mySubscriptions',
+        'myRecommendations',
+        'manageRecommendations',
         'user_management',
         'admin',
         ...Object.keys(LEGACY_MOON_PERMISSION_ALIASES),
@@ -616,6 +658,9 @@ export const createSageApp = ({
         'moon_login',
         'library_management',
         'download_management',
+        'mySubscriptions',
+        'myRecommendations',
+        'manageRecommendations',
         'user_management',
         'admin',
     ])
@@ -624,6 +669,8 @@ export const createSageApp = ({
         'moon_login',
         'library_management',
         'download_management',
+        'mySubscriptions',
+        'myRecommendations',
     ])
     const DEFAULT_MEMBER_PERMISSIONS_SETTINGS = Object.freeze({
         key: DEFAULT_MEMBER_PERMISSIONS_SETTINGS_KEY,
@@ -632,6 +679,16 @@ export const createSageApp = ({
     const DEFAULT_DOWNLOAD_WORKER_SETTINGS = Object.freeze({
         key: DOWNLOAD_WORKER_SETTINGS_KEY,
         threadRateLimitsKbps: [],
+    })
+    const DEFAULT_DOWNLOAD_VPN_SETTINGS = Object.freeze({
+        key: DOWNLOAD_VPN_SETTINGS_KEY,
+        provider: 'pia',
+        enabled: false,
+        autoRotate: true,
+        rotateEveryMinutes: 30,
+        region: 'us_california',
+        piaUsername: '',
+        piaPassword: '',
     })
     const UNLIMITED_THREAD_RATE_LIMIT_KBPS = -1
     const MAX_THREAD_RATE_LIMIT_KBPS = 2_147_483_647
@@ -649,6 +706,13 @@ export const createSageApp = ({
         return MOON_OP_PERMISSION_KEYS.filter((entry) => present.has(entry))
     }
     const normalizePermissionEntry = (value) => normalizeString(value).toLowerCase()
+    const applyPermissionDependencies = (permissions = []) => {
+        const next = new Set(Array.isArray(permissions) ? permissions : [])
+        if (next.has('manageRecommendations')) {
+            next.add('myRecommendations')
+        }
+        return Array.from(next)
+    }
     const normalizePermissionKey = (value) => {
         const key = normalizePermissionEntry(value)
         if (!key || !MOON_OP_PERMISSION_SET.has(key)) {
@@ -671,7 +735,7 @@ export const createSageApp = ({
             normalized.push(key)
         }
 
-        return sortMoonPermissions(Array.from(new Set(normalized)))
+        return sortMoonPermissions(applyPermissionDependencies(Array.from(new Set(normalized))))
     }
     const validatePermissionListInput = (value) => {
         if (!Array.isArray(value)) {
@@ -692,13 +756,15 @@ export const createSageApp = ({
 
         return {
             ok: true,
-            permissions: sortMoonPermissions(Array.from(new Set(normalized))),
+            permissions: sortMoonPermissions(applyPermissionDependencies(Array.from(new Set(normalized)))),
         }
     }
     const normalizeDefaultMemberPermissions = (value) => {
         const normalized = normalizePermissionList(value)
         const next = new Set(normalized)
         next.add('moon_login')
+        next.add('mySubscriptions')
+        next.add('myRecommendations')
         return sortMoonPermissions(Array.from(next))
     }
     const parseThreadRateLimitEntry = (value, {strict = false} = {}) => {
@@ -780,6 +846,37 @@ export const createSageApp = ({
         }
 
         return {ok: true, threadRateLimitsKbps: normalized}
+    }
+    const normalizeVpnProvider = (value) => {
+        const normalized = normalizeString(value).toLowerCase()
+        return normalized || DEFAULT_DOWNLOAD_VPN_SETTINGS.provider
+    }
+    const normalizeVpnRegion = (value) => {
+        const normalized = normalizeString(value).toLowerCase()
+        return normalized || DEFAULT_DOWNLOAD_VPN_SETTINGS.region
+    }
+    const normalizeVpnRotateEveryMinutes = (value, fallback = DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes) => {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed)) {
+            return Math.max(1, Math.min(1440, Math.floor(fallback)))
+        }
+        return Math.max(1, Math.min(1440, Math.floor(parsed)))
+    }
+    const sanitizeDownloadVpnSettingsForResponse = (settings = {}) => {
+        const password = normalizeString(settings?.piaPassword)
+        const maskedPassword = password ? '********' : ''
+        return {
+            key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
+            provider: normalizeVpnProvider(settings?.provider),
+            enabled: parseBooleanInput(settings?.enabled) === true,
+            autoRotate: parseBooleanInput(settings?.autoRotate) !== false,
+            rotateEveryMinutes: normalizeVpnRotateEveryMinutes(settings?.rotateEveryMinutes),
+            region: normalizeVpnRegion(settings?.region),
+            piaUsername: normalizeString(settings?.piaUsername),
+            piaPassword: maskedPassword,
+            passwordConfigured: Boolean(password),
+            updatedAt: normalizeString(settings?.updatedAt) || null,
+        }
     }
     const defaultPermissionsForRole = (role) =>
         normalizeRole(role, 'member') === 'admin'
@@ -875,11 +972,18 @@ export const createSageApp = ({
         }
         return normalizeUsernameKey(user?.username)
     }
-    const buildAuthUserLookupQuery = (user, fallbackLookupKey = '') => {
-        if (user && Object.prototype.hasOwnProperty.call(user, '_id')) {
-            return {_id: user._id}
+    const hasUsableMongoId = (value) => {
+        if (!value || typeof value !== 'object') {
+            return false
         }
 
+        if (typeof value.toHexString === 'function') {
+            return true
+        }
+
+        return normalizeString(value?._bsontype).toLowerCase() === 'objectid'
+    }
+    const buildAuthUserLookupQuery = (user, fallbackLookupKey = '') => {
         const storedLookupKey = normalizeUsernameKey(user?.usernameNormalized)
         if (storedLookupKey) {
             return {usernameNormalized: storedLookupKey}
@@ -893,6 +997,10 @@ export const createSageApp = ({
         const fallbackLookup = normalizeUsernameKey(fallbackLookupKey)
         if (fallbackLookup) {
             return {usernameNormalized: fallbackLookup}
+        }
+
+        if (user && Object.prototype.hasOwnProperty.call(user, '_id') && hasUsableMongoId(user._id)) {
+            return {_id: user._id}
         }
 
         return null
@@ -1736,12 +1844,27 @@ export const createSageApp = ({
             lastTestedUser: snapshot,
         }
     }
-    const buildOauthRedirectTarget = (value, fallback = '/') => {
+    const buildOauthRedirectTarget = (value, fallback = '/', allowedOrigin = '') => {
         const normalized = normalizeString(value)
-        if (!normalized.startsWith('/')) {
+        if (normalized.startsWith('/')) {
+            return normalized
+        }
+
+        const absoluteTarget = normalizeAbsoluteHttpUrl(normalized)
+        if (!absoluteTarget || !allowedOrigin) {
             return fallback
         }
-        return normalized
+
+        try {
+            const parsed = new URL(absoluteTarget)
+            if (parsed.origin !== allowedOrigin) {
+                return fallback
+            }
+
+            return parsed.toString()
+        } catch {
+            return fallback
+        }
     }
     const fetchDiscordJson = async (url, init = {}, {expectFormError = false} = {}) => {
         const response = await discordOauthFetch(url, init)
@@ -1885,6 +2008,30 @@ export const createSageApp = ({
                 {upsert: true},
             )
         }
+
+        const existingDownloadVpnSettings = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
+        })
+        if (!existingDownloadVpnSettings) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key},
+                {
+                    $set: {
+                        ...DEFAULT_DOWNLOAD_VPN_SETTINGS,
+                        provider: normalizeVpnProvider(DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
+                        enabled: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.enabled) === true,
+                        autoRotate: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.autoRotate) !== false,
+                        rotateEveryMinutes: normalizeVpnRotateEveryMinutes(DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes),
+                        region: normalizeVpnRegion(DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
+                        piaUsername: normalizeString(DEFAULT_DOWNLOAD_VPN_SETTINGS.piaUsername),
+                        piaPassword: normalizeString(DEFAULT_DOWNLOAD_VPN_SETTINGS.piaPassword),
+                        updatedAt: timestamp,
+                    },
+                },
+                {upsert: true},
+            )
+        }
     }
     const readDefaultMemberPermissions = async () => {
         if (!vaultClient?.mongo?.findOne) {
@@ -1975,6 +2122,107 @@ export const createSageApp = ({
             threadRateLimitsKbps: nextThreadRateLimitsKbps,
             updatedAt,
         }
+    }
+    const readDownloadVpnSettings = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                ...DEFAULT_DOWNLOAD_VPN_SETTINGS,
+                provider: normalizeVpnProvider(DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
+                enabled: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.enabled) === true,
+                autoRotate: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.autoRotate) !== false,
+                rotateEveryMinutes: normalizeVpnRotateEveryMinutes(DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes),
+                region: normalizeVpnRegion(DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
+                piaUsername: normalizeString(DEFAULT_DOWNLOAD_VPN_SETTINGS.piaUsername),
+                piaPassword: normalizeString(DEFAULT_DOWNLOAD_VPN_SETTINGS.piaPassword),
+                updatedAt: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
+        })
+
+        return {
+            key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
+            provider: normalizeVpnProvider(doc?.provider ?? DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
+            enabled: parseBooleanInput(doc?.enabled) === true,
+            autoRotate: parseBooleanInput(doc?.autoRotate) !== false,
+            rotateEveryMinutes: normalizeVpnRotateEveryMinutes(
+                doc?.rotateEveryMinutes,
+                DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes,
+            ),
+            region: normalizeVpnRegion(doc?.region ?? DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
+            piaUsername: normalizeString(doc?.piaUsername),
+            piaPassword: normalizeString(doc?.piaPassword),
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+        }
+    }
+    const writeDownloadVpnSettings = async (payload = {}) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        const current = await readDownloadVpnSettings()
+        const nextEnabled = (() => {
+            const parsed = parseBooleanInput(payload?.enabled)
+            return parsed == null ? current.enabled : parsed
+        })()
+        const nextAutoRotate = (() => {
+            const parsed = parseBooleanInput(payload?.autoRotate)
+            return parsed == null ? current.autoRotate : parsed
+        })()
+        const nextProvider = normalizeVpnProvider(payload?.provider ?? current.provider)
+        const nextRegion = normalizeVpnRegion(payload?.region ?? current.region)
+        const nextRotateEveryMinutes = normalizeVpnRotateEveryMinutes(
+            payload?.rotateEveryMinutes,
+            current.rotateEveryMinutes,
+        )
+        const nextPiaUsername = (() => {
+            if (typeof payload?.piaUsername === 'string') {
+                return normalizeString(payload.piaUsername)
+            }
+            return normalizeString(current.piaUsername)
+        })()
+        const shouldClearPassword = parseBooleanInput(payload?.clearPiaPassword) === true
+        const nextPiaPassword = (() => {
+            if (shouldClearPassword) {
+                return ''
+            }
+            if (typeof payload?.piaPassword === 'string') {
+                const candidate = normalizeString(payload.piaPassword)
+                if (!candidate || candidate === '********') {
+                    return normalizeString(current.piaPassword)
+                }
+                return candidate
+            }
+            return normalizeString(current.piaPassword)
+        })()
+
+        if (nextEnabled && (!nextPiaUsername || !nextPiaPassword)) {
+            throw new Error('PIA username and password are required when VPN is enabled.')
+        }
+
+        const updatedAt = new Date().toISOString()
+        const next = {
+            key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
+            provider: nextProvider,
+            enabled: nextEnabled,
+            autoRotate: nextAutoRotate,
+            rotateEveryMinutes: nextRotateEveryMinutes,
+            region: nextRegion,
+            piaUsername: nextPiaUsername,
+            piaPassword: nextPiaPassword,
+            updatedAt,
+        }
+
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key},
+            {$set: next},
+            {upsert: true},
+        )
+
+        return next
     }
     const readDebugSetting = async () => {
         if (!vaultClient?.mongo?.findOne) {
@@ -2088,6 +2336,42 @@ export const createSageApp = ({
     const verifyFactoryResetSelections = ({result, deleteRavenDownloads, deleteDockers}) => {
         const failures = []
 
+        if (!result?.bootPersistence || typeof result.bootPersistence !== 'object') {
+            failures.push('Warden did not report boot-state cleanup.')
+        } else {
+            if (result.bootPersistence?.setupConfig?.deleted !== true) {
+                const details = Array.isArray(result.bootPersistence?.setupConfig?.entries)
+                    ? result.bootPersistence.setupConfig.entries
+                        .filter((entry) => entry?.deleted !== true)
+                        .map((entry) => {
+                            const target = normalizeString(entry?.path).trim() || 'unknown-setup-snapshot'
+                            const reason = normalizeString(entry?.reason).trim() || 'unknown error'
+                            return `${target}: ${reason}`
+                        })
+                        .join(' | ')
+                    : ''
+                failures.push(
+                    details
+                        ? `Warden setup snapshot cleanup failed (${details}).`
+                        : 'Warden setup snapshot cleanup did not report success.',
+                )
+            }
+
+            if (result.bootPersistence?.runtimeConfig?.deleted !== true) {
+                const target = normalizeString(result.bootPersistence?.runtimeConfig?.path).trim() || 'unknown-runtime-snapshot'
+                const reason = normalizeString(result.bootPersistence?.runtimeConfig?.reason).trim() || 'unknown error'
+                failures.push(`Warden runtime config snapshot cleanup failed (${target}: ${reason}).`)
+            }
+
+            if (result.bootPersistence?.runtimeOverridesCleared !== true) {
+                failures.push('Warden runtime override cache was not cleared.')
+            }
+
+            if (result.bootPersistence?.wizardStateCleared !== true) {
+                failures.push('Warden wizard-state cache was not cleared.')
+            }
+        }
+
         if (deleteRavenDownloads) {
             if (result?.ravenDownloads?.requested !== true) {
                 failures.push('Raven download cleanup was not requested by Warden.')
@@ -2155,6 +2439,45 @@ export const createSageApp = ({
 
         const authenticated = await authenticateAuthUser({username, password})
         return authenticated?.authenticated === true
+    }
+    const resolveDangerousActionConfirmation = (session = {}) => {
+        const authProvider = resolveStoredAuthProvider(session, LOCAL_AUTH_PROVIDER)
+        if (authProvider === DISCORD_AUTH_PROVIDER) {
+            const expectedValues = Array.from(new Set([
+                normalizeString(session?.username).trim(),
+                normalizeString(session?.discordGlobalName).trim(),
+                normalizeString(session?.discordUsername).trim(),
+                normalizeString(session?.lookupKey).trim(),
+                normalizeString(session?.usernameNormalized).trim(),
+            ].filter(Boolean)))
+
+            return {
+                authProvider,
+                mode: 'identity',
+                expectedValues,
+            }
+        }
+
+        return {
+            authProvider,
+            mode: 'password',
+            expectedValues: [],
+        }
+    }
+    const verifyDangerousActionConfirmation = async ({session, confirmation}) => {
+        const requirement = resolveDangerousActionConfirmation(session)
+        if (requirement.mode === 'password') {
+            return verifySessionPassword({session, password: confirmation})
+        }
+
+        const normalizedConfirmation = normalizeString(confirmation).trim().toLowerCase()
+        if (!normalizedConfirmation) {
+            return false
+        }
+
+        return requirement.expectedValues.some(
+            (entry) => normalizeString(entry).trim().toLowerCase() === normalizedConfirmation,
+        )
     }
     const writeAdminToVault = async ({username, password}) => {
         if (!hasVaultUserApi()) {
@@ -2539,6 +2862,7 @@ export const createSageApp = ({
         createSessionToken,
         defaultPermissionsForRole,
         DEFAULT_DOWNLOAD_WORKER_SETTINGS,
+        DEFAULT_DOWNLOAD_VPN_SETTINGS,
         DEFAULT_MEMBER_PERMISSIONS_SETTINGS,
         DEFAULT_NAMING_SETTINGS,
         deleteAuthUser,
@@ -2563,6 +2887,7 @@ export const createSageApp = ({
         logger,
         markDiscordAuthConfigTested,
         managedKavitaSetupClient,
+        portalClient,
         MOON_OP_PERMISSION_KEYS,
         normalizeHistoryLimit,
         normalizeRole,
@@ -2580,6 +2905,7 @@ export const createSageApp = ({
         readDefaultMemberPermissions,
         readDebugSetting,
         readDownloadWorkerSettings,
+        readDownloadVpnSettings,
         readDiscordAuthConfig,
         readVerificationSummary,
         requireAdminSession,
@@ -2587,6 +2913,7 @@ export const createSageApp = ({
         requirePermissionSession,
         requireSession,
         requireSessionIfSetupCompleted,
+        resolveDangerousActionConfirmation,
         resolveBaseRedirectUrl,
         resolveProtectedBootstrapLookupKey,
         resolveStoredAuthProvider,
@@ -2594,6 +2921,7 @@ export const createSageApp = ({
         resolveWizardStepKey,
         saveDiscordAuthConfig,
         selectPrimaryAdmin,
+        sanitizeDownloadVpnSettingsForResponse,
         serviceName,
         sessionTtlSeconds,
         setPendingAdminCredentials,
@@ -2608,12 +2936,14 @@ export const createSageApp = ({
         vaultErrorMessage,
         vaultErrorStatus,
         VERIFICATION_SERVICES,
+        verifyDangerousActionConfirmation,
         verifyFactoryResetSelections,
         verifySessionPassword,
         wizardMetadata,
         wizardStateClient,
         writeDefaultMemberPermissions,
         writeDownloadWorkerSettings,
+        writeDownloadVpnSettings,
         writeDiscordAdminToVault,
         writeOauthState,
         writeSession,
@@ -2634,8 +2964,10 @@ export const startSage = ({
                               setupClient,
                               discordSetupClient,
                               managedKavitaSetupClient,
+                              portalClient,
                               ravenClient,
                               setup,
+                              portal,
                               raven,
                               wizard,
                               wizardStateClient,
@@ -2651,8 +2983,10 @@ export const startSage = ({
         setupClient,
         discordSetupClient,
         managedKavitaSetupClient,
+        portalClient,
         ravenClient,
         setup,
+        portal,
         raven,
         wizard,
         wizardStateClient,

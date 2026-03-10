@@ -1,3 +1,4 @@
+import {Suspense} from "react";
 import {Meta} from "@once-ui-system/core";
 import {LoginPage} from "@/components/noona/LoginPage";
 import {resolveMoonBaseUrl} from "@/utils/webGui";
@@ -13,5 +14,9 @@ export async function generateMetadata() {
 }
 
 export default function Login() {
-    return <LoginPage/>;
+    return (
+        <Suspense fallback={null}>
+            <LoginPage/>
+        </Suspense>
+    );
 }
