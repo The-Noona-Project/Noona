@@ -1,5 +1,5 @@
 import {NextRequest, NextResponse} from "next/server";
-import {jsonError, sageJson, wardenJson} from "../_backend";
+import {jsonError, sageJson} from "../_backend";
 
 export const dynamic = "force-dynamic";
 
@@ -23,20 +23,12 @@ export async function POST(request: NextRequest) {
     const timeout = {timeoutMs: 15_000} as const;
 
     try {
-        const {status, payload} = await wardenJson("/api/services/install?async=true", {
+        const {status, payload} = await sageJson("/api/setup/install?async=true", {
             ...requestInit,
         }, timeout);
         return NextResponse.json(payload, {status});
-    } catch (wardenError) {
-        try {
-            const {status, payload} = await sageJson("/api/setup/install?async=true", {
-                ...requestInit,
-            }, timeout);
-            return NextResponse.json(payload, {status});
-        } catch (sageError) {
-            const wardenMessage = wardenError instanceof Error ? wardenError.message : String(wardenError);
-            const sageMessage = sageError instanceof Error ? sageError.message : String(sageError);
-            return jsonError(`Warden install failed (${wardenMessage}). Sage fallback failed (${sageMessage}).`);
-        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return jsonError(message);
     }
 }

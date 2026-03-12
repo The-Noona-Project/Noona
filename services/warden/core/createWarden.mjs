@@ -7,6 +7,7 @@ import Docker from 'dockerode';
 import fetch from 'node-fetch';
 import addonDockers from '../docker/addonDockers.mjs';
 import noonaDockers from '../docker/noonaDockers.mjs';
+import {buildVaultTokenRegistry} from '../docker/vaultTokens.mjs';
 import {
     attachSelfToNetwork,
     containerExists,
@@ -195,6 +196,9 @@ function cloneEnvConfig(config) {
         warning: entry?.warning ?? null,
         required: entry?.required !== false,
         readOnly: entry?.readOnly === true,
+        sensitive: entry?.sensitive === true,
+        serverManaged: entry?.serverManaged === true,
+        configured: entry?.configured === true,
     })).filter((entry) => typeof entry.key === 'string' && entry.key.trim().length > 0);
 }
 
@@ -1718,6 +1722,7 @@ export function createWarden(options = {}) {
             wizardStateOption.token ??
             wizardEnv?.VAULT_API_TOKEN ??
             wizardEnv?.VAULT_ACCESS_TOKEN ??
+            buildVaultTokenRegistry([WARDEN_CONFIG_SERVICE_NAME])[WARDEN_CONFIG_SERVICE_NAME] ??
             null;
 
         if (token) {
@@ -1767,6 +1772,7 @@ export function createWarden(options = {}) {
             settingsOption.token ??
             settingsEnv?.VAULT_API_TOKEN ??
             settingsEnv?.VAULT_ACCESS_TOKEN ??
+            buildVaultTokenRegistry([WARDEN_CONFIG_SERVICE_NAME])[WARDEN_CONFIG_SERVICE_NAME] ??
             null;
 
         if (token) {

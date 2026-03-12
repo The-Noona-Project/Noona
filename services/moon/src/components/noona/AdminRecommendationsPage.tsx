@@ -3,6 +3,7 @@
 import {useEffect, useMemo, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {AuthGate} from "./AuthGate";
+import {RecommendationApprovalModal} from "./RecommendationApprovalModal";
 import {SetupModeGate} from "./SetupModeGate";
 import {
     formatTimestamp,
@@ -10,7 +11,10 @@ import {
     normalizeStatus,
     normalizeString,
     parseErrorMessage,
+    recommendationMetadataLabel,
+    recommendationMetadataStatusLabel,
     type RecommendationRecord,
+    recommendationSourceHasAdultContent,
     type RecommendationsResponse,
     recommendationTitle,
     resolveRecommendationKey,
@@ -25,6 +29,7 @@ export function AdminRecommendationsPage() {
     const [recommendations, setRecommendations] = useState<RecommendationRecord[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [actingId, setActingId] = useState<string | null>(null);
+    const [approvalRecommendation, setApprovalRecommendation] = useState<RecommendationRecord | null>(null);
 
     const loadRecommendations = async () => {
         setError(null);
@@ -61,40 +66,6 @@ export function AdminRecommendationsPage() {
 
             setRecommendations((prev) =>
                 Array.isArray(prev) ? prev.filter((entry) => normalizeString(entry.id) !== safeId) : prev,
-            );
-        } catch (error_) {
-            const message = error_ instanceof Error ? error_.message : String(error_);
-            setError(message);
-        } finally {
-            setActingId(null);
-        }
-    };
-
-    const approveRecommendation = async (id: string) => {
-        const safeId = normalizeString(id);
-        if (!safeId || actingId) return;
-
-        setActingId(safeId);
-        setError(null);
-        try {
-            const response = await fetch(`/api/noona/recommendations/${encodeURIComponent(safeId)}/approve`, {
-                method: "POST",
-            });
-            const payload = (await response.json().catch(() => null)) as RecommendationMutationResponse | null;
-            if (!response.ok) {
-                throw new Error(parseErrorMessage(payload, `Failed to approve recommendation (HTTP ${response.status}).`));
-            }
-
-            const updated = payload?.recommendation ?? null;
-            if (!updated) {
-                await loadRecommendations();
-                return;
-            }
-
-            setRecommendations((prev) =>
-                Array.isArray(prev)
-                    ? prev.map((entry) => (normalizeString(entry.id) === safeId ? updated : entry))
-                    : prev,
             );
         } catch (error_) {
             const message = error_ instanceof Error ? error_.message : String(error_);
@@ -223,6 +194,9 @@ export function AdminRecommendationsPage() {
                                 const requesterTag = normalizeString(entry.requestedBy?.tag);
                                 const sourceUrl = normalizeString(entry.href);
                                 const query = normalizeString(entry.query);
+                                const metadataLabel = recommendationMetadataLabel(entry.metadataSelection);
+                                const metadataStatus = recommendationMetadataStatusLabel(entry.metadataSelection);
+                                const hasAdultContent = recommendationSourceHasAdultContent(entry);
                                 const busy = actingId === id;
                                 const canTransition = isPendingRecommendation(status);
 
@@ -252,6 +226,16 @@ export function AdminRecommendationsPage() {
                                                         Requested {requestedAt}
                                                     </Badge>
                                                 )}
+                                                {metadataStatus && (
+                                                    <Badge background="neutral-alpha-weak">
+                                                        {metadataStatus}
+                                                    </Badge>
+                                                )}
+                                                {hasAdultContent && (
+                                                    <Badge background="danger-alpha-weak">
+                                                        Adult Content
+                                                    </Badge>
+                                                )}
                                                 {requesterTag && (
                                                     <Badge background="neutral-alpha-weak">
                                                         By @{requesterTag}
@@ -270,6 +254,12 @@ export function AdminRecommendationsPage() {
                                                     Source: <SmartLink href={sourceUrl}>{sourceUrl}</SmartLink>
                                                 </Text>
                                             )}
+                                            {metadataLabel && (
+                                                <Text>
+                                                    Metadata: <Text as="span"
+                                                                    onBackground="neutral-weak">{metadataLabel}</Text>
+                                                </Text>
+                                            )}
 
                                             <Row gap="8" style={{flexWrap: "wrap"}}>
                                                 {id && (
@@ -283,9 +273,9 @@ export function AdminRecommendationsPage() {
                                                         size="s"
                                                         variant="primary"
                                                         disabled={busy}
-                                                        onClick={() => void approveRecommendation(id)}
+                                                        onClick={() => setApprovalRecommendation(entry)}
                                                     >
-                                                        {busy ? "Saving..." : "Approve"}
+                                                        Approve
                                                     </Button>
                                                 )}
                                                 {id && canTransition && (
@@ -316,6 +306,24 @@ export function AdminRecommendationsPage() {
                         </Column>
                     )}
                 </Column>
+                <RecommendationApprovalModal
+                    open={approvalRecommendation != null}
+                    recommendation={approvalRecommendation}
+                    onClose={() => setApprovalRecommendation(null)}
+                    onApproved={(updatedRecommendation) => {
+                        const safeId = normalizeString(updatedRecommendation?.id);
+                        if (!safeId || !updatedRecommendation) {
+                            void loadRecommendations();
+                            return;
+                        }
+                        setRecommendations((prev) =>
+                            Array.isArray(prev)
+                                ? prev.map((entry) => (normalizeString(entry.id) === safeId ? updatedRecommendation : entry))
+                                : prev,
+                        );
+                        setApprovalRecommendation(null);
+                    }}
+                />
             </AuthGate>
         </SetupModeGate>
     );

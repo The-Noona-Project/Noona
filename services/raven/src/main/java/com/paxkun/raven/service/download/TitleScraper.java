@@ -205,6 +205,11 @@ public class TitleScraper {
     }
 
     public String getSummary(String titleUrl) {
+        TitleDetails details = getTitleDetails(titleUrl);
+        return details != null ? details.getSummary() : null;
+    }
+
+    public TitleDetails getTitleDetails(String titleUrl) {
         if (titleUrl == null || titleUrl.isBlank()) {
             return null;
         }
@@ -215,18 +220,28 @@ public class TitleScraper {
                     .timeout(15_000)
                     .get();
 
-            Element description = doc.selectFirst("strong:matchesOwn((?i)Description) + p");
-            if (description == null) {
-                return null;
-            }
+            String summary = extractSummary(doc);
+            String type = normalizeMediaType(extractLabeledValue(doc, "Type"));
+            Boolean adultContent = parseBooleanFlag(extractLabeledValue(doc, "Adult Content"));
+            List<String> associatedNames = extractLabeledList(doc, "Associated Name(s)");
+            String status = cleanExtractedValue(extractLabeledValue(doc, "Status"));
+            String released = cleanExtractedValue(extractLabeledValue(doc, "Released"));
+            Boolean officialTranslation = parseBooleanFlag(extractLabeledValue(doc, "Official Translation"));
+            Boolean animeAdaptation = parseBooleanFlag(extractLabeledValue(doc, "Anime Adaptation"));
+            List<Map<String, String>> relatedSeries = extractRelatedSeries(doc);
 
-            String summary = description.text();
-            if (summary == null) {
-                return null;
-            }
-
-            String trimmed = summary.trim();
-            return trimmed.isBlank() ? null : trimmed;
+            TitleDetails details = new TitleDetails();
+            details.setSourceUrl(titleUrl.trim());
+            details.setSummary(summary);
+            details.setType(type);
+            details.setAdultContent(adultContent);
+            details.setAssociatedNames(associatedNames);
+            details.setStatus(status);
+            details.setReleased(released);
+            details.setOfficialTranslation(officialTranslation);
+            details.setAnimeAdaptation(animeAdaptation);
+            details.setRelatedSeries(relatedSeries);
+            return details;
         } catch (Exception e) {
             logger.warn("SCRAPER", "âš ï¸ Failed to fetch summary: " + e.getMessage());
             return null;
@@ -327,6 +342,188 @@ public class TitleScraper {
         }
 
         return "";
+    }
+
+    private String extractSummary(Document doc) {
+        if (doc == null) {
+            return null;
+        }
+
+        Element description = doc.selectFirst("strong:matchesOwn((?i)Description) + p");
+        if (description == null) {
+            return null;
+        }
+
+        String summary = description.text();
+        if (summary == null) {
+            return null;
+        }
+
+        String trimmed = summary.trim();
+        return trimmed.isBlank() ? null : trimmed;
+    }
+
+    private String extractLabeledValue(Document doc, String label) {
+        if (doc == null || label == null || label.isBlank()) {
+            return null;
+        }
+
+        Element section = findLabeledSection(doc, label);
+        if (section == null) {
+            return null;
+        }
+
+        Element labelElement = section.selectFirst("strong");
+        Element sibling = labelElement != null ? labelElement.nextElementSibling() : null;
+        while (sibling != null) {
+            String siblingText = sibling.text();
+            if (siblingText != null && !siblingText.isBlank()) {
+                return siblingText.trim();
+            }
+            sibling = sibling.nextElementSibling();
+        }
+
+        String sectionText = section.text();
+        if (sectionText == null || sectionText.isBlank()) {
+            return null;
+        }
+
+        String cleaned = sectionText
+                .replaceFirst("(?i)^\\s*" + Pattern.quote(label) + "\\s*:?\\s*", "")
+                .trim();
+        if (!cleaned.isBlank()) {
+            return cleaned;
+        }
+
+        return null;
+    }
+
+    private List<String> extractLabeledList(Document doc, String label) {
+        Element section = findLabeledSection(doc, label);
+        if (section == null) {
+            return List.of();
+        }
+
+        Elements items = section.select("> ul > li");
+        if (items.isEmpty()) {
+            items = section.select("ul > li");
+        }
+
+        List<String> values = new ArrayList<>();
+        for (Element item : items) {
+            String text = cleanExtractedValue(item.text());
+            if (text != null && !text.isBlank()) {
+                values.add(text);
+            }
+        }
+        return values.isEmpty() ? List.of() : List.copyOf(values);
+    }
+
+    private List<Map<String, String>> extractRelatedSeries(Document doc) {
+        Element section = findLabeledSection(doc, "Related Series(s)");
+        if (section == null) {
+            return List.of();
+        }
+
+        Elements items = section.select("> ul > li");
+        if (items.isEmpty()) {
+            items = section.select("ul > li");
+        }
+
+        List<Map<String, String>> values = new ArrayList<>();
+        for (Element item : items) {
+            Element link = item.selectFirst("a[href]");
+            String title = cleanExtractedValue(link != null ? link.text() : item.ownText());
+            String sourceUrl = link != null ? cleanExtractedValue(link.absUrl("href")) : null;
+            String relation = null;
+
+            Element relationElement = item.selectFirst("span");
+            if (relationElement != null) {
+                relation = cleanRelationValue(relationElement.text());
+            } else if (title != null && !title.isBlank()) {
+                relation = cleanRelationValue(item.text().replaceFirst("^" + Pattern.quote(title) + "\\s*", ""));
+            }
+
+            Map<String, String> entry = new LinkedHashMap<>();
+            if (title != null && !title.isBlank()) {
+                entry.put("title", title);
+            }
+            if (sourceUrl != null && !sourceUrl.isBlank()) {
+                entry.put("sourceUrl", sourceUrl);
+            }
+            if (relation != null && !relation.isBlank()) {
+                entry.put("relation", relation);
+            }
+            if (!entry.isEmpty()) {
+                values.add(entry);
+            }
+        }
+
+        return values.isEmpty() ? List.of() : List.copyOf(values);
+    }
+
+    private Element findLabeledSection(Document doc, String label) {
+        if (doc == null || label == null || label.isBlank()) {
+            return null;
+        }
+
+        String normalizedTarget = normalizeLabelText(label);
+        for (Element strong : doc.select("strong")) {
+            String ownText = strong.ownText();
+            if (ownText == null || ownText.isBlank()) {
+                continue;
+            }
+            if (!normalizedTarget.equals(normalizeLabelText(ownText))) {
+                continue;
+            }
+
+            Element parent = strong.parent();
+            if (parent != null) {
+                return parent;
+            }
+        }
+
+        return null;
+    }
+
+    private String normalizeLabelText(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace(":", "").trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String cleanExtractedValue(String value) {
+        if (value == null) {
+            return null;
+        }
+
+        String trimmed = value.trim();
+        return trimmed.isBlank() ? null : trimmed;
+    }
+
+    private String cleanRelationValue(String value) {
+        String cleaned = cleanExtractedValue(value);
+        if (cleaned == null) {
+            return null;
+        }
+        return cleaned
+                .replaceFirst("^[\\(\\[]\\s*", "")
+                .replaceFirst("\\s*[\\)\\]]$", "")
+                .trim();
+    }
+
+    private Boolean parseBooleanFlag(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "yes", "true", "1", "adult", "explicit", "nsfw" -> true;
+            case "no", "false", "0", "safe", "clean" -> false;
+            default -> null;
+        };
     }
 
     private String normalizeMediaType(String raw) {

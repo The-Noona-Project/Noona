@@ -16,6 +16,7 @@ import {
     Timeline
 } from "@once-ui-system/core";
 import {AuthGate} from "./AuthGate";
+import {RecommendationApprovalModal} from "./RecommendationApprovalModal";
 import {SetupModeGate} from "./SetupModeGate";
 import {
     formatTimestamp,
@@ -23,8 +24,11 @@ import {
     normalizeStatus,
     normalizeString,
     parseErrorMessage,
+    recommendationMetadataLabel,
+    recommendationMetadataStatusLabel,
     type RecommendationRecord,
     type RecommendationResponse,
+    recommendationSourceHasAdultContent,
     type RecommendationTimelineEvent,
     recommendationTitle,
     statusBadgeBackground,
@@ -78,6 +82,7 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
     const [comment, setComment] = useState("");
     const [submittingComment, setSubmittingComment] = useState(false);
     const [acting, setActing] = useState(false);
+    const [approvalOpen, setApprovalOpen] = useState(false);
 
     const loadRecommendation = useCallback(async () => {
         setError(null);
@@ -127,12 +132,6 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
         } finally {
             setActing(false);
         }
-    };
-
-    const approveRecommendation = async () => {
-        await applyMutation(`/api/noona/recommendations/${encodeURIComponent(recommendationId)}/approve`, {
-            method: "POST",
-        });
     };
 
     const denyRecommendation = async () => {
@@ -239,6 +238,10 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
     const query = normalizeString(recommendation?.query);
     const requestedBy = normalizeString(recommendation?.requestedBy?.tag);
     const title = recommendationTitle(recommendation ?? {});
+    const metadataLabel = recommendationMetadataLabel(recommendation?.metadataSelection);
+    const metadataStatus = recommendationMetadataStatusLabel(recommendation?.metadataSelection);
+    const hasAdultContent = recommendationSourceHasAdultContent(recommendation);
+    const metadataLastError = normalizeString(recommendation?.metadataSelection?.lastError);
 
     return (
         <SetupModeGate>
@@ -300,6 +303,11 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
                                                 Requested {formatTimestamp(recommendation.requestedAt)}
                                             </Badge>
                                         )}
+                                        {metadataStatus && (
+                                            <Badge background="neutral-alpha-weak">
+                                                {metadataStatus}
+                                            </Badge>
+                                        )}
                                         {requestedBy && (
                                             <Badge background="neutral-alpha-weak">
                                                 By @{requestedBy}
@@ -318,13 +326,28 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
                                             Source: <SmartLink href={sourceUrl}>{sourceUrl}</SmartLink>
                                         </Text>
                                     )}
+                                    {metadataLabel && (
+                                        <Text>
+                                            Metadata: <Text as="span" onBackground="neutral-weak">{metadataLabel}</Text>
+                                        </Text>
+                                    )}
+                                    {isAdminScope && hasAdultContent && (
+                                        <Badge background="danger-alpha-weak">
+                                            Adult Content
+                                        </Badge>
+                                    )}
+                                    {metadataLastError && (
+                                        <Text onBackground="danger-strong" variant="body-default-xs" wrap="balance">
+                                            Metadata retry note: {metadataLastError}
+                                        </Text>
+                                    )}
 
                                     {isAdminScope && (
                                         <Row gap="8" style={{flexWrap: "wrap"}}>
                                             {canTransition && (
                                                 <Button size="s" variant="primary" disabled={acting}
-                                                        onClick={() => void approveRecommendation()}>
-                                                    {acting ? "Saving..." : "Approve"}
+                                                        onClick={() => setApprovalOpen(true)}>
+                                                    Approve
                                                 </Button>
                                             )}
                                             {canTransition && (
@@ -393,6 +416,15 @@ export function RecommendationDetailPage({recommendationId, scope}: Recommendati
                         </>
                     )}
                 </Column>
+                <RecommendationApprovalModal
+                    open={approvalOpen}
+                    recommendation={recommendation}
+                    onClose={() => setApprovalOpen(false)}
+                    onApproved={(updatedRecommendation) => {
+                        setRecommendation(updatedRecommendation);
+                        setApprovalOpen(false);
+                    }}
+                />
             </AuthGate>
         </SetupModeGate>
     );

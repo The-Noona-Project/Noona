@@ -44,6 +44,7 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT_MS) => {
 export const createPortalWardenClient = ({
                                              baseUrl,
                                              baseUrls = [],
+                                             token = null,
                                              fetchImpl = fetch,
                                              timeoutMs = DEFAULT_TIMEOUT_MS,
                                              env = process.env,
@@ -88,6 +89,9 @@ export const createPortalWardenClient = ({
                     method: 'GET',
                     headers: {
                         Accept: 'application/json',
+                        ...(typeof token === 'string' && token.trim()
+                            ? {Authorization: `Bearer ${token.trim()}`}
+                            : {}),
                     },
                     signal: controller.signal,
                 });

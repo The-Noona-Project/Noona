@@ -7,6 +7,12 @@ import {buildKavitaSeriesUrl, fetchManagedServiceHostUrl} from "@/utils/kavitaLi
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 
+type RelatedSeriesEntry = {
+    title?: string | null;
+    sourceUrl?: string | null;
+    relation?: string | null;
+};
+
 type RavenTitle = {
     title?: string | null;
     titleName?: string | null;
@@ -20,7 +26,26 @@ type RavenTitle = {
     summary?: string | null;
     coverUrl?: string | null;
     type?: string | null;
+    associatedNames?: string[] | null;
+    status?: string | null;
+    released?: string | null;
+    officialTranslation?: boolean | null;
+    animeAdaptation?: boolean | null;
+    relatedSeries?: RelatedSeriesEntry[] | null;
     downloadedChapterNumbers?: string[] | null;
+};
+
+type SourceTitleDetails = {
+    sourceUrl?: string | null;
+    summary?: string | null;
+    type?: string | null;
+    adultContent?: boolean | null;
+    associatedNames?: string[] | null;
+    status?: string | null;
+    released?: string | null;
+    officialTranslation?: boolean | null;
+    animeAdaptation?: boolean | null;
+    relatedSeries?: RelatedSeriesEntry[] | null;
 };
 
 type TitleFile = {
@@ -126,6 +151,50 @@ const normalizeStringList = (value: unknown): string[] =>
     Array.isArray(value)
         ? value.map((entry) => normalizeString(entry).trim()).filter(Boolean)
         : [];
+const normalizeBoolean = (value: unknown): boolean | null => {
+    if (typeof value === "boolean") {
+        return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+
+    const normalized = normalizeString(value).trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (normalized === "true" || normalized === "yes" || normalized === "y" || normalized === "1") {
+        return true;
+    }
+    if (normalized === "false" || normalized === "no" || normalized === "n" || normalized === "0") {
+        return false;
+    }
+    return null;
+};
+const normalizeRelatedSeriesList = (value: unknown): RelatedSeriesEntry[] =>
+    Array.isArray(value)
+        ? value
+            .map((entry) => {
+                if (!entry || typeof entry !== "object") {
+                    return null;
+                }
+
+                const title = normalizeString((entry as RelatedSeriesEntry).title).trim();
+                const sourceUrl = normalizeString((entry as RelatedSeriesEntry).sourceUrl).trim();
+                const relation = normalizeString((entry as RelatedSeriesEntry).relation).trim();
+                if (!title && !sourceUrl && !relation) {
+                    return null;
+                }
+
+                return {
+                    ...(title ? {title} : {}),
+                    ...(sourceUrl ? {sourceUrl} : {}),
+                    ...(relation ? {relation} : {}),
+                };
+            })
+            .filter((entry): entry is RelatedSeriesEntry => entry != null)
+        : [];
 
 const normalizeKavitaProviderId = (value: unknown): string | null => {
     if (value == null) return null;
@@ -181,6 +250,8 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const normalizedUuid = normalizeString(uuid).trim();
 
     const [title, setTitle] = useState<RavenTitle | null>(null);
+    const [sourceDetails, setSourceDetails] = useState<SourceTitleDetails | null>(null);
+    const [sourceDetailsLoading, setSourceDetailsLoading] = useState(false);
     const [files, setFiles] = useState<TitleFilesResponse | null>(null);
 
     const [loading, setLoading] = useState(false);
@@ -219,10 +290,33 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     const fileCount = files?.files?.length ?? 0;
     const coverUrl = normalizeString(title?.coverUrl).trim();
     const mediaType = normalizeString(title?.type).trim();
+    const displayMediaType = normalizeString(sourceDetails?.type).trim() || mediaType;
     const currentTitleName = normalizeString(title?.title ?? title?.titleName).trim();
+    const sourceUrl = normalizeString(title?.sourceUrl).trim();
     const downloadedChapterNumbers = useMemo(
         () => normalizeStringList(title?.downloadedChapterNumbers),
         [title],
+    );
+    const associatedNames = useMemo(() => {
+        const liveValues = normalizeStringList(sourceDetails?.associatedNames);
+        return liveValues.length > 0 ? liveValues : normalizeStringList(title?.associatedNames);
+    }, [sourceDetails, title]);
+    const relatedSeries = useMemo(() => {
+        const liveValues = normalizeRelatedSeriesList(sourceDetails?.relatedSeries);
+        return liveValues.length > 0 ? liveValues : normalizeRelatedSeriesList(title?.relatedSeries);
+    }, [sourceDetails, title]);
+    const sourceStatus = normalizeString(sourceDetails?.status).trim() || normalizeString(title?.status).trim();
+    const sourceReleased = normalizeString(sourceDetails?.released).trim() || normalizeString(title?.released).trim();
+    const officialTranslation = normalizeBoolean(sourceDetails?.officialTranslation ?? title?.officialTranslation);
+    const animeAdaptation = normalizeBoolean(sourceDetails?.animeAdaptation ?? title?.animeAdaptation);
+    const sourceSummary = normalizeString(sourceDetails?.summary).trim() || normalizeString(title?.summary).trim();
+    const sourceMetadataMissing = Boolean(sourceUrl) && (
+        normalizeStringList(title?.associatedNames).length === 0
+        || !normalizeString(title?.status).trim()
+        || !normalizeString(title?.released).trim()
+        || normalizeBoolean(title?.officialTranslation) == null
+        || normalizeBoolean(title?.animeAdaptation) == null
+        || normalizeRelatedSeriesList(title?.relatedSeries).length === 0
     );
     const selectedKavitaSeries = useMemo(
         () => kavitaSeries.find((entry) => typeof entry?.seriesId === "number" && entry.seriesId === selectedKavitaSeriesId) ?? null,
@@ -269,6 +363,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
         setLoading(true);
         setError(null);
         setTitle(null);
+        setSourceDetails(null);
         setFiles(null);
         setCurrentTask(null);
         setSelectedFiles(new Set());
@@ -321,6 +416,44 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
     useEffect(() => {
         void load();
     }, [normalizedUuid]);
+
+    useEffect(() => {
+        if (!sourceUrl || !sourceMetadataMissing) {
+            setSourceDetails(null);
+            setSourceDetailsLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        setSourceDetailsLoading(true);
+
+        const loadSourceDetails = async () => {
+            try {
+                const response = await fetch(`/api/noona/raven/title-details?url=${encodeURIComponent(sourceUrl)}`, {
+                    cache: "no-store",
+                });
+                const payload = (await response.json().catch(() => null)) as SourceTitleDetails | null;
+                if (!response.ok || cancelled) {
+                    return;
+                }
+
+                setSourceDetails(payload);
+            } catch {
+                if (!cancelled) {
+                    setSourceDetails(null);
+                }
+            } finally {
+                if (!cancelled) {
+                    setSourceDetailsLoading(false);
+                }
+            }
+        };
+
+        void loadSourceDetails();
+        return () => {
+            cancelled = true;
+        };
+    }, [sourceUrl, sourceMetadataMissing]);
 
     useEffect(() => {
         let cancelled = false;
@@ -836,9 +969,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                 {normalizeString(title?.title ?? title?.titleName) || "Title"}
                             </Heading>
                             <Row gap="8" style={{flexWrap: "wrap"}}>
-                                {mediaType && (
+                                {displayMediaType && (
                                     <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                                        {mediaType}
+                                        {displayMediaType}
                                     </Badge>
                                 )}
                                 <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
@@ -1074,9 +1207,35 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                             last chapter: {title.lastDownloaded}
                                         </Badge>
                                     )}
-                                    {mediaType && (
+                                    {displayMediaType && (
                                         <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                                            type: {mediaType}
+                                            type: {displayMediaType}
+                                        </Badge>
+                                    )}
+                                    {sourceStatus && (
+                                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            status: {sourceStatus}
+                                        </Badge>
+                                    )}
+                                    {sourceReleased && (
+                                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                            released: {sourceReleased}
+                                        </Badge>
+                                    )}
+                                    {officialTranslation != null && (
+                                        <Badge
+                                            background={officialTranslation ? "success-alpha-weak" : "neutral-alpha-weak"}
+                                            onBackground="neutral-strong"
+                                        >
+                                            official translation: {officialTranslation ? "yes" : "no"}
+                                        </Badge>
+                                    )}
+                                    {animeAdaptation != null && (
+                                        <Badge
+                                            background={animeAdaptation ? "brand-alpha-weak" : "neutral-alpha-weak"}
+                                            onBackground="neutral-strong"
+                                        >
+                                            anime adaptation: {animeAdaptation ? "yes" : "no"}
                                         </Badge>
                                     )}
                                     {typeof title?.chapterCount === "number" && Number.isFinite(title.chapterCount) && (
@@ -1102,9 +1261,9 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                     )}
                                 </Row>
 
-                                {typeof title?.sourceUrl === "string" && title.sourceUrl.trim() && (
+                                {sourceUrl && (
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Source: <SmartLink href={title.sourceUrl}>{title.sourceUrl}</SmartLink>
+                                        Source: <SmartLink href={sourceUrl}>{sourceUrl}</SmartLink>
                                     </Text>
                                 )}
 
@@ -1114,10 +1273,73 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                     </Text>
                                 )}
 
-                                {typeof title?.summary === "string" && title.summary.trim() && (
-                                    <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
-                                        {title.summary}
+                                {sourceDetailsLoading && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Fetching source metadata...
                                     </Text>
+                                )}
+
+                                {sourceSummary && (
+                                    <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
+                                        {sourceSummary}
+                                    </Text>
+                                )}
+
+                                {associatedNames.length > 0 && (
+                                    <Column gap="8">
+                                        <Text variant="label-default-s" onBackground="neutral-weak">
+                                            Associated names
+                                        </Text>
+                                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                                            {associatedNames.map((entry) => (
+                                                <Badge
+                                                    key={entry}
+                                                    background="neutral-alpha-weak"
+                                                    onBackground="neutral-strong"
+                                                >
+                                                    {entry}
+                                                </Badge>
+                                            ))}
+                                        </Row>
+                                    </Column>
+                                )}
+
+                                {relatedSeries.length > 0 && (
+                                    <Column gap="8">
+                                        <Text variant="label-default-s" onBackground="neutral-weak">
+                                            Related series
+                                        </Text>
+                                        <Column gap="6">
+                                            {relatedSeries.map((entry, index) => {
+                                                const entryTitle = normalizeString(entry.title).trim() || `Related series ${index + 1}`;
+                                                const entryUrl = normalizeString(entry.sourceUrl).trim();
+                                                const entryRelation = normalizeString(entry.relation).trim();
+
+                                                return (
+                                                    <Row
+                                                        key={`${entryTitle}-${entryUrl || index}`}
+                                                        gap="8"
+                                                        vertical="center"
+                                                        style={{flexWrap: "wrap"}}
+                                                    >
+                                                        {entryUrl ? (
+                                                            <SmartLink href={entryUrl}>{entryTitle}</SmartLink>
+                                                        ) : (
+                                                            <Text>{entryTitle}</Text>
+                                                        )}
+                                                        {entryRelation && (
+                                                            <Badge
+                                                                background="neutral-alpha-weak"
+                                                                onBackground="neutral-strong"
+                                                            >
+                                                                {entryRelation}
+                                                            </Badge>
+                                                        )}
+                                                    </Row>
+                                                );
+                                            })}
+                                        </Column>
+                                    </Column>
                                 )}
                             </Column>
                         </Card>

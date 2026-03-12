@@ -11,6 +11,31 @@ const MOON_SERVICE_NAMES = new Set(['noona-moon', 'moon']);
 const DEFAULT_MOON_RECOMMENDATION_PATH_PREFIX = '/myrecommendations/';
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+const normalizeBoolean = value => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === '1') {
+        return true;
+    }
+
+    if (normalized === 'false' || normalized === 'no' || normalized === 'n' || normalized === '0') {
+        return false;
+    }
+
+    return null;
+};
 const normalizeTitleKey = value => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim();
 const normalizeSeriesInteger = value => {
     const parsed = Number.parseInt(String(value), 10);
@@ -570,6 +595,16 @@ export const createRecommendCommand = ({
             }
 
             const requestedAtIso = new Date(Number(now())).toISOString();
+            let sourceAdultContent = null;
+            if (selected.href && typeof raven?.getTitleDetails === 'function') {
+                try {
+                    const sourceDetails = await raven.getTitleDetails(selected.href);
+                    sourceAdultContent = normalizeBoolean(sourceDetails?.adultContent);
+                } catch (error) {
+                    errMSG(`[Portal/Discord] Failed to fetch Raven title details for "${selected.title}": ${error.message}`);
+                }
+            }
+
             const recommendation = {
                 source: 'discord',
                 status: 'pending',
@@ -579,6 +614,7 @@ export const createRecommendCommand = ({
                 selectedOptionIndex: selected.optionIndex,
                 title: selected.title,
                 href: selected.href || null,
+                sourceAdultContent,
                 requestedBy: {
                     discordId: session.requestedById,
                     tag: session.requestedByTag,

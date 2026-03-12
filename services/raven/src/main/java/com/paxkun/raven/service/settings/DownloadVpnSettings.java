@@ -15,6 +15,7 @@ public class DownloadVpnSettings {
     private String key;
     private String provider;
     private Boolean enabled;
+    private Boolean onlyDownloadWhenVpnOn;
     private Boolean autoRotate;
     private Integer rotateEveryMinutes;
     private String region;

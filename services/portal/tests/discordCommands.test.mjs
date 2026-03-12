@@ -738,6 +738,13 @@ test('recommend command searches Raven and stores the selected recommendation in
                     ],
                 };
             },
+            getTitleDetails: async (sourceUrl) => {
+                assert.equal(sourceUrl, 'https://source.example/solo-leveling');
+                return {
+                    sourceUrl,
+                    adultContent: true,
+                };
+            },
         },
         vault: {
             storeRecommendation: async recommendation => {
@@ -773,6 +780,7 @@ test('recommend command searches Raven and stores the selected recommendation in
         selectedOptionIndex: 1,
         title: 'Solo Leveling',
         href: 'https://source.example/solo-leveling',
+        sourceAdultContent: true,
         requestedBy: {
             discordId: 'discord-user-1',
             tag: 'Member#0001',

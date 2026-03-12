@@ -41,6 +41,36 @@ const describeKavitaRole = (role) => {
 };
 
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
+const normalizeBooleanLike = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        if (value === 1) {
+            return true;
+        }
+        if (value === 0) {
+            return false;
+        }
+    }
+
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === '1' || normalized === 'on') {
+        return true;
+    }
+
+    if (normalized === 'false' || normalized === 'no' || normalized === 'n' || normalized === '0' || normalized === 'off') {
+        return false;
+    }
+
+    return null;
+};
+const normalizeMetadataKey = (value) => normalizeString(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const normalizeAbsoluteHttpUrl = (value) => {
     const normalized = normalizeString(value);
     if (!normalized) {
@@ -65,6 +95,30 @@ const normalizePositiveInteger = (value, fallback = null) => {
     }
 
     return parsed;
+};
+const normalizeNonNegativeInteger = (value, fallback = null) => {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+        return fallback;
+    }
+
+    return parsed;
+};
+const normalizeMatchStateKey = (value) => normalizeString(value).toLowerCase().replace(/[^a-z]+/g, '');
+const KAVITA_MATCH_STATE_OPTIONS = new Map([
+    ['all', {label: 'all', option: 0}],
+    ['matched', {label: 'matched', option: 1}],
+    ['notmatched', {label: 'notMatched', option: 2}],
+    ['error', {label: 'error', option: 3}],
+    ['dontmatch', {label: 'dontMatch', option: 4}],
+]);
+const resolveMatchStateDescriptor = (value) => {
+    const normalized = normalizeMatchStateKey(value);
+    if (!normalized) {
+        return KAVITA_MATCH_STATE_OPTIONS.get('all') ?? null;
+    }
+
+    return KAVITA_MATCH_STATE_OPTIONS.get(normalized) ?? null;
 };
 const createAbortController = (timeoutMs = DEFAULT_PROXY_TIMEOUT_MS) => {
     const controller = new AbortController();
@@ -241,6 +295,189 @@ const normalizeSeriesSearchResult = (series = {}, baseUrl = null) => ({
         .filter((entry) => entry.toLowerCase() !== normalizeString(series?.name).toLowerCase()),
     url: toKavitaSeriesUrl(baseUrl, series),
 });
+const normalizeManageMatchSeries = (entry = {}, baseUrl = null) => {
+    const series = entry?.series && typeof entry.series === 'object'
+        ? entry.series
+        : entry?.Series && typeof entry.Series === 'object'
+            ? entry.Series
+            : {};
+
+    return {
+        ...normalizeSeriesSearchResult(series, baseUrl),
+        isMatched: entry?.isMatched === true || entry?.IsMatched === true,
+        validUntilUtc: normalizeString(entry?.validUntilUtc ?? entry?.ValidUntilUtc) || null,
+    };
+};
+
+const resolveAdultContentTagValue = (value) => {
+    const normalizedBoolean = normalizeBooleanLike(value);
+    if (normalizedBoolean != null) {
+        return normalizedBoolean;
+    }
+
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === 'adult' || normalized === 'explicit' || normalized === 'nsfw') {
+        return true;
+    }
+
+    if (normalized === 'safe' || normalized === 'clean') {
+        return false;
+    }
+
+    return null;
+};
+
+const resolveAdultContentFromNamedEntry = (entry = {}) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return null;
+    }
+
+    const tagName = [
+        entry?.name,
+        entry?.Name,
+        entry?.label,
+        entry?.Label,
+        entry?.tag,
+        entry?.Tag,
+        entry?.title,
+        entry?.Title,
+        entry?.key,
+        entry?.Key,
+    ]
+        .map((value) => normalizeString(value))
+        .find(Boolean);
+
+    if (normalizeMetadataKey(tagName) !== 'adult content') {
+        return null;
+    }
+
+    for (const candidate of [
+        entry?.value,
+        entry?.Value,
+        entry?.status,
+        entry?.Status,
+        entry?.answer,
+        entry?.Answer,
+        entry?.displayValue,
+        entry?.DisplayValue,
+        entry?.content,
+        entry?.Content,
+        entry?.text,
+        entry?.Text,
+    ]) {
+        const normalized = resolveAdultContentTagValue(candidate);
+        if (normalized != null) {
+            return normalized;
+        }
+    }
+
+    return true;
+};
+
+const resolveAdultContentFromTagCollection = (value) => {
+    if (!value) {
+        return null;
+    }
+
+    if (Array.isArray(value)) {
+        for (const entry of value) {
+            if (typeof entry === 'string') {
+                if (normalizeMetadataKey(entry) === 'adult content') {
+                    return true;
+                }
+                continue;
+            }
+
+            const namedEntry = resolveAdultContentFromNamedEntry(entry);
+            if (namedEntry != null) {
+                return namedEntry;
+            }
+
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+                continue;
+            }
+
+            for (const [key, candidateValue] of Object.entries(entry)) {
+                if (normalizeMetadataKey(key) !== 'adult content') {
+                    const nested = resolveAdultContentFromTagCollection(candidateValue);
+                    if (nested != null) {
+                        return nested;
+                    }
+                    continue;
+                }
+
+                return resolveAdultContentTagValue(candidateValue) ?? true;
+            }
+        }
+
+        return null;
+    }
+
+    const namedEntry = resolveAdultContentFromNamedEntry(value);
+    if (namedEntry != null) {
+        return namedEntry;
+    }
+
+    if (typeof value === 'object') {
+        for (const [key, candidateValue] of Object.entries(value)) {
+            if (normalizeMetadataKey(key) !== 'adult content') {
+                const nested = resolveAdultContentFromTagCollection(candidateValue);
+                if (nested != null) {
+                    return nested;
+                }
+                continue;
+            }
+
+            return resolveAdultContentTagValue(candidateValue) ?? true;
+        }
+    }
+
+    return null;
+};
+
+const resolveAdultContentFlag = (...sources) => {
+    for (const source of sources) {
+        if (!source || typeof source !== 'object' || Array.isArray(source)) {
+            continue;
+        }
+
+        for (const [key, value] of Object.entries(source)) {
+            const normalizedKey = normalizeMetadataKey(key).replace(/\s+/g, '');
+            if (normalizedKey !== 'adultcontent' && normalizedKey !== 'isadult' && normalizedKey !== 'nsfw') {
+                continue;
+            }
+
+            const normalized = resolveAdultContentTagValue(value);
+            if (normalized != null) {
+                return normalized;
+            }
+        }
+
+        for (const container of [
+            source?.tags,
+            source?.Tags,
+            source?.metadataTags,
+            source?.MetadataTags,
+            source?.attributes,
+            source?.Attributes,
+            source?.properties,
+            source?.Properties,
+            source?.metadata,
+            source?.Metadata,
+        ]) {
+            const normalized = resolveAdultContentFromTagCollection(container);
+            if (normalized != null) {
+                return normalized;
+            }
+        }
+    }
+
+    return null;
+};
 
 const normalizeMetadataMatch = (match = {}) => {
     const series = match?.series && typeof match.series === 'object'
@@ -248,6 +485,7 @@ const normalizeMetadataMatch = (match = {}) => {
         : match?.Series && typeof match.Series === 'object'
             ? match.Series
             : match;
+    const adultContent = resolveAdultContentFlag(series, match);
 
     return {
         provider: normalizeString(series?.provider ?? series?.Provider ?? series?.source) || null,
@@ -289,6 +527,7 @@ const normalizeMetadataMatch = (match = {}) => {
         aniListId: series?.aniListId ?? series?.AniListId ?? match?.aniListId ?? match?.AniListId ?? null,
         malId: series?.malId ?? series?.MALId ?? series?.MalId ?? match?.malId ?? match?.MALId ?? match?.MalId ?? null,
         cbrId: series?.cbrId ?? series?.CbrId ?? match?.cbrId ?? match?.CbrId ?? null,
+        adultContent,
     };
 };
 
@@ -629,6 +868,75 @@ export const registerPortalRoutes = ({
         }
     });
 
+    app.get('/api/portal/kavita/series-metadata', async (req, res) => {
+        const matchState = resolveMatchStateDescriptor(req.query?.state);
+        if (!matchState) {
+            res.status(400).json({error: 'state must be one of all, matched, notMatched, error, or dontMatch.'});
+            return;
+        }
+
+        if (typeof kavita?.fetchSeriesMetadataStatus !== 'function') {
+            res.status(503).json({error: 'Kavita series metadata status is not configured.'});
+            return;
+        }
+
+        const pageNumber = normalizePositiveInteger(req.query?.pageNumber, 1) ?? 1;
+        const pageSize = normalizeNonNegativeInteger(req.query?.pageSize, 0) ?? 0;
+        const libraryType = Number.parseInt(String(req.query?.libraryType ?? -1), 10);
+        if (!Number.isInteger(libraryType)) {
+            res.status(400).json({error: 'libraryType must be an integer.'});
+            return;
+        }
+
+        const searchTerm = normalizeString(req.query?.searchTerm);
+
+        try {
+            const items = await kavita.fetchSeriesMetadataStatus({
+                matchStateOption: matchState.option,
+                libraryType,
+                searchTerm,
+                pageNumber,
+                pageSize,
+            });
+
+            res.json({
+                state: matchState.label,
+                pageNumber,
+                pageSize,
+                items: Array.isArray(items) ? items.map((entry) => normalizeManageMatchSeries(entry, kavitaLinkBaseUrl)) : [],
+            });
+        } catch (error) {
+            const normalized = normalizeError(error);
+            errMSG(`[Portal] Failed to load Kavita series metadata status: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/kavita/title-match/search', async (req, res) => {
+        const query = normalizeString(req.body?.query);
+        if (!query) {
+            res.status(400).json({error: 'query is required.'});
+            return;
+        }
+
+        if (typeof komf?.searchSeriesMetadata !== 'function') {
+            res.status(503).json({error: 'Metadata match lookup is not configured.'});
+            return;
+        }
+
+        try {
+            const matches = await komf.searchSeriesMetadata(query);
+            res.json({
+                query,
+                matches: Array.isArray(matches) ? matches.map((entry) => normalizeMetadataMatch(entry)) : [],
+            });
+        } catch (error) {
+            const normalized = normalizeMetadataRouteError(error, {action: 'lookup', backend: 'komf'});
+            errMSG(`[Portal] Failed to search standalone metadata matches for "${query}": ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
     app.post('/api/portal/kavita/title-match', async (req, res) => {
         const parsedSeriesId = Number.parseInt(String(req.body?.seriesId), 10);
         if (!Number.isInteger(parsedSeriesId) || parsedSeriesId < 1) {
@@ -933,7 +1241,13 @@ export const registerPortalRoutes = ({
         }
 
         try {
-            const storedCredential = await readStoredPortalCredential(vault, discordId);
+            let storedCredential = null;
+            try {
+                storedCredential = await readStoredPortalCredential(vault, discordId);
+            } catch (error) {
+                const normalized = normalizeError(error);
+                errMSG(`[Portal] Failed to read stored Noona Kavita credential for ${discordId}; continuing without it: ${normalized.message}`);
+            }
             const storedPassword = normalizeString(storedCredential?.password);
             const normalizedUsername = normalizeKavitaUsername(
                 normalizeString(storedCredential?.username),
@@ -1055,29 +1369,43 @@ export const registerPortalRoutes = ({
                 provisionedUser?.passwordUpdated === false
                     ? (storedPassword || generatedPassword)
                     : generatedPassword;
+            const provisionedUsername = normalizeString(provisionedUser?.username);
+            const provisionedEmail = normalizeString(provisionedUser?.email) || email;
+            if (!provisionedUsername || !provisionedEmail) {
+                throw buildError(502, 'Kavita provisioning returned an invalid user record.');
+            }
 
             const loginToken = await onboardingStore.setToken(discordId, {
                 type: NOONA_KAVITA_LOGIN_TOKEN_TYPE,
-                username: provisionedUser.username,
-                email: provisionedUser.email,
+                username: provisionedUsername,
+                email: provisionedEmail,
                 password: effectivePassword,
             });
+            const tokenValue = normalizeString(loginToken?.token);
+            if (!tokenValue) {
+                throw buildError(502, 'Portal login token storage did not return a token.');
+            }
 
             if (vault?.storePortalCredential) {
-                await vault.storePortalCredential(discordId, {
-                    username: provisionedUser.username,
-                    email: provisionedUser.email,
-                    password: effectivePassword,
-                    roles: provisionedUser.roles,
-                    libraries: provisionedUser.libraries,
-                    issuedAt: new Date().toISOString(),
-                });
+                try {
+                    await vault.storePortalCredential(discordId, {
+                        username: provisionedUsername,
+                        email: provisionedEmail,
+                        password: effectivePassword,
+                        roles: provisionedUser.roles,
+                        libraries: provisionedUser.libraries,
+                        issuedAt: new Date().toISOString(),
+                    });
+                } catch (error) {
+                    const normalized = normalizeError(error);
+                    errMSG(`[Portal] Failed to persist Noona Kavita credential for ${discordId}; continuing with issued login token: ${normalized.message}`);
+                }
             }
 
             res.status(provisionedUser.created === true ? 201 : 200).json({
-                token: loginToken?.token,
-                username: provisionedUser.username,
-                email: provisionedUser.email,
+                token: tokenValue,
+                username: provisionedUsername,
+                email: provisionedEmail,
                 created: provisionedUser.created === true,
                 baseUrl: kavitaLinkBaseUrl,
             });

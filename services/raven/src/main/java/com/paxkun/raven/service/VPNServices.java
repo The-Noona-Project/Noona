@@ -52,7 +52,10 @@ public class VPNServices {
     private static final Duration PROFILE_REFRESH_TTL = Duration.ofHours(6);
     private static final Pattern REMOTE_PATTERN = Pattern.compile("^\\s*remote\\s+([^\\s]+)\\s+\\d+\\s*$");
     private static final Pattern IP_JSON_PATTERN = Pattern.compile("\"ip\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern VPN_ROUTE_DEVICE_PATTERN = Pattern.compile("\\bdev\\s+tun\\S*\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOOPBACK_ROUTE_DEVICE_PATTERN = Pattern.compile("\\bdev\\s+lo\\b", Pattern.CASE_INSENSITIVE);
     private static final int CONNECT_LOG_PREVIEW_LIMIT = 8;
+    private static final int ROUTE_COMMAND_TIMEOUT_SECONDS = 10;
     private static final String LOGIN_TEST_PUBLIC_IP_URL = "https://api64.ipify.org?format=json";
 
     private final SettingsService settingsService;
@@ -170,6 +173,7 @@ public class VPNServices {
         String region = DEFAULT_REGION;
         String endpoint = "";
         String reportedIp = "";
+        List<String> preservedLocalRoutes = List.of();
         try {
             DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
             String provider = Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER);
@@ -186,11 +190,13 @@ public class VPNServices {
 
             Path profilePath = resolveProfilePath(region);
             endpoint = parseRemoteEndpoint(profilePath);
-            reportedIp = probeOpenVpnLogin(profilePath, username, password);
+            preservedLocalRoutes = captureLocalRouteSpecs();
+            reportedIp = probeOpenVpnLogin(profilePath, username, password, preservedLocalRoutes);
 
             String successMessage = "PIA login succeeded for region " + region + ".";
             logger.info(VPN_TAG, "PIA login test succeeded | trigger=" + sanitizeForLog(sanitizedTrigger)
-                    + " | region=" + sanitizeForLog(region));
+                    + " | region=" + sanitizeForLog(region)
+                    + " | preservedLocalRoutes=" + preservedLocalRoutes.size());
             return new VpnLoginTestResult(
                     true,
                     successMessage,
@@ -303,6 +309,7 @@ public class VPNServices {
         int resumedTasks = 0;
         String previousIp = currentPublicIp;
         String activeRegion = currentRegion;
+        List<String> preservedLocalRoutes = List.of();
         try {
             DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
             validateEnabledVpnSettings(settings);
@@ -322,13 +329,16 @@ public class VPNServices {
             }
 
             disconnectOpenVpn();
+            preservedLocalRoutes = captureLocalRouteSpecs();
             connectOpenVpn(targetRegion, settings.getPiaUsername(), settings.getPiaPassword());
+            restoreLocalRouteSpecs(preservedLocalRoutes);
 
             currentRegion = targetRegion;
             currentPublicIp = resolvePublicIp();
             connectionState = "connected";
             lastError = null;
             lastRotationAtIso = Instant.now().toString();
+            logger.info(VPN_TAG, "Re-applied " + preservedLocalRoutes.size() + " local route(s) after VPN connect.");
 
             resumedTasks = downloadService.resumePausedDownloads();
             downloadService.endMaintenancePause("VPN rotation complete");
@@ -369,6 +379,104 @@ public class VPNServices {
         } finally {
             rotationInProgress.set(false);
         }
+    }
+
+    List<String> captureLocalRouteSpecs() throws IOException {
+        LinkedHashSet<String> preserved = new LinkedHashSet<>();
+        for (String line : runCommandForOutput(List.of("ip", "-o", "-4", "route", "show", "table", "main"))) {
+            String routeSpec = normalizeRouteSpec(line);
+            if (routeSpec == null || shouldSkipPreservedRoute(routeSpec)) {
+                continue;
+            }
+            preserved.add(routeSpec);
+        }
+        return List.copyOf(preserved);
+    }
+
+    void restoreLocalRouteSpecs(List<String> routeSpecs) throws IOException {
+        if (routeSpecs == null || routeSpecs.isEmpty()) {
+            return;
+        }
+
+        for (String routeSpec : routeSpecs) {
+            String normalized = normalizeRouteSpec(routeSpec);
+            if (normalized == null || shouldSkipPreservedRoute(normalized)) {
+                continue;
+            }
+
+            List<String> command = new ArrayList<>();
+            command.add("ip");
+            command.add("route");
+            command.add("replace");
+            command.addAll(Arrays.asList(normalized.split("\\s+")));
+            runCommand(command);
+        }
+    }
+
+    List<String> runCommandForOutput(List<String> command) throws IOException {
+        if (command == null || command.isEmpty()) {
+            throw new IOException("Command cannot be empty.");
+        }
+
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+
+        List<String> output = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.add(line);
+            }
+        }
+
+        boolean finished;
+        try {
+            finished = process.waitFor(ROUTE_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new IOException("Command interrupted: " + String.join(" ", command), interrupted);
+        }
+
+        if (!finished) {
+            process.destroyForcibly();
+            throw new IOException("Command timed out: " + String.join(" ", command));
+        }
+
+        int exit = process.exitValue();
+        if (exit != 0) {
+            String detail = output.isEmpty() ? "" : " | " + sanitizeForLog(String.join(" | ", output));
+            throw new IOException("Command failed (" + exit + "): " + String.join(" ", command) + detail);
+        }
+
+        return output;
+    }
+
+    void runCommand(List<String> command) throws IOException {
+        runCommandForOutput(command);
+    }
+
+    private String normalizeRouteSpec(String routeSpec) {
+        String trimmed = Optional.ofNullable(routeSpec).orElse("").trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+        return trimmed.replaceAll("\\s+", " ");
+    }
+
+    private boolean shouldSkipPreservedRoute(String routeSpec) {
+        String normalized = Optional.ofNullable(routeSpec).orElse("").trim();
+        if (normalized.isBlank()) {
+            return true;
+        }
+
+        if (normalized.regionMatches(true, 0, "default ", 0, "default ".length())) {
+            return true;
+        }
+
+        return LOOPBACK_ROUTE_DEVICE_PATTERN.matcher(normalized).find()
+                || VPN_ROUTE_DEVICE_PATTERN.matcher(normalized).find();
     }
 
     private void validateEnabledVpnSettings(DownloadVpnSettings settings) {
@@ -501,7 +609,7 @@ public class VPNServices {
         }
     }
 
-    private void connectOpenVpn(String region, String username, String password) throws IOException {
+    void connectOpenVpn(String region, String username, String password) throws IOException {
         Path configPath = resolveProfilePath(region);
 
         Path authPath = resolveVpnRoot().resolve("pia-auth.txt");
@@ -563,7 +671,7 @@ public class VPNServices {
                 + (preview.isBlank() ? "" : " Logs: " + preview));
     }
 
-    private String probeOpenVpnLogin(Path configPath, String username, String password) throws IOException {
+    private String probeOpenVpnLogin(Path configPath, String username, String password, List<String> preservedLocalRoutes) throws IOException {
         Path authPath = resolveVpnRoot().resolve("pia-auth-test.txt");
         writeAuthFile(authPath, username, password);
 
@@ -593,6 +701,7 @@ public class VPNServices {
             long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(Math.max(15, connectTimeoutSeconds));
             while (System.currentTimeMillis() < deadline) {
                 if (connected.get()) {
+                    restoreLocalRouteSpecs(preservedLocalRoutes);
                     String reportedIp = resolvePublicIpFromJsonEndpoint(LOGIN_TEST_PUBLIC_IP_URL);
                     stopOpenVpnProcess(activeProcess);
                     return reportedIp;
@@ -800,7 +909,7 @@ public class VPNServices {
         return Math.max(MIN_ROTATE_INTERVAL_MINUTES, Math.min(MAX_ROTATE_INTERVAL_MINUTES, inputMinutes));
     }
 
-    private String resolvePublicIp() {
+    String resolvePublicIp() {
         try {
             HttpURLConnection connection = (HttpURLConnection) new URL(publicIpUrl).openConnection();
             connection.setConnectTimeout(10_000);

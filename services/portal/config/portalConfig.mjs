@@ -169,6 +169,9 @@ export const loadPortalConfig = (overrides = {}) => {
         },
         warden: {
             baseUrl: normalizeUrl(env.WARDEN_BASE_URL || DEFAULT_WARDEN_BASE_URL),
+            token:
+                normalizeString(env.WARDEN_API_TOKEN) ||
+                normalizeString(env.WARDEN_ACCESS_TOKEN),
         },
         moon: {
             baseUrl: normalizeUrl(env.MOON_BASE_URL),

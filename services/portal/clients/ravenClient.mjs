@@ -19,6 +19,82 @@ const normalizeUrl = (candidate) => {
     }
 };
 
+const normalizeBoolean = (value) => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === '1') {
+        return true;
+    }
+
+    if (normalized === 'false' || normalized === 'no' || normalized === 'n' || normalized === '0') {
+        return false;
+    }
+
+    return null;
+};
+
+const normalizeString = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed || null;
+};
+
+const normalizeStringList = (value) => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value
+        .map((entry) => normalizeString(entry))
+        .filter(Boolean);
+};
+
+const normalizeRelatedSeries = (value) => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value
+        .map((entry) => {
+            if (!entry || typeof entry !== 'object') {
+                return null;
+            }
+
+            const title = normalizeString(entry.title);
+            const sourceUrl = normalizeString(entry.sourceUrl);
+            const relation = normalizeString(entry.relation);
+            if (!title && !sourceUrl && !relation) {
+                return null;
+            }
+
+            return {
+                ...(title ? {title} : {}),
+                ...(sourceUrl ? {sourceUrl} : {}),
+                ...(relation ? {relation} : {}),
+            };
+        })
+        .filter(Boolean);
+};
+
 const parseResponsePayload = async (response) => {
     const text = await response.text().catch(() => '');
     if (!text.trim()) {
@@ -142,6 +218,41 @@ export const createPortalRavenClient = ({
             }
 
             return await request(`/v1/download/search/${encodeURIComponent(normalized)}`);
+        },
+        getTitleDetails: async (sourceUrl) => {
+            const normalized = typeof sourceUrl === 'string' ? sourceUrl.trim() : '';
+            if (!normalized) {
+                throw new Error('sourceUrl is required.');
+            }
+
+            const payload = await request(`/v1/download/title-details?url=${encodeURIComponent(normalized)}`);
+            if (!payload || typeof payload !== 'object') {
+                return {
+                    sourceUrl: normalized,
+                    summary: null,
+                    type: null,
+                    adultContent: null,
+                    associatedNames: [],
+                    status: null,
+                    released: null,
+                    officialTranslation: null,
+                    animeAdaptation: null,
+                    relatedSeries: [],
+                };
+            }
+
+            return {
+                sourceUrl: normalizeString(payload.sourceUrl) ?? normalized,
+                summary: normalizeString(payload.summary),
+                type: normalizeString(payload.type),
+                adultContent: normalizeBoolean(payload.adultContent),
+                associatedNames: normalizeStringList(payload.associatedNames),
+                status: normalizeString(payload.status),
+                released: normalizeString(payload.released),
+                officialTranslation: normalizeBoolean(payload.officialTranslation),
+                animeAdaptation: normalizeBoolean(payload.animeAdaptation),
+                relatedSeries: normalizeRelatedSeries(payload.relatedSeries),
+            };
         },
         getTitle: async (uuid) => {
             const normalized = typeof uuid === 'string' ? uuid.trim() : '';

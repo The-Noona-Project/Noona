@@ -22,6 +22,7 @@ import {
 export function registerUserRoutes(context = {}) {
     const {
         app,
+        authorizer,
         requireAuth,
         resolvePacketHandler,
         usersCollection,
@@ -35,7 +36,21 @@ export function registerUserRoutes(context = {}) {
         refreshNormalizedUsernameIfMissing,
     } = createUserStore({resolvePacketHandler, usersCollection});
 
+    const ensureUserAccess = (req, res) => {
+        const access = authorizer?.canAccessUsers?.(req.serviceName) ?? {ok: true};
+        if (access.ok === true) {
+            return true;
+        }
+
+        res.status(access.status ?? 403).json({error: access.error || 'Forbidden'});
+        return false;
+    };
+
     app.get('/api/users', requireAuth, async (req, res) => {
+        if (!ensureUserAccess(req, res)) {
+            return;
+        }
+
         try {
             const roleRaw = normalizeString(req.query?.role);
             const roleFilter = roleRaw ? roleRaw.toLowerCase() : null;
@@ -57,6 +72,10 @@ export function registerUserRoutes(context = {}) {
     });
 
     app.get('/api/users/:username', requireAuth, async (req, res) => {
+        if (!ensureUserAccess(req, res)) {
+            return;
+        }
+
         const lookup = normalizeUsername(req.params?.username);
         const lookupKey = normalizeUsernameKey(lookup);
         if (!lookupKey) {
@@ -81,6 +100,10 @@ export function registerUserRoutes(context = {}) {
     });
 
     app.post('/api/users', requireAuth, async (req, res) => {
+        if (!ensureUserAccess(req, res)) {
+            return;
+        }
+
         const username = normalizeUsername(req.body?.username);
         const password = typeof req.body?.password === 'string' ? req.body.password : '';
         const roleInput = req.body && Object.prototype.hasOwnProperty.call(req.body, 'role')
@@ -188,6 +211,10 @@ export function registerUserRoutes(context = {}) {
     });
 
     app.put('/api/users/:username', requireAuth, async (req, res) => {
+        if (!ensureUserAccess(req, res)) {
+            return;
+        }
+
         const currentLookup = normalizeUsername(req.params?.username);
         const currentLookupKey = normalizeUsernameKey(currentLookup);
         if (!currentLookupKey) {
@@ -368,6 +395,10 @@ export function registerUserRoutes(context = {}) {
     });
 
     app.delete('/api/users/:username', requireAuth, async (req, res) => {
+        if (!ensureUserAccess(req, res)) {
+            return;
+        }
+
         const lookup = normalizeUsername(req.params?.username);
         const lookupKey = normalizeUsernameKey(lookup);
         if (!lookupKey) {
@@ -411,6 +442,10 @@ export function registerUserRoutes(context = {}) {
     });
 
     app.post('/api/users/authenticate', requireAuth, async (req, res) => {
+        if (!ensureUserAccess(req, res)) {
+            return;
+        }
+
         const username = normalizeUsername(req.body?.username);
         const password = typeof req.body?.password === 'string' ? req.body.password : '';
         const lookupKey = normalizeUsernameKey(username);

@@ -151,7 +151,7 @@ public class SettingsService {
         }
 
         if (out.getChapterTemplate() == null || out.getChapterTemplate().isBlank()) {
-            out.setChapterTemplate("Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
+            out.setChapterTemplate("{title} c{chapter} (v01) [Noona].cbz");
         }
 
         if (out.getPageTemplate() == null || out.getPageTemplate().isBlank()) {
@@ -163,7 +163,7 @@ public class SettingsService {
         }
 
         if (out.getChapterPad() == null || out.getChapterPad() < 1) {
-            out.setChapterPad(4);
+            out.setChapterPad(3);
         }
 
         return out;
@@ -200,6 +200,10 @@ public class SettingsService {
 
         if (out.getEnabled() == null) {
             out.setEnabled(false);
+        }
+
+        if (out.getOnlyDownloadWhenVpnOn() == null) {
+            out.setOnlyDownloadWhenVpnOn(false);
         }
 
         if (out.getAutoRotate() == null) {

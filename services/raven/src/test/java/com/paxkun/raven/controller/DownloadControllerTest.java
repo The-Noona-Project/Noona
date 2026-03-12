@@ -4,6 +4,7 @@ import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
 import com.paxkun.raven.service.download.DownloadProgress;
+import com.paxkun.raven.service.download.TitleDetails;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -63,6 +64,40 @@ class DownloadControllerTest {
                 .andExpect(status().isNoContent());
 
         verify(downloadService).clearDownloadStatus("Solo Leveling");
+    }
+
+    @Test
+    void titleDetailsEndpointReturnsAdultContent() throws Exception {
+        TitleDetails details = new TitleDetails();
+        details.setSourceUrl("https://source.example/solo-leveling");
+        details.setSummary("A hunter rises.");
+        details.setType("Manhwa");
+        details.setAdultContent(true);
+        details.setAssociatedNames(List.of("Only I level up"));
+        details.setStatus("Complete");
+        details.setReleased("2018");
+        details.setOfficialTranslation(true);
+        details.setAnimeAdaptation(true);
+        details.setRelatedSeries(List.of(java.util.Map.of(
+                "title", "Solo Leveling: Ragnarok",
+                "sourceUrl", "https://source.example/solo-leveling-ragnarok",
+                "relation", "Sequel"
+        )));
+
+        when(downloadService.getTitleDetails("https://source.example/solo-leveling"))
+                .thenReturn(details);
+
+        mockMvc.perform(get("/v1/download/title-details").param("url", "https://source.example/solo-leveling"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sourceUrl").value("https://source.example/solo-leveling"))
+                .andExpect(jsonPath("$.type").value("Manhwa"))
+                .andExpect(jsonPath("$.adultContent").value(true))
+                .andExpect(jsonPath("$.associatedNames[0]").value("Only I level up"))
+                .andExpect(jsonPath("$.status").value("Complete"))
+                .andExpect(jsonPath("$.released").value("2018"))
+                .andExpect(jsonPath("$.officialTranslation").value(true))
+                .andExpect(jsonPath("$.animeAdaptation").value(true))
+                .andExpect(jsonPath("$.relatedSeries[0].title").value("Solo Leveling: Ragnarok"));
     }
 
     @Test

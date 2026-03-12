@@ -5,9 +5,16 @@ import {once} from 'node:events';
 
 import {startWardenServer} from '../api/startWardenServer.mjs';
 
+const SAGE_TOKEN = 'sage-test-token';
+const PORTAL_TOKEN = 'portal-test-token';
+const TEST_ENV = {
+    WARDEN_API_TOKEN_MAP: `noona-sage:${SAGE_TOKEN},noona-portal:${PORTAL_TOKEN}`,
+};
+
 const listen = async (options = {}) => {
     const { server } = startWardenServer({
         warden: options.warden,
+        env: options.env ?? TEST_ENV,
         port: 0,
         logger: options.logger,
     });
@@ -35,6 +42,14 @@ const closeServer = (server) => new Promise((resolve, reject) => {
     });
 });
 
+const wardenFetch = (baseUrl, path, options = {}, token = SAGE_TOKEN) => fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+        ...(token ? {authorization: `Bearer ${token}`} : {}),
+        ...(options?.headers ?? {}),
+    },
+});
+
 test('GET /api/services returns installable services by default', async (t) => {
     const calls = [];
     const warden = {
@@ -53,12 +68,12 @@ test('GET /api/services returns installable services by default', async (t) => {
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services`);
+    const response = await wardenFetch(baseUrl, '/api/services');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         services: [
-            { name: 'noona-sage', category: 'core', required: false },
-            { name: 'noona-redis', category: 'addon', required: true },
+            {name: 'noona-sage', category: 'core', envConfig: [], required: false},
+            {name: 'noona-redis', category: 'addon', envConfig: [], required: true},
         ],
     });
     assert.deepEqual(calls, [{ includeInstalled: false }]);
@@ -82,15 +97,52 @@ test('GET /api/services can include installed services when requested', async (t
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services?includeInstalled=true`);
+    const response = await wardenFetch(baseUrl, '/api/services?includeInstalled=true');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         services: [
-            { name: 'noona-sage', category: 'core', installed: true, required: false },
-            { name: 'noona-redis', category: 'addon', installed: false, required: true },
+            {name: 'noona-sage', category: 'core', envConfig: [], installed: true, required: false},
+            {name: 'noona-redis', category: 'addon', envConfig: [], installed: false, required: true},
         ],
     });
     assert.deepEqual(calls, [{ includeInstalled: true }]);
+});
+
+test('protected Warden routes reject requests without a bearer token', async (t) => {
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services', {}, null);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), {
+        error: 'Missing or invalid Authorization header.',
+    });
+});
+
+test('noona-portal token is limited to read-only activity routes', async (t) => {
+    const warden = {
+        listServices: async () => [],
+        getInstallationProgress: async () => ({items: [], status: 'idle', percent: null}),
+        installServices: async () => [],
+        getStorageLayout: async () => ({root: '/srv/noona', services: []}),
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const allowedResponse = await wardenFetch(baseUrl, '/api/services/install/progress', {}, PORTAL_TOKEN);
+    assert.equal(allowedResponse.status, 200);
+
+    const forbiddenResponse = await wardenFetch(baseUrl, '/api/storage/layout', {}, PORTAL_TOKEN);
+    assert.equal(forbiddenResponse.status, 403);
+    assert.deepEqual(await forbiddenResponse.json(), {
+        error: 'Forbidden for this service identity.',
+    });
 });
 
 test('GET /api/storage/layout returns the Warden storage layout payload', async (t) => {
@@ -116,7 +168,7 @@ test('GET /api/storage/layout returns the Warden storage layout payload', async 
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/storage/layout`);
+    const response = await wardenFetch(baseUrl, '/api/storage/layout');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         root: '/srv/noona',
@@ -158,7 +210,7 @@ test('GET /api/setup/config returns persisted setup snapshot metadata from warde
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/setup/config`);
+    const response = await wardenFetch(baseUrl, '/api/setup/config');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         exists: true,
@@ -168,8 +220,8 @@ test('GET /api/setup/config returns persisted setup snapshot metadata from warde
             selected: ['noona-portal'],
             values: {
                 'noona-portal': {
-                    DISCORD_BOT_TOKEN: 'token',
-                    KAVITA_API_KEY: 'k-api',
+                    DISCORD_BOT_TOKEN: '********',
+                    KAVITA_API_KEY: '********',
                 },
             },
         },
@@ -199,6 +251,22 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
                 ],
             };
         },
+        getServiceConfig(name) {
+            if (name !== 'noona-portal') {
+                throw new Error('unknown service');
+            }
+
+            return {
+                env: {
+                    DISCORD_BOT_TOKEN: 'token',
+                    KAVITA_API_KEY: 'k-api',
+                },
+                envConfig: [
+                    {key: 'DISCORD_BOT_TOKEN', sensitive: true},
+                    {key: 'KAVITA_API_KEY', sensitive: true},
+                ],
+            };
+        },
         listServices: async () => [],
         installServices: async () => [],
     };
@@ -217,7 +285,7 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
         },
     };
 
-    const response = await fetch(`${baseUrl}/api/setup/config`, {
+    const response = await wardenFetch(baseUrl, '/api/setup/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
@@ -229,13 +297,22 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
         exists: true,
         path: '/srv/noona/wardenm/noona-settings.json',
         selected: ['noona-portal'],
-        snapshot: payload,
+        snapshot: {
+            version: 2,
+            selected: ['noona-portal'],
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: '********',
+                    KAVITA_API_KEY: '********',
+                },
+            },
+        },
         runtime: [
             {
                 service: 'noona-portal',
                 env: {
-                    DISCORD_BOT_TOKEN: 'token',
-                    KAVITA_API_KEY: 'k-api',
+                    DISCORD_BOT_TOKEN: '********',
+                    KAVITA_API_KEY: '********',
                 },
                 hostPort: null,
             },
@@ -259,7 +336,7 @@ test('POST /api/services/install returns results and status code for errors', as
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/install`, {
+    const response = await wardenFetch(baseUrl, '/api/services/install', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ services: [
@@ -308,7 +385,7 @@ test('POST /api/services/install accepts async installs and reports an active se
     });
 
     const body = JSON.stringify({services: [{name: 'noona-kavita'}]});
-    const firstResponse = await fetch(`${baseUrl}/api/services/install?async=true`, {
+    const firstResponse = await wardenFetch(baseUrl, '/api/services/install?async=true', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body,
@@ -322,7 +399,7 @@ test('POST /api/services/install accepts async installs and reports an active se
         progress,
     });
 
-    const secondResponse = await fetch(`${baseUrl}/api/services/install?async=true`, {
+    const secondResponse = await wardenFetch(baseUrl, '/api/services/install?async=true', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body,
@@ -349,7 +426,7 @@ test('POST /api/services/install validates payload', async (t) => {
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/install`, {
+    const response = await wardenFetch(baseUrl, '/api/services/install', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ services: [] }),
@@ -372,7 +449,7 @@ test('GET /api/services/install/progress forwards to warden summary', async (t) 
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/install/progress`);
+    const response = await wardenFetch(baseUrl, '/api/services/install/progress');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         status: 'installing',
@@ -398,7 +475,7 @@ test('GET /api/services/installation/logs returns installation history from ward
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/installation/logs?limit=5`);
+    const response = await wardenFetch(baseUrl, '/api/services/installation/logs?limit=5');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         service: 'installation',
@@ -425,7 +502,7 @@ test('GET /api/services/:name/logs returns history from warden', async (t) => {
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/noona-sage/logs?limit=10`);
+    const response = await wardenFetch(baseUrl, '/api/services/noona-sage/logs?limit=10');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         service: 'noona-sage',
@@ -449,7 +526,7 @@ test('POST /api/services/:name/test delegates to warden testService', async (t) 
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/noona-portal/test`, {
+    const response = await wardenFetch(baseUrl, '/api/services/noona-portal/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ method: 'GET' }),
@@ -472,7 +549,7 @@ test('POST /api/services/:name/test returns error when unsupported', async (t) =
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/noona-sage/test`, {
+    const response = await wardenFetch(baseUrl, '/api/services/noona-sage/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -499,7 +576,7 @@ test('POST /api/services/noona-raven/detect returns detection payload', async (t
     const { server, baseUrl } = await listen({ warden });
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/services/noona-raven/detect`, { method: 'POST' });
+    const response = await wardenFetch(baseUrl, '/api/services/noona-raven/detect', {method: 'POST'});
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { detection: { mountPath: '/data/path' } });
 });
@@ -516,7 +593,7 @@ test('GET /api/debug returns debug state payload', async (t) => {
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/debug`);
+    const response = await wardenFetch(baseUrl, '/api/debug');
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {enabled: true, value: 'true'});
 });
@@ -535,7 +612,7 @@ test('POST /api/debug updates warden debug mode', async (t) => {
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/debug`, {
+    const response = await wardenFetch(baseUrl, '/api/debug', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({enabled: false}),
@@ -559,7 +636,7 @@ test('POST /api/ecosystem/restart delegates to warden restartEcosystem', async (
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/ecosystem/restart`, {
+    const response = await wardenFetch(baseUrl, '/api/ecosystem/restart', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({trackedOnly: false}),
@@ -583,7 +660,7 @@ test('POST /api/ecosystem/factory-reset delegates to warden factoryResetEcosyste
     const {server, baseUrl} = await listen({warden});
     t.after(() => closeServer(server));
 
-    const response = await fetch(`${baseUrl}/api/ecosystem/factory-reset`, {
+    const response = await wardenFetch(baseUrl, '/api/ecosystem/factory-reset', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({deleteDockers: true, deleteRavenDownloads: true}),

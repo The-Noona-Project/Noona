@@ -5,6 +5,7 @@ import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
 import com.paxkun.raven.service.download.DownloadProgress;
 import com.paxkun.raven.service.download.SearchTitle;
+import com.paxkun.raven.service.download.TitleDetails;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -55,6 +56,22 @@ public class DownloadController {
                         " | searchId=" + sanitizedSearchId +
                         " | options=" + optionCount);
         return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/title-details")
+    public ResponseEntity<TitleDetails> getTitleDetails(@RequestParam("url") String url) {
+        String normalized = url == null ? "" : url.trim();
+        if (normalized.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        TitleDetails details = downloadService.getTitleDetails(normalized);
+        if (details == null) {
+            TitleDetails empty = new TitleDetails();
+            empty.setSourceUrl(normalized);
+            return ResponseEntity.ok(empty);
+        }
+        return ResponseEntity.ok(details);
     }
 
     /**

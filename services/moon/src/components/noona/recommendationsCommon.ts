@@ -13,6 +13,34 @@ export type RecommendationTimelineEvent = {
     actor?: RecommendationTimelineActor | null;
 };
 
+export type RecommendationMetadataSelection = {
+    status?: string | null;
+    query?: string | null;
+    title?: string | null;
+    provider?: string | null;
+    providerSeriesId?: string | null;
+    aniListId?: string | null;
+    malId?: string | null;
+    cbrId?: string | null;
+    summary?: string | null;
+    sourceUrl?: string | null;
+    coverImageUrl?: string | null;
+    adultContent?: boolean | null;
+    selectedAt?: string | null;
+    selectedBy?: {
+        username?: string | null;
+        discordId?: string | null;
+    } | null;
+    queuedAt?: string | null;
+    titleUuid?: string | null;
+    appliedAt?: string | null;
+    appliedSeriesId?: number | null;
+    appliedLibraryId?: number | null;
+    appliedTitle?: string | null;
+    lastAttemptedAt?: string | null;
+    lastError?: string | null;
+};
+
 export type RecommendationRecord = {
     id?: string | null;
     source?: string | null;
@@ -23,6 +51,7 @@ export type RecommendationRecord = {
     selectedOptionIndex?: number | null;
     title?: string | null;
     href?: string | null;
+    sourceAdultContent?: boolean | null;
     approvedAt?: string | null;
     deniedAt?: string | null;
     denialReason?: string | null;
@@ -44,6 +73,7 @@ export type RecommendationRecord = {
         channelId?: string | null;
     } | null;
     timeline?: RecommendationTimelineEvent[] | null;
+    metadataSelection?: RecommendationMetadataSelection | null;
 };
 
 export type RecommendationsResponse = {
@@ -56,6 +86,31 @@ export type RecommendationResponse = {
 };
 
 export const normalizeString = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+export const normalizeBoolean = (value: unknown): boolean | null => {
+    if (typeof value === "boolean") {
+        return value;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === "true" || normalized === "yes" || normalized === "y" || normalized === "1") {
+        return true;
+    }
+
+    if (normalized === "false" || normalized === "no" || normalized === "n" || normalized === "0") {
+        return false;
+    }
+
+    return null;
+};
 
 export const normalizeStatus = (value: unknown): string => {
     const normalized = normalizeString(value).toLowerCase();
@@ -116,6 +171,46 @@ export const resolveRecommendationKey = (entry: RecommendationRecord, index: num
 
 export const recommendationTitle = (entry: RecommendationRecord): string =>
     normalizeString(entry.title) || normalizeString(entry.query) || "Untitled recommendation";
+
+export const recommendationMetadataLabel = (value: RecommendationMetadataSelection | null | undefined): string => {
+    const title = normalizeString(value?.title);
+    const provider = normalizeString(value?.provider).toUpperCase();
+    if (title && provider) {
+        return `${title} (${provider})`;
+    }
+    if (title) {
+        return title;
+    }
+    if (provider) {
+        return provider;
+    }
+    if (normalizeString(value?.aniListId)) {
+        return `AniList ${normalizeString(value?.aniListId)}`;
+    }
+    if (normalizeString(value?.malId)) {
+        return `MyAnimeList ${normalizeString(value?.malId)}`;
+    }
+    if (normalizeString(value?.cbrId)) {
+        return `ComicBookResources ${normalizeString(value?.cbrId)}`;
+    }
+    return "";
+};
+
+export const recommendationMetadataStatusLabel = (value: RecommendationMetadataSelection | null | undefined): string => {
+    const status = normalizeString(value?.status).toLowerCase();
+    if (status === "applied") return "metadata applied";
+    if (status === "failed") return "metadata retrying";
+    if (value) return "metadata queued";
+    return "";
+};
+
+export const recommendationMetadataHasAdultContent = (
+    value: RecommendationMetadataSelection | null | undefined,
+): boolean => normalizeBoolean(value?.adultContent) === true;
+
+export const recommendationSourceHasAdultContent = (
+    value: RecommendationRecord | null | undefined,
+): boolean => normalizeBoolean(value?.sourceAdultContent) === true;
 
 export const timelineActorLabel = (event: RecommendationTimelineEvent): string => {
     const role = normalizeString(event?.actor?.role).toLowerCase();

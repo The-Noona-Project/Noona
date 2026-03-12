@@ -4,15 +4,33 @@ import {useEffect, useMemo, useState} from "react";
 import {Button, Card, Column, Heading, Input, Row, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
+import {LibraryMetadataBatchModal} from "./LibraryMetadataBatchModal";
 import {RAVEN_TITLE_CARD_WIDTH, RavenTitleCard, type RavenTitleCardEntry} from "./RavenTitleCard";
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+type RavenLibraryImportSummary = {
+    manifestsFound?: number | null;
+    importedTitles?: number | null;
+    failedImports?: number | null;
+    queuedChapters?: number | null;
+    newChaptersQueued?: number | null;
+    missingChaptersQueued?: number | null;
+    scannedLibraries?: number | null;
+    message?: string | null;
+    error?: string;
+};
 
 export function LibrariesPage() {
     const [titles, setTitles] = useState<RavenTitleCardEntry[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [query, setQuery] = useState("");
     const [typeFilter, setTypeFilter] = useState<string>("All");
+    const [checkingImports, setCheckingImports] = useState(false);
+    const [importsMessage, setImportsMessage] = useState<string | null>(null);
+    const [importsError, setImportsError] = useState<string | null>(null);
+    const [metadataBatchOpen, setMetadataBatchOpen] = useState(false);
+    const [metadataBatchMessage, setMetadataBatchMessage] = useState<string | null>(null);
 
     const load = async () => {
         setError(null);
@@ -47,6 +65,50 @@ export function LibrariesPage() {
     useEffect(() => {
         void load();
     }, []);
+
+    const checkAvailableImports = async () => {
+        setCheckingImports(true);
+        setImportsError(null);
+        setImportsMessage(null);
+
+        try {
+            const res = await fetch("/api/noona/raven/library/imports/check", {
+                method: "POST",
+            });
+            const json = (await res.json().catch(() => null)) as RavenLibraryImportSummary | null;
+            if (!res.ok) {
+                throw new Error(normalizeString(json?.error).trim() || `Import check failed (HTTP ${res.status}).`);
+            }
+
+            const manifestsFound =
+                typeof json?.manifestsFound === "number" && Number.isFinite(json.manifestsFound)
+                    ? json.manifestsFound
+                    : null;
+            const importedTitles =
+                typeof json?.importedTitles === "number" && Number.isFinite(json.importedTitles)
+                    ? json.importedTitles
+                    : null;
+            const queuedChapters =
+                typeof json?.queuedChapters === "number" && Number.isFinite(json.queuedChapters)
+                    ? json.queuedChapters
+                    : null;
+            const failedImports =
+                typeof json?.failedImports === "number" && Number.isFinite(json.failedImports)
+                    ? json.failedImports
+                    : null;
+
+            const fallbackMessage = manifestsFound && manifestsFound > 0
+                ? `Imported ${importedTitles ?? 0} title(s) from ${manifestsFound} manifest(s)${queuedChapters ? ` and queued ${queuedChapters} chapter(s)` : ""}${failedImports ? `. Failed imports: ${failedImports}.` : "."}`
+                : "No available .noona imports were found.";
+            setImportsMessage(normalizeString(json?.message).trim() || fallbackMessage);
+            await load();
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setImportsError(message);
+        } finally {
+            setCheckingImports(false);
+        }
+    };
 
     const libraryTabs = useMemo(() => {
         const list = titles ?? [];
@@ -127,11 +189,39 @@ export function LibrariesPage() {
                             <Button variant="primary" href="/downloads">
                                 Open downloads
                             </Button>
+                            <Button
+                                variant="secondary"
+                                disabled={checkingImports}
+                                onClick={() => void checkAvailableImports()}
+                            >
+                                {checkingImports ? "Checking imports..." : "Check available imports"}
+                            </Button>
+                            <Button variant="secondary" onClick={() => setMetadataBatchOpen(true)}>
+                                Find missing metadata
+                            </Button>
                             <Button variant="secondary" onClick={() => void load()}>
                                 Refresh
                             </Button>
                         </Row>
                     </Row>
+
+                    {importsError && (
+                        <Card fillWidth background="surface" border="danger-alpha-weak" padding="m" radius="l">
+                            <Text>{importsError}</Text>
+                        </Card>
+                    )}
+
+                    {importsMessage && !importsError && (
+                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                            <Text>{importsMessage}</Text>
+                        </Card>
+                    )}
+
+                    {metadataBatchMessage && (
+                        <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                            <Text>{metadataBatchMessage}</Text>
+                        </Card>
+                    )}
 
                     <Row gap="8" style={{flexWrap: "wrap"}}>
                         {libraryTabs.map((value) => (
@@ -198,6 +288,19 @@ export function LibrariesPage() {
                             })}
                         </Row>
                     )}
+
+                    <LibraryMetadataBatchModal
+                        open={metadataBatchOpen}
+                        titles={titles ?? []}
+                        onClose={(result) => {
+                            setMetadataBatchOpen(false);
+                            const appliedCount = result?.appliedCount ?? 0;
+                            if (appliedCount > 0) {
+                                setMetadataBatchMessage(`Applied metadata to ${appliedCount} title(s).`);
+                                void load();
+                            }
+                        }}
+                    />
                 </Column>
             </AuthGate>
         </SetupModeGate>

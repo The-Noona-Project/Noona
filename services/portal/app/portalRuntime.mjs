@@ -69,6 +69,7 @@ export const startPortal = async (overrides = {}) => {
 
     const warden = createPortalWardenClient({
         baseUrl: config.warden.baseUrl,
+        token: config.warden.token,
         timeoutMs: config.http.timeoutMs,
     });
     runtime.warden = warden;
@@ -118,6 +119,7 @@ export const startPortal = async (overrides = {}) => {
             vaultClient: vault,
             ravenClient: raven,
             kavitaClient: kavita,
+            komfClient: komf,
             wardenClient: warden,
             moonBaseUrl: config.moon?.baseUrl,
             kavitaBaseUrl: config.kavita?.externalUrl,

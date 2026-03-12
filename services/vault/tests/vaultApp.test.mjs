@@ -205,20 +205,20 @@ test('createVaultApp warns when no tokens are configured', () => {
 test('createVaultApp logs loaded services when tokens exist', () => {
     const logs = [];
     createVaultApp({
-        env: { VAULT_TOKEN_MAP: 'moon:abc,raven:def' },
+        env: {VAULT_TOKEN_MAP: 'noona-sage:abc,noona-portal:def'},
         warn: () => {},
         log: message => logs.push(message),
         debug: () => {},
         handlePacket: async () => ({}),
     });
 
-    assert.ok(logs.some(message => message.includes('moon, raven')));
+    assert.ok(logs.some(message => message.includes('noona-sage, noona-portal')));
 });
 
 test('POST /v1/vault/handle authorizes valid token and returns result', async () => {
     const packets = [];
     const { app } = createVaultApp({
-        env: { VAULT_TOKEN_MAP: 'moon:secret' },
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {},
         log: () => {},
         debug: () => {},
@@ -253,7 +253,7 @@ test('POST /v1/vault/handle authorizes valid token and returns result', async ()
 
 test('POST /v1/vault/handle returns 400 when handler reports error', async () => {
     const { app } = createVaultApp({
-        env: { VAULT_TOKEN_MAP: 'moon:secret' },
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {},
         log: () => {},
         debug: () => {},
@@ -285,7 +285,7 @@ test('POST /v1/vault/handle returns 400 when handler reports error', async () =>
 test('POST /v1/vault/handle returns 500 when handler throws', async () => {
     const warnings = [];
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'moon:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: message => warnings.push(message),
         log: () => {
         },
@@ -312,7 +312,7 @@ test('POST /v1/vault/handle returns 500 when handler throws', async () => {
     assert.equal(response.status, 500);
     const body = await response.json();
     assert.deepEqual(body, {error: 'packet exploded'});
-    assert.ok(warnings.some(message => message.includes('Packet handler failed for moon: packet exploded')));
+    assert.ok(warnings.some(message => message.includes('Packet handler failed for noona-sage: packet exploded')));
 
     await new Promise((resolve, reject) =>
         server.close(err => (err ? reject(err) : resolve()))
@@ -321,7 +321,7 @@ test('POST /v1/vault/handle returns 500 when handler throws', async () => {
 
 test('POST /v1/vault/handle rejects requests without valid token', async () => {
     const { app } = createVaultApp({
-        env: { VAULT_TOKEN_MAP: 'moon:secret' },
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {},
         log: () => {},
         debug: () => {},
@@ -374,7 +374,7 @@ test('GET /v1/vault/health responds with status message', async () => {
 
 test('GET /v1/vault/debug returns current debug state', async () => {
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {
         },
         log: () => {
@@ -403,7 +403,7 @@ test('GET /v1/vault/debug returns current debug state', async () => {
 test('POST /v1/vault/debug updates debug state', async () => {
     let enabled = false;
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {
         },
         log: () => {
@@ -461,7 +461,7 @@ test('POST /v1/vault/handle returns array payloads from handler', async () => {
     };
 
     const { app } = createVaultApp({
-        env: { VAULT_TOKEN_MAP: 'raven:secret' },
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {},
         log: () => {},
         debug: () => {},
@@ -496,10 +496,56 @@ test('POST /v1/vault/handle returns array payloads from handler', async () => {
     );
 });
 
+test('POST /v1/vault/handle rejects packets outside the service policy scope', async () => {
+    let called = false;
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async () => {
+            called = true;
+            return {ok: true};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/handle`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret',
+        },
+        body: JSON.stringify({
+            storageType: 'mongo',
+            operation: 'find',
+            payload: {
+                collection: 'noona_settings',
+                query: {key: 'downloads.naming'},
+            },
+        }),
+    });
+
+    assert.equal(response.status, 403);
+    assert.equal(called, false);
+    const body = await response.json();
+    assert.ok(body.error.includes('not allowed'));
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('GET /api/secrets/:path returns stored secret payload', async () => {
     const packets = [];
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
         warn: () => {
         },
         log: () => {
@@ -536,9 +582,41 @@ test('GET /api/secrets/:path returns stored secret payload', async () => {
     );
 });
 
+test('GET /api/secrets/:path rejects secret paths outside the service policy scope', async () => {
+    let called = false;
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async () => {
+            called = true;
+            return {status: 'ok', data: {secret: {}}};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/secrets/admin%2Froot`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+
+    assert.equal(response.status, 403);
+    assert.equal(called, false);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('GET /api/secrets/:path returns 404 when secret is missing', async () => {
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
         warn: () => {
         },
         log: () => {
@@ -568,7 +646,7 @@ test('GET /api/secrets/:path returns 404 when secret is missing', async () => {
 test('PUT /api/secrets/:path writes secret via packet handler', async () => {
     const packets = [];
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
         warn: () => {
         },
         log: () => {
@@ -608,7 +686,7 @@ test('PUT /api/secrets/:path writes secret via packet handler', async () => {
 test('DELETE /api/secrets/:path deletes secret via packet handler', async () => {
     const packets = [];
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'portal:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
         warn: () => {
         },
         log: () => {
@@ -649,7 +727,7 @@ test('DELETE /api/secrets/:path deletes secret via packet handler', async () => 
 test('POST /api/users creates a user and GET /api/users lists sanitized users', async () => {
     const store = createUsersPacketHandler();
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {
         },
         log: () => {
@@ -699,10 +777,39 @@ test('POST /api/users creates a user and GET /api/users lists sanitized users', 
     );
 });
 
+test('user routes reject non-admin service identities', async () => {
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async () => ({status: 'ok', data: []}),
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/users`, {
+        headers: {authorization: 'Bearer secret'},
+    });
+
+    assert.equal(response.status, 403);
+    const payload = await response.json();
+    assert.ok(payload.error.includes('not allowed'));
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('POST /api/users/authenticate validates credentials via hashed passwords', async () => {
     const store = createUsersPacketHandler();
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {
         },
         log: () => {
@@ -768,7 +875,7 @@ test('POST /api/users/authenticate validates credentials via hashed passwords', 
 test('PUT and DELETE /api/users update and remove users', async () => {
     const store = createUsersPacketHandler();
     const {app} = createVaultApp({
-        env: {VAULT_TOKEN_MAP: 'sage:secret'},
+        env: {VAULT_TOKEN_MAP: 'noona-sage:secret'},
         warn: () => {
         },
         log: () => {

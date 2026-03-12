@@ -75,27 +75,29 @@ test('normalizeEnvKey helper formats service names for env lookup', () => {
     assert.equal(normalizeEnvKey('noona-portal'), 'NOONA_PORTAL_VAULT_TOKEN');
 });
 
-test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async () => {
+test('managed descriptors only inject Vault tokens into services that talk to Vault', async () => {
     const { generatedTokenCache } = __testables__;
     generatedTokenCache.clear();
 
-    const services = [
+    const servicesWithVaultAccess = [
         'noona-sage',
-        'noona-moon',
-        'noona-oracle',
         'noona-raven',
         'noona-portal',
+    ];
+    const servicesWithoutVaultAccess = [
+        'noona-moon',
+        'noona-oracle',
         'noona-vault',
     ];
 
-    for (const name of services) {
+    for (const name of [...servicesWithVaultAccess, ...servicesWithoutVaultAccess]) {
         generatedTokenCache.set(name, `${name}-cached-token`);
     }
 
     const module = await import('../docker/noonaDockers.mjs?test=setup');
     const { default: noonaDockers } = module;
 
-    for (const name of services) {
+    for (const name of servicesWithVaultAccess) {
         const service = noonaDockers[name];
         assert.ok(service, `Service ${name} should exist in setup wizard definition.`);
 
@@ -109,6 +111,16 @@ test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async
         if (field) {
             assert.equal(field.defaultValue, token);
         }
+    }
+
+    for (const name of servicesWithoutVaultAccess) {
+        const service = noonaDockers[name];
+        assert.ok(service, `Service ${name} should exist in setup wizard definition.`);
+        assert.equal(
+            service.env.some((entry) => entry.startsWith('VAULT_API_TOKEN=')),
+            false,
+            `Service ${name} should not receive a direct Vault token.`,
+        );
     }
 });
 

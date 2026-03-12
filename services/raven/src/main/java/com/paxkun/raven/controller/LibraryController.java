@@ -189,4 +189,10 @@ public class LibraryController {
         LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
         return ResponseEntity.ok(result);
     }
+
+    @PostMapping("/v1/library/imports/check")
+    public ResponseEntity<LibraryService.LibraryImportSummary> checkAvailableImports() {
+        LibraryService.LibraryImportSummary result = libraryService.checkAvailableImports();
+        return ResponseEntity.ok(result);
+    }
 }

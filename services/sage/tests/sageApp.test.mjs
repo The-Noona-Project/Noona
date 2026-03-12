@@ -48,6 +48,9 @@ const createRavenStub = (overrides = {}) => ({
     async checkLibraryForNewChapters() {
         throw new Error('checkLibraryForNewChapters should not be called')
     },
+    async checkAvailableLibraryImports() {
+        throw new Error('checkAvailableLibraryImports should not be called')
+    },
     async getTitle() {
         throw new Error('getTitle should not be called')
     },
@@ -71,6 +74,9 @@ const createRavenStub = (overrides = {}) => ({
     },
     async searchTitle() {
         throw new Error('searchTitle should not be called')
+    },
+    async getTitleDetails() {
+        throw new Error('getTitleDetails should not be called')
     },
     async queueDownload() {
         throw new Error('queueDownload should not be called')
@@ -1574,6 +1580,97 @@ test('setupClient.installServices can request async forwarding to Warden', async
     assert.deepEqual(parsedBody.services, [{name: 'noona-sage'}])
 })
 
+test('setupClient forwards Warden bearer auth when a WARDEN_API_TOKEN is configured', async (t) => {
+    const requests = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            env: {
+                WARDEN_API_TOKEN: 'warden-secret',
+            },
+            fetchImpl: async (url, options = {}) => {
+                requests.push({url, headers: options.headers})
+                return {
+                    ok: true,
+                    status: 200,
+                    async json() {
+                        return {services: []}
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services`)
+    assert.equal(response.status, 200)
+    await response.json()
+
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].url, 'http://warden.local/api/services?includeInstalled=false')
+    assert.equal(requests[0].headers.Authorization, 'Bearer warden-secret')
+})
+
+test('setup routes proxy setup config and storage layout through the setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({status: 200, results: []}),
+            getStorageLayout: async () => {
+                calls.push('layout')
+                return {root: '/srv/noona', services: []}
+            },
+            getSetupConfig: async () => {
+                calls.push('get-config')
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 2},
+                    error: null
+                }
+            },
+            saveSetupConfig: async (payload) => {
+                calls.push({save: payload})
+                return {exists: true, snapshot: payload}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const layoutResponse = await fetch(`${baseUrl}/api/setup/layout`)
+    assert.equal(layoutResponse.status, 200)
+    assert.deepEqual(await layoutResponse.json(), {root: '/srv/noona', services: []})
+
+    const configResponse = await fetch(`${baseUrl}/api/setup/config`)
+    assert.equal(configResponse.status, 200)
+    assert.deepEqual(await configResponse.json(), {
+        exists: true,
+        path: '/srv/noona/wardenm/noona-settings.json',
+        snapshot: {version: 2},
+        error: null,
+    })
+
+    const payload = {version: 2, selected: ['noona-portal']}
+    const saveResponse = await fetch(`${baseUrl}/api/setup/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    })
+    assert.equal(saveResponse.status, 200)
+    assert.deepEqual(await saveResponse.json(), {
+        exists: true,
+        snapshot: payload,
+    })
+    assert.deepEqual(calls, ['layout', 'get-config', {save: payload}])
+})
+
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -2278,6 +2375,72 @@ test('DELETE /api/recommendations/:id allows manageRecommendations users to clos
     assert.deepEqual(deleteCalls, [['portal_recommendations', {_id: 'rec-delete-1'}]])
 })
 
+test('GET /api/recommendations/:id includes sourceAdultContent from the stored recommendation', async (t) => {
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return [
+                {
+                    _id: 'rec-source-adult-1',
+                    source: 'discord',
+                    status: 'pending',
+                    requestedAt: '2026-03-10T00:00:00.000Z',
+                    query: 'Ore no Level Up ga Okashii!',
+                    searchId: 'search-source-adult-1',
+                    selectedOptionIndex: 1,
+                    title: 'Ore no Level Up ga Okashii!',
+                    href: 'https://weebcentral.com/series/017J6XGG6KRM1YDSXY4JENCO9B/ore-no-level-up-ga-okashi-dekiru-otoko-no-isekai-tensei',
+                    sourceAdultContent: true,
+                    requestedBy: {
+                        discordId: '111',
+                        tag: 'requester',
+                    },
+                },
+            ]
+        }
+        return originalFindMany(collection, query)
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-source-adult-1`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(response.status, 200)
+
+    const payload = await response.json()
+    assert.equal(payload.recommendation?.id, 'rec-source-adult-1')
+    assert.equal(payload.recommendation?.sourceAdultContent, true)
+})
+
 test('DELETE /api/recommendations/:id retries fallback query for serialized recommendation ids', async (t) => {
     const deleteCalls = []
     const recommendations = [
@@ -2474,11 +2637,8 @@ test('POST /api/recommendations/:id/approve queues Raven downloads for manageRec
     assert.equal(recommendations[0].status, 'approved')
 })
 
-test('POST /api/recommendations/:id/approve auto-applies metadata through Portal when available', async (t) => {
+test('POST /api/recommendations/:id/approve stores selected metadata for deferred apply', async (t) => {
     const queueCalls = []
-    const portalSearchCalls = []
-    const portalMatchCalls = []
-    const portalApplyCalls = []
     const recommendations = [
         {
             _id: 'rec-approve-metadata-1',
@@ -2531,37 +2691,6 @@ test('POST /api/recommendations/:id/approve auto-applies metadata through Portal
                 return {completed: true}
             },
         },
-        portalClient: createPortalMetadataStub({
-            async searchKavitaTitles(query) {
-                portalSearchCalls.push(query)
-                return {
-                    series: [
-                        {
-                            seriesId: 17,
-                            libraryId: 4,
-                            name: 'Solo Leveling',
-                        },
-                    ],
-                }
-            },
-            async fetchTitleMetadataMatches(payload) {
-                portalMatchCalls.push(payload)
-                return {
-                    matches: [
-                        {
-                            provider: 'mal',
-                            providerSeriesId: '15180124327',
-                            title: 'Solo Leveling',
-                            coverImageUrl: 'https://covers.example/solo-leveling.jpg',
-                        },
-                    ],
-                }
-            },
-            async applyTitleMetadataMatch(payload) {
-                portalApplyCalls.push(payload)
-                return {message: 'Applied the selected Kavita metadata match.'}
-            },
-        }),
         ravenClient: createRavenStub({
             async queueDownload(payload) {
                 queueCalls.push(payload)
@@ -2588,28 +2717,122 @@ test('POST /api/recommendations/:id/approve auto-applies metadata through Portal
 
     const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-metadata-1/approve`, {
         method: 'POST',
-        headers: {Authorization: `Bearer ${token}`},
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Solo Leveling',
+            metadataSelection: {
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                summary: 'The strongest hunter returns.',
+                sourceUrl: 'https://metadata.example/solo-leveling',
+                coverImageUrl: 'https://covers.example/solo-leveling.jpg',
+                adultContent: true,
+            },
+        }),
     })
     assert.equal(response.status, 200)
     const payload = await response.json()
 
     assert.deepEqual(queueCalls, [{searchId: 'search-metadata-123', optionIndex: 1}])
-    assert.deepEqual(portalSearchCalls, ['Solo Leveling'])
-    assert.deepEqual(portalMatchCalls, [{seriesId: 17, query: 'Solo Leveling'}])
-    assert.equal(portalApplyCalls.length, 1)
-    assert.equal(portalApplyCalls[0]?.seriesId, 17)
-    assert.equal(portalApplyCalls[0]?.libraryId, 4)
-    assert.equal(portalApplyCalls[0]?.provider, 'mal')
-    assert.equal(portalApplyCalls[0]?.providerSeriesId, '15180124327')
-    assert.equal(portalApplyCalls[0]?.titleUuid, 'title-uuid-7')
-    assert.equal(portalApplyCalls[0]?.coverImageUrl, 'https://covers.example/solo-leveling.jpg')
-
-    assert.equal(payload.metadata?.status, 'applied')
+    assert.equal(payload.metadataSelection?.status, 'pending')
+    assert.equal(payload.metadataSelection?.provider, 'mal')
+    assert.equal(payload.metadataSelection?.providerSeriesId, '15180124327')
+    assert.equal(payload.metadataSelection?.adultContent, true)
+    assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-7')
     assert.ok(Array.isArray(payload.recommendation?.timeline))
     const metadataComment = payload.recommendation.timeline.find((event) =>
-        event?.type === 'comment' && /auto-applied metadata/i.test(event?.body ?? ''))
+        event?.type === 'comment' && /Queued metadata plan/i.test(event?.body ?? ''))
     assert.ok(metadataComment)
-    assert.equal(metadataComment?.actor?.username, 'Portal')
+    assert.equal(metadataComment?.actor?.username, 'Moon')
+    assert.equal(recommendations[0]?.metadataSelection?.status, 'pending')
+    assert.equal(recommendations[0]?.metadataSelection?.adultContent, true)
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-7')
+})
+
+test('POST /api/recommendations/:id/approve rejects invalid metadata selections before queueing Raven', async (t) => {
+    const queueCalls = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-invalid-metadata-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Wind Breaker',
+            searchId: 'search-invalid-metadata-123',
+            selectedOptionIndex: 1,
+            title: 'Wind Breaker',
+            href: 'https://source.example/wind-breaker',
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async queueDownload(payload) {
+                queueCalls.push(payload)
+                return {taskId: 'should-not-queue'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-invalid-metadata-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Wind Breaker',
+            metadataSelection: {
+                title: 'Wind Breaker',
+            },
+        }),
+    })
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.match(payload.error, /valid metadata selection/i)
+    assert.deepEqual(queueCalls, [])
 })
 
 test('POST /api/recommendations/:id/approve retries fallback query for serialized recommendation ids', async (t) => {
@@ -3046,6 +3269,46 @@ test('POST /api/raven/library/checkForNew surfaces Raven errors', async (t) => {
     assert.ok(payload.error.includes('Unable to check Raven library for updates'))
 })
 
+test('POST /api/raven/library/imports/check proxies Raven library imports', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkAvailableLibraryImports() {
+                calls.push('imports')
+                return {manifestsFound: 2, importedTitles: 2, queuedChapters: 1}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/imports/check`, {method: 'POST'})
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {manifestsFound: 2, importedTitles: 2, queuedChapters: 1})
+    assert.deepEqual(calls, ['imports'])
+})
+
+test('POST /api/raven/library/imports/check surfaces Raven errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkAvailableLibraryImports() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/imports/check`, {method: 'POST'})
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to check Raven library imports'))
+})
+
 test('GET /api/raven/title/:uuid proxies Raven title lookups', async (t) => {
     const calls = []
     const app = createSageApp({
@@ -3084,6 +3347,53 @@ test('GET /api/raven/title/:uuid returns 404 for unknown titles', async (t) => {
     assert.equal(response.status, 404)
     const payload = await response.json()
     assert.ok(payload.error.includes('not found'))
+})
+
+test('GET /api/raven/title-details proxies Raven source-title metadata lookups', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getTitleDetails(sourceUrl) {
+                calls.push(sourceUrl)
+                return {
+                    sourceUrl,
+                    status: 'Complete',
+                    released: '2018',
+                    officialTranslation: true,
+                    animeAdaptation: true,
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title-details?url=${encodeURIComponent('https://source.example/solo-leveling')}`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        sourceUrl: 'https://source.example/solo-leveling',
+        status: 'Complete',
+        released: '2018',
+        officialTranslation: true,
+        animeAdaptation: true,
+    })
+    assert.deepEqual(calls, ['https://source.example/solo-leveling'])
+})
+
+test('GET /api/raven/title-details validates the source url query parameter', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub(),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title-details`)
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {error: 'url is required.'})
 })
 
 test('POST /api/raven/title/:uuid/checkForNew proxies title sync', async (t) => {
@@ -5481,6 +5791,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
             key: 'downloads.vpn',
             provider: 'pia',
             enabled: true,
+            onlyDownloadWhenVpnOn: true,
             autoRotate: true,
             rotateEveryMinutes: 30,
             region: 'us_california',
@@ -5515,6 +5826,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     const getPayload = await getRes.json()
     assert.equal(getPayload.provider, 'pia')
     assert.equal(getPayload.enabled, true)
+    assert.equal(getPayload.onlyDownloadWhenVpnOn, true)
     assert.equal(getPayload.piaUsername, 'pia-user')
     assert.equal(getPayload.piaPassword, '********')
     assert.equal(getPayload.passwordConfigured, true)
@@ -5528,6 +5840,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
         },
         body: JSON.stringify({
             enabled: true,
+            onlyDownloadWhenVpnOn: false,
             autoRotate: true,
             rotateEveryMinutes: 45,
             region: 'us_texas',
@@ -5538,6 +5851,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     assert.equal(putRes.status, 200)
     const putPayload = await putRes.json()
     assert.equal(putPayload.enabled, true)
+    assert.equal(putPayload.onlyDownloadWhenVpnOn, false)
     assert.equal(putPayload.rotateEveryMinutes, 45)
     assert.equal(putPayload.region, 'us_texas')
     assert.equal(putPayload.piaUsername, 'new-user')
@@ -5548,6 +5862,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     assert.ok(stored)
     assert.equal(stored.piaUsername, 'new-user')
     assert.equal(stored.piaPassword, 'new-secret')
+    assert.equal(stored.onlyDownloadWhenVpnOn, false)
     assert.equal(stored.rotateEveryMinutes, 45)
 })
 
@@ -5638,6 +5953,68 @@ test('settings VPN routes proxy region list and rotate action to Raven', async (
     assert.equal(loginTestCalls[0].region, 'us_california')
     assert.equal(loginTestCalls[0].piaUsername, 'pia-user')
     assert.equal(loginTestCalls[0].piaPassword, 'pia-secret')
+})
+
+test('settings VPN test-login falls back to persisted credentials when form values are blank', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.vpn',
+            provider: 'pia',
+            enabled: true,
+            autoRotate: true,
+            rotateEveryMinutes: 45,
+            region: 'us_texas',
+            piaUsername: 'saved-user',
+            piaPassword: 'saved-secret',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+    const loginTestCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async testVpnLogin(payload) {
+                loginTestCalls.push(payload)
+                return {
+                    ok: true,
+                    message: 'PIA login succeeded for region us_texas.',
+                    region: payload.region,
+                    endpoint: '203.0.113.22',
+                    reportedIp: '198.51.100.42',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const testLoginRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/test-login`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            triggeredBy: 'moon-settings',
+            region: '',
+            piaUsername: '',
+            piaPassword: '',
+        }),
+    })
+    assert.equal(testLoginRes.status, 200)
+    const testLoginPayload = await testLoginRes.json()
+    assert.equal(testLoginPayload.ok, true)
+    assert.equal(testLoginPayload.region, 'us_texas')
+    assert.equal(loginTestCalls.length, 1)
+    assert.equal(loginTestCalls[0].triggeredBy, 'moon-settings')
+    assert.equal(loginTestCalls[0].region, 'us_texas')
+    assert.equal(loginTestCalls[0].piaUsername, 'saved-user')
+    assert.equal(loginTestCalls[0].piaPassword, 'saved-secret')
 })
 
 test('settings debug routes read and update live debug mode', async (t) => {

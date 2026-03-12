@@ -366,6 +366,88 @@ test('POST /api/portal/kavita/noona-login provisions a Kavita account and return
     }
 });
 
+test('POST /api/portal/kavita/noona-login continues when Vault credential reads or writes fail', async () => {
+    const kavitaCalls = [];
+    const tokens = new Map();
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            kavita: {
+                baseUrl: 'http://noona-kavita:5000/',
+                externalUrl: 'https://kavita.example.com',
+            },
+            join: {
+                defaultRoles: ['Pleb', 'Login'],
+                defaultLibraries: ['Manga'],
+            },
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            createOrUpdateUser: async (payload) => {
+                kavitaCalls.push(payload);
+                return {
+                    id: 142,
+                    username: payload.username,
+                    email: payload.email,
+                    roles: ['Pleb', 'Login'],
+                    libraries: ['Manga'],
+                    created: true,
+                };
+            },
+        },
+        vault: {
+            readSecret: async () => {
+                const error = new Error('Vault read unavailable');
+                error.status = 503;
+                throw error;
+            },
+            storePortalCredential: async () => {
+                const error = new Error('Vault write unavailable');
+                error.status = 503;
+                throw error;
+            },
+        },
+        onboardingStore: {
+            setToken: async (discordId, payload) => {
+                const record = {token: 'login-token-vault-soft-fail', discordId, ...payload};
+                tokens.set(record.token, record);
+                return record;
+            },
+            getToken: async (token) => tokens.get(token) ?? null,
+            consumeToken: async (token) => {
+                const record = tokens.get(token) ?? null;
+                tokens.delete(token);
+                return record;
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/noona-login`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                discordId: '333333333333333333',
+                email: 'reader@example.com',
+                username: 'Reader Display',
+                discordUsername: 'reader.discord',
+                displayName: 'Reader Display',
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 201);
+        assert.equal(payload.token, 'login-token-vault-soft-fail');
+        assert.equal(payload.username, 'reader.discord');
+        assert.equal(kavitaCalls.length, 1);
+    } finally {
+        await stopServer(server);
+    }
+});
+
 test('POST /api/portal/kavita/noona-login retries with safe fallback roles after Kavita returns 400', async () => {
     const kavitaCalls = [];
     const tokens = new Map();
@@ -445,6 +527,66 @@ test('POST /api/portal/kavita/noona-login retries with safe fallback roles after
         assert.deepEqual(kavitaCalls[0].libraries, ['Manga']);
         assert.deepEqual(kavitaCalls[1].roles, ['Pleb', 'Login']);
         assert.deepEqual(kavitaCalls[1].libraries, []);
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('POST /api/portal/kavita/noona-login fails clearly when token storage does not return a token', async () => {
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            kavita: {
+                baseUrl: 'http://noona-kavita:5000/',
+                externalUrl: 'https://kavita.example.com',
+            },
+            join: {
+                defaultRoles: ['Pleb', 'Login'],
+                defaultLibraries: ['Manga'],
+            },
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            createOrUpdateUser: async (payload) => ({
+                id: 77,
+                username: payload.username,
+                email: payload.email,
+                roles: ['Pleb', 'Login'],
+                libraries: ['Manga'],
+                created: true,
+            }),
+        },
+        vault: {
+            readSecret: async () => null,
+            storePortalCredential: async () => {
+            },
+        },
+        onboardingStore: {
+            setToken: async (discordId, payload) => ({discordId, ...payload}),
+            getToken: async () => null,
+            consumeToken: async () => null,
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/noona-login`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                discordId: '444444444444444444',
+                email: 'reader@example.com',
+                username: 'Reader Display',
+                discordUsername: 'reader.discord',
+                displayName: 'Reader Display',
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 502);
+        assert.equal(payload.error, 'Portal login token storage did not return a token.');
     } finally {
         await stopServer(server);
     }
@@ -690,6 +832,76 @@ test('GET /api/portal/kavita/title-search rebuilds series links with external Ka
         assert.equal(payload.baseUrl, 'https://kavita.example.com/');
         assert.equal(payload.series.length, 1);
         assert.equal(payload.series[0].url, 'https://kavita.example.com/library/4/series/17');
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('GET /api/portal/kavita/series-metadata returns unmatched Kavita series for Moon batch metadata flows', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            getBaseUrl: () => 'http://noona-kavita:5000/',
+            fetchSeriesMetadataStatus: async (options = {}) => {
+                calls.push(options);
+                return [
+                    {
+                        isMatched: false,
+                        validUntilUtc: '0001-01-01T00:00:00Z',
+                        series: {
+                            seriesId: 17,
+                            libraryId: 4,
+                            name: 'Solo Leveling',
+                            originalName: 'Na Honjaman Level Up',
+                            localizedName: 'Only I Level Up',
+                            libraryName: 'Manhwa',
+                        },
+                    },
+                ];
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/series-metadata?state=notMatched&pageSize=0`);
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.deepEqual(calls, [
+            {
+                matchStateOption: 2,
+                libraryType: -1,
+                searchTerm: '',
+                pageNumber: 1,
+                pageSize: 0,
+            },
+        ]);
+        assert.deepEqual(payload, {
+            state: 'notMatched',
+            pageNumber: 1,
+            pageSize: 0,
+            items: [
+                {
+                    seriesId: 17,
+                    libraryId: 4,
+                    name: 'Solo Leveling',
+                    originalName: 'Na Honjaman Level Up',
+                    localizedName: 'Only I Level Up',
+                    libraryName: 'Manhwa',
+                    aliases: ['Na Honjaman Level Up', 'Only I Level Up'],
+                    url: 'http://noona-kavita:5000/library/4/series/17',
+                    isMatched: false,
+                    validUntilUtc: '0001-01-01T00:00:00Z',
+                },
+            ],
+        });
     } finally {
         await stopServer(server);
     }
@@ -969,6 +1181,7 @@ test('POST /api/portal/kavita/title-match uses Komf metadata search and normaliz
                         resultId: '15180124327',
                         imageUrl: 'https://covers.example/solo-leveling.jpg',
                         url: 'https://www.mangaupdates.com/series/6z1uqw7/solo-leveling',
+                        'Adult Content': 'yes',
                     },
                 ];
             },
@@ -998,6 +1211,64 @@ test('POST /api/portal/kavita/title-match uses Komf metadata search and normaliz
                     aniListId: null,
                     malId: null,
                     cbrId: null,
+                    adultContent: true,
+                },
+            ],
+        });
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('POST /api/portal/kavita/title-match/search exposes adult-content flags from Komf metadata tags', async () => {
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        komf: {
+            searchSeriesMetadata: async (query) => {
+                assert.equal(query, 'Ore no Level Up ga Okashii!');
+                return [
+                    {
+                        title: 'Ore no Level Up ga Okashii!',
+                        provider: 'MANGA_UPDATES',
+                        resultId: 'mu-777',
+                        tags: {
+                            'Adult Content': 'yes',
+                        },
+                    },
+                ];
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/title-match/search`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({query: 'Ore no Level Up ga Okashii!'}),
+        });
+        const payload = await response.json();
+        assert.equal(response.status, 200);
+        assert.deepEqual(payload, {
+            query: 'Ore no Level Up ga Okashii!',
+            matches: [
+                {
+                    provider: 'MANGA_UPDATES',
+                    title: 'Ore no Level Up ga Okashii!',
+                    summary: null,
+                    score: null,
+                    coverImageUrl: null,
+                    sourceUrl: null,
+                    providerSeriesId: 'mu-777',
+                    aniListId: null,
+                    malId: null,
+                    cbrId: null,
+                    adultContent: true,
                 },
             ],
         });

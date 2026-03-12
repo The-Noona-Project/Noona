@@ -3,6 +3,7 @@
 import express from 'express';
 
 import {getDefaultHandlePacket} from './defaultHandlePacket.mjs';
+import {createVaultPolicyAuthorizer} from '../auth/servicePolicy.mjs';
 import {createRequireAuth, extractBearerToken, parseTokenMap} from '../auth/tokenAuth.mjs';
 import {registerSecretRoutes} from '../routes/registerSecretRoutes.mjs';
 import {registerSystemRoutes} from '../routes/registerSystemRoutes.mjs';
@@ -25,6 +26,7 @@ export function createVaultApp(options = {}) {
         warn,
         debug,
         isDebugEnabled,
+        servicePolicies,
         setDebug,
     } = options;
 
@@ -58,6 +60,7 @@ export function createVaultApp(options = {}) {
     app.use(express.json());
 
     const requireAuth = createRequireAuth({serviceByToken, debug: logger.debug});
+    const authorizer = createVaultPolicyAuthorizer({servicePolicies});
     const getDebugState =
         typeof isDebugEnabled === 'function'
             ? isDebugEnabled
@@ -88,18 +91,21 @@ export function createVaultApp(options = {}) {
         applyDebugState,
         getDebugState,
         logger,
+        authorizer,
         parseBooleanInput,
         requireAuth,
         resolvePacketHandler,
     });
     registerUserRoutes({
         app,
+        authorizer,
         requireAuth,
         resolvePacketHandler,
         usersCollection,
     });
     registerSecretRoutes({
         app,
+        authorizer,
         requireAuth,
         resolvePacketHandler,
         secretsCollection,

@@ -23,12 +23,17 @@ Raven is Noona's downloader and library worker service. It searches supported so
 4. Zip finished chapters there, then move completed title folders into `downloaded/`.
 5. Track progress/status, persist the current task into Vault-backed Mongo plus the Redis current-task cache, and
    update local library metadata.
-6. Ask Portal/Kavita to scan the matching library after successful imports so new titles appear in Kavita.
+6. Write a `<uuid>.noona` manifest beside the completed title's `.cbz` files so Noona can rebuild that title later if
+   the library database needs to be restored.
+7. Ask Portal/Kavita to scan the matching library after successful imports so new titles appear in Kavita.
 
 ## API Surface (Direct Raven)
 
 - `GET /v1/download/health`
 - `GET /v1/download/search/{titleName}`
+- `GET /v1/download/title-details?url=<source_url>` - scrape a source title page for summary, media type,
+  `Adult Content`, `Associated Name(s)`, `Status`, `Released`, `Official Translation`, `Anime Adaptation`, and
+  `Related Series(s)`
 - `GET /v1/download/select/{searchId}/{optionIndex}`
 - `POST /v1/download/pause` - gracefully pause active tasks after the current chapter finishes and persist pending work
 - `GET /v1/download/status`
@@ -44,6 +49,8 @@ Raven is Noona's downloader and library worker service. It searches supported so
 - `GET /v1/library/get/{titleName}`
 - `PATCH /v1/library/title/{uuid}` - update stored library metadata for an existing title (`title`, `sourceUrl`, and
   now `coverUrl`)
+- `POST /v1/library/imports/check` - scan `downloaded/` for `.noona` manifests, rebuild missing Noona library rows,
+  sync missing/new chapters from the source, and trigger Kavita scans for affected libraries
 
 ## Build & Test
 ```bash
@@ -51,6 +58,17 @@ cd services/raven
 ./gradlew clean build
 ./gradlew test
 ```
+
+## Manual Scraper Inspection
+
+To capture the current live fields Raven extracts for `Solo Leveling` from WeebCentral, run:
+
+```bash
+cd services/raven
+./gradlew -PliveScrape=true test --tests com.paxkun.raven.service.download.TitleScraperSoloLevelingInspectionTest
+```
+
+The test writes a pretty-printed JSON snapshot to `build/test-results/live-scrape/solo-leveling-inspection.json`.
 
 ## Docker (from repository root)
 ```bash
@@ -65,11 +83,20 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
 - Persist downloads by mounting a host directory to `/app/downloads`.
 - Raven now uses `/app/downloads/downloading` for active work and `/app/downloads/downloaded` for completed title
   folders.
+- Raven writes a `<uuid>.noona` JSON manifest into each completed title folder. The manifest stores the Raven/Noona
+  title metadata needed to re-import that title into the library database after a reset, and Raven's import check
+  reads the live `.cbz` files in that same folder to rebuild the downloaded chapter index before it looks for missing
+  chapters.
 - Raven writes `latest.log` under `NOONA_LOG_DIR` when that environment variable is set. Warden-managed installs mount
   Raven logs at `/app/logs`.
 - Raven now supports PIA OpenVPN rotation controls through `/v1/vpn/*`. It reads Vault key `downloads.vpn`,
   pauses active downloads at chapter boundaries, rotates to the selected PIA region, then resumes paused tasks.
-  Scheduled rotation is driven by the configured interval (default 30 minutes).
+  Scheduled rotation is driven by the configured interval (default 30 minutes). When `onlyDownloadWhenVpnOn` is
+  enabled in that same settings document, queued Raven downloads wait until the VPN reports a live connection before
+  starting.
+- After Raven connects OpenVPN, it now replays the pre-VPN non-default IPv4 routes back onto the container's local
+  interface so Docker-local traffic to services like Vault, Portal, and managed Kavita stays on the Noona bridge
+  network while Raven's internet-bound download traffic continues using the VPN default route.
 - `POST /v1/vpn/test-login` validates provided PIA credentials against a selected region profile without triggering
   the download pause/rotate/resume flow, and returns Raven's `https://api64.ipify.org?format=json` reported IP for
   that login test.
@@ -86,6 +113,9 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
   resume.
 - Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming plus per-thread
   speed limits without editing container env.
+- New Raven naming defaults now follow a Kavita-style manga chapter pattern:
+  `{title} c{chapter} (v01) [Noona].cbz`, with the default chapter padding set to `3` so chapter `3` becomes `c003`.
+  The `(v01)` segment is currently a literal default because Raven does not yet scrape per-volume metadata.
 - In Raven naming templates, `{chapter}` now uses the configured chapter padding width. `{chapter_padded}` remains as a
   compatible alias for the same padded value.
 - Missing-chapter detection now prefers the stored `downloadedChapterNumbers` index on each library title instead of
@@ -102,6 +132,12 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
 - After Raven finishes moving a title into `downloaded/`, it asks Portal to run
   `POST /api/portal/kavita/libraries/scan` for that media-type library so Kavita picks up the new files. If Portal is
   unavailable, Raven falls back to a direct Kavita library scan when `KAVITA_BASE_URL` and `KAVITA_API_KEY` are set.
+- `GET /v1/download/title-details` now scrapes the selected source title page directly so Portal can read fields like
+  `Adult Content: yes`, `Associated Name(s)`, `Status`, `Released`, `Official Translation`, `Anime Adaptation`, and
+  `Related Series(s)` from the same site Raven later uses for download and Moon title-page metadata.
+- `POST /v1/library/imports/check` replays those `.noona` manifests on demand: Raven recreates missing library rows,
+  rechecks the source for missing/new chapters using the files already present on disk, downloads anything still
+  missing, and then requests Kavita scans for the affected media types.
 - `GET /v1/download/status/summary` exposes the active download title, current library-check title, idle state, and
   the effective worker rate-limit array plus the current persisted task snapshot so Portal and Moon can surface live
   activity and recovery state after restarts.

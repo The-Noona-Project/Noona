@@ -36,6 +36,10 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
 - Tokens are loaded from `VAULT_TOKEN_MAP` (`service:token,service:token` format).
 - `app/createVaultApp.mjs` wires the token registry, and `auth/tokenAuth.mjs` attaches `req.serviceName` for authorized
   callers.
+- Vault now also enforces per-service authorization in `auth/servicePolicy.mjs`. In the managed stack:
+  `noona-sage` has admin access, `noona-portal` is limited to `portal/*` secrets plus its recommendation/subscription
+  collections and Discord-DM Redis keys, `noona-raven` is limited to Raven collections/current-task Redis state, and
+  `noona-warden` is limited to `noona_settings` plus wizard-state Redis keys.
 
 ## Permission Model
 
@@ -43,6 +47,8 @@ operations to storage adapters, and exposes APIs for users, secrets, and runtime
   `download_management` keys.
 - The user APIs still accept legacy inputs (`lookup_new_title`, `download_new_title`,
   `check_download_missing_titles`) so older callers can write users/defaults without breaking.
+- User routes and debug/admin packet operations are now Sage-only capabilities; non-admin service identities receive
+  `403` responses before the packet handler runs.
 
 ## Environment Variables
 

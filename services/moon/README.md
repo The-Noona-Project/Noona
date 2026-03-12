@@ -25,7 +25,9 @@ frontend.
 - [Legacy recommendation redirect route](src/app/recommendation/page.tsx)
 - [Legacy recommendation detail redirect route](src/app/recommendation/[id]/page.tsx)
 - [Downloads add page component](src/components/noona/DownloadsAddPage.tsx)
+- [Library metadata batch modal](src/components/noona/LibraryMetadataBatchModal.tsx)
 - [Recommendations admin page component](src/components/noona/AdminRecommendationsPage.tsx)
+- [Recommendation approval modal](src/components/noona/RecommendationApprovalModal.tsx)
 - [My recommendations page component](src/components/noona/MyRecommendationsPage.tsx)
 - [My subscriptions page component](src/components/noona/MySubscriptionsPage.tsx)
 - [Recommendation detail page component](src/components/noona/RecommendationDetailPage.tsx)
@@ -53,6 +55,8 @@ frontend.
 - [Noona API routes](src/app/api/noona)
 - [Install history proxy](src/app/api/noona/install/history/route.ts)
 - [Home latest-titles proxy](src/app/api/noona/raven/library/latest/route.ts)
+- [Raven source-title details proxy](src/app/api/noona/raven/title-details/route.ts)
+- [Raven library import proxy](src/app/api/noona/raven/library/imports/check/route.ts)
 - [Raven pause proxy](src/app/api/noona/raven/downloads/pause/route.ts)
 - [Raven VPN settings proxy](src/app/api/noona/settings/downloads/vpn/route.ts)
 - [Raven VPN login test proxy](src/app/api/noona/settings/downloads/vpn/test-login/route.ts)
@@ -74,6 +78,8 @@ frontend.
 - [Noona-to-Kavita login proxy](src/app/api/noona/kavita/login/route.ts)
 - [Kavita user-role list proxy](src/app/api/noona/portal/kavita/users/route.ts)
 - [Kavita user-role update proxy](src/app/api/noona/portal/kavita/users/[username]/roles/route.ts)
+- [Recommendation metadata search proxy](src/app/api/noona/portal/kavita/title-match/search/route.ts)
+- [Library metadata status proxy](src/app/api/noona/portal/kavita/series-metadata/route.ts)
 - [Managed Kavita key proxy](src/app/api/noona/setup/kavita/service-key/route.ts)
 - [Web GUI helpers](src/utils/webGui.ts)
 - [Permission helpers](src/utils/moonPermissions.ts)
@@ -93,19 +99,31 @@ frontend.
   as the main library page so the landing screen and `/libraries` stay visually consistent, and signed-in users
   without `library_management` can still see the latest titles there even though the cards stay non-clickable.
 - `/libraries` - Library browsing, filtering, and title drill-down. The tab and direct page now require the
-  `library_management` permission.
+  `library_management` permission. The page now also includes a `Check available imports` action that asks Raven to
+  rehydrate titles from on-disk `.noona` manifests, resync missing/new chapters from the source, and trigger a
+  Kavita library scan for the affected media types. It now also exposes a `Find missing metadata` batch flow that
+  opens a centered modal, loads Kavita series currently marked `notMatched`, filters them to Raven-linked library
+  titles, and lets admins confirm/apply Komf metadata one title at a time without leaving `/libraries`.
 - `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
   the `download_management` permission, and the add-download action now links to a dedicated `/downloads/add` page
   instead of an in-page modal. The page now also prioritizes Raven's persisted
   current-task snapshot, including recovery state, remaining queued chapters, and the new-vs-missing split that Raven
-  discovered for the active task. The top task panel now rotates through every live Raven task like a slide deck, and
-  both the active-download and history grids scale with Moon's selected `desktop` / `ultrawide` / `mobile` view mode.
-  Active download cards now also expose a `Pause downloads` action that asks Raven to finish the chapter in progress
-  and persist the remaining chapter queue as a paused task.
+  discovered for the active task. The downloads screen now uses a focused mission-control layout instead of the older
+  slide-deck view: one primary focus board for the hottest task, a stacked live queue panel, a slimmer worker rail,
+  and card-based history summaries for finished/interrupted runs. Active download cards still expose a
+  `Pause downloads` action that asks Raven to finish the chapter in progress and persist the remaining chapter queue as
+  a paused task.
 - `/downloads/add` - Dedicated Raven search/select/queue page for adding downloads. It keeps keyboard shortcuts,
   supports quick single-result queueing, and stores recent search queries for faster repeat queue sessions.
 - `/recommendations` and `/recommendations/[id]` - admin-only recommendation management and detail timeline routes.
-  They require `manageRecommendations` and expose approve, deny, close, and admin-comment actions.
+  They require `manageRecommendations` and expose approve, deny, close, and admin-comment actions. Approving now opens
+  a Moon modal that searches metadata candidates through Portal/Komf, lets the manager confirm the intended metadata
+  match, then submits that saved metadata plan together with the Raven queue request. Moon shows the saved metadata
+  state on both the admin list and detail views so managers can see when metadata is merely queued versus later
+  applied in Kavita after the download/import completes. Moon now also surfaces the recommendation's
+  `sourceAdultContent` flag from Raven's source-site scrape on the admin list, detail view, and approval modal, and
+  requires an explicit confirmation before either approval action queues Raven when the source page reports
+  `Adult Content: yes`.
 - `/myrecommendations` and `/myrecommendations/[id]` - user recommendation routes that require `myRecommendations` and
   show only the signed-in user's records plus a Once UI timeline for created/approved/denied/comment events and the
   Raven download lifecycle (`download-started`, `download-progress`, `download-completed`).
@@ -127,13 +145,18 @@ frontend.
   controls, internal and external service links including Moon's public `MOON_EXTERNAL_URL` override, the
   same Warden setup JSON snapshot download/import actions used by the setup wizard, and a load-and-restart path that
   posts an imported settings JSON back to Warden before forcing a full ecosystem restart with the imported service
-  selection. That snapshot now maps to Warden's canonical `<NOONA_DATA_ROOT>/noona-settings.json` boot file,
+  selection. Moon now reaches those control-plane reads/writes through Sage's `/api/setup/*` broker routes instead of
+  calling Warden directly, and the downloaded snapshot redacts sensitive service secrets while preserving masked-value
+  restore support for unchanged credentials. That snapshot now maps to Warden's canonical
+  `<NOONA_DATA_ROOT>/noona-settings.json` boot file,
   setup-wizard-style storage tree, editable storage paths, the
   hidden-by-default Vault Mongo URI toggle, a fixed-height sorted Once UI `InfiniteScroll` collection viewer, downloader
   worker/naming
   controls, the dashboard-style Noona Docker updater with summary cards plus a full-width responsive service grid.
   Settings service-card grids now default to five columns on wide layouts and collapse responsively on smaller screens,
-  and Raven naming templates where `{chapter}` now follows the configured chapter padding width while
+  and Raven naming templates now default to the Kavita-style chapter pattern
+  `{title} c{chapter} (v01) [Noona].cbz` with a default chapter pad of `3`, while `{chapter}` follows the configured
+  chapter padding width and
   `{chapter_padded}` remains available as the same padded value,
   Discord bot validation plus per-command role fields for `/ding`,
   `/join`, `/scan`, `/search`, `/recommend`, and `/subscribe`, the managed
@@ -151,8 +174,8 @@ frontend.
   Raven worker speed-limit inputs now accept raw KB/s values
   or `mb` / `gb` suffixes, and `-1` means unlimited speed. Moon's Portal-backed Kavita metadata-match proxy now also
   includes a PIA VPN panel under Downloader settings so admins can store PIA credentials in Vault, pick a Raven VPN
-  region endpoint, run a direct login test, trigger immediate IP rotation, and configure scheduled auto-rotation
-  intervals.
+  region endpoint, run a direct login test, trigger immediate IP rotation, configure scheduled auto-rotation
+  intervals, and toggle whether Raven should keep queued downloads waiting until the VPN is actually connected.
   During rotation Raven pauses active download tasks, waits for chapter boundaries, rotates, then resumes paused tasks.
   Moon's Portal-backed Kavita metadata-match proxy now also
   uses provider-aware danger-zone confirmation: local admins confirm factory reset with their password, while
@@ -197,7 +220,10 @@ frontend.
   path, so Discord sign-in can bounce directly back into `/kavita/complete` on the correct public origin.
 - `/kavita/complete` - Internal Moon bridge route used by Kavita's `Log in with Noona` button. It requires a valid
   Noona session, asks Portal to provision or refresh the user's Kavita account, and immediately redirects the browser
-  back to Kavita with a short-lived one-time login token.
+  back to Kavita with a short-lived one-time login token. The bridge now retries Moon login once automatically when
+  the Noona session is missing on return, then surfaces a direct error instead of looping forever. It also only honors
+  explicit Kavita `target` URLs that stay on the resolved public Kavita origin/path, falling back to Portal's known
+  Kavita base URL for the final redirect when the supplied target is not trusted.
 - Title detail pages now surface Kavita series links plus metadata match actions, and the footer/title Kavita buttons
   now prefer Portal's configured external Kavita URL (`KAVITA_EXTERNAL_URL`) before falling back to the managed
   host-facing URL from Warden. The title-page
@@ -208,8 +234,9 @@ frontend.
   candidates with provider source links before applying the selected match, and applying a metadata match from the
   title page still sends the Raven title UUID so Portal can lock Kavita to the same Noona cover art that Moon is
   rendering for that title. Title detail pages now also show Raven's stored downloaded-chapter index, the exact latest
-  new/missing chapter plan returned by `Check new/missing`, and the live cached Raven task when that task belongs to
-  the current title.
+  new/missing chapter plan returned by `Check new/missing`, the live cached Raven task when that task belongs to the
+  current title, and source-title metadata such as associated names, release status/year, official translation,
+  anime-adaptation flags, and related series links from Raven's source scrape.
 - Moon now uses a permission-aware top header plus a slide-out navigation drawer for `Home`, `Library`, `Downloads`,
   `Recommendations`, `Subscriptions`, and `Settings` instead of the old fixed top tab strip. Settings keeps its own
   nested settings-only sub-navigation
@@ -224,12 +251,18 @@ frontend.
 - `src/app/api/noona/raven/*` - Raven search/download/library/status/history/pause proxies. The dedicated
   `src/app/api/noona/raven/library/latest` feed keeps the Home page's latest-title cards visible for signed-in users
   who do not have `library_management`, while full library/title navigation still stays permission-gated.
+- `src/app/api/noona/raven/title-details` - proxy for Raven's live source-title metadata scrape used by Moon's title
+  detail page when stored Raven library metadata is missing those source-only fields.
 - `src/app/api/noona/recommendations/*` - manager-only recommendation proxies for list/detail, approve, deny, close,
   and admin comments.
 - `src/app/api/noona/myrecommendations/*` - user recommendation proxies for own list/detail plus timeline comment
   replies.
 - `src/app/api/noona/mysubscriptions/*` - user subscription proxies for list and unsubscribe actions.
 - `src/app/api/noona/portal/kavita/*` - Portal-backed Kavita info, title search, and metadata-match proxies.
+- `src/app/api/noona/portal/kavita/series-metadata` - proxy for Kavita metadata-match status used by the `/libraries`
+  batch metadata modal so admins can step through unmatched titles.
+- `src/app/api/noona/portal/kavita/title-match/search` - proxy for standalone metadata candidate search used by the
+  recommendation-approval modal before a title exists in Kavita.
 - `src/app/api/noona/portal/kavita/users` and `src/app/api/noona/portal/kavita/users/[username]/roles` - Moon
   proxies for loading Kavita user-role data and updating Kavita roles from the user-management page.
 - `src/app/api/noona/kavita/login` - signed-in Noona session proxy that forwards the current Discord-backed account to

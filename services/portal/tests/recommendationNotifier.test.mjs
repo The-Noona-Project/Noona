@@ -165,6 +165,122 @@ test('recommendation notifier DMs completion with Kavita link once title is avai
     assert.ok(typeof recommendations[0]?.completedAt === 'string');
 });
 
+test('recommendation notifier applies deferred metadata after Raven import is ready', async () => {
+    const recommendations = [
+        {
+            _id: 'rec-deferred-metadata-1',
+            status: 'approved',
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            metadataSelection: {
+                status: 'pending',
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                coverImageUrl: 'https://covers.example/solo-leveling.jpg',
+                adultContent: true,
+            },
+            notifications: {
+                approvalDmSentAt: '2026-03-07T00:00:00.000Z',
+            },
+        },
+    ];
+    const identifyCalls = [];
+    const coverCalls = [];
+    const updateTitleCalls = [];
+
+    const notifier = createRecommendationNotifier({
+        discordClient: {},
+        vaultClient: {
+            findRecommendations: async () => recommendations.map((entry) => ({...entry})),
+            updateRecommendation: async ({query, update} = {}) => {
+                const index = recommendations.findIndex((entry) => matchesQuery(entry, query));
+                if (index < 0) {
+                    return {status: 'ok', matched: 0, modified: 0};
+                }
+
+                recommendations[index] = applyUpdate(recommendations[index], update);
+                return {status: 'ok', matched: 1, modified: 1};
+            },
+        },
+        ravenClient: {
+            getLibrary: async () => [
+                {
+                    uuid: 'title-uuid-7',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+            updateTitle: async (uuid, payload) => {
+                updateTitleCalls.push({uuid, payload});
+                return {
+                    uuid,
+                    coverUrl: payload?.coverUrl,
+                };
+            },
+        },
+        kavitaClient: {
+            searchTitles: async () => ({
+                series: [
+                    {
+                        libraryId: 4,
+                        seriesId: 17,
+                        name: 'Solo Leveling',
+                    },
+                ],
+            }),
+            setSeriesCover: async (payload) => {
+                coverCalls.push(payload);
+                return {ok: true};
+            },
+        },
+        komfClient: {
+            identifySeriesMetadata: async (payload) => {
+                identifyCalls.push(payload);
+                return {ok: true};
+            },
+        },
+        pollMs: 60000,
+        logger: {},
+    });
+
+    notifier.start();
+    await notifier.refresh();
+    notifier.stop();
+
+    assert.deepEqual(identifyCalls, [
+        {
+            seriesId: 17,
+            libraryId: 4,
+            provider: 'mal',
+            providerSeriesId: '15180124327',
+        },
+    ]);
+    assert.deepEqual(updateTitleCalls, [
+        {
+            uuid: 'title-uuid-7',
+            payload: {
+                coverUrl: 'https://covers.example/solo-leveling.jpg',
+            },
+        },
+    ]);
+    assert.deepEqual(coverCalls, [
+        {
+            seriesId: 17,
+            url: 'https://covers.example/solo-leveling.jpg',
+            lockCover: true,
+        },
+    ]);
+    assert.equal(recommendations[0]?.metadataSelection?.status, 'applied');
+    assert.equal(recommendations[0]?.metadataSelection?.appliedSeriesId, 17);
+    assert.equal(recommendations[0]?.metadataSelection?.appliedLibraryId, 4);
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-7');
+    assert.equal(recommendations[0]?.metadataSelection?.adultContent, true);
+    assert.ok(Array.isArray(recommendations[0]?.timeline));
+    assert.ok(recommendations[0].timeline.some((event) => /saved metadata selection/i.test(event?.body ?? '')));
+});
+
 test('recommendation notifier prefers configured external Kavita URL for completion DMs', async () => {
     const recommendations = [
         {

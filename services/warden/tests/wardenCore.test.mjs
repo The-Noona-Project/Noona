@@ -3981,6 +3981,119 @@ test('updateServiceConfig persists service runtime overrides to noona_settings',
     assert.match(update.$set.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test('updateServiceConfig preserves masked sensitive values and rejects managed credential changes', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'SERVICE_NAME=noona-portal',
+                        'VAULT_API_TOKEN=vault-token',
+                        'DISCORD_BOT_TOKEN=portal-token',
+                    ],
+                    envConfig: [
+                        {key: 'SERVICE_NAME', defaultValue: 'noona-portal', readOnly: true, serverManaged: true},
+                        {
+                            key: 'VAULT_API_TOKEN',
+                            defaultValue: 'vault-token',
+                            readOnly: true,
+                            sensitive: true,
+                            serverManaged: true
+                        },
+                        {key: 'DISCORD_BOT_TOKEN', defaultValue: 'portal-token', sensitive: true},
+                    ],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const preserved = await warden.updateServiceConfig('noona-portal', {
+        env: {
+            SERVICE_NAME: 'noona-portal',
+            VAULT_API_TOKEN: '********',
+            DISCORD_BOT_TOKEN: '********',
+        },
+    });
+
+    assert.deepEqual(preserved.service.runtimeConfig.env, {
+        DISCORD_BOT_TOKEN: 'portal-token',
+    });
+
+    await assert.rejects(
+        async () => {
+            await warden.updateServiceConfig('noona-portal', {
+                env: {
+                    SERVICE_NAME: 'noona-portal',
+                    VAULT_API_TOKEN: 'rotated-token',
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                },
+            });
+        },
+        /VAULT_API_TOKEN is managed by Warden and cannot be changed/,
+    );
+});
+
+test('installServices rejects managed environment overrides', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'SERVICE_NAME=noona-portal',
+                        'VAULT_API_TOKEN=vault-token',
+                    ],
+                    envConfig: [
+                        {key: 'SERVICE_NAME', defaultValue: 'noona-portal', readOnly: true, serverManaged: true},
+                        {
+                            key: 'VAULT_API_TOKEN',
+                            defaultValue: 'vault-token',
+                            readOnly: true,
+                            sensitive: true,
+                            serverManaged: true
+                        },
+                    ],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const results = await warden.installServices([
+        {
+            name: 'noona-portal',
+            env: {
+                VAULT_API_TOKEN: 'rotated-token',
+            },
+        },
+    ]);
+
+    const portalResult = results.find((entry) => entry?.name === 'noona-portal');
+    assert.deepEqual(portalResult, {
+        name: 'noona-portal',
+        status: 'error',
+        error: 'VAULT_API_TOKEN is managed by Warden and cannot be changed.',
+    });
+});
+
 test('saveSetupConfig writes setup snapshot to disk and applies runtime env overrides', async () => {
     const memoryFs = createMemoryFs();
     const warden = buildWarden({

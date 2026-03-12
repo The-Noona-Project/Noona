@@ -34,6 +34,12 @@ download/library routes for Moon and other clients.
 ## Common Endpoint Groups
 
 - Setup: `/api/setup/*`
+    - Sage is now the only browser-adjacent broker for Warden's control-plane routes. Moon's setup/service-management
+      proxies go through Sage for service listing, install requests, install progress/logs, service health, storage
+      layout, and setup snapshot read/write.
+    - `GET /api/setup/layout` proxies Warden's resolved storage layout.
+    - `GET /api/setup/config` and `POST /api/setup/config` proxy Warden's persisted setup snapshot, with Warden-side
+      redaction of sensitive values and masking-aware restore behavior for unchanged secrets.
     - `POST /api/setup/install?async=true` now proxies Warden's accepted/background install mode and returns the
       current install-progress snapshot immediately so Moon can keep polling instead of waiting on a long request.
 - Managed Kavita setup: `/api/setup/services/noona-kavita/service-key`
@@ -67,17 +73,20 @@ download/library routes for Moon and other clients.
   - `/api/auth/users/default-permissions` reads and updates the default permission set used for new Discord-linked
     Moon accounts. Sage now enforces `moon_login`, `mySubscriptions`, and `myRecommendations` as baseline defaults.
 - Download settings: `/api/settings/downloads/*`
-    - `/api/settings/downloads/naming` stores Raven naming templates in Vault.
+    - `/api/settings/downloads/naming` stores Raven naming templates in Vault. The default chapter filename pattern is
+      now `{title} c{chapter} (v01) [Noona].cbz`, with a default chapter pad of `3`.
     - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
       It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write, and normalizes unlimited entries to `-1`.
   - `/api/settings/downloads/vpn` stores Raven PIA VPN settings in Vault (`downloads.vpn`) while masking
-    the persisted password in responses.
+    the persisted password in responses. It now also stores `onlyDownloadWhenVpnOn`, which keeps queued Raven
+    downloads waiting until the VPN is actually connected.
   - `/api/settings/downloads/vpn/regions` proxies Raven's discovered PIA OpenVPN region options for Moon's picker.
   - `/api/settings/downloads/vpn/rotate` proxies Raven's immediate VPN rotation action so Moon can trigger
     pause -> rotate -> resume from the settings page.
       - `/api/settings/downloads/vpn/test-login` proxies Raven's credential validation endpoint so Moon can test
-        PIA login + region selection before saving or rotating; the response includes Raven's reported public IP for
-        the test session.
+        PIA login + region selection before saving or rotating; blank `piaUsername` / `piaPassword` values now fall
+        back to the saved Vault-backed VPN credentials, and the response includes Raven's reported public IP for the
+        test session.
   - `/api/settings/factory-reset` and `/api/settings/vault/wipe` now use provider-aware confirmation for dangerous
     actions: local-auth admins confirm with their password, while Discord-auth admins confirm with their current
     Discord-linked username.
@@ -85,15 +94,24 @@ download/library routes for Moon and other clients.
     - `/api/raven/library/latest` exposes the Home page latest-title feed to any authenticated Moon session after
       setup, without opening the full library routes.
     - Library listing/title/file routes require `library_management` after setup completes.
+  - `GET /api/raven/title-details?url=<source_url>` proxies Raven's live source-title scrape so Moon title pages can
+    surface source metadata like associated names, release status/year, translation/anime flags, and related series.
+  - `POST /api/raven/library/imports/check` requires `library_management`, asks Raven to rebuild titles from
+    on-disk `.noona` manifests, recheck the related title folders for missing/new chapters, and trigger the
+    downstream Kavita scans for the affected libraries.
   - Search, queue, pause (`POST /api/raven/downloads/pause`), download-status/history, and library-wide sync routes
     require `download_management` after setup completes.
 - Recommendations admin routes: `/api/recommendations*`
     - `GET /api/recommendations` and `GET /api/recommendations/:id` require `manageRecommendations` and return
       normalized recommendation records (including timeline events such as `created`, `approved`, `denied`,
-      `comment`, `download-started`, `download-progress`, and `download-completed`).
+      `comment`, `download-started`, `download-progress`, and `download-completed`). Recommendation payloads now also
+      pass through `sourceAdultContent` when Portal stored Raven's source-site `Adult Content` tag on the record.
     - `POST /api/recommendations/:id/approve` requires `manageRecommendations`, queues Raven download (`searchId` +
-      `selectedOptionIndex`), marks the recommendation approved, records an approval timeline event, and now
-      best-effort auto-applies a Kavita metadata match through Portal using the recommendation title/query.
+      `selectedOptionIndex`), marks the recommendation approved, records an approval timeline event, and now accepts
+      an optional confirmed `metadataSelection` payload from Moon. Sage stores that selection on the recommendation as
+      a pending metadata plan instead of trying to hit Kavita immediately; Portal later applies it only after Raven has
+      finished downloading and Kavita can resolve the scanned title. The stored selection now also preserves
+      `adultContent` when Portal/Komf marked the picked metadata match as `Adult Content: yes`.
     - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores
       optional denial reason, and records a denial timeline event.
     - `POST /api/recommendations/:id/comments` requires `manageRecommendations` and appends an admin comment timeline
@@ -121,6 +139,7 @@ download/library routes for Moon and other clients.
 | `SERVICE_NAME`                                 | Service label used in logs                                                               |
 | `SERVER_IP`                                    | Optional fallback LAN host for browser redirects when no explicit base URL is configured |
 | `WARDEN_BASE_URL`                              | Preferred Warden base URL override                                                       |
+| `WARDEN_API_TOKEN`                             | Bearer token Sage uses to authenticate every proxied Warden API call                     |
 | `RAVEN_BASE_URL`                               | Preferred Raven base URL override                                                        |
 | `RAVEN_INTERNAL_BASE_URL` / `RAVEN_DOCKER_URL` | Additional Raven discovery overrides                                                     |
 

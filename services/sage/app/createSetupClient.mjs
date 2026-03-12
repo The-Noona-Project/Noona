@@ -19,6 +19,15 @@ const normalizeUrl = (candidate) => {
     return `http://${trimmed}`
 }
 
+const normalizeToken = (candidate) => {
+    if (!candidate || typeof candidate !== 'string') {
+        return null
+    }
+
+    const trimmed = candidate.trim()
+    return trimmed || null
+}
+
 const resolveDefaultWardenUrls = (env = process.env) => {
     const candidates = [
         env?.WARDEN_BASE_URL,
@@ -133,6 +142,7 @@ export const normalizeServiceInstallPayload = (services) => {
 const createSetupClient = ({
                                baseUrl,
                                baseUrls = [],
+                               token,
                                fetchImpl = fetch,
                                logger,
                                serviceName,
@@ -152,6 +162,10 @@ const createSetupClient = ({
     }
 
     let preferredBaseUrl = deduped[0]
+    const authToken =
+        normalizeToken(token)
+        || normalizeToken(env?.WARDEN_API_TOKEN)
+        || normalizeToken(env?.WARDEN_ACCESS_TOKEN)
 
     const fetchFromWarden = async (path, options) => {
         const errors = []
@@ -162,7 +176,13 @@ const createSetupClient = ({
         for (const candidate of candidates) {
             try {
                 const requestUrl = new URL(path, candidate)
-                const response = await fetchImpl(requestUrl.toString(), options)
+                const response = await fetchImpl(requestUrl.toString(), {
+                    ...(options ?? {}),
+                    headers: {
+                        ...(authToken ? {Authorization: `Bearer ${authToken}`} : {}),
+                        ...((options && options.headers) ? options.headers : {}),
+                    },
+                })
 
                 if (!response.ok) {
                     throw new Error(`Warden responded with status ${response.status}`)
@@ -223,6 +243,32 @@ const createSetupClient = ({
         async getInstallProgress() {
             const response = await fetchFromWarden('/api/services/install/progress')
             return await response.json().catch(() => ({items: [], status: 'idle', percent: null}))
+        },
+        async getStorageLayout() {
+            const response = await fetchFromWarden('/api/storage/layout')
+            return await response.json().catch(() => ({root: null, services: []}))
+        },
+        async getSetupConfig() {
+            const response = await fetchFromWarden('/api/setup/config')
+            return await response.json().catch(() => ({
+                exists: false,
+                path: null,
+                snapshot: null,
+                error: null,
+            }))
+        },
+        async saveSetupConfig(snapshot = {}) {
+            if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+                throw new SetupValidationError('Setup config payload must be a JSON object.')
+            }
+
+            const response = await fetchFromWarden('/api/setup/config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(snapshot),
+            })
+
+            return await response.json().catch(() => ({}))
         },
         async getInstallationLogs(options = {}) {
             const limit = options?.limit
