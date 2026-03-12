@@ -1179,6 +1179,7 @@ test('POST /api/portal/kavita/title-match uses Komf metadata search and normaliz
                         title: 'Solo Leveling',
                         provider: 'MANGA_UPDATES',
                         resultId: '15180124327',
+                        alternateTitles: ['Only I Level Up', 'Na Honjaman Level Up'],
                         imageUrl: 'https://covers.example/solo-leveling.jpg',
                         url: 'https://www.mangaupdates.com/series/6z1uqw7/solo-leveling',
                         'Adult Content': 'yes',
@@ -1203,6 +1204,7 @@ test('POST /api/portal/kavita/title-match uses Komf metadata search and normaliz
                 {
                     provider: 'MANGA_UPDATES',
                     title: 'Solo Leveling',
+                    aliases: ['Only I Level Up', 'Na Honjaman Level Up'],
                     summary: null,
                     score: null,
                     coverImageUrl: 'https://covers.example/solo-leveling.jpg',
@@ -1236,6 +1238,7 @@ test('POST /api/portal/kavita/title-match/search exposes adult-content flags fro
                         title: 'Ore no Level Up ga Okashii!',
                         provider: 'MANGA_UPDATES',
                         resultId: 'mu-777',
+                        aliases: ['Only I Level Up'],
                         tags: {
                             'Adult Content': 'yes',
                         },
@@ -1260,6 +1263,7 @@ test('POST /api/portal/kavita/title-match/search exposes adult-content flags fro
                 {
                     provider: 'MANGA_UPDATES',
                     title: 'Ore no Level Up ga Okashii!',
+                    aliases: ['Only I Level Up'],
                     summary: null,
                     score: null,
                     coverImageUrl: null,

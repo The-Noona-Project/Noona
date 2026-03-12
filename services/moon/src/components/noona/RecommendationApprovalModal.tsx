@@ -22,6 +22,7 @@ type RecommendationApprovalModalProps = {
 type MetadataCandidate = {
     provider?: string | null;
     title?: string | null;
+    aliases?: string[] | null;
     summary?: string | null;
     score?: number | null;
     coverImageUrl?: string | null;
@@ -50,6 +51,10 @@ const normalizeIdentifier = (value: unknown): string | null => {
     const normalized = normalizeString(value);
     return normalized || null;
 };
+const normalizeStringList = (value: unknown): string[] =>
+    Array.isArray(value)
+        ? value.map((entry) => normalizeString(entry)).filter(Boolean)
+        : [];
 
 const hasMetadataIdentifiers = (candidate: MetadataCandidate | null | undefined): boolean =>
     Boolean(
@@ -78,6 +83,7 @@ const buildMetadataSelectionPayload = (
 ): RecommendationMetadataSelection => ({
     query,
     title: normalizeString(candidate.title) || null,
+    aliases: normalizeStringList(candidate.aliases),
     provider: normalizeString(candidate.provider) || null,
     providerSeriesId: normalizeIdentifier(candidate.providerSeriesId),
     aniListId: normalizeIdentifier(candidate.aniListId),

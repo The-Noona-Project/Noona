@@ -453,10 +453,12 @@ const normalizeRecommendationMetadataSelection = entry => {
         return null;
     }
 
+    const aliases = normalizeStringArray(source?.aliases);
     const selection = {
         status: normalizeRecommendationMetadataStatus(source?.status),
         query: normalizeString(source?.query) || null,
         title: normalizeString(source?.title) || null,
+        aliases,
         provider: normalizeString(source?.provider) || null,
         providerSeriesId: normalizeMetadataIdentifier(source?.providerSeriesId),
         aniListId: normalizeMetadataIdentifier(source?.aniListId),
@@ -488,6 +490,7 @@ const normalizeRecommendationMetadataSelection = entry => {
     const hasUsefulData = Boolean(
         selection.query
         || selection.title
+        || aliases.length > 0
         || selection.provider
         || selection.providerSeriesId
         || selection.aniListId

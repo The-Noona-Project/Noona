@@ -2726,6 +2726,7 @@ test('POST /api/recommendations/:id/approve stores selected metadata for deferre
             metadataSelection: {
                 query: 'Solo Leveling',
                 title: 'Solo Leveling',
+                aliases: ['Only I Level Up'],
                 provider: 'mal',
                 providerSeriesId: '15180124327',
                 summary: 'The strongest hunter returns.',
@@ -2743,6 +2744,7 @@ test('POST /api/recommendations/:id/approve stores selected metadata for deferre
     assert.equal(payload.metadataSelection?.provider, 'mal')
     assert.equal(payload.metadataSelection?.providerSeriesId, '15180124327')
     assert.equal(payload.metadataSelection?.adultContent, true)
+    assert.deepEqual(payload.metadataSelection?.aliases, ['Only I Level Up'])
     assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-7')
     assert.ok(Array.isArray(payload.recommendation?.timeline))
     const metadataComment = payload.recommendation.timeline.find((event) =>
@@ -2751,7 +2753,261 @@ test('POST /api/recommendations/:id/approve stores selected metadata for deferre
     assert.equal(metadataComment?.actor?.username, 'Moon')
     assert.equal(recommendations[0]?.metadataSelection?.status, 'pending')
     assert.equal(recommendations[0]?.metadataSelection?.adultContent, true)
+    assert.deepEqual(recommendations[0]?.metadataSelection?.aliases, ['Only I Level Up'])
     assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-7')
+})
+
+test('POST /api/recommendations/:id/approve recovers a Raven queue target from metadata aliases', async (t) => {
+    const queueCalls = []
+    const searchCalls = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-recover-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Only I Level Up',
+            searchId: null,
+            selectedOptionIndex: null,
+            title: 'Only I Level Up',
+            href: null,
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async searchTitle(query) {
+                searchCalls.push(query)
+                if (query === 'Ore no Level Up ga Okashii!') {
+                    return {searchId: 'search-recover-empty', options: []}
+                }
+                if (query === 'Only I Level Up') {
+                    return {
+                        searchId: 'search-recover-hit',
+                        options: [
+                            {
+                                index: '1',
+                                title: 'Solo Leveling',
+                                href: 'https://source.example/solo-leveling',
+                            },
+                        ],
+                    }
+                }
+                return {searchId: 'search-recover-other', options: []}
+            },
+            async getTitleDetails(sourceUrl) {
+                assert.equal(sourceUrl, 'https://source.example/solo-leveling')
+                return {
+                    sourceUrl,
+                    adultContent: false,
+                    associatedNames: ['Only I Level Up'],
+                }
+            },
+            async queueDownload(payload) {
+                queueCalls.push(payload)
+                return {
+                    taskId: 'raven-task-recovered-1',
+                    titleUuid: 'title-uuid-recovered-1',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-recover-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Ore no Level Up ga Okashii!',
+            metadataSelection: {
+                query: 'Ore no Level Up ga Okashii!',
+                title: 'Ore no Level Up ga Okashii!',
+                aliases: ['Only I Level Up'],
+                provider: 'mal',
+                providerSeriesId: 'recover-1518',
+            },
+        }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(searchCalls, ['Ore no Level Up ga Okashii!', 'Only I Level Up'])
+    assert.deepEqual(queueCalls, [{searchId: 'search-recover-hit', optionIndex: 1}])
+    assert.equal(payload.recommendation?.status, 'approved')
+    assert.equal(payload.recommendation?.searchId, 'search-recover-hit')
+    assert.equal(payload.recommendation?.selectedOptionIndex, 1)
+    assert.equal(payload.recommendation?.title, 'Solo Leveling')
+    assert.equal(payload.recommendation?.href, 'https://source.example/solo-leveling')
+    assert.equal(payload.recommendation?.sourceAdultContent, false)
+    assert.equal(recommendations[0]?.status, 'approved')
+    assert.equal(recommendations[0]?.searchId, 'search-recover-hit')
+    assert.equal(recommendations[0]?.selectedOptionIndex, 1)
+})
+
+test('POST /api/recommendations/:id/approve saves unmatched metadata plans for later when Raven recovery fails', async (t) => {
+    const queueCalls = []
+    const searchCalls = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-save-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Unknown Hunter Story',
+            searchId: null,
+            selectedOptionIndex: null,
+            title: 'Unknown Hunter Story',
+            href: null,
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async searchTitle(query) {
+                searchCalls.push(query)
+                return {searchId: `search-miss-${searchCalls.length}`, options: []}
+            },
+            async queueDownload(payload) {
+                queueCalls.push(payload)
+                return {taskId: 'should-not-queue'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-save-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Unknown Hunter Story',
+            metadataSelection: {
+                query: 'Unknown Hunter Story',
+                title: 'Ore no Hunter Story',
+                aliases: ['Unknown Hunter Story', 'Mystery Hunter'],
+                provider: 'mal',
+                providerSeriesId: 'save-1518',
+            },
+        }),
+    })
+    assert.equal(response.status, 202)
+    const payload = await response.json()
+
+    assert.equal(payload.savedForLater, true)
+    assert.match(payload.message, /expand our content reach/i)
+    assert.equal(payload.recommendation?.status, 'pending')
+    assert.equal(payload.metadataSelection?.status, 'pending')
+    assert.equal(payload.metadataSelection?.lastError, payload.message)
+    assert.deepEqual(queueCalls, [])
+    assert.deepEqual(searchCalls, ['Ore no Hunter Story', 'Unknown Hunter Story', 'Mystery Hunter'])
+    const savedComment = payload.recommendation?.timeline?.find((event) =>
+        event?.type === 'comment' && /expand our content reach/i.test(event?.body ?? ''))
+    assert.ok(savedComment)
+    assert.equal(recommendations[0]?.status, 'pending')
+    assert.equal(recommendations[0]?.metadataSelection?.lastError, payload.message)
 })
 
 test('POST /api/recommendations/:id/approve rejects invalid metadata selections before queueing Raven', async (t) => {
@@ -3007,7 +3263,7 @@ test('POST /api/recommendations/:id/approve validates recommendation queue metad
     })
     assert.equal(response.status, 409)
     const payload = await response.json()
-    assert.match(payload.error ?? '', /missing Raven queue details/i)
+    assert.match(payload.error ?? '', /saved metadata match before Noona can search alternate Raven titles/i)
     assert.deepEqual(queueCalls, [])
 })
 

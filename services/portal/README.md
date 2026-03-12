@@ -110,12 +110,14 @@ default Discord roles.
 - `/search` - search Kavita series titles by name and return matching series results.
 - `/recommend title:<name>` - search Raven for up to five title matches, ask the user to confirm the intended title
   with Discord buttons, then insert a pending recommendation document into Vault's `portal_recommendations`
-  collection. After insertion Portal sends an immediate DM receipt to the requester confirming the recommendation and,
-  when Moon URL discovery succeeds, includes a direct `/myrecommendations/<id>` link. If the confirmed title already
-  exists in Raven's library, Portal skips insertion and responds that the title is already on the server plus a Kavita
-  title link when one can be resolved (preferring `KAVITA_EXTERNAL_URL`). When Raven can inspect the selected source
-  title page, Portal also stores `sourceAdultContent` from the source site's `Adult Content` tag on the recommendation
-  document so Moon admins can be warned before approval.
+  collection. The Discord picker now also includes a `Can't find your title?` fallback action so users can save a
+  recommendation even when none of Raven's current source results match. After insertion Portal sends an immediate DM
+  receipt to the requester confirming the recommendation and, when Moon URL discovery succeeds, includes a direct
+  `/myrecommendations/<id>` link. If the confirmed title already exists in Raven's library, Portal skips insertion and
+  responds that the title is already on the server plus a Kavita title link when one can be resolved (preferring
+  `KAVITA_EXTERNAL_URL`). When Raven can inspect the selected source title page, Portal also stores
+  `sourceAdultContent` from the source site's `Adult Content` tag on the recommendation document so Moon admins can be
+  warned before approval.
 - `/subscribe title:<name>` - subscribe the Discord user to a Raven title and store the subscription in Vault's
   `portal_subscriptions` collection. Portal sends the subscriber a DM whenever Raven reports newly completed chapter
   numbers for that title.

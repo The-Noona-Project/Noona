@@ -17,6 +17,7 @@ export type RecommendationMetadataSelection = {
     status?: string | null;
     query?: string | null;
     title?: string | null;
+    aliases?: string[] | null;
     provider?: string | null;
     providerSeriesId?: string | null;
     aniListId?: string | null;

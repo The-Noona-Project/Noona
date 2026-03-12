@@ -123,7 +123,9 @@ frontend.
   applied in Kavita after the download/import completes. Moon now also surfaces the recommendation's
   `sourceAdultContent` flag from Raven's source-site scrape on the admin list, detail view, and approval modal, and
   requires an explicit confirmation before either approval action queues Raven when the source page reports
-  `Adult Content: yes`.
+  `Adult Content: yes`. Recommendations that were saved from Discord with `Can't find your title?` now carry Komf
+  aliases through the approval modal so Sage can retry Raven source lookup from those alternate names; when no source
+  can be recovered yet, Moon will still reflect the saved-for-later timeline note instead of losing the request.
 - `/myrecommendations` and `/myrecommendations/[id]` - user recommendation routes that require `myRecommendations` and
   show only the signed-in user's records plus a Once UI timeline for created/approved/denied/comment events and the
   Raven download lifecycle (`download-started`, `download-progress`, `download-completed`).

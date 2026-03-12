@@ -150,6 +150,52 @@ const normalizeDistinctStrings = (...values) => {
 
     return normalized;
 };
+const pushStringCandidates = (target = [], value) => {
+    if (Array.isArray(value)) {
+        target.push(...value);
+        return;
+    }
+
+    target.push(value);
+};
+const normalizeMetadataAliasList = (...sources) => {
+    const candidates = [];
+
+    for (const source of sources) {
+        if (!source || typeof source !== 'object') {
+            continue;
+        }
+
+        pushStringCandidates(candidates, source?.aliases);
+        pushStringCandidates(candidates, source?.Aliases);
+        pushStringCandidates(candidates, source?.alternativeTitles);
+        pushStringCandidates(candidates, source?.AlternativeTitles);
+        pushStringCandidates(candidates, source?.alternateTitles);
+        pushStringCandidates(candidates, source?.AlternateTitles);
+        pushStringCandidates(candidates, source?.alternativeNames);
+        pushStringCandidates(candidates, source?.AlternativeNames);
+        pushStringCandidates(candidates, source?.associatedNames);
+        pushStringCandidates(candidates, source?.AssociatedNames);
+        pushStringCandidates(candidates, source?.synonyms);
+        pushStringCandidates(candidates, source?.Synonyms);
+        pushStringCandidates(candidates, source?.titles);
+        pushStringCandidates(candidates, source?.Titles);
+        candidates.push(
+            source?.originalName,
+            source?.OriginalName,
+            source?.localizedName,
+            source?.LocalizedName,
+            source?.romajiTitle,
+            source?.RomajiTitle,
+            source?.englishTitle,
+            source?.EnglishTitle,
+            source?.nativeTitle,
+            source?.NativeTitle,
+        );
+    }
+
+    return normalizeDistinctStrings(...candidates);
+};
 
 const normalizeDistinctRoleList = (value) => {
     if (Array.isArray(value)) {
@@ -486,10 +532,15 @@ const normalizeMetadataMatch = (match = {}) => {
             ? match.Series
             : match;
     const adultContent = resolveAdultContentFlag(series, match);
+    const title = normalizeString(series?.title ?? series?.Title ?? series?.name ?? series?.Name) || null;
+    const aliases = normalizeMetadataAliasList(series, match).filter((alias) =>
+        normalizeMetadataKey(alias) !== normalizeMetadataKey(title),
+    );
 
     return {
         provider: normalizeString(series?.provider ?? series?.Provider ?? series?.source) || null,
-        title: normalizeString(series?.title ?? series?.Title ?? series?.name ?? series?.Name) || null,
+        title,
+        aliases,
         summary: normalizeString(series?.summary ?? series?.Summary ?? series?.description ?? series?.Description) || null,
         score: typeof match?.matchRating === 'number'
             ? match.matchRating

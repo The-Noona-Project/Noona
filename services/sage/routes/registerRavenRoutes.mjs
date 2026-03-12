@@ -14,6 +14,7 @@ export function registerRavenRoutes(context = {}) {
 
     const RECOMMENDATIONS_COLLECTION = 'portal_recommendations'
     const SUBSCRIPTIONS_COLLECTION = 'portal_subscriptions'
+    const SAVED_FOR_LATER_MESSAGE = 'Noona could not find a matching Raven source yet. We are working to expand our content reach, and this will be saved for later.'
     const APPROVED_RECOMMENDATION_STATUSES = new Set(['approved', 'accepted'])
     const DENIED_RECOMMENDATION_STATUSES = new Set(['denied', 'rejected', 'declined'])
     const PENDING_RECOMMENDATION_STATUSES = new Set(['pending', 'new', 'requested'])
@@ -29,9 +30,64 @@ export function registerRavenRoutes(context = {}) {
     const MAX_RECOMMENDATION_COMMENT_LENGTH = 2000
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
+    const normalizeDistinctStrings = (...values) => {
+        const out = []
+        const seen = new Set()
+
+        for (const value of values) {
+            if (Array.isArray(value)) {
+                for (const nestedValue of value) {
+                    const normalizedNested = normalizeString(nestedValue)
+                    if (!normalizedNested) {
+                        continue
+                    }
+
+                    const nestedKey = normalizedNested.toLowerCase()
+                    if (seen.has(nestedKey)) {
+                        continue
+                    }
+
+                    seen.add(nestedKey)
+                    out.push(normalizedNested)
+                }
+                continue
+            }
+
+            const normalized = normalizeString(value)
+            if (!normalized) {
+                continue
+            }
+
+            const key = normalized.toLowerCase()
+            if (seen.has(key)) {
+                continue
+            }
+
+            seen.add(key)
+            out.push(normalized)
+        }
+
+        return out
+    }
+    const normalizeRecommendationTitleKey = (value) =>
+        normalizeString(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()
     const normalizePositiveInteger = (value) => {
         const parsed = Number.parseInt(String(value), 10)
         return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+    }
+    const normalizeComparableUrl = (value) => {
+        const normalized = normalizeString(value)
+        if (!normalized) {
+            return null
+        }
+
+        try {
+            const parsed = new URL(normalized)
+            parsed.hash = ''
+            return parsed.toString()
+        } catch {
+            return null
+        }
     }
     const normalizeRecommendationIsoTimestamp = (value) => {
         const iso = normalizeString(value)
@@ -194,6 +250,14 @@ export function registerRavenRoutes(context = {}) {
         const selectedBySource = value?.selectedBy && typeof value.selectedBy === 'object' ? value.selectedBy : {}
         const query = normalizeString(value?.query) || null
         const title = normalizeString(value?.title ?? value?.name) || null
+        const aliases = normalizeDistinctStrings(
+            value?.aliases,
+            value?.Aliases,
+            value?.alternativeTitles,
+            value?.AlternativeTitles,
+            value?.alternateTitles,
+            value?.AlternateTitles,
+        ).filter((alias) => normalizeRecommendationTitleKey(alias) !== normalizeRecommendationTitleKey(title))
         const provider = normalizeString(value?.provider) || null
         const providerSeriesId = normalizeMetadataIdentifier(value?.providerSeriesId ?? value?.resultId)
         const aniListId = normalizeMetadataIdentifier(value?.aniListId ?? value?.AniListId)
@@ -208,6 +272,7 @@ export function registerRavenRoutes(context = {}) {
         const hasUsefulData = Boolean(
             query
             || title
+            || aliases.length > 0
             || provider
             || providerSeriesId
             || aniListId
@@ -226,6 +291,7 @@ export function registerRavenRoutes(context = {}) {
             status: normalizeRecommendationMetadataStatus(value?.status),
             query,
             title,
+            aliases,
             provider,
             providerSeriesId,
             aniListId,
@@ -807,6 +873,164 @@ export function registerRavenRoutes(context = {}) {
 
         return null
     }
+    const normalizeRavenSearchOptionIndex = (value, fallbackIndex) => {
+        const parsed = Number.parseInt(String(value), 10)
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : fallbackIndex
+    }
+    const normalizeRavenSearchPayload = (payload = {}) => {
+        const searchId = normalizeString(payload?.searchId)
+        const rawOptions = Array.isArray(payload?.options) ? payload.options : []
+
+        return {
+            searchId,
+            options: rawOptions
+                .map((entry, index) => {
+                    const title = normalizeString(entry?.title)
+                    if (!title) {
+                        return null
+                    }
+
+                    return {
+                        title,
+                        href: normalizeString(entry?.href) || null,
+                        optionIndex: normalizeRavenSearchOptionIndex(
+                            entry?.optionIndex ?? entry?.option_number ?? entry?.index,
+                            index + 1,
+                        ),
+                    }
+                })
+                .filter(Boolean),
+        }
+    }
+    const buildRecommendationSourceSearchCandidates = ({
+                                                           recommendation = {},
+                                                           metadataSelection = null,
+                                                           metadataQuery = '',
+                                                       } = {}) =>
+        normalizeDistinctStrings(
+            normalizeString(metadataSelection?.title),
+            metadataSelection?.aliases,
+            normalizeString(metadataSelection?.query),
+            normalizeString(metadataQuery),
+            normalizeString(recommendation?.title),
+            normalizeString(recommendation?.query),
+        )
+    const optionMatchesRecommendationCandidates = (option = {}, candidateKeys = new Set(), recommendationHref = null) => {
+        const titleKey = normalizeRecommendationTitleKey(option?.title)
+        if (titleKey && candidateKeys.has(titleKey)) {
+            return true
+        }
+
+        const optionHref = normalizeComparableUrl(option?.href)
+        return Boolean(recommendationHref && optionHref && optionHref === recommendationHref)
+    }
+    const resolveRavenRecommendationQueueTarget = async ({
+                                                             recommendation = {},
+                                                             metadataSelection = null,
+                                                             metadataQuery = '',
+                                                         } = {}) => {
+        if (typeof ravenClient?.searchTitle !== 'function') {
+            return null
+        }
+
+        const candidates = buildRecommendationSourceSearchCandidates({
+            recommendation,
+            metadataSelection,
+            metadataQuery,
+        })
+        if (candidates.length === 0) {
+            return null
+        }
+
+        const candidateKeys = new Set(
+            candidates
+                .map((value) => normalizeRecommendationTitleKey(value))
+                .filter(Boolean),
+        )
+        const recommendationHref = normalizeComparableUrl(recommendation?.href)
+
+        for (const query of candidates) {
+            let searchPayload = null
+            try {
+                searchPayload = await ravenClient.searchTitle(query)
+            } catch (error) {
+                logger.warn?.(`[${serviceName}] Failed to search Raven for recommendation recovery "${query}": ${error.message}`)
+                continue
+            }
+
+            const normalizedPayload = normalizeRavenSearchPayload(searchPayload)
+            if (!normalizedPayload.searchId || normalizedPayload.options.length === 0) {
+                continue
+            }
+
+            for (const option of normalizedPayload.options) {
+                if (optionMatchesRecommendationCandidates(option, candidateKeys, recommendationHref)) {
+                    let sourceAdultContent = null
+                    if (option.href && typeof ravenClient?.getTitleDetails === 'function') {
+                        try {
+                            const details = await ravenClient.getTitleDetails(option.href)
+                            sourceAdultContent = normalizeRecommendationSourceAdultContent(details?.adultContent)
+                        } catch (error) {
+                            logger.warn?.(`[${serviceName}] Failed to inspect Raven title details for recommendation recovery "${option.title}": ${error.message}`)
+                        }
+                    }
+
+                    return {
+                        searchId: normalizedPayload.searchId,
+                        optionIndex: option.optionIndex,
+                        title: option.title,
+                        href: option.href,
+                        sourceAdultContent,
+                    }
+                }
+            }
+
+            if (typeof ravenClient?.getTitleDetails !== 'function') {
+                continue
+            }
+
+            for (const option of normalizedPayload.options) {
+                if (!option?.href) {
+                    continue
+                }
+
+                try {
+                    const details = await ravenClient.getTitleDetails(option.href)
+                    const associatedNames = normalizeDistinctStrings(details?.associatedNames)
+                    const associatedNameKeys = new Set(
+                        associatedNames
+                            .map((value) => normalizeRecommendationTitleKey(value))
+                            .filter(Boolean),
+                    )
+                    const matchesAlias = [...associatedNameKeys].some((key) => candidateKeys.has(key))
+                    if (!matchesAlias) {
+                        continue
+                    }
+
+                    return {
+                        searchId: normalizedPayload.searchId,
+                        optionIndex: option.optionIndex,
+                        title: option.title,
+                        href: option.href,
+                        sourceAdultContent: normalizeRecommendationSourceAdultContent(details?.adultContent),
+                    }
+                } catch (error) {
+                    logger.warn?.(`[${serviceName}] Failed to inspect Raven aliases for recommendation recovery "${option.title}": ${error.message}`)
+                }
+            }
+        }
+
+        return null
+    }
+    const createSavedForLaterTimelineEvent = () =>
+        createRecommendationTimelineEvent({
+            type: 'comment',
+            actor: {
+                role: 'system',
+                username: 'Moon',
+            },
+            body: SAVED_FOR_LATER_MESSAGE,
+        })
 
     app.use('/api/raven', requireSessionIfSetupCompleted)
     app.use('/api/recommendations', requireSessionIfSetupCompleted)
@@ -1202,13 +1426,6 @@ export function registerRavenRoutes(context = {}) {
                 return
             }
 
-            const searchId = normalizeString(recommendation?.searchId)
-            const selectedOptionIndex = Number(target?.selectedOptionIndex ?? recommendation?.selectedOptionIndex)
-            if (!searchId || !Number.isFinite(selectedOptionIndex)) {
-                res.status(409).json({error: 'Recommendation is missing Raven queue details.'})
-                return
-            }
-
             const requestBody =
                 req.body && typeof req.body === 'object' && !Array.isArray(req.body)
                     ? req.body
@@ -1237,13 +1454,112 @@ export function registerRavenRoutes(context = {}) {
                 return
             }
 
-            let queueResult = null
-            try {
-                queueResult = await ravenClient.queueDownload({searchId, optionIndex: selectedOptionIndex})
-            } catch (error) {
-                logger.error(`[${serviceName}] Failed to queue approved recommendation ${id}: ${error.message}`)
-                res.status(502).json({error: 'Unable to queue Raven download for this recommendation.'})
+            const storedSearchId = normalizeString(recommendation?.searchId)
+            const storedSelectedOptionIndexRaw = target?.selectedOptionIndex ?? recommendation?.selectedOptionIndex
+            const storedSelectedOptionIndex =
+                typeof storedSelectedOptionIndexRaw === 'number'
+                    ? storedSelectedOptionIndexRaw
+                    : typeof storedSelectedOptionIndexRaw === 'string' && storedSelectedOptionIndexRaw.trim()
+                        ? Number(storedSelectedOptionIndexRaw)
+                        : Number.NaN
+            if ((!storedSearchId || !Number.isFinite(storedSelectedOptionIndex)) && !requestedMetadataSelection) {
+                res.status(409).json({error: 'Recommendation needs a saved metadata match before Noona can search alternate Raven titles.'})
                 return
+            }
+
+            let resolvedQueueTarget = null
+            let queueResult = null
+            let usedRecoveredQueueTarget = false
+            const tryRecoveredQueueTarget = async () => {
+                if (!requestedMetadataSelection) {
+                    return false
+                }
+
+                resolvedQueueTarget = await resolveRavenRecommendationQueueTarget({
+                    recommendation,
+                    metadataSelection: requestedMetadataSelection,
+                    metadataQuery,
+                })
+                if (!resolvedQueueTarget?.searchId || !Number.isFinite(resolvedQueueTarget?.optionIndex)) {
+                    return false
+                }
+
+                usedRecoveredQueueTarget = true
+                queueResult = await ravenClient.queueDownload({
+                    searchId: resolvedQueueTarget.searchId,
+                    optionIndex: resolvedQueueTarget.optionIndex,
+                })
+                return true
+            }
+
+            if (storedSearchId && Number.isFinite(storedSelectedOptionIndex)) {
+                try {
+                    queueResult = await ravenClient.queueDownload({
+                        searchId: storedSearchId,
+                        optionIndex: storedSelectedOptionIndex,
+                    })
+                } catch (error) {
+                    if (!requestedMetadataSelection) {
+                        logger.error(`[${serviceName}] Failed to queue approved recommendation ${id}: ${error.message}`)
+                        res.status(502).json({error: 'Unable to queue Raven download for this recommendation.'})
+                        return
+                    }
+
+                    logger.warn?.(`[${serviceName}] Failed to queue stored Raven target for recommendation ${id}; retrying through metadata recovery: ${error.message}`)
+                }
+            }
+
+            if (!queueResult) {
+                try {
+                    const recovered = await tryRecoveredQueueTarget()
+                    if (!recovered) {
+                        const savedMetadataSelection = requestedMetadataSelection
+                            ? normalizeRecommendationMetadataSelection({
+                                ...requestedMetadataSelection,
+                                lastAttemptedAt: approvedAt,
+                                lastError: SAVED_FOR_LATER_MESSAGE,
+                            })
+                            : null
+                        const metadataTimelineEvent = createRecommendationMetadataSelectionTimelineEvent(savedMetadataSelection)
+                        const savedForLaterTimelineEvent = createSavedForLaterTimelineEvent()
+                        const nextTimeline = [
+                            ...appendRecommendationTimelineEvent(target, savedForLaterTimelineEvent),
+                            ...(metadataTimelineEvent ? [metadataTimelineEvent] : []),
+                        ]
+
+                        const updatePersisted = await persistRecommendationDocumentUpdate(target, {
+                            $set: {
+                                metadataSelection: savedMetadataSelection,
+                                timeline: nextTimeline,
+                            },
+                        })
+                        if (!updatePersisted) {
+                            res.status(502).json({error: 'Vault did not persist the saved recommendation state.'})
+                            return
+                        }
+
+                        const refreshedDocuments = await loadRecommendationDocuments()
+                        const refreshedTarget = findRecommendationDocumentById(refreshedDocuments, id)
+                        if (!refreshedTarget) {
+                            res.status(502).json({error: 'Vault did not persist the saved recommendation state.'})
+                            return
+                        }
+
+                        res.status(202).json({
+                            ok: true,
+                            id,
+                            savedForLater: true,
+                            message: SAVED_FOR_LATER_MESSAGE,
+                            metadataSelection: savedMetadataSelection,
+                            recommendation: normalizeRecommendationDoc(refreshedTarget),
+                        })
+                        return
+                    }
+                } catch (error) {
+                    logger.error(`[${serviceName}] Failed to recover Raven queue details for recommendation ${id}: ${error.message}`)
+                    res.status(502).json({error: 'Unable to queue Raven download for this recommendation.'})
+                    return
+                }
             }
 
             const metadataSelection = requestedMetadataSelection
@@ -1251,6 +1567,8 @@ export function registerRavenRoutes(context = {}) {
                     ...requestedMetadataSelection,
                     queuedAt: approvedAt,
                     titleUuid: resolveQueuedRecommendationTitleUuid(queueResult),
+                    lastAttemptedAt: null,
+                    lastError: null,
                 })
                 : null
 
@@ -1275,6 +1593,25 @@ export function registerRavenRoutes(context = {}) {
                     deniedAt: null,
                     deniedBy: null,
                     denialReason: null,
+                    searchId: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.searchId ?? null
+                        : storedSearchId,
+                    selectedOptionIndex: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.optionIndex ?? null
+                        : storedSelectedOptionIndex,
+                    title: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.title ?? recommendation?.title ?? null
+                        : recommendation?.title ?? null,
+                    href: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.href ?? recommendation?.href ?? null
+                        : recommendation?.href ?? null,
+                    sourceAdultContent: usedRecoveredQueueTarget
+                        ? (
+                            resolvedQueueTarget?.sourceAdultContent != null
+                                ? resolvedQueueTarget.sourceAdultContent
+                                : recommendation?.sourceAdultContent ?? null
+                        )
+                        : recommendation?.sourceAdultContent ?? null,
                     timeline: nextTimeline,
                     metadataSelection,
                 },

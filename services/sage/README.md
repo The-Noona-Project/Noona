@@ -108,10 +108,13 @@ download/library routes for Moon and other clients.
       pass through `sourceAdultContent` when Portal stored Raven's source-site `Adult Content` tag on the record.
     - `POST /api/recommendations/:id/approve` requires `manageRecommendations`, queues Raven download (`searchId` +
       `selectedOptionIndex`), marks the recommendation approved, records an approval timeline event, and now accepts
-      an optional confirmed `metadataSelection` payload from Moon. Sage stores that selection on the recommendation as
-      a pending metadata plan instead of trying to hit Kavita immediately; Portal later applies it only after Raven has
-      finished downloading and Kavita can resolve the scanned title. The stored selection now also preserves
-      `adultContent` when Portal/Komf marked the picked metadata match as `Adult Content: yes`.
+      an optional confirmed `metadataSelection` payload from Moon. When a Discord recommendation was saved without a
+      usable Raven source match, Sage now retries Raven search using the selected Komf metadata title plus aliases
+      before queueing. If no confident Raven source can be recovered yet, Sage keeps the recommendation pending,
+      stores the metadata plan plus a saved-for-later note, and returns that deferred state instead of failing the
+      entire approval request. Portal later applies the stored metadata only after Raven finishes downloading and
+      Kavita can resolve the scanned title. The stored selection now also preserves `adultContent` when Portal/Komf
+      marked the picked metadata match as `Adult Content: yes`.
     - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores
       optional denial reason, and records a denial timeline event.
     - `POST /api/recommendations/:id/comments` requires `manageRecommendations` and appends an admin comment timeline
