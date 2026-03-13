@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 
 import {startWardenServer} from '../api/startWardenServer.mjs';
+import {WardenConflictError, WardenNotFoundError, WardenValidationError,} from '../core/wardenErrors.mjs';
 
 const SAGE_TOKEN = 'sage-test-token';
 const PORTAL_TOKEN = 'portal-test-token';
@@ -238,6 +239,7 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
                 exists: true,
                 path: '/srv/noona/wardenm/noona-settings.json',
                 selected: ['noona-portal'],
+                selectionMode: 'selected',
                 snapshot: payload,
                 runtime: [
                     {
@@ -249,6 +251,13 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
                         hostPort: null,
                     },
                 ],
+                saved: true,
+                restarted: true,
+                rolledBack: false,
+                restart: {
+                    stopped: [],
+                    started: {mode: 'full', setupCompleted: true},
+                },
             };
         },
         getServiceConfig(name) {
@@ -297,6 +306,7 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
         exists: true,
         path: '/srv/noona/wardenm/noona-settings.json',
         selected: ['noona-portal'],
+        selectionMode: 'selected',
         snapshot: {
             version: 2,
             selected: ['noona-portal'],
@@ -317,7 +327,126 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
                 hostPort: null,
             },
         ],
+        saved: true,
+        restarted: true,
+        rolledBack: false,
+        restart: {
+            stopped: [],
+            started: {mode: 'full', setupCompleted: true},
+        },
     });
+});
+
+test('POST /api/setup/config returns 409 for apply conflicts', async (t) => {
+    const warden = {
+        async saveSetupConfig() {
+            throw new WardenConflictError('Cannot apply setup config snapshot while restart the ecosystem is already in progress.');
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/setup/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({selected: []}),
+    });
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+        error: 'Cannot apply setup config snapshot while restart the ecosystem is already in progress.',
+    });
+});
+
+test('PUT /api/services/:name/config returns 400 for invalid config payloads', async (t) => {
+    const warden = {
+        async updateServiceConfig() {
+            throw new WardenValidationError('hostPort must be a valid TCP port between 1 and 65535.');
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services/noona-moon/config', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({hostPort: 70000}),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+        error: 'hostPort must be a valid TCP port between 1 and 65535.',
+    });
+});
+
+test('PUT /api/services/:name/config returns 404 for unknown services', async (t) => {
+    const warden = {
+        async updateServiceConfig() {
+            throw new WardenNotFoundError('Service noona-ghost is not registered with Warden.');
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services/noona-ghost/config', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({env: {DEBUG: 'true'}}),
+    });
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), {
+        error: 'Service noona-ghost is not registered with Warden.',
+    });
+});
+
+test('POST routes reject oversized JSON bodies with 413', async (t) => {
+    const calls = [];
+    const warden = {
+        async saveSetupConfig(payload) {
+            calls.push(payload);
+            return {ok: true};
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({
+        warden,
+        env: {
+            ...TEST_ENV,
+            WARDEN_API_MAX_BODY_BYTES: '32',
+        },
+    });
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/setup/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            selected: ['noona-portal'],
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'this-payload-is-too-large',
+                },
+            },
+        }),
+    });
+
+    assert.equal(response.status, 413);
+    assert.deepEqual(await response.json(), {
+        error: 'Request body exceeds the 32 byte limit.',
+    });
+    assert.deepEqual(calls, []);
 });
 
 test('POST /api/services/install returns results and status code for errors', async (t) => {
@@ -646,6 +775,33 @@ test('POST /api/ecosystem/restart delegates to warden restartEcosystem', async (
     assert.deepEqual(calls, [{trackedOnly: false}]);
 });
 
+test('POST /api/ecosystem/factory-reset requires explicit confirmation', async (t) => {
+    const calls = [];
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+        async factoryResetEcosystem(options) {
+            calls.push(options);
+            return {ok: true};
+        },
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/ecosystem/factory-reset', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({deleteDockers: true}),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+        error: 'Factory reset requires confirm: "FACTORY_RESET".',
+    });
+    assert.deepEqual(calls, []);
+});
+
 test('POST /api/ecosystem/factory-reset delegates to warden factoryResetEcosystem', async (t) => {
     const calls = [];
     const warden = {
@@ -663,9 +819,17 @@ test('POST /api/ecosystem/factory-reset delegates to warden factoryResetEcosyste
     const response = await wardenFetch(baseUrl, '/api/ecosystem/factory-reset', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({deleteDockers: true, deleteRavenDownloads: true}),
+        body: JSON.stringify({
+            confirm: 'FACTORY_RESET',
+            deleteDockers: true,
+            deleteRavenDownloads: true,
+        }),
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {ok: true, cleaned: true});
-    assert.deepEqual(calls, [{deleteDockers: true, deleteRavenDownloads: true}]);
+    assert.deepEqual(calls, [{
+        confirm: 'FACTORY_RESET',
+        deleteDockers: true,
+        deleteRavenDownloads: true,
+    }]);
 });

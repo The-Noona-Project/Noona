@@ -2,11 +2,15 @@
 import http from 'node:http';
 import {URL} from 'node:url';
 
+import {isWardenHttpError} from '../core/wardenErrors.mjs';
 import {buildWardenApiTokenRegistry, stringifyServiceTokenMap} from '../docker/wardenApiTokens.mjs';
 import {errMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 
 const SENSITIVE_ENV_PLACEHOLDER = '********';
 const DEFAULT_WARDEN_API_CLIENTS = Object.freeze(['noona-sage', 'noona-portal']);
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 15000;
 const defaultPort = (env = process.env) => Number.parseInt(env.WARDEN_API_PORT ?? '4001', 10);
 
 const DEFAULT_HEADERS = Object.freeze({
@@ -87,14 +91,50 @@ const readDebugState = (warden) => {
     };
 };
 
-const parseJsonBody = (req) => new Promise((resolve, reject) => {
+class PayloadTooLargeError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'PayloadTooLargeError';
+        this.statusCode = 413;
+    }
+}
+
+const normalizePositiveInteger = (value, fallback) => {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const parseJsonBody = (req, {maxBytes = DEFAULT_MAX_BODY_BYTES} = {}) => new Promise((resolve, reject) => {
     const chunks = [];
+    const contentLength = Number.parseInt(String(req.headers?.['content-length'] ?? ''), 10);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        reject(new PayloadTooLargeError(`Request body exceeds the ${maxBytes} byte limit.`));
+        return;
+    }
+
+    let totalBytes = 0;
+    let rejected = false;
 
     req.on('data', (chunk) => {
+        if (rejected) {
+            return;
+        }
+
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+            rejected = true;
+            reject(new PayloadTooLargeError(`Request body exceeds the ${maxBytes} byte limit.`));
+            return;
+        }
+
         chunks.push(chunk);
     });
 
     req.on('end', () => {
+        if (rejected) {
+            return;
+        }
+
         if (chunks.length === 0) {
             resolve(null);
             return;
@@ -108,7 +148,11 @@ const parseJsonBody = (req) => new Promise((resolve, reject) => {
         }
     });
 
-    req.on('error', (error) => reject(error));
+    req.on('error', (error) => {
+        if (!rejected) {
+            reject(error);
+        }
+    });
 });
 
 const normalizeString = (value) => {
@@ -401,6 +445,33 @@ const sanitizeSetupConfigPayload = (payload, warden) => {
     };
 };
 
+const buildErrorPayload = (error, fallbackMessage) => {
+    if (error?.payload && typeof error.payload === 'object' && !Array.isArray(error.payload)) {
+        return error.payload;
+    }
+
+    return {
+        error:
+            error instanceof Error && normalizeString(error.message)
+                ? error.message
+                : fallbackMessage,
+    };
+};
+
+const sendMappedError = (res, error, fallbackStatusCode, fallbackMessage) => {
+    if (error instanceof PayloadTooLargeError || error?.statusCode === 413) {
+        sendJson(res, 413, buildErrorPayload(error, fallbackMessage));
+        return;
+    }
+
+    if (isWardenHttpError(error)) {
+        sendJson(res, error.statusCode, buildErrorPayload(error, fallbackMessage));
+        return;
+    }
+
+    sendJson(res, fallbackStatusCode, buildErrorPayload(error, fallbackMessage));
+};
+
 const isPublicRoute = (method, pathname) => method === 'GET' && pathname === '/health';
 
 const isAllowedPortalRoute = (method, pathname, segments = []) =>
@@ -440,6 +511,9 @@ export const startWardenServer = ({
     const logger = resolveLogger(loggerOverrides);
     const port = portOption ?? defaultPort(env);
     const listenHost = normalizeString(host) || normalizeString(env?.WARDEN_API_HOST) || undefined;
+    const maxBodyBytes = normalizePositiveInteger(env?.WARDEN_API_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES);
+    const requestTimeoutMs = normalizePositiveInteger(env?.WARDEN_API_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS);
+    const headersTimeoutMs = normalizePositiveInteger(env?.WARDEN_API_HEADERS_TIMEOUT_MS, DEFAULT_HEADERS_TIMEOUT_MS);
     let activeInstallPromise = null;
     const {tokenPairs, serviceByToken} = parseTokenMap(resolveWardenTokenMap(env));
 
@@ -501,9 +575,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -620,9 +694,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
             } catch (error) {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -732,9 +806,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -744,11 +818,11 @@ export const startWardenServer = ({
             }
 
             try {
-                const config = await warden.saveSetupConfig?.(sanitizeSetupConfigPayload(body, warden));
+                const config = await warden.saveSetupConfig?.(body);
                 sendJson(res, 200, redactSetupConfigResponse(config, warden) ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to persist setup config snapshot: ${error.message}`);
-                sendJson(res, 500, {error: 'Unable to persist setup config snapshot.'});
+                sendMappedError(res, error, 500, 'Unable to persist setup config snapshot.');
             }
             return;
         }
@@ -757,9 +831,9 @@ export const startWardenServer = ({
             let body;
 
             try {
-                body = await parseJsonBody(req);
+                body = await parseJsonBody(req, {maxBytes: maxBodyBytes});
             } catch (error) {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -835,7 +909,7 @@ export const startWardenServer = ({
                 sendJson(res, 200, redactServiceConfig(config));
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to load config for ${serviceName}: ${error.message}`);
-                sendJson(res, 500, {error: `Unable to retrieve configuration for ${serviceName}.`});
+                sendMappedError(res, error, 500, `Unable to retrieve configuration for ${serviceName}.`);
             }
             return;
         }
@@ -851,9 +925,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -870,7 +944,7 @@ export const startWardenServer = ({
                 sendJson(res, 200, result ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to update config for ${serviceName}: ${error.message}`);
-                sendJson(res, 500, {error: `Unable to update configuration for ${serviceName}.`});
+                sendMappedError(res, error, 500, `Unable to update configuration for ${serviceName}.`);
             }
             return;
         }
@@ -904,9 +978,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -948,9 +1022,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -976,9 +1050,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -1002,9 +1076,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -1028,9 +1102,14 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
+                return;
+            }
+
+            if (body?.confirm !== 'FACTORY_RESET') {
+                sendJson(res, 400, {error: 'Factory reset requires confirm: "FACTORY_RESET".'});
                 return;
             }
 
@@ -1039,7 +1118,7 @@ export const startWardenServer = ({
                 sendJson(res, 200, result ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to run ecosystem factory reset: ${error.message}`);
-                sendJson(res, 500, {error: 'Unable to run ecosystem factory reset.'});
+                sendMappedError(res, error, 500, 'Unable to run ecosystem factory reset.');
             }
             return;
         }
@@ -1054,9 +1133,9 @@ export const startWardenServer = ({
             let body = {};
 
             try {
-                body = (await parseJsonBody(req)) || {};
-            } catch {
-                sendJson(res, 400, {error: 'Request body must be valid JSON.'});
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
                 return;
             }
 
@@ -1065,7 +1144,7 @@ export const startWardenServer = ({
                 sendJson(res, 200, result ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to restart ecosystem: ${error.message}`);
-                sendJson(res, 500, {error: 'Unable to restart ecosystem.'});
+                sendMappedError(res, error, 500, 'Unable to restart ecosystem.');
             }
             return;
         }
@@ -1073,6 +1152,10 @@ export const startWardenServer = ({
         logger.warn(`[Warden API] Route not found: ${req.method} ${url.pathname}`);
         sendJson(res, 404, {error: 'Not Found'});
     });
+
+    server.requestTimeout = requestTimeoutMs;
+    server.timeout = requestTimeoutMs;
+    server.headersTimeout = Math.min(requestTimeoutMs, headersTimeoutMs);
 
     server.listen(port, listenHost, () => {
         logger.log(`[Warden API] Listening on port ${server.address().port}`);

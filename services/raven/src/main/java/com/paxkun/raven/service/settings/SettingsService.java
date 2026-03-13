@@ -151,7 +151,7 @@ public class SettingsService {
         }
 
         if (out.getChapterTemplate() == null || out.getChapterTemplate().isBlank()) {
-            out.setChapterTemplate("{title} c{chapter} (v01) [Noona].cbz");
+            out.setChapterTemplate("{title} c{chapter} (v{volume}) [Noona].cbz");
         }
 
         if (out.getPageTemplate() == null || out.getPageTemplate().isBlank()) {
@@ -164,6 +164,10 @@ public class SettingsService {
 
         if (out.getChapterPad() == null || out.getChapterPad() < 1) {
             out.setChapterPad(3);
+        }
+
+        if (out.getVolumePad() == null || out.getVolumePad() < 1) {
+            out.setVolumePad(2);
         }
 
         return out;

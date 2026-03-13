@@ -188,7 +188,9 @@ test('recommendation notifier applies deferred metadata after Raven import is re
     ];
     const identifyCalls = [];
     const coverCalls = [];
+    const seriesDetailsCalls = [];
     const updateTitleCalls = [];
+    const volumeMapCalls = [];
 
     const notifier = createRecommendationNotifier({
         discordClient: {},
@@ -219,6 +221,18 @@ test('recommendation notifier applies deferred metadata after Raven import is re
                     coverUrl: payload?.coverUrl,
                 };
             },
+            applyTitleVolumeMap: async (uuid, payload) => {
+                volumeMapCalls.push({uuid, payload});
+                return {
+                    title: {uuid},
+                    renameSummary: {
+                        attempted: true,
+                        renamed: 2,
+                        skippedCollisions: 0,
+                        alreadyMatched: 0,
+                    },
+                };
+            },
         },
         kavitaClient: {
             searchTitles: async () => ({
@@ -240,6 +254,26 @@ test('recommendation notifier applies deferred metadata after Raven import is re
                 identifyCalls.push(payload);
                 return {ok: true};
             },
+            getSeriesMetadataDetails: async (payload) => {
+                seriesDetailsCalls.push(payload);
+                return {
+                    provider: 'mal',
+                    providerSeriesId: '15180124327',
+                    books: [
+                        {
+                            providerBookId: 'book-1',
+                            volumeNumber: 1,
+                            startChapter: 1,
+                            endChapter: 5,
+                        },
+                        {
+                            providerBookId: 'book-2',
+                            volumeNumber: 2,
+                            chapters: [6],
+                        },
+                    ],
+                };
+            },
         },
         pollMs: 60000,
         logger: {},
@@ -257,11 +291,29 @@ test('recommendation notifier applies deferred metadata after Raven import is re
             providerSeriesId: '15180124327',
         },
     ]);
+    assert.deepEqual(seriesDetailsCalls, [
+        {
+            provider: 'mal',
+            providerSeriesId: '15180124327',
+            libraryId: 4,
+        },
+    ]);
     assert.deepEqual(updateTitleCalls, [
         {
             uuid: 'title-uuid-7',
             payload: {
                 coverUrl: 'https://covers.example/solo-leveling.jpg',
+            },
+        },
+    ]);
+    assert.deepEqual(volumeMapCalls, [
+        {
+            uuid: 'title-uuid-7',
+            payload: {
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                chapterVolumeMap: {'1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 2},
+                autoRename: true,
             },
         },
     ]);
@@ -279,6 +331,7 @@ test('recommendation notifier applies deferred metadata after Raven import is re
     assert.equal(recommendations[0]?.metadataSelection?.adultContent, true);
     assert.ok(Array.isArray(recommendations[0]?.timeline));
     assert.ok(recommendations[0].timeline.some((event) => /saved metadata selection/i.test(event?.body ?? '')));
+    assert.ok(recommendations[0].timeline.some((event) => /chapter-to-volume map/i.test(event?.body ?? '')));
 });
 
 test('recommendation notifier prefers configured external Kavita URL for completion DMs', async () => {

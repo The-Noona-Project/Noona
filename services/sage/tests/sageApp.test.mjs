@@ -112,6 +112,9 @@ const createPortalMetadataStub = (overrides = {}) => ({
     async applyTitleMetadataMatch() {
         throw new Error('applyTitleMetadataMatch should not be called')
     },
+    async applyRavenTitleVolumeMap() {
+        throw new Error('applyRavenTitleVolumeMap should not be called')
+    },
     ...overrides,
 })
 
@@ -2755,6 +2758,277 @@ test('POST /api/recommendations/:id/approve stores selected metadata for deferre
     assert.equal(recommendations[0]?.metadataSelection?.adultContent, true)
     assert.deepEqual(recommendations[0]?.metadataSelection?.aliases, ['Only I Level Up'])
     assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-7')
+})
+
+test('POST /api/recommendations/:id/approve pre-seeds Raven volume metadata before queueing confirmed matches', async (t) => {
+    const callOrder = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-preseed-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Solo Leveling',
+            searchId: 'search-preseed-123',
+            selectedOptionIndex: 1,
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        portalClient: createPortalMetadataStub({
+            async applyRavenTitleVolumeMap(payload) {
+                callOrder.push({type: 'volume-map', payload})
+                return {status: 'applied', mappedChapterCount: 12}
+            },
+        }),
+        ravenClient: createRavenStub({
+            async createTitle(payload) {
+                callOrder.push({type: 'create-title', payload})
+                return {uuid: 'title-uuid-preseed-1'}
+            },
+            async queueDownload(payload) {
+                callOrder.push({type: 'queue-download', payload})
+                return {taskId: 'raven-task-preseed-1'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-preseed-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Solo Leveling',
+            metadataSelection: {
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+            },
+        }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(callOrder, [
+        {
+            type: 'create-title',
+            payload: {
+                title: 'Solo Leveling',
+                sourceUrl: 'https://source.example/solo-leveling',
+            },
+        },
+        {
+            type: 'volume-map',
+            payload: {
+                titleUuid: 'title-uuid-preseed-1',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                autoRename: false,
+            },
+        },
+        {
+            type: 'queue-download',
+            payload: {
+                searchId: 'search-preseed-123',
+                optionIndex: 1,
+            },
+        },
+    ])
+    assert.equal(payload.recommendation?.status, 'approved')
+    assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-preseed-1')
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-preseed-1')
+})
+
+test('POST /api/recommendations/:id/approve keeps queueing when Raven volume pre-seeding fails', async (t) => {
+    const callOrder = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-preseed-fail-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Solo Leveling',
+            searchId: 'search-preseed-fail-123',
+            selectedOptionIndex: 1,
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        portalClient: createPortalMetadataStub({
+            async applyRavenTitleVolumeMap(payload) {
+                callOrder.push({type: 'volume-map', payload})
+                throw new Error('Komf unavailable')
+            },
+        }),
+        ravenClient: createRavenStub({
+            async createTitle(payload) {
+                callOrder.push({type: 'create-title', payload})
+                return {uuid: 'title-uuid-preseed-fail-1'}
+            },
+            async queueDownload(payload) {
+                callOrder.push({type: 'queue-download', payload})
+                return {
+                    taskId: 'raven-task-preseed-fail-1',
+                    titleUuid: 'title-uuid-from-queue-1',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-preseed-fail-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Solo Leveling',
+            metadataSelection: {
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+            },
+        }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(callOrder, [
+        {
+            type: 'create-title',
+            payload: {
+                title: 'Solo Leveling',
+                sourceUrl: 'https://source.example/solo-leveling',
+            },
+        },
+        {
+            type: 'volume-map',
+            payload: {
+                titleUuid: 'title-uuid-preseed-fail-1',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                autoRename: false,
+            },
+        },
+        {
+            type: 'queue-download',
+            payload: {
+                searchId: 'search-preseed-fail-123',
+                optionIndex: 1,
+            },
+        },
+    ])
+    assert.equal(payload.recommendation?.status, 'approved')
+    assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-from-queue-1')
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-from-queue-1')
 })
 
 test('POST /api/recommendations/:id/approve recovers a Raven queue target from metadata aliases', async (t) => {
@@ -5960,6 +6234,164 @@ test('Discord OAuth login auto-creates a Discord user with configured default pe
         'mySubscriptions',
         'myRecommendations',
     ])
+})
+
+test('settings Discord onboarding message route returns the seeded default template', async (t) => {
+    const defaultTemplate = [
+        'Welcome to {guild_name}!',
+        '',
+        'Start with Moon: {moon_url}',
+        'Read in Kavita: {kavita_url}',
+        '',
+        'Use /join in Discord to create your library access.',
+        'Server: {server_ip}',
+    ].join('\n')
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const response = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.key, 'discord.onboarding_message')
+    assert.equal(payload.template, defaultTemplate)
+    assert.ok(typeof payload.updatedAt === 'string')
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'discord.onboarding_message')
+    assert.ok(stored)
+    assert.equal(stored.template, defaultTemplate)
+})
+
+test('settings Discord onboarding message route persists updates and returns updatedAt', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const template = [
+        'Hello {guild_name},',
+        '',
+        'Moon: {moon_url}',
+        'Kavita: {kavita_url}',
+        'Unknown token stays: {custom_note}',
+    ].join('\n')
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({template}),
+    })
+    assert.equal(putResponse.status, 200)
+    const putPayload = await putResponse.json()
+    assert.equal(putPayload.key, 'discord.onboarding_message')
+    assert.equal(putPayload.template, template)
+    assert.ok(typeof putPayload.updatedAt === 'string')
+
+    const getResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getResponse.status, 200)
+    const getPayload = await getResponse.json()
+    assert.equal(getPayload.template, template)
+    assert.equal(getPayload.updatedAt, putPayload.updatedAt)
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'discord.onboarding_message')
+    assert.ok(stored)
+    assert.equal(stored.template, template)
+    assert.equal(stored.updatedAt, putPayload.updatedAt)
+})
+
+test('settings Discord onboarding message route rejects empty templates', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const response = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({template: ' \n \t '}),
+    })
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {
+        error: 'template must not be empty.',
+    })
+})
+
+test('settings Discord onboarding message route stays admin-gated after setup completes', async (t) => {
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'ReaderOne',
+        password: 'Password123',
+        role: 'member',
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const unauthorizedResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`)
+    assert.equal(unauthorizedResponse.status, 401)
+    assert.deepEqual(await unauthorizedResponse.json(), {
+        error: 'Unauthorized.',
+    })
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    assert.equal(loginPayload.user.role, 'member')
+
+    const memberResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        headers: {Authorization: `Bearer ${loginPayload.token}`},
+    })
+    assert.equal(memberResponse.status, 403)
+    assert.deepEqual(await memberResponse.json(), {
+        error: 'Admin privileges are required.',
+    })
 })
 
 test('settings download worker routes read and update per-thread rate limits', async (t) => {

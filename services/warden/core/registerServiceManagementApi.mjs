@@ -5,6 +5,7 @@ import {
     DEFAULT_MANAGED_KOMF_APPLICATION_YML,
     normalizeManagedKomfConfigContent,
 } from '../docker/komfConfigTemplate.mjs';
+import {WardenNotFoundError, WardenValidationError,} from './wardenErrors.mjs';
 
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
 const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
@@ -115,6 +116,7 @@ export function registerServiceManagementApi(context = {}) {
         applyStorageMountsForService,
         buildEffectiveServiceDescriptor,
         buildHostServiceUrl,
+        buildWardenEnvConfig: buildWardenEnvConfigOverride,
         cloneEnvConfig,
         cloneMeta,
         cloneServiceDescriptor,
@@ -158,12 +160,14 @@ export function registerServiceManagementApi(context = {}) {
         resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
+        validateAndNormalizeServiceConfigUpdate,
         runtimeDebugState,
         serviceCatalog,
         serviceName,
         setLoggerDebug,
         timestamp,
         trackedContainers,
+        withLifecycleOperation,
         writeRuntimeConfig,
     } = context;
 
@@ -247,7 +251,9 @@ export function registerServiceManagementApi(context = {}) {
 
     const isWardenConfigName = (name) => normalizeString(name) === WARDEN_CONFIG_SERVICE_NAME;
     const buildWardenEnvConfig = () =>
-        cloneEnvConfig([
+        typeof buildWardenEnvConfigOverride === 'function'
+            ? buildWardenEnvConfigOverride()
+            : cloneEnvConfig([
             {
                 key: 'SERVER_IP',
                 label: 'Server IP / Hostname',
@@ -1799,12 +1805,12 @@ export function registerServiceManagementApi(context = {}) {
 
     api.getServiceConfig = function getServiceConfig(name) {
         if (!name || typeof name !== 'string') {
-            throw new Error('Service name must be a non-empty string.');
+            throw new WardenValidationError('Service name must be a non-empty string.');
         }
 
         const trimmedName = name.trim();
         if (!trimmedName) {
-            throw new Error('Service name must be a non-empty string.');
+            throw new WardenValidationError('Service name must be a non-empty string.');
         }
 
         if (isWardenConfigName(trimmedName)) {
@@ -1813,7 +1819,7 @@ export function registerServiceManagementApi(context = {}) {
 
         const entry = serviceCatalog.get(trimmedName);
         if (!entry) {
-            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+            throw new WardenNotFoundError(`Service ${trimmedName} is not registered with Warden.`);
         }
 
         const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
@@ -1847,32 +1853,15 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     api.updateServiceConfig = async function updateServiceConfig(name, updates = {}) {
-        if (!name || typeof name !== 'string') {
-            throw new Error('Service name must be a non-empty string.');
-        }
-
-        const trimmedName = name.trim();
-        if (!trimmedName) {
-            throw new Error('Service name must be a non-empty string.');
-        }
+        const validation =
+            typeof validateAndNormalizeServiceConfigUpdate === 'function'
+                ? await validateAndNormalizeServiceConfigUpdate(name, updates)
+                : null;
+        const trimmedName = validation?.name ?? normalizeString(name);
 
         if (isWardenConfigName(trimmedName)) {
-            if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort') && updates?.hostPort != null) {
-                throw new Error('noona-warden does not support hostPort overrides.');
-            }
-
-            const envUpdates = Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')
-                ? sanitizeRequestedEnvMap(trimmedName, updates?.env ?? {}, {
-                    currentEnv: resolveCurrentEnvSnapshot(trimmedName),
-                })
-                : {};
-            const nextServerIp = normalizeString(envUpdates.SERVER_IP);
-            const nextAutoUpdates = normalizeBooleanSettingValue(envUpdates.AUTO_UPDATES, 'AUTO_UPDATES');
-            const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, {
-                env: {
-                    ...(nextServerIp ? {SERVER_IP: nextServerIp} : {}),
-                    ...(nextAutoUpdates ? {AUTO_UPDATES: nextAutoUpdates} : {}),
-                },
+            const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, validation?.nextRuntime ?? {
+                env: {},
                 hostPort: null,
             });
 
@@ -1880,47 +1869,41 @@ export function registerServiceManagementApi(context = {}) {
 
             return {
                 service: api.getServiceConfig(WARDEN_CONFIG_SERVICE_NAME),
+                saved: true,
                 restarted: false,
+                pendingRestart: false,
             };
         }
 
         if (!serviceCatalog.has(trimmedName)) {
-            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+            throw new WardenNotFoundError(`Service ${trimmedName} is not registered with Warden.`);
         }
 
-        const runtime = resolveRuntimeConfig(trimmedName);
-        const {descriptor: currentDescriptor} = buildEffectiveServiceDescriptor(trimmedName);
-        const currentEnv = parseEnvEntries(currentDescriptor.env);
-        const nextRuntime = {
-            env: {...runtime.env},
-            hostPort: runtime.hostPort,
+        const nextRuntime = validation?.nextRuntime ?? {
+            env: {},
+            hostPort: null,
         };
         const previousManagedKavitaMoonBaseUrl =
             trimmedName === MANAGED_MOON_SERVICE_NAME
                 ? resolveManagedKavitaNoonaMoonBaseUrl()
                 : '';
 
-        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
-            nextRuntime.env = sanitizeRequestedEnvMap(trimmedName, updates?.env ?? {}, {currentEnv});
-        }
-
-        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort')) {
-            const parsedHostPort = normalizeHostPort(updates?.hostPort);
-            if (updates?.hostPort != null && parsedHostPort == null) {
-                throw new Error('hostPort must be a valid TCP port between 1 and 65535.');
-            }
-            nextRuntime.hostPort = parsedHostPort;
-        }
-
-        await persistServiceRuntimeConfig(trimmedName, nextRuntime);
         writeRuntimeConfig(trimmedName, nextRuntime);
+        await persistServiceRuntimeConfig(trimmedName, nextRuntime);
 
         const restart = updates?.restart === true;
         let restartResult = null;
         const linkedRestarts = [];
         const warnings = [];
+        let pendingRestart = false;
         if (restart) {
-            restartResult = await api.restartService(trimmedName);
+            try {
+                restartResult = await api.restartService(trimmedName);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                pendingRestart = true;
+                warnings.push(`Saved ${trimmedName}, but restart failed: ${message}`);
+            }
         }
 
         if (restart && trimmedName === MANAGED_MOON_SERVICE_NAME && serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
@@ -1942,7 +1925,9 @@ export function registerServiceManagementApi(context = {}) {
 
         return {
             service: api.getServiceConfig(trimmedName),
+            saved: true,
             restarted: Boolean(restartResult),
+            pendingRestart,
             ...(linkedRestarts.length > 0 ? {linkedRestarts} : {}),
             ...(warnings.length > 0 ? {warnings} : {}),
         };
@@ -2104,75 +2089,97 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     api.restartEcosystem = async function restartEcosystem(options = {}) {
-        const stopResults = await api.stopEcosystem({...options, trackedOnly: false, remove: false});
-        const startResults = await api.startEcosystem(options);
+        if (typeof withLifecycleOperation !== 'function') {
+            const stopResults = await api.stopEcosystem({...options, trackedOnly: false, remove: false});
+            const startResults = await api.startEcosystem(options);
 
-        return {
-            stopped: stopResults,
-            started: startResults,
-        };
+            return {
+                stopped: stopResults,
+                started: startResults,
+            };
+        }
+
+        return withLifecycleOperation('restart the ecosystem', async () => {
+            const stopResults = await api.stopEcosystem({...options, trackedOnly: false, remove: false});
+            const startResults = await api.startEcosystem(options);
+
+            return {
+                stopped: stopResults,
+                started: startResults,
+            };
+        });
     };
 
     api.factoryResetEcosystem = async function factoryResetEcosystem(options = {}) {
-        const deleteRavenDownloadsRequested = options?.deleteRavenDownloads === true;
-        const deleteDockersRequested = options?.deleteDockers === true;
-        const dockerClient = await ensureDockerConnection();
-
-        let ravenMounts = [];
-        if (deleteRavenDownloadsRequested) {
-            try {
-                ravenMounts = await collectRavenDownloadMounts(dockerClient);
-            } catch (error) {
-                logger.warn?.(
-                    `[${serviceName}] Failed to inspect Raven mounts during factory reset: ${
-                        error instanceof Error ? error.message : String(error)
-                    }`,
-                );
-            }
+        if (options?.confirm !== 'FACTORY_RESET') {
+            throw new WardenValidationError('Factory reset requires confirm: "FACTORY_RESET".');
         }
 
-        const stopped = await api.stopEcosystem({
-            trackedOnly: false,
-            remove: true,
-        });
+        const runFactoryReset = async () => {
+            const deleteRavenDownloadsRequested = options?.deleteRavenDownloads === true;
+            const deleteDockersRequested = options?.deleteDockers === true;
+            const dockerClient = await ensureDockerConnection();
 
-        const ravenDownloads = deleteRavenDownloadsRequested
-            ? await deleteRavenDownloads(dockerClient, ravenMounts)
-            : {
-                requested: false,
-                mountCount: 0,
-                entries: [],
-                deleted: false,
+            let ravenMounts = [];
+            if (deleteRavenDownloadsRequested) {
+                try {
+                    ravenMounts = await collectRavenDownloadMounts(dockerClient);
+                } catch (error) {
+                    logger.warn?.(
+                        `[${serviceName}] Failed to inspect Raven mounts during factory reset: ${
+                            error instanceof Error ? error.message : String(error)
+                        }`,
+                    );
+                }
+            }
+
+            const stopped = await api.stopEcosystem({
+                trackedOnly: false,
+                remove: true,
+            });
+
+            const ravenDownloads = deleteRavenDownloadsRequested
+                ? await deleteRavenDownloads(dockerClient, ravenMounts)
+                : {
+                    requested: false,
+                    mountCount: 0,
+                    entries: [],
+                    deleted: false,
+                };
+
+            const dockerCleanup = deleteDockersRequested
+                ? await removeNoonaDockerArtifacts(dockerClient)
+                : {
+                    requested: false,
+                    containersRemoved: [],
+                    imagesRemoved: [],
+                    containerErrors: [],
+                    imageErrors: [],
+                };
+
+            const bootPersistence =
+                typeof api.clearPersistedBootState === 'function'
+                    ? await api.clearPersistedBootState()
+                    : null;
+
+            const started = await api.startEcosystem({
+                setupCompleted: false,
+                forceFull: false,
+            });
+
+            return {
+                ok: true,
+                stopped,
+                ravenDownloads,
+                dockerCleanup,
+                bootPersistence,
+                started,
             };
-
-        const dockerCleanup = deleteDockersRequested
-            ? await removeNoonaDockerArtifacts(dockerClient)
-            : {
-                requested: false,
-                containersRemoved: [],
-                imagesRemoved: [],
-                containerErrors: [],
-                imageErrors: [],
-            };
-
-        const bootPersistence =
-            typeof api.clearPersistedBootState === 'function'
-                ? await api.clearPersistedBootState()
-                : null;
-
-        const started = await api.startEcosystem({
-            setupCompleted: false,
-            forceFull: false,
-        });
-
-        return {
-            ok: true,
-            stopped,
-            ravenDownloads,
-            dockerCleanup,
-            bootPersistence,
-            started,
         };
+
+        return typeof withLifecycleOperation === 'function'
+            ? withLifecycleOperation('run a factory reset', runFactoryReset)
+            : runFactoryReset();
     };
 }
 

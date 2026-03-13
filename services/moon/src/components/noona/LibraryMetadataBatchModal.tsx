@@ -57,6 +57,10 @@ type ApplyResponse = {
         status?: string | null;
         message?: string | null;
     } | null;
+    volumeMap?: {
+        status?: string | null;
+        message?: string | null;
+    } | null;
     error?: string;
 };
 
@@ -118,6 +122,8 @@ export function LibraryMetadataBatchModal({open, titles, onClose}: Props) {
     const [matches, setMatches] = useState<Match[]>([]);
     const [selectedMatchKey, setSelectedMatchKey] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [resultMessage, setResultMessage] = useState<string | null>(null);
+    const [resultTone, setResultTone] = useState<"neutral" | "warning">("neutral");
 
     const current = queue[0] ?? null;
     const totalCount = queue.length + appliedCount;
@@ -196,6 +202,8 @@ export function LibraryMetadataBatchModal({open, titles, onClose}: Props) {
         setMatches([]);
         setSelectedMatchKey(null);
         setError(null);
+        setResultMessage(null);
+        setResultTone("neutral");
         loadQueueOnOpen();
     }, [open, lookup]);
 
@@ -241,6 +249,8 @@ export function LibraryMetadataBatchModal({open, titles, onClose}: Props) {
 
         setApplying(true);
         setError(null);
+        setResultMessage(null);
+        setResultTone("neutral");
         try {
             const response = await fetch("/api/noona/portal/kavita/title-match/apply", {
                 method: "POST",
@@ -262,6 +272,9 @@ export function LibraryMetadataBatchModal({open, titles, onClose}: Props) {
             if (s(payload?.coverSync?.status).toLowerCase() === "failed") {
                 throw new Error(s(payload?.coverSync?.message) || s(payload?.message) || "Metadata apply succeeded, but cover sync failed.");
             }
+            const volumeMapStatus = s(payload?.volumeMap?.status).toLowerCase();
+            setResultMessage(s(payload?.message) || "Applied the selected metadata match.");
+            setResultTone(volumeMapStatus === "no-op" || volumeMapStatus === "failed" ? "warning" : "neutral");
             setAppliedCount((value) => value + 1);
             setQueue((value) => value.slice(1));
         } catch (error_) {
@@ -361,6 +374,24 @@ export function LibraryMetadataBatchModal({open, titles, onClose}: Props) {
                     {error && (
                         <Card fillWidth background="surface" border="danger-alpha-weak" padding="m" radius="l">
                             <Text onBackground="danger-strong" variant="body-default-xs" wrap="balance">{error}</Text>
+                        </Card>
+                    )}
+
+                    {resultMessage && (
+                        <Card
+                            fillWidth
+                            background="surface"
+                            border={resultTone === "warning" ? "warning-alpha-weak" : "neutral-alpha-weak"}
+                            padding="m"
+                            radius="l"
+                        >
+                            <Text
+                                onBackground={resultTone === "warning" ? "warning-strong" : "neutral-weak"}
+                                variant="body-default-xs"
+                                wrap="balance"
+                            >
+                                {resultMessage}
+                            </Text>
                         </Card>
                     )}
 

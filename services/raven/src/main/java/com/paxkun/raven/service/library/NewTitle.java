@@ -105,4 +105,29 @@ public class NewTitle {
      * Canonical downloaded chapter index used for missing-chapter detection.
      */
     private List<String> downloadedChapterNumbers;
+
+    /**
+     * Explicit Noona-owned chapter-to-volume assignments keyed by normalized chapter number.
+     */
+    private Map<String, Integer> chapterVolumeMap;
+
+    /**
+     * Canonical chapter-to-file index keyed by normalized chapter number.
+     */
+    private Map<String, String> downloadedChapterFiles;
+
+    /**
+     * Confirmed metadata match provider name.
+     */
+    private String metadataProvider;
+
+    /**
+     * Confirmed metadata match provider series id.
+     */
+    private String metadataProviderSeriesId;
+
+    /**
+     * Timestamp (ISO-8601) when Noona confirmed the metadata match.
+     */
+    private String metadataMatchedAt;
 }

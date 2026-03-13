@@ -56,19 +56,28 @@ HTTP API.
 - `GET /api/services` - service catalog + status.
 - `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
 - `GET /api/setup/config` - read Warden's persisted setup JSON snapshot (path + parsed payload when available).
-- `POST /api/setup/config` - persist setup JSON snapshot and hydrate runtime overrides from the saved values.
+- `POST /api/setup/config` - validate, persist, and apply a setup JSON snapshot by default.
   Warden now treats `<NOONA_DATA_ROOT>/wardenm/noona-settings.json` as the canonical boot snapshot, mirrors that
   payload to the legacy `<NOONA_DATA_ROOT>/noona-settings.json` and
   `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` paths for compatibility, and Moon's General settings page uses
   the same snapshot endpoints for its `Save JSON` / `Load JSON` controls.
   If Warden itself runs in a container, bind-mount `NOONA_DATA_ROOT` into that container or those snapshot files will
   only exist inside Warden's container filesystem.
-  Loading a snapshot there follows up with a forced ecosystem restart using the imported service selection.
+  Applying a snapshot now validates unknown services, unsupported/read-only env keys, `SERVER_IP`, effective host-port
+  collisions, and imported storage-root paths before anything is written. A successful apply persists the snapshot,
+  persists runtime overrides, and restarts the ecosystem using the imported selection. If restart fails, Warden rolls
+  the persisted snapshot/runtime state back before returning the failure payload. Omitting `selected` keeps the current
+  persisted selection, while `selected: []` explicitly restarts into minimal mode.
 - `POST /api/services/install` - install/start one or more services. Add `?async=true` to accept the install in the
   background and return `202` with the current progress snapshot instead of holding the request open.
 - `GET /api/services/install/progress` - current installation timeline.
 - `GET /api/services/installation/logs` - buffered installation-session history with summary status/progress.
 - `GET /api/services/:name/logs` - buffered log output.
+- `PUT /api/services/:name/config` - save validated runtime config overrides. When `restart: true` is requested and the
+  save succeeds but the restart fails, the response now reports `saved`, `restarted`, `pendingRestart`, and
+  `warnings` instead of surfacing a misleading generic post-save 500.
+- `POST /api/ecosystem/factory-reset` - destructive reset endpoint. Requests must include
+  `{"confirm":"FACTORY_RESET"}`.
 - `POST /api/services/:name/test` - service-level diagnostics.
 
 ## Key Environment Variables
@@ -78,6 +87,9 @@ HTTP API.
 | `DEBUG`                                           | Boot profile + log verbosity                                                                         | `false`                                                   |
 | `WARDEN_API_PORT`                                 | Warden API listen port                                                                               | `4001`                                                    |
 | `WARDEN_API_HOST`                                 | Optional bind host override for the Warden HTTP listener                                             | Node default (`0.0.0.0` when unset)                       |
+| `WARDEN_API_MAX_BODY_BYTES`                       | Maximum JSON request body size accepted by the Warden HTTP API                                       | `1048576`                                                 |
+| `WARDEN_API_REQUEST_TIMEOUT_MS`                   | Request timeout applied to the Warden HTTP server                                                    | `30000`                                                   |
+| `WARDEN_API_HEADERS_TIMEOUT_MS`                   | Header-read timeout applied to the Warden HTTP server                                                | `15000`                                                   |
 | `WARDEN_API_TOKEN_MAP`                            | Optional `service:token` map for Warden API callers (`noona-sage`, `noona-portal`)                   | generated from Warden's persisted token registry          |
 | `SERVER_IP`                                       | Optional LAN IP/hostname Warden uses for host-facing service URLs and shared runtime env             | unset                                                     |
 | `AUTO_UPDATES`                                    | Pull newer images during Warden startup and restart installed services whose image changed           | `false`                                                   |
@@ -201,13 +213,19 @@ HTTP API.
   `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json` for older installs. When any file exists, Warden restores runtime
   env overrides from its `values` payload before managed-service startup and can recover full-stack boot selection even
   if wizard-state or `noona_settings` entries are unavailable.
+- Snapshot imports and per-service config writes now fail closed on unknown services, unsupported/read-only settings,
+  invalid `SERVER_IP` values, host-port collisions in the effective ecosystem, and imported setup paths that resolve
+  outside Warden's canonical `NOONA_DATA_ROOT`.
 - Factory reset now also clears Warden's canonical setup snapshot, the legacy setup snapshot, the local runtime-config
   snapshot, the in-memory runtime override cache, and the in-process wizard-state fallback before restarting. This
-  keeps a reset from immediately restoring the old stack configuration on the next boot.
+  keeps a reset from immediately restoring the old stack configuration on the next boot, and the HTTP endpoint now
+  requires `confirm: "FACTORY_RESET"` before it will run.
 - When Warden runs containerized on Linux or Unraid, mount `NOONA_DATA_ROOT` into the Warden container at the same
   absolute path as the host root. Otherwise direct filesystem writes like `wardenm/noona-settings.json`,
   `noona-settings.json`, `warden/setup-wizard-state.json`, and `warden/service-runtime-config.json` will not appear on
   the host share even though Warden reports that they exist.
+- The Warden HTTP control plane now enforces JSON body size limits plus request/header timeouts. Oversized bodies are
+  rejected with `413` instead of being buffered without bound.
 - `startEcosystem()` now also treats that persisted setup snapshot selection as enough signal to choose a full-stack
   boot path even when Docker discovery is temporarily unavailable during a cold start, which helps managed Portal come
   back after reboot when its saved settings already exist on disk.

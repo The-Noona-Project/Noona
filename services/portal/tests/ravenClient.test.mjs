@@ -257,3 +257,42 @@ test('updateTitle patches Raven title cover metadata', async () => {
         coverUrl: 'https://covers.example/solo-leveling.jpg',
     });
 });
+
+test('applyTitleVolumeMap posts Raven volume-map payloads', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                title: {uuid: 'title-1'},
+                renameSummary: {attempted: true, renamed: 2},
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const payload = await raven.applyTitleVolumeMap('title-1', {
+        provider: 'MANGA_UPDATES',
+        providerSeriesId: '15180124327',
+        chapterVolumeMap: {'1': 1, '2': 1, '3': 2},
+        autoRename: false,
+    });
+
+    assert.equal(payload.title.uuid, 'title-1');
+    assert.equal(payload.renameSummary.renamed, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/library/title/title-1/volume-map');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        provider: 'MANGA_UPDATES',
+        providerSeriesId: '15180124327',
+        chapterVolumeMap: {'1': 1, '2': 1, '3': 2},
+        autoRename: false,
+    });
+});

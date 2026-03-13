@@ -11,6 +11,7 @@ default Discord roles.
 - [Entrypoint](initPortal.mjs)
 - [Portal runtime](app/portalRuntime.mjs)
 - [HTTP app](app/createPortalApp.mjs)
+- [Raven volume-map helper](app/ravenTitleVolumeMap.mjs)
 - [Portal routes](routes/registerPortalRoutes.mjs)
 - [Runtime config loader](config/portalConfig.mjs)
 - [Discord runtime modules](discord/)
@@ -73,8 +74,14 @@ default Discord roles.
   Kavita series through Komf `/api/kavita/metadata/identify`, then, when Moon supplies the Raven `titleUuid`,
   immediately lock Kavita to the same Noona cover art through the `title-cover` proxy route. If the Raven title record
   does not already have a stored `coverUrl`, Portal now backfills it from the selected metadata match's
-  `coverImageUrl` before syncing Kavita so older Noona library entries still inherit the correct cover art. Legacy
+  `coverImageUrl` before syncing Kavita so older Noona library entries still inherit the correct cover art. When the
+  selected metadata match includes an explicit provider + `providerSeriesId` and the Raven title already exists,
+  Portal now also derives a chapter-to-volume map from Komf's normalized provider book coverage, stores it on the
+  Raven title, and lets Raven auto-rename existing `.cbz` files when the provider coverage is trustworthy. Legacy
   Kavita provider-id payloads are still accepted as a compatibility fallback.
+- `POST /api/portal/raven/title-volume-map` - mediator route that loads normalized provider series details from Komf,
+  derives a chapter-to-volume map only from unambiguous integer volume + chapter-coverage data, and forwards the
+  normalized map to Raven with optional auto-rename.
 - `GET /api/portal/kavita/users` - return Kavita users plus available Kavita roles/role descriptions for Moon's
   `/settings/users` management view.
 - `PUT /api/portal/kavita/users/:username/roles` - update one Kavita user's role set while preserving their current
@@ -135,6 +142,8 @@ default Discord roles.
   completion DMs go out. When Sage/Moon stored a confirmed `metadataSelection` during approval, Portal now waits until
   Raven's imported title is visible and Kavita can resolve the scanned series, then applies that saved metadata match
   through Komf/Kavita and records the apply result back onto the recommendation before completion messaging finishes.
+  That deferred metadata apply now reuses the same Raven volume-map helper as the immediate metadata-apply route, so
+  provider-backed chapter-to-volume mappings and post-download file renames stay consistent across both paths.
 - Subscription follow-up DMs: Portal polls active `portal_subscriptions` documents and DM-notifies each subscriber
   whenever Raven exposes new `completedChapterNumbers` for a matched title task.
 - Boot behavior: when Discord is configured, Portal logs in, clears current-app global commands, clears the guild

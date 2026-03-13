@@ -1,5 +1,5 @@
 import {NextRequest, NextResponse} from "next/server";
-import {jsonError, portalJson} from "../../../../_backend";
+import {jsonError, portalJson} from "../../../_backend";
 
 export const dynamic = "force-dynamic";
 

@@ -1,3 +1,5 @@
+import {applyRavenTitleVolumeMap} from '../app/ravenTitleVolumeMap.mjs';
+
 const DEFAULT_RECOMMENDATION_COLLECTION = 'portal_recommendations';
 const DEFAULT_POLL_MS = 30000;
 const APPROVED_STATUSES = new Set(['approved', 'accepted']);
@@ -1240,6 +1242,23 @@ export const createRecommendationNotifier = ({
                 });
             }
 
+            let volumeMap = null;
+            if (metadataSelection.provider && metadataSelection.providerSeriesId && titleUuid) {
+                try {
+                    volumeMap = await applyRavenTitleVolumeMap({
+                        titleUuid,
+                        provider: metadataSelection.provider,
+                        providerSeriesId: metadataSelection.providerSeriesId,
+                        libraryId,
+                        autoRename: true,
+                        komfClient,
+                        ravenClient,
+                    });
+                } catch (error) {
+                    logger.warn?.(`[Portal/Discord] Failed to store Raven volume map for "${titleName}": ${error.message}`);
+                }
+            }
+
             const providerLabel = normalizeString(metadataSelection.provider).toUpperCase();
             const providerDetail = providerLabel
                 ? providerLabel
@@ -1265,9 +1284,18 @@ export const createRecommendationNotifier = ({
                 lastAttemptedAt: attemptedAt,
                 lastError: null,
             };
+            const volumeMapSuffix = volumeMap?.status === 'applied'
+                ? (
+                    (Number(volumeMap?.renameSummary?.renamed) || 0) > 0
+                        ? ' Raven also stored the chapter-to-volume map and renamed existing files to the real volume numbers.'
+                        : ' Raven also stored the chapter-to-volume map.'
+                )
+                : volumeMap?.status === 'no-op'
+                    ? ' The matched provider did not expose usable chapter-to-volume coverage, so Raven kept fallback v01 file names.'
+                    : '';
             const timelineEvent = createSystemTimelineEvent({
                 type: 'comment',
-                body: `Noona applied the saved metadata selection (${providerDetail}) to Kavita after Raven finished the import.`,
+                body: `Noona applied the saved metadata selection (${providerDetail}) to Kavita after Raven finished the import.${volumeMapSuffix}`,
                 createdAt: attemptedAt,
                 username: 'Portal',
             });

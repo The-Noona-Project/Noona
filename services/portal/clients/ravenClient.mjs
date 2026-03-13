@@ -292,6 +292,46 @@ export const createPortalRavenClient = ({
                 acceptStatuses: [404],
             });
         },
+        applyTitleVolumeMap: async (uuid, {
+            provider,
+            providerSeriesId,
+            chapterVolumeMap = {},
+            autoRename = true
+        } = {}) => {
+            const normalized = typeof uuid === 'string' ? uuid.trim() : '';
+            if (!normalized) {
+                throw new Error('uuid is required.');
+            }
+
+            const normalizedProvider = normalizeString(provider);
+            if (!normalizedProvider) {
+                throw new Error('provider is required.');
+            }
+
+            const normalizedProviderSeriesId = normalizeString(providerSeriesId);
+            if (!normalizedProviderSeriesId) {
+                throw new Error('providerSeriesId is required.');
+            }
+
+            const payload = {
+                provider: normalizedProvider,
+                providerSeriesId: normalizedProviderSeriesId,
+                chapterVolumeMap:
+                    chapterVolumeMap && typeof chapterVolumeMap === 'object' && !Array.isArray(chapterVolumeMap)
+                        ? chapterVolumeMap
+                        : {},
+                autoRename: autoRename !== false,
+            };
+
+            return await request(`/v1/library/title/${encodeURIComponent(normalized)}/volume-map`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+                acceptStatuses: [404],
+            });
+        },
     };
 };
 

@@ -14,6 +14,7 @@ import io.ktor.server.routing.route
 import io.ktor.server.util.getOrFail
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.Serializable
 import snd.komf.api.KomfErrorResponse
 import snd.komf.api.KomfProviderSeriesId
 import snd.komf.api.job.KomfMetadataJobId
@@ -27,8 +28,11 @@ import snd.komf.mediaserver.MediaServerClient
 import snd.komf.mediaserver.MetadataServiceProvider
 import snd.komf.mediaserver.model.MediaServerLibraryId
 import snd.komf.mediaserver.model.MediaServerSeriesId
+import snd.komf.model.BookRange
+import snd.komf.model.ProviderBookMetadata
 import snd.komf.model.ProviderSeriesId
 import snd.komf.providers.CoreProviders
+import snd.komf.providers.MetadataProvider
 
 private val logger = KotlinLogging.logger {}
 
@@ -43,6 +47,7 @@ class MetadataRoutes(
             searchSeriesRoute()
             getSeriesCoverRoute()
             identifySeriesRoute()
+            seriesDetailsRoute()
 
             matchSeriesRoute()
             matchLibraryRoute()
@@ -145,6 +150,82 @@ class MetadataRoutes(
         }
     }
 
+    private fun Route.seriesDetailsRoute() {
+        get("/series-details") {
+            val provider = call.request.queryParameters["provider"]
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let {
+                    runCatching { CoreProviders.valueOf(it.uppercase()) }.getOrElse {
+                        return@get call.respond(
+                            HttpStatusCode.BadRequest,
+                            KomfErrorResponse("IllegalArgumentException :Unsupported provider")
+                        )
+                    }
+                }
+                ?: return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    KomfErrorResponse("IllegalArgumentException :provider is required")
+                )
+            val providerSeriesId = call.request.queryParameters["providerSeriesId"]
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let(::ProviderSeriesId)
+                ?: return@get call.respond(
+                    HttpStatusCode.BadRequest,
+                    KomfErrorResponse("IllegalArgumentException :providerSeriesId is required")
+                )
+            val libraryId = call.request.queryParameters["libraryId"]
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let(::MediaServerLibraryId)
+
+            try {
+                val metadataService = libraryId
+                    ?.let { metadataServiceProvider.first().metadataServiceFor(it.value) }
+                    ?: metadataServiceProvider.first().defaultMetadataService()
+                val providerClient = resolveMetadataProvider(metadataService, provider, libraryId)
+                val seriesMetadata = providerClient.getSeriesMetadata(providerSeriesId)
+                val books = seriesMetadata.books.map { book ->
+                    val bookMetadata =
+                        runCatching { providerClient.getBookMetadata(providerSeriesId, book.id) }.getOrNull()
+                    KomfMetadataSeriesDetailsBook(
+                        providerBookId = book.id.id,
+                        title = book.name,
+                        type = book.type,
+                        edition = book.edition,
+                        volumeNumber = book.number?.toSingleIntegerOrNull(),
+                        volumeRangeStart = book.number?.start,
+                        volumeRangeEnd = book.number?.end,
+                        chapters = normalizeBookChapters(bookMetadata),
+                        startChapter = bookMetadata?.metadata?.startChapter,
+                        endChapter = bookMetadata?.metadata?.endChapter,
+                    )
+                }
+
+                call.respond(
+                    HttpStatusCode.OK,
+                    KomfMetadataSeriesDetailsResponse(
+                        provider = provider.name,
+                        providerSeriesId = providerSeriesId.value,
+                        libraryId = libraryId?.value,
+                        title = seriesMetadata.metadata.title?.name,
+                        books = books,
+                    )
+                )
+            } catch (exception: ResponseException) {
+                call.respond(exception.response.status, KomfErrorResponse(exception.response.bodyAsText()))
+                logger.catching(exception)
+            } catch (exception: Exception) {
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    KomfErrorResponse("${exception::class.simpleName} :${exception.message}")
+                )
+                logger.catching(exception)
+            }
+        }
+    }
+
     private fun Route.matchSeriesRoute() {
         post("/match/library/{libraryId}/series/{seriesId}") {
 
@@ -193,3 +274,50 @@ class MetadataRoutes(
     }
 
 }
+
+private fun resolveMetadataProvider(
+    metadataService: snd.komf.mediaserver.metadata.MetadataService,
+    provider: CoreProviders,
+    libraryId: MediaServerLibraryId?,
+): MetadataProvider {
+    val providers = libraryId?.let { metadataService.availableProviders(it) } ?: metadataService.availableProviders()
+    return providers.firstOrNull { it.providerName() == provider }
+        ?: throw IllegalArgumentException("Provider $provider is not enabled for library ${libraryId?.value ?: "default"}")
+}
+
+private fun normalizeBookChapters(bookMetadata: ProviderBookMetadata?): List<Int> {
+    return bookMetadata?.metadata?.chapters
+        ?.map { it.number }
+        ?.filter { it > 0 }
+        ?.distinct()
+        ?.sorted()
+        ?: emptyList()
+}
+
+private fun BookRange.toSingleIntegerOrNull(): Int? {
+    val normalizedStart = start.toInt()
+    return if (start == end && start == normalizedStart.toDouble()) normalizedStart else null
+}
+
+@Serializable
+private data class KomfMetadataSeriesDetailsResponse(
+    val provider: String,
+    val providerSeriesId: String,
+    val libraryId: String? = null,
+    val title: String? = null,
+    val books: List<KomfMetadataSeriesDetailsBook>,
+)
+
+@Serializable
+private data class KomfMetadataSeriesDetailsBook(
+    val providerBookId: String,
+    val title: String? = null,
+    val type: String? = null,
+    val edition: String? = null,
+    val volumeNumber: Int? = null,
+    val volumeRangeStart: Double? = null,
+    val volumeRangeEnd: Double? = null,
+    val chapters: List<Int> = emptyList(),
+    val startChapter: Int? = null,
+    val endChapter: Int? = null,
+)

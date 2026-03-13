@@ -254,6 +254,30 @@ export const createPortalClient = ({
             })
             return await parseResponsePayload(response)
         },
+
+        async applyRavenTitleVolumeMap(payload = {}) {
+            const titleUuid = typeof payload?.titleUuid === 'string' ? payload.titleUuid.trim() : ''
+            if (!titleUuid) {
+                throw new Error('titleUuid is required.')
+            }
+
+            const provider = typeof payload?.provider === 'string' ? payload.provider.trim() : ''
+            if (!provider) {
+                throw new Error('provider is required.')
+            }
+
+            const providerSeriesId = typeof payload?.providerSeriesId === 'string' ? payload.providerSeriesId.trim() : ''
+            if (!providerSeriesId) {
+                throw new Error('providerSeriesId is required.')
+            }
+
+            const response = await requestPortal('/api/portal/raven/title-volume-map', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify(payload),
+            })
+            return await parseResponsePayload(response)
+        },
     }
 }
 

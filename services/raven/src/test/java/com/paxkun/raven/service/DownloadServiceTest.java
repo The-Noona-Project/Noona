@@ -68,10 +68,11 @@ class DownloadServiceTest {
         DownloadNamingSettings naming = new DownloadNamingSettings(
                 "downloads.naming",
                 "{title}",
-                "{title} c{chapter} (v01) [Noona].cbz",
+                "{title} c{chapter} (v{volume}) [Noona].cbz",
                 "{page_padded}{ext}",
                 3,
-                3
+                3,
+                2
         );
         DownloadVpnSettings vpnSettings = new DownloadVpnSettings(
                 "downloads.vpn",
@@ -272,6 +273,74 @@ class DownloadServiceTest {
         assertThat(Files.exists(downloadingTitleFolder)).isFalse();
         assertThat(resolvedTitle.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
         verify(libraryService).scanKavitaLibraryForType("Manhwa");
+    }
+
+    @Test
+    void completedDownloadsUseConfiguredVolumeMapWhenPresent() throws Exception {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+        title.put("type", "Manhwa");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        resolvedTitle.setType("Manhwa");
+        resolvedTitle.setChapterVolumeMap(Map.of("1", 7));
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForStatus("Solo Leveling", "completed");
+
+        Path downloadedTitleFolder = downloadsRoot.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        try (var stream = Files.list(downloadedTitleFolder)) {
+            assertThat(stream.toList())
+                    .hasSize(1)
+                    .allSatisfy(path -> assertThat(path.getFileName().toString())
+                            .isEqualTo("Solo Leveling c001 (v07) [Noona].cbz"));
+        }
+    }
+
+    @Test
+    void completedDownloadsRecordChapterToFileMappings() throws Exception {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+        title.put("type", "Manhwa");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        resolvedTitle.setType("Manhwa");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForStatus("Solo Leveling", "completed");
+
+        assertThat(resolvedTitle.getDownloadedChapterFiles())
+                .containsEntry("1", "Solo Leveling c001 (v01) [Noona].cbz");
     }
 
     @Test
@@ -506,7 +575,7 @@ class DownloadServiceTest {
         }
 
         @Override
-        protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
+        protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber) {
             beforeSaveImagesHook.run();
             if (perImageDelayMs > 0) {
                 try {

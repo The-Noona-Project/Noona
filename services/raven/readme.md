@@ -49,6 +49,9 @@ Raven is Noona's downloader and library worker service. It searches supported so
 - `GET /v1/library/get/{titleName}`
 - `PATCH /v1/library/title/{uuid}` - update stored library metadata for an existing title (`title`, `sourceUrl`, and
   now `coverUrl`)
+- `POST /v1/library/title/{uuid}/volume-map` - store provider-backed chapter-to-volume assignments, persist the
+  matched metadata ids on the Raven title, and optionally auto-rename existing chapter archives to the current naming
+  template
 - `POST /v1/library/imports/check` - scan `downloaded/` for `.noona` manifests, rebuild missing Noona library rows,
   sync missing/new chapters from the source, and trigger Kavita scans for affected libraries
 
@@ -84,9 +87,9 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
 - Raven now uses `/app/downloads/downloading` for active work and `/app/downloads/downloaded` for completed title
   folders.
 - Raven writes a `<uuid>.noona` JSON manifest into each completed title folder. The manifest stores the Raven/Noona
-  title metadata needed to re-import that title into the library database after a reset, and Raven's import check
-  reads the live `.cbz` files in that same folder to rebuild the downloaded chapter index before it looks for missing
-  chapters.
+  title metadata needed to re-import that title into the library database after a reset. Raven now also persists each
+  title's `chapterVolumeMap`, `downloadedChapterFiles`, and matched metadata provider ids there so import checks and
+  later volume-map reapplications can rebuild the exact chapter/file index without guessing from filenames.
 - Raven writes `latest.log` under `NOONA_LOG_DIR` when that environment variable is set. Warden-managed installs mount
   Raven logs at `/app/logs`.
 - Raven now supports PIA OpenVPN rotation controls through `/v1/vpn/*`. It reads Vault key `downloads.vpn`,
@@ -114,15 +117,21 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
 - Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming plus per-thread
   speed limits without editing container env.
 - New Raven naming defaults now follow a Kavita-style manga chapter pattern:
-  `{title} c{chapter} (v01) [Noona].cbz`, with the default chapter padding set to `3` so chapter `3` becomes `c003`.
-  The `(v01)` segment is currently a literal default because Raven does not yet scrape per-volume metadata.
+  `{title} c{chapter} (v{volume}) [Noona].cbz`, with the default chapter padding set to `3` so chapter `3` becomes
+  `c003` and the default volume padding set to `2` so fallback volume `1` renders as `v01`.
 - In Raven naming templates, `{chapter}` now uses the configured chapter padding width. `{chapter_padded}` remains as a
-  compatible alias for the same padded value.
+  compatible alias for the same padded value. `{volume}` and `{volume_padded}` now use Raven's stored
+  `chapterVolumeMap` when Noona has an explicit provider-backed metadata match, and otherwise fall back to volume `1`
+  so unmatched/manual downloads keep the legacy `v01` behavior.
 - Missing-chapter detection now prefers the stored `downloadedChapterNumbers` index on each library title instead of
   depending only on archive file-name parsing, which avoids false positives for series names that contain digits or
-  custom chapter naming templates.
+  custom chapter naming templates. When Raven does need to parse legacy archive names, it now prefers explicit
+  `c###` chapter markers before trailing digits so `(v02)` is not mistaken for chapter `2`.
 - Raven title metadata patching now also accepts `coverUrl`, which lets Portal backfill missing Noona library cover
   art from a selected metadata match before locking that same cover into Kavita.
+- When Portal later supplies a usable provider-backed chapter-to-volume map, Raven can idempotently rename existing
+  `.cbz` files to the current template, skip collisions without deleting data, update the persisted
+  `downloadedChapterFiles` index, and rewrite the adjacent `.noona` manifest after each successful rename batch.
 - When `KAVITA_LIBRARY_ROOT` is configured, Raven now auto-creates matching Kavita libraries for new media-type
   folders it writes into the shared downloads tree. It prefers Portal's
   `POST /api/portal/kavita/libraries/ensure` flow when `PORTAL_BASE_URL` is available, then falls back to direct

@@ -72,3 +72,47 @@ test('identifySeriesMetadata posts the Komf identify payload', async () => {
         providerSeriesId: '32d76d19-8a05-4db0-9fc2-e0b0648fe9d0',
     });
 });
+
+test('getSeriesMetadataDetails queries the Komf series-details route', async () => {
+    const calls = [];
+    const komf = createKomfClient({
+        baseUrl: 'http://noona-komf:8085',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                provider: 'MANGA_UPDATES',
+                providerSeriesId: '15180124327',
+                libraryId: '4',
+                books: [
+                    {
+                        providerBookId: 'book-1',
+                        volumeNumber: 1,
+                        startChapter: 1,
+                        endChapter: 12,
+                    },
+                ],
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const result = await komf.getSeriesMetadataDetails({
+        provider: 'MANGA_UPDATES',
+        providerSeriesId: '15180124327',
+        libraryId: 4,
+    });
+
+    assert.equal(result.provider, 'MANGA_UPDATES');
+    assert.equal(result.providerSeriesId, '15180124327');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'GET');
+    const requestUrl = new URL(calls[0].url);
+    assert.equal(requestUrl.pathname, '/api/kavita/metadata/series-details');
+    assert.equal(requestUrl.searchParams.get('provider'), 'MANGA_UPDATES');
+    assert.equal(requestUrl.searchParams.get('providerSeriesId'), '15180124327');
+    assert.equal(requestUrl.searchParams.get('libraryId'), '4');
+});

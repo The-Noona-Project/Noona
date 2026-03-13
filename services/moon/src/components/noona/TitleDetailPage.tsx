@@ -174,26 +174,25 @@ const normalizeBoolean = (value: unknown): boolean | null => {
 };
 const normalizeRelatedSeriesList = (value: unknown): RelatedSeriesEntry[] =>
     Array.isArray(value)
-        ? value
-            .map((entry) => {
+        ? value.reduce<RelatedSeriesEntry[]>((entries, entry) => {
                 if (!entry || typeof entry !== "object") {
-                    return null;
+                    return entries;
                 }
 
                 const title = normalizeString((entry as RelatedSeriesEntry).title).trim();
                 const sourceUrl = normalizeString((entry as RelatedSeriesEntry).sourceUrl).trim();
                 const relation = normalizeString((entry as RelatedSeriesEntry).relation).trim();
                 if (!title && !sourceUrl && !relation) {
-                    return null;
+                    return entries;
                 }
 
-                return {
+            entries.push({
                     ...(title ? {title} : {}),
                     ...(sourceUrl ? {sourceUrl} : {}),
                     ...(relation ? {relation} : {}),
-                };
-            })
-            .filter((entry): entry is RelatedSeriesEntry => entry != null)
+            });
+            return entries;
+        }, [])
         : [];
 
 const normalizeKavitaProviderId = (value: unknown): string | null => {
@@ -1309,7 +1308,7 @@ export function TitleDetailPage({uuid}: { uuid: string }) {
                                         <Text variant="label-default-s" onBackground="neutral-weak">
                                             Related series
                                         </Text>
-                                        <Column gap="6">
+                                        <Column gap={6}>
                                             {relatedSeries.map((entry, index) => {
                                                 const entryTitle = normalizeString(entry.title).trim() || `Related series ${index + 1}`;
                                                 const entryUrl = normalizeString(entry.sourceUrl).trim();

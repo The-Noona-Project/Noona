@@ -19,6 +19,7 @@ export function registerBootApi(context = {}) {
         requiredServiceSet,
         resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
+        resolvePersistedSetupSelectionState,
         serviceCatalog,
         sleepImpl,
         startServiceUpdateTimer,
@@ -295,6 +296,14 @@ export function registerBootApi(context = {}) {
     };
 
     api.startEcosystem = async function startEcosystem(options = {}) {
+        const persistedSelectionState =
+            !Array.isArray(options?.services) && typeof resolvePersistedSetupSelectionState === 'function'
+                ? await resolvePersistedSetupSelectionState().catch(() => ({
+                    mode: 'unspecified',
+                    selected: [],
+                    explicit: false,
+                }))
+                : {mode: 'unspecified', selected: [], explicit: false};
         const setupCompleted = options?.setupCompleted === true
             ? true
             : options?.setupCompleted === false
@@ -302,9 +311,19 @@ export function registerBootApi(context = {}) {
                 : await api.isSetupCompleted();
         let dockerClient = null;
         let detectedServices = [];
-        let shouldBootFull = options?.forceFull === true || SUPER_MODE || setupCompleted;
+        let shouldBootFull =
+            options?.forceMinimal === true
+                ? false
+                : persistedSelectionState?.mode === 'minimal'
+                    ? false
+                    : options?.forceFull === true || SUPER_MODE || setupCompleted;
 
-        if (!shouldBootFull && !Array.isArray(options?.services)) {
+        if (
+            !shouldBootFull
+            && !Array.isArray(options?.services)
+            && options?.forceMinimal !== true
+            && persistedSelectionState?.mode !== 'minimal'
+        ) {
             if (typeof resolveManagedLifecycleServices === 'function') {
                 detectedServices = await resolveManagedLifecycleServices({
                     dockerClient: null,

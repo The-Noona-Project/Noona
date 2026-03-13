@@ -2,6 +2,7 @@
 
 import crypto from 'node:crypto';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
+import {applyRavenTitleVolumeMap} from '../app/ravenTitleVolumeMap.mjs';
 
 const DEFAULT_PROXY_TIMEOUT_MS = 10000;
 const NOONA_KAVITA_LOGIN_TOKEN_TYPE = 'noona-kavita-login';
@@ -1079,6 +1080,7 @@ export const registerPortalRoutes = ({
                 'skipped',
                 'Applied the selected Kavita metadata match. Kavita cover art was left unchanged.',
             );
+            let volumeMap = null;
 
             try {
                 coverSync = await syncKavitaTitleCover({
@@ -1098,16 +1100,80 @@ export const registerPortalRoutes = ({
                 );
             }
 
+            if (provider && providerSeriesId && req.body?.titleUuid) {
+                try {
+                    volumeMap = await applyRavenTitleVolumeMap({
+                        titleUuid: req.body?.titleUuid,
+                        provider,
+                        providerSeriesId,
+                        libraryId: Number.isInteger(parsedLibraryId) && parsedLibraryId > 0 ? parsedLibraryId : null,
+                        autoRename: req.body?.autoRename,
+                        komfClient: komf,
+                        ravenClient: raven,
+                    });
+                } catch (error) {
+                    const normalized = normalizeError(error, 502);
+                    errMSG(`[Portal] Failed to apply Raven volume map for title ${normalizeString(req.body?.titleUuid)}: ${normalized.message}`);
+                    volumeMap = {
+                        status: 'failed',
+                        mappedChapterCount: 0,
+                        renameSummary: null,
+                        message: `Metadata applied, but Raven volume-map sync failed: ${normalized.message}`,
+                    };
+                }
+            }
+
             res.json({
                 success: true,
                 seriesId: parsedSeriesId,
                 result: result ?? null,
-                message: coverSync.message,
+                message: volumeMap?.message ? `${coverSync.message} ${volumeMap.message}` : coverSync.message,
                 coverSync,
+                volumeMap,
             });
         } catch (error) {
             const normalized = normalizeMetadataRouteError(error, {action: 'apply', backend});
             errMSG(`[Portal] Failed to apply Kavita metadata match for series ${parsedSeriesId}: ${normalized.message}`);
+            res.status(normalized.status).json({error: normalized.message, details: normalized.details});
+        }
+    });
+
+    app.post('/api/portal/raven/title-volume-map', async (req, res) => {
+        const titleUuid = normalizeString(req.body?.titleUuid);
+        if (!titleUuid) {
+            res.status(400).json({error: 'titleUuid is required.'});
+            return;
+        }
+
+        const provider = normalizeString(req.body?.provider);
+        const providerSeriesId = normalizeString(req.body?.providerSeriesId);
+        if (!provider || !providerSeriesId) {
+            res.status(400).json({error: 'provider and providerSeriesId are required.'});
+            return;
+        }
+
+        try {
+            const result = await applyRavenTitleVolumeMap({
+                titleUuid,
+                provider,
+                providerSeriesId,
+                libraryId: req.body?.libraryId,
+                autoRename: req.body?.autoRename,
+                komfClient: komf,
+                ravenClient: raven,
+            });
+
+            res.json({
+                ok: true,
+                status: result.status,
+                mappedChapterCount: result.mappedChapterCount,
+                title: result.title,
+                renameSummary: result.renameSummary,
+                message: result.message,
+            });
+        } catch (error) {
+            const normalized = normalizeError(error, 502);
+            errMSG(`[Portal] Failed to store Raven title volume map for ${titleUuid}: ${normalized.message}`);
             res.status(normalized.status).json({error: normalized.message, details: normalized.details});
         }
     });

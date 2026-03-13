@@ -1118,6 +1118,326 @@ test('POST /api/portal/kavita/title-match/apply backfills a missing Raven cover 
     }
 });
 
+test('POST /api/portal/kavita/title-match/apply stores a Raven volume map when provider metadata is confirmed', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            port: 3003,
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        kavita: {
+            setSeriesCover: async (payload) => {
+                calls.push({type: 'cover', payload});
+                return {ok: true};
+            },
+        },
+        komf: {
+            identifySeriesMetadata: async (payload) => {
+                calls.push({type: 'identify', payload});
+                return {ok: true};
+            },
+            getSeriesMetadataDetails: async (payload) => {
+                calls.push({type: 'series-details', payload});
+                return {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    books: [
+                        {
+                            providerBookId: 'book-1',
+                            volumeNumber: 1,
+                            startChapter: 1,
+                            endChapter: 2,
+                        },
+                        {
+                            providerBookId: 'book-2',
+                            volumeNumber: 2,
+                            chapters: [3, 4],
+                        },
+                    ],
+                };
+            },
+        },
+        raven: {
+            getTitle: async (uuid) => {
+                calls.push({type: 'title', uuid});
+                return {
+                    uuid,
+                    coverUrl: 'https://covers.example/solo-leveling.jpg',
+                };
+            },
+            applyTitleVolumeMap: async (uuid, payload) => {
+                calls.push({type: 'volume-map', uuid, payload});
+                return {
+                    title: {uuid},
+                    renameSummary: {
+                        attempted: true,
+                        renamed: 1,
+                        skippedCollisions: 0,
+                        alreadyMatched: 0,
+                    },
+                };
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/kavita/title-match/apply`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                seriesId: 17,
+                libraryId: 4,
+                titleUuid: 'title-1',
+                provider: 'MANGA_UPDATES',
+                providerSeriesId: '15180124327',
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(payload.success, true);
+        assert.equal(payload.volumeMap?.status, 'applied');
+        assert.equal(payload.volumeMap?.mappedChapterCount, 4);
+        assert.equal(payload.volumeMap?.renameSummary?.renamed, 1);
+        assert.match(payload.message, /Stored the Raven volume map/i);
+        assert.deepEqual(calls, [
+            {
+                type: 'identify',
+                payload: {
+                    seriesId: 17,
+                    libraryId: 4,
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                },
+            },
+            {type: 'title', uuid: 'title-1'},
+            {
+                type: 'cover',
+                payload: {
+                    seriesId: 17,
+                    url: 'http://noona-portal:3003/api/portal/kavita/title-cover/title-1',
+                    lockCover: true,
+                },
+            },
+            {
+                type: 'series-details',
+                payload: {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    libraryId: 4,
+                },
+            },
+            {
+                type: 'volume-map',
+                uuid: 'title-1',
+                payload: {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    chapterVolumeMap: {'1': 1, '2': 1, '3': 2, '4': 2},
+                    autoRename: true,
+                },
+            },
+        ]);
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('POST /api/portal/raven/title-volume-map derives chapter-to-volume coverage and forwards it to Raven', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        komf: {
+            getSeriesMetadataDetails: async (payload) => {
+                calls.push({type: 'series-details', payload});
+                return {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    books: [
+                        {
+                            providerBookId: 'book-1',
+                            volumeNumber: 1,
+                            startChapter: 1,
+                            endChapter: 2,
+                        },
+                        {
+                            providerBookId: 'book-2',
+                            volumeNumber: 2,
+                            chapters: [3, 4],
+                        },
+                        {
+                            providerBookId: 'book-ambiguous-a',
+                            volumeNumber: 3,
+                            chapters: [5],
+                        },
+                        {
+                            providerBookId: 'book-ambiguous-b',
+                            volumeNumber: 4,
+                            chapters: [5],
+                        },
+                    ],
+                };
+            },
+        },
+        raven: {
+            applyTitleVolumeMap: async (uuid, payload) => {
+                calls.push({type: 'volume-map', uuid, payload});
+                return {
+                    title: {uuid},
+                    renameSummary: {
+                        attempted: true,
+                        renamed: 2,
+                        skippedCollisions: 0,
+                        alreadyMatched: 0,
+                    },
+                };
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/raven/title-volume-map`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                titleUuid: 'title-1',
+                provider: 'MANGA_UPDATES',
+                providerSeriesId: '15180124327',
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(payload.ok, true);
+        assert.equal(payload.status, 'applied');
+        assert.equal(payload.mappedChapterCount, 4);
+        assert.equal(payload.renameSummary?.renamed, 2);
+        assert.match(payload.message, /renamed 2 existing files/i);
+        assert.deepEqual(calls, [
+            {
+                type: 'series-details',
+                payload: {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    libraryId: null,
+                },
+            },
+            {
+                type: 'volume-map',
+                uuid: 'title-1',
+                payload: {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    chapterVolumeMap: {'1': 1, '2': 1, '3': 2, '4': 2},
+                    autoRename: true,
+                },
+            },
+        ]);
+    } finally {
+        await stopServer(server);
+    }
+});
+
+test('POST /api/portal/raven/title-volume-map returns no-op when Komf has no usable chapter coverage', async () => {
+    const calls = [];
+    const app = createPortalApp({
+        config: {
+            serviceName: 'noona-portal',
+            discord: {
+                guildId: 'guild-1',
+            },
+        },
+        komf: {
+            getSeriesMetadataDetails: async (payload) => {
+                calls.push({type: 'series-details', payload});
+                return {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    books: [
+                        {
+                            providerBookId: 'book-range-only',
+                            volumeRangeStart: 1,
+                            volumeRangeEnd: 2,
+                        },
+                        {
+                            providerBookId: 'book-no-coverage',
+                            volumeNumber: 3,
+                        },
+                    ],
+                };
+            },
+        },
+        raven: {
+            applyTitleVolumeMap: async (uuid, payload) => {
+                calls.push({type: 'volume-map', uuid, payload});
+                return {
+                    title: {uuid},
+                    renameSummary: {
+                        attempted: true,
+                        renamed: 0,
+                        skippedCollisions: 0,
+                        alreadyMatched: 0,
+                    },
+                };
+            },
+        },
+    });
+    const {server, baseUrl} = await startServer(app);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/portal/raven/title-volume-map`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                titleUuid: 'title-1',
+                provider: 'MANGA_UPDATES',
+                providerSeriesId: '15180124327',
+                autoRename: false,
+            }),
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(payload.ok, true);
+        assert.equal(payload.status, 'no-op');
+        assert.equal(payload.mappedChapterCount, 0);
+        assert.equal(payload.renameSummary, null);
+        assert.match(payload.message, /kept fallback v01/i);
+        assert.deepEqual(calls, [
+            {
+                type: 'series-details',
+                payload: {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    libraryId: null,
+                },
+            },
+            {
+                type: 'volume-map',
+                uuid: 'title-1',
+                payload: {
+                    provider: 'MANGA_UPDATES',
+                    providerSeriesId: '15180124327',
+                    chapterVolumeMap: {},
+                    autoRename: false,
+                },
+            },
+        ]);
+    } finally {
+        await stopServer(server);
+    }
+});
+
 test('GET /api/portal/kavita/title-cover proxies the stored Noona cover art', async () => {
     const upstreamCalls = [];
     const app = createPortalApp({

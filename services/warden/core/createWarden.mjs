@@ -1,5 +1,6 @@
 // services/warden/core/createWarden.mjs
 import fs from 'node:fs';
+import {isIP} from 'node:net';
 import path from 'node:path';
 import {inspect} from 'node:util';
 
@@ -49,6 +50,7 @@ import {
 } from '../../../utilities/etc/dockerSockets.mjs';
 import {createVaultPacketClient} from '../../sage/clients/vaultPacketClient.mjs';
 import {createWizardStateClient, createWizardStatePublisher,} from '../../sage/wizard/wizardStateClient.mjs';
+import {WardenApplyError, WardenConflictError, WardenNotFoundError, WardenValidationError,} from './wardenErrors.mjs';
 import {registerBootApi} from './registerBootApi.mjs';
 import {registerDiagnosticsApi} from './registerDiagnosticsApi.mjs';
 import {registerServiceManagementApi} from './registerServiceManagementApi.mjs';
@@ -85,6 +87,7 @@ const RUNTIME_CONFIG_SNAPSHOT_FILE_NAME = 'service-runtime-config.json';
 const RUNTIME_CONFIG_SNAPSHOT_VERSION = 1;
 const RUNTIME_CONFIG_DIRECTORY_NAME = LEGACY_SETUP_CONFIG_DIRECTORY_NAME;
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
+const SENSITIVE_ENV_PLACEHOLDER = '********';
 const MANAGED_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
 const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
@@ -607,6 +610,7 @@ export function createWarden(options = {}) {
     let setupConfigSnapshotCache = null;
     let setupConfigSnapshotCacheLoaded = false;
     let setupConfigSnapshotPathCache = null;
+    let activeLifecycleOperation = null;
     const serviceUpdateSnapshots = new Map();
     const updateCheckIntervalMs = (() => {
         const candidate = Number.parseInt(env.SERVICE_UPDATE_CHECK_INTERVAL_MS ?? '3600000', 10);
@@ -2610,6 +2614,12 @@ export function createWarden(options = {}) {
         return values;
     };
 
+    const hasSetupSelectionField = (snapshot) =>
+        Boolean(snapshot)
+        && typeof snapshot === 'object'
+        && !Array.isArray(snapshot)
+        && ['selected', 'selectedServices', 'services'].some((key) => Object.prototype.hasOwnProperty.call(snapshot, key));
+
     const extractPersistedSetupSelectionFromSetupSnapshot = (snapshot) => {
         const candidates = [
             snapshot?.selected,
@@ -2635,11 +2645,22 @@ export function createWarden(options = {}) {
             return null;
         }
 
+        const selected = extractPersistedSetupSelectionFromSetupSnapshot(candidate);
+        const selectionMode =
+            normalizePathValue(candidate?.selectionMode).toLowerCase() === 'minimal'
+                ? 'minimal'
+                : selected.length > 0
+                    ? 'selected'
+                    : hasSetupSelectionField(candidate)
+                        ? 'minimal'
+                        : null;
+
         const normalized = {
             version: Number.isFinite(Number(candidate.version))
                 ? Math.max(1, Math.floor(Number(candidate.version)))
                 : 2,
-            selected: extractPersistedSetupSelectionFromSetupSnapshot(candidate),
+            selected,
+            selectionMode,
             values: normalizeSetupConfigSnapshotValues(candidate?.values),
             storageRoot: normalizePathValue(candidate?.storageRoot) || null,
             integrations:
@@ -2662,7 +2683,8 @@ export function createWarden(options = {}) {
 
         return {
             version: normalized.version,
-            selected: normalized.selected,
+            ...(normalized.selectionMode || normalized.selected.length > 0 ? {selected: normalized.selected} : {}),
+            ...(normalized.selectionMode ? {selectionMode: normalized.selectionMode} : {}),
             values: normalized.values,
             storageRoot: normalized.storageRoot,
             integrations: normalized.integrations,
@@ -2670,47 +2692,26 @@ export function createWarden(options = {}) {
         };
     };
 
-    const resolveSetupConfigRoot = (snapshot = null) => {
-        const candidates = [];
-        const appendCandidate = (value) => {
-            const normalized = normalizePathValue(value);
-            if (normalized) {
-                candidates.push(normalized);
-            }
-        };
-
-        appendCandidate(snapshot?.storageRoot);
-
-        const values = snapshot?.values && typeof snapshot.values === 'object' ? snapshot.values : {};
-        for (const serviceName of ['noona-vault', 'noona-raven', 'noona-kavita', 'noona-komf']) {
-            appendCandidate(values?.[serviceName]?.NOONA_DATA_ROOT);
-        }
-
-        appendCandidate(resolveRuntimeConfig('noona-vault')?.env?.NOONA_DATA_ROOT);
-        appendCandidate(resolveRuntimeConfig('noona-raven')?.env?.NOONA_DATA_ROOT);
-        appendCandidate(resolveRuntimeConfig('noona-kavita')?.env?.NOONA_DATA_ROOT);
-        appendCandidate(resolveRuntimeConfig('noona-komf')?.env?.NOONA_DATA_ROOT);
-
-        return resolveNoonaDataRoot({
-            candidate: candidates[0] ?? null,
+    const resolveCanonicalNoonaDataRoot = () => resolveNoonaDataRoot({
             env,
             cwd: process.cwd(),
         });
-    };
 
-    const resolveSetupConfigSnapshotPath = (snapshot = null) =>
-        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
+    const resolveSetupConfigRoot = () => resolveCanonicalNoonaDataRoot();
 
-    const resolveLegacyRootSetupConfigSnapshotPath = (snapshot = null) =>
-        path.join(resolveSetupConfigRoot(snapshot), SETUP_CONFIG_FILE_NAME);
+    const resolveSetupConfigSnapshotPath = () =>
+        path.join(resolveSetupConfigRoot(), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
 
-    const resolveLegacySetupConfigSnapshotPath = (snapshot = null) =>
-        path.join(resolveSetupConfigRoot(snapshot), LEGACY_SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
+    const resolveLegacyRootSetupConfigSnapshotPath = () =>
+        path.join(resolveSetupConfigRoot(), SETUP_CONFIG_FILE_NAME);
 
-    const resolveSetupConfigSnapshotPaths = (snapshot = null) => {
-        const primaryPath = resolveSetupConfigSnapshotPath(snapshot);
-        const legacyRootPath = resolveLegacyRootSetupConfigSnapshotPath(snapshot);
-        const legacyPath = resolveLegacySetupConfigSnapshotPath(snapshot);
+    const resolveLegacySetupConfigSnapshotPath = () =>
+        path.join(resolveSetupConfigRoot(), LEGACY_SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
+
+    const resolveSetupConfigSnapshotPaths = () => {
+        const primaryPath = resolveSetupConfigSnapshotPath();
+        const legacyRootPath = resolveLegacyRootSetupConfigSnapshotPath();
+        const legacyPath = resolveLegacySetupConfigSnapshotPath();
         return Array.from(new Set([primaryPath, legacyRootPath, legacyPath].filter(Boolean)));
     };
 
@@ -2904,14 +2905,12 @@ export function createWarden(options = {}) {
         };
     };
 
-    const resolveRuntimeConfigSnapshotPath = (snapshotHint = undefined) => {
-        const sourceSnapshot = snapshotHint === undefined ? readSetupConfigSnapshot().snapshot : snapshotHint;
-        return path.join(
-            resolveSetupConfigRoot(sourceSnapshot),
+    const resolveRuntimeConfigSnapshotPath = () =>
+        path.join(
+            resolveSetupConfigRoot(),
             RUNTIME_CONFIG_DIRECTORY_NAME,
             RUNTIME_CONFIG_SNAPSHOT_FILE_NAME,
         );
-    };
 
     const readRuntimeConfigSnapshot = () => {
         const filePath = resolveRuntimeConfigSnapshotPath();
@@ -2999,8 +2998,11 @@ export function createWarden(options = {}) {
             return [];
         }
 
+        const validatedValues = validateSetupSnapshotValues(normalized.values, {
+            currentSnapshotValues: normalized.values,
+        });
         const loaded = [];
-        for (const [service, envOverrides] of Object.entries(normalized.values)) {
+        for (const [service, envOverrides] of Object.entries(validatedValues)) {
             if (!supportsRuntimeConfigTarget(service)) {
                 continue;
             }
@@ -3056,12 +3058,45 @@ export function createWarden(options = {}) {
         return [];
     };
 
-    const resolvePersistedSetupServiceNames = async () => {
+    const extractPersistedSetupSelectionStateFromSetupSnapshot = (snapshot) => {
+        const selected = extractPersistedSetupSelectionFromSetupSnapshot(snapshot);
+        if (normalizePathValue(snapshot?.selectionMode).toLowerCase() === 'minimal') {
+            return {mode: 'minimal', selected: [], explicit: true};
+        }
+
+        if (selected.length > 0) {
+            return {mode: 'selected', selected, explicit: true};
+        }
+
+        if (hasSetupSelectionField(snapshot)) {
+            return {mode: 'minimal', selected: [], explicit: true};
+        }
+
+        return {mode: 'unspecified', selected: [], explicit: false};
+    };
+
+    const resolveLifecycleServiceNamesForSelectionState = (selectionState = {}) => {
+        if (selectionState?.mode === 'minimal') {
+            return [...minimalServiceNames];
+        }
+
+        if (selectionState?.mode === 'selected') {
+            return orderServicesForLifecycle([
+                ...requiredServices,
+                ...minimalServiceNames,
+                ...(Array.isArray(selectionState.selected) ? selectionState.selected : []),
+            ]);
+        }
+
+        return [];
+    };
+
+    const resolvePersistedSetupSelectionState = async () => {
         try {
             const {snapshot} = readSetupConfigSnapshot();
-            const selection = extractPersistedSetupSelectionFromSetupSnapshot(snapshot);
-            if (selection.length > 0) {
-                return selection;
+            const selectionState = extractPersistedSetupSelectionStateFromSetupSnapshot(snapshot);
+            if (selectionState.mode !== 'unspecified') {
+                return selectionState;
             }
         } catch {
             // Fall through to wizard-state selection.
@@ -3072,14 +3107,14 @@ export function createWarden(options = {}) {
                 const state = await wizardStateClient.loadState({fallbackToDefault: true});
                 const selection = extractPersistedSetupServiceSelection(state);
                 if (selection.length > 0) {
-                    return selection;
+                    return {mode: 'selected', selected: selection, explicit: false};
                 }
             } catch {
                 // Fall through to empty selection.
             }
         }
 
-        return [];
+        return {mode: 'unspecified', selected: [], explicit: false};
     };
 
     const listInstalledManagedServiceNames = async (dockerClient) => {
@@ -3099,13 +3134,13 @@ export function createWarden(options = {}) {
     };
 
     const resolveManagedLifecycleServices = async ({dockerClient = null, fallbackToAll = true} = {}) => {
-        const persistedSelection = await resolvePersistedSetupServiceNames();
-        if (persistedSelection.length > 0) {
-            return orderServicesForLifecycle([
-                ...requiredServices,
-                ...minimalServiceNames,
-                ...persistedSelection,
-            ]);
+        const persistedSelectionState = await resolvePersistedSetupSelectionState();
+        if (persistedSelectionState.mode === 'minimal') {
+            return [];
+        }
+
+        if (persistedSelectionState.mode === 'selected') {
+            return resolveLifecycleServiceNamesForSelectionState(persistedSelectionState);
         }
 
         if (dockerClient) {
@@ -3391,6 +3426,17 @@ export function createWarden(options = {}) {
         return snapshot;
     };
 
+    const cloneRuntimeConfigState = () =>
+        new Map(
+            Array.from(serviceRuntimeConfig.entries()).map(([name, runtime]) => [
+                name,
+                {
+                    env: normalizeEnvOverrideMap(runtime?.env),
+                    hostPort: normalizeHostPort(runtime?.hostPort),
+                },
+            ]),
+        );
+
     const buildHostServiceUrl = (descriptor, port = descriptor?.port) => {
         const normalizedPort = normalizeHostPort(port);
         if (normalizedPort == null) {
@@ -3515,15 +3561,24 @@ export function createWarden(options = {}) {
         };
     };
 
-    const buildEffectiveServiceDescriptor = (name, {envOverrides = null} = {}) => {
+    const buildEffectiveServiceDescriptorForRuntime = (
+        name,
+        runtimeOverride = null,
+        {envOverrides = null} = {},
+    ) => {
         const normalizedName = normalizeManagedServiceName(name);
         const entry = serviceCatalog.get(normalizedName);
         if (!entry) {
-            throw new Error(`Service ${normalizedName || name} is not registered with Warden.`);
+            throw new WardenNotFoundError(`Service ${normalizedName || name} is not registered with Warden.`);
         }
 
         const baseDescriptor = cloneServiceDescriptor(entry.descriptor);
-        const runtime = resolveRuntimeConfig(normalizedName);
+        const runtime = runtimeOverride == null
+            ? resolveRuntimeConfig(normalizedName)
+            : {
+                env: normalizeEnvOverrideMap(runtimeOverride?.env),
+                hostPort: normalizeHostPort(runtimeOverride?.hostPort),
+            };
         const mergedOverrides = {
             ...runtime.env,
             ...normalizeEnvOverrideMap(envOverrides),
@@ -3559,6 +3614,574 @@ export function createWarden(options = {}) {
                 hostPort,
             },
         };
+    };
+
+    const buildEffectiveServiceDescriptor = (name, {envOverrides = null} = {}) =>
+        buildEffectiveServiceDescriptorForRuntime(name, null, {envOverrides});
+
+    const buildWardenEnvConfig = () =>
+        cloneEnvConfig([
+            {
+                key: 'SERVER_IP',
+                label: 'Server IP / Hostname',
+                defaultValue: normalizePathValue(resolveCurrentServerIp()),
+                description:
+                    'Host IP address or hostname Warden should publish in Noona links such as Kavita buttons and setup summary URLs.',
+                warning:
+                    'If Warden was started with HOST_SERVICE_URL, that explicit URL still takes precedence over SERVER_IP.',
+                required: false,
+                readOnly: false,
+            },
+            {
+                key: 'AUTO_UPDATES',
+                label: 'Auto updates',
+                defaultValue: resolveCurrentAutoUpdatesEnabled() === true ? 'true' : 'false',
+                description:
+                    'When enabled, Warden pulls newer Docker images during startup and restarts installed services that changed.',
+                warning:
+                    'Startup may take longer, and managed services can restart during boot when a newer image is found.',
+                required: false,
+                readOnly: false,
+            },
+        ]);
+
+    const buildEnvFieldMap = (envConfig = []) => {
+        const map = new Map();
+
+        for (const field of Array.isArray(envConfig) ? envConfig : []) {
+            const key = normalizePathValue(field?.key);
+            if (!key) {
+                continue;
+            }
+
+            map.set(key, field);
+        }
+
+        return map;
+    };
+
+    const resolveCurrentEnvSnapshot = (name) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        if (!normalizedName) {
+            return {};
+        }
+
+        if (normalizedName === WARDEN_CONFIG_SERVICE_NAME) {
+            return {
+                SERVER_IP: normalizePathValue(resolveCurrentServerIp()),
+                AUTO_UPDATES: resolveCurrentAutoUpdatesEnabled() === true ? 'true' : 'false',
+            };
+        }
+
+        return parseEnvEntries(buildEffectiveServiceDescriptor(normalizedName).descriptor.env);
+    };
+
+    const resolveEditableEnvConfig = (name) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        if (normalizedName === WARDEN_CONFIG_SERVICE_NAME) {
+            return buildWardenEnvConfig();
+        }
+
+        return cloneEnvConfig(buildEffectiveServiceDescriptor(normalizedName).descriptor.envConfig);
+    };
+
+    const isValidServerHostname = (value) => {
+        const normalized = normalizePathValue(value).replace(/\.$/, '');
+        if (!normalized) {
+            return false;
+        }
+
+        if (normalized.startsWith('[') && normalized.endsWith(']')) {
+            return isIP(normalized.slice(1, -1)) === 6;
+        }
+
+        if (isIP(normalized) > 0) {
+            return true;
+        }
+
+        if (normalized.includes('/') || normalized.includes('?') || normalized.includes('#') || /\s/.test(normalized)) {
+            return false;
+        }
+
+        return normalized.split('.').every((label) =>
+            label.length > 0
+            && label.length <= 63
+            && !label.startsWith('-')
+            && !label.endsWith('-')
+            && /^[A-Za-z0-9-]+$/.test(label),
+        );
+    };
+
+    const normalizeServerIpSettingValue = (value) => {
+        const normalized = normalizePathValue(value);
+        if (!normalized) {
+            return '';
+        }
+
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+            let parsed;
+            try {
+                parsed = new URL(normalized);
+            } catch {
+                throw new WardenValidationError(
+                    'SERVER_IP must be a valid hostname, IP address, or http(s) URL without a path.',
+                );
+            }
+
+            const hasPath = normalizePathValue(parsed.pathname || '') && parsed.pathname !== '/';
+            if (
+                (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+                || parsed.username
+                || parsed.password
+                || parsed.search
+                || parsed.hash
+                || parsed.port
+                || hasPath
+            ) {
+                throw new WardenValidationError(
+                    'SERVER_IP must be a valid hostname, IP address, or http(s) URL without a path.',
+                );
+            }
+
+            return parsed.hostname;
+        }
+
+        if (!isValidServerHostname(normalized)) {
+            throw new WardenValidationError(
+                'SERVER_IP must be a valid hostname, IP address, or http(s) URL without a path.',
+            );
+        }
+
+        return normalized;
+    };
+
+    const normalizeBooleanSettingValueOrThrow = (value, key) => {
+        const normalizedInput = normalizePathValue(value);
+        if (!normalizedInput) {
+            return '';
+        }
+
+        const normalized = normalizeBooleanSettingValue(normalizedInput);
+        if (!normalized) {
+            throw new WardenValidationError(`${key} must be true or false.`);
+        }
+
+        return normalized;
+    };
+
+    const validateServiceEnvOverrideMap = (
+        name,
+        envCandidate,
+        {currentEnv = null, currentSnapshotEnv = null, allowSensitivePlaceholder = false} = {},
+    ) => {
+        if (!envCandidate || typeof envCandidate !== 'object' || Array.isArray(envCandidate)) {
+            throw new WardenValidationError('Environment overrides must be provided as an object map.');
+        }
+
+        const normalizedName = normalizeManagedServiceName(name);
+        if (!normalizedName) {
+            throw new WardenValidationError('Service name must be a non-empty string.');
+        }
+
+        const envConfig = resolveEditableEnvConfig(normalizedName);
+        const fieldMap = buildEnvFieldMap(envConfig);
+        const current = currentEnv && typeof currentEnv === 'object' ? currentEnv : resolveCurrentEnvSnapshot(normalizedName);
+        const snapshotEnv =
+            currentSnapshotEnv && typeof currentSnapshotEnv === 'object' && !Array.isArray(currentSnapshotEnv)
+                ? currentSnapshotEnv
+                : {};
+        const sanitized = {};
+
+        for (const [rawKey, rawValue] of Object.entries(envCandidate)) {
+            const key = normalizePathValue(rawKey);
+            if (!key) {
+                continue;
+            }
+
+            const field = fieldMap.get(key);
+            if (!field) {
+                throw new WardenValidationError(`${key} is not a supported setting for ${normalizedName}.`);
+            }
+
+            if (field.serverManaged === true || field.readOnly === true) {
+                throw new WardenValidationError(`${key} is managed by Warden and cannot be changed.`);
+            }
+
+            const incomingValue = rawValue == null ? '' : String(rawValue);
+            const currentValue = Object.prototype.hasOwnProperty.call(current, key)
+                ? (current[key] == null ? '' : String(current[key]))
+                : '';
+            const snapshotValue = Object.prototype.hasOwnProperty.call(snapshotEnv, key)
+                ? (snapshotEnv[key] == null ? '' : String(snapshotEnv[key]))
+                : currentValue;
+
+            let nextValue =
+                allowSensitivePlaceholder && field.sensitive === true && incomingValue === SENSITIVE_ENV_PLACEHOLDER
+                    ? snapshotValue
+                    : incomingValue;
+
+            if (normalizedName === WARDEN_CONFIG_SERVICE_NAME && key === 'SERVER_IP') {
+                nextValue = normalizeServerIpSettingValue(nextValue);
+            } else if (normalizedName === WARDEN_CONFIG_SERVICE_NAME && key === 'AUTO_UPDATES') {
+                nextValue = normalizeBooleanSettingValueOrThrow(nextValue, 'AUTO_UPDATES');
+            }
+
+            sanitized[key] = nextValue;
+        }
+
+        return sanitized;
+    };
+
+    const isPathWithinRoot = (candidatePath, rootPath) => {
+        const relative = path.relative(rootPath, candidatePath);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    };
+
+    const validateImportedStoragePath = (value, label) => {
+        const normalized = normalizePathValue(value);
+        if (!normalized) {
+            return null;
+        }
+
+        const resolved = toAbsoluteHostPath(normalized, {cwd: process.cwd()});
+        const canonicalRoot = resolveCanonicalNoonaDataRoot();
+
+        if (!resolved || !isPathWithinRoot(resolved, canonicalRoot)) {
+            throw new WardenValidationError(
+                `${label} must stay within Warden's managed Noona data root (${canonicalRoot}).`,
+            );
+        }
+
+        return canonicalRoot;
+    };
+
+    const validateSetupSnapshotStoragePaths = (snapshot = {}) => {
+        const canonicalRoot = resolveCanonicalNoonaDataRoot();
+
+        if (Object.prototype.hasOwnProperty.call(snapshot, 'storageRoot')) {
+            validateImportedStoragePath(snapshot.storageRoot, 'storageRoot');
+        }
+
+        const rawValues = snapshot?.values;
+        if (rawValues && typeof rawValues === 'object' && !Array.isArray(rawValues)) {
+            for (const [rawServiceName, rawEnv] of Object.entries(rawValues)) {
+                if (!rawEnv || typeof rawEnv !== 'object' || Array.isArray(rawEnv)) {
+                    continue;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(rawEnv, 'NOONA_DATA_ROOT')) {
+                    const serviceName = normalizeManagedServiceName(rawServiceName) || rawServiceName;
+                    validateImportedStoragePath(rawEnv.NOONA_DATA_ROOT, `${serviceName}.NOONA_DATA_ROOT`);
+                }
+            }
+        }
+
+        return canonicalRoot;
+    };
+
+    const getRequestedSetupSelectionCandidate = (snapshot = {}) => {
+        for (const key of ['selected', 'selectedServices', 'services']) {
+            if (Object.prototype.hasOwnProperty.call(snapshot, key)) {
+                return {provided: true, key, value: snapshot[key]};
+            }
+        }
+
+        return {provided: false, key: null, value: null};
+    };
+
+    const validatePersistedServiceSelectionEntries = (candidate, label = 'selected') => {
+        if (!Array.isArray(candidate)) {
+            throw new WardenValidationError(`${label} must be an array of service names.`);
+        }
+
+        const names = [];
+        const seen = new Set();
+
+        for (const entry of candidate) {
+            const rawName =
+                typeof entry === 'string'
+                    ? entry
+                    : entry && typeof entry === 'object' && !Array.isArray(entry)
+                        ? entry.name
+                        : '';
+            const normalizedName = normalizeManagedServiceName(rawName);
+
+            if (!normalizedName) {
+                throw new WardenValidationError(`${label} must contain valid service names.`);
+            }
+
+            if (!serviceCatalog.has(normalizedName)) {
+                throw new WardenValidationError(`Service ${rawName} is not registered with Warden.`);
+            }
+
+            if (seen.has(normalizedName)) {
+                continue;
+            }
+
+            seen.add(normalizedName);
+            names.push(normalizedName);
+        }
+
+        return names;
+    };
+
+    const resolveRequestedSetupSelectionState = async (snapshot = {}) => {
+        const requestedSelection = getRequestedSetupSelectionCandidate(snapshot);
+        if (requestedSelection.provided) {
+            const selected = validatePersistedServiceSelectionEntries(
+                requestedSelection.value,
+                requestedSelection.key || 'selected',
+            );
+            return selected.length > 0
+                ? {mode: 'selected', selected, explicit: true}
+                : {mode: 'minimal', selected: [], explicit: true};
+        }
+
+        return resolvePersistedSetupSelectionState();
+    };
+
+    const resolvePortValidationServiceNames = async (selectionState = null, extraServiceNames = []) => {
+        const effectiveSelectionState =
+            selectionState && typeof selectionState === 'object'
+                ? selectionState
+                : extractPersistedSetupSelectionStateFromSetupSnapshot(readSetupConfigSnapshot().snapshot);
+        const fallbackNames =
+            effectiveSelectionState.mode === 'minimal'
+                ? [...minimalServiceNames]
+                : effectiveSelectionState.mode === 'selected'
+                    ? resolveLifecycleServiceNamesForSelectionState(effectiveSelectionState)
+                    : orderServicesForLifecycle([
+                        ...requiredServices,
+                        ...minimalServiceNames,
+                        ...bootOrder,
+                        ...listRegisteredServiceNames(),
+                    ]);
+
+        return orderServicesForLifecycle([
+            ...fallbackNames,
+            ...(Array.isArray(extraServiceNames) ? extraServiceNames : []),
+        ]);
+    };
+
+    const validateHostPortCollisions = async ({runtimeOverridesByService = new Map(), selectionState = null} = {}) => {
+        const overrideNames = runtimeOverridesByService instanceof Map
+            ? Array.from(runtimeOverridesByService.keys())
+            : [];
+        const names = await resolvePortValidationServiceNames(selectionState, overrideNames);
+        const portOwners = new Map();
+
+        for (const name of names) {
+            if (!serviceCatalog.has(name)) {
+                continue;
+            }
+
+            const runtimeOverride =
+                runtimeOverridesByService instanceof Map && runtimeOverridesByService.has(name)
+                    ? runtimeOverridesByService.get(name)
+                    : null;
+            const {descriptor} = buildEffectiveServiceDescriptorForRuntime(name, runtimeOverride);
+            const hostPort = normalizeHostPort(descriptor?.port);
+
+            if (hostPort == null) {
+                continue;
+            }
+
+            const owner = portOwners.get(hostPort);
+            if (owner && owner !== name) {
+                throw new WardenValidationError(
+                    `Host port collision detected: ${owner} and ${name} both use port ${hostPort}.`,
+                );
+            }
+
+            portOwners.set(hostPort, name);
+        }
+    };
+
+    const validateSetupSnapshotValues = (rawValues, {currentSnapshotValues = {}} = {}) => {
+        if (rawValues == null) {
+            return {};
+        }
+
+        if (typeof rawValues !== 'object' || Array.isArray(rawValues)) {
+            throw new WardenValidationError('values must be an object map keyed by service name.');
+        }
+
+        const values = {};
+        for (const [rawServiceName, rawEnv] of Object.entries(rawValues)) {
+            const normalizedName = normalizeManagedServiceName(rawServiceName);
+            if (!normalizedName || !supportsRuntimeConfigTarget(normalizedName)) {
+                throw new WardenValidationError(`Service ${rawServiceName} is not registered with Warden.`);
+            }
+
+            const env = validateServiceEnvOverrideMap(normalizedName, rawEnv ?? {}, {
+                currentEnv: resolveCurrentEnvSnapshot(normalizedName),
+                currentSnapshotEnv:
+                    currentSnapshotValues?.[normalizedName] && typeof currentSnapshotValues[normalizedName] === 'object'
+                        ? currentSnapshotValues[normalizedName]
+                        : {},
+                allowSensitivePlaceholder: true,
+            });
+
+            if (Object.keys(env).length > 0) {
+                values[normalizedName] = env;
+            }
+        }
+
+        return values;
+    };
+
+    const validateAndNormalizeServiceConfigUpdate = async (name, updates = {}) => {
+        const normalizedName = normalizeManagedServiceName(name);
+        if (!normalizedName) {
+            throw new WardenValidationError('Service name must be a non-empty string.');
+        }
+
+        if (normalizedName === WARDEN_CONFIG_SERVICE_NAME) {
+            if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort') && updates?.hostPort != null) {
+                throw new WardenValidationError('noona-warden does not support hostPort overrides.');
+            }
+
+            const env = Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')
+                ? validateServiceEnvOverrideMap(normalizedName, updates?.env ?? {}, {
+                    currentEnv: resolveCurrentEnvSnapshot(normalizedName),
+                    allowSensitivePlaceholder: true,
+                })
+                : {};
+
+            return {
+                name: normalizedName,
+                nextRuntime: {
+                    env: {
+                        ...(env.SERVER_IP ? {SERVER_IP: env.SERVER_IP} : {}),
+                        ...(env.AUTO_UPDATES ? {AUTO_UPDATES: env.AUTO_UPDATES} : {}),
+                    },
+                    hostPort: null,
+                },
+            };
+        }
+
+        if (!serviceCatalog.has(normalizedName)) {
+            throw new WardenNotFoundError(`Service ${normalizedName} is not registered with Warden.`);
+        }
+
+        const runtime = resolveRuntimeConfig(normalizedName);
+        const nextRuntime = {
+            env: {...runtime.env},
+            hostPort: runtime.hostPort,
+        };
+
+        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
+            nextRuntime.env = validateServiceEnvOverrideMap(normalizedName, updates?.env ?? {}, {
+                currentEnv: resolveCurrentEnvSnapshot(normalizedName),
+                allowSensitivePlaceholder: true,
+            });
+        }
+
+        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort')) {
+            const parsedHostPort = normalizeHostPort(updates?.hostPort);
+            if (updates?.hostPort != null && parsedHostPort == null) {
+                throw new WardenValidationError('hostPort must be a valid TCP port between 1 and 65535.');
+            }
+            nextRuntime.hostPort = parsedHostPort;
+        }
+
+        await validateHostPortCollisions({
+            runtimeOverridesByService: new Map([[normalizedName, nextRuntime]]),
+        });
+
+        return {
+            name: normalizedName,
+            nextRuntime,
+        };
+    };
+
+    const validateAndNormalizeSetupConfigPayload = async (snapshot = {}) => {
+        if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+            throw new WardenValidationError('Setup config snapshot must be a JSON object.');
+        }
+
+        const currentSetupConfig = readSetupConfigSnapshot({refresh: true});
+        const currentSnapshotValues =
+            currentSetupConfig?.snapshot?.values && typeof currentSetupConfig.snapshot.values === 'object'
+                ? currentSetupConfig.snapshot.values
+                : {};
+        const selectionState = await resolveRequestedSetupSelectionState(snapshot);
+        const canonicalRoot = validateSetupSnapshotStoragePaths(snapshot);
+        const values = validateSetupSnapshotValues(snapshot?.values, {currentSnapshotValues});
+        const runtimeOverridesByService = new Map();
+
+        for (const [serviceName, envOverrides] of Object.entries(values)) {
+            const current = resolveRuntimeConfig(serviceName);
+            runtimeOverridesByService.set(serviceName, {
+                env: {
+                    ...normalizeEnvOverrideMap(current.env),
+                    ...envOverrides,
+                },
+                hostPort: current.hostPort,
+            });
+        }
+
+        await validateHostPortCollisions({
+            runtimeOverridesByService,
+            selectionState,
+        });
+
+        return {
+            selectionState,
+            snapshot: {
+                version: Number.isFinite(Number(snapshot.version))
+                    ? Math.max(1, Math.floor(Number(snapshot.version)))
+                    : 2,
+                selected: selectionState.mode === 'selected' ? selectionState.selected : [],
+                selectionMode: selectionState.mode === 'minimal' ? 'minimal' : selectionState.mode === 'selected' ? 'selected' : null,
+                values,
+                storageRoot: canonicalRoot,
+                integrations:
+                    snapshot?.integrations && typeof snapshot.integrations === 'object' && !Array.isArray(snapshot.integrations)
+                        ? cloneMeta(snapshot.integrations)
+                        : null,
+                savedAt:
+                    typeof snapshot?.savedAt === 'string' && snapshot.savedAt.trim()
+                        ? snapshot.savedAt.trim()
+                        : null,
+            },
+        };
+    };
+
+    const restoreRuntimeConfigState = async (snapshot = new Map()) => {
+        const currentNames = new Set(serviceRuntimeConfig.keys());
+        serviceRuntimeConfig.clear();
+
+        for (const [name, runtime] of snapshot.entries()) {
+            writeRuntimeConfig(name, runtime);
+        }
+
+        const namesToPersist = new Set([
+            ...Array.from(currentNames),
+            ...Array.from(serviceRuntimeConfig.keys()),
+        ]);
+
+        for (const name of namesToPersist) {
+            await persistServiceRuntimeConfig(name, resolveRuntimeConfig(name));
+        }
+
+        writeRuntimeConfigSnapshot();
+    };
+
+    const withLifecycleOperation = async (label, callback) => {
+        if (activeLifecycleOperation) {
+            throw new WardenConflictError(
+                `Cannot ${label} while ${activeLifecycleOperation} is already in progress.`,
+            );
+        }
+
+        activeLifecycleOperation = label;
+
+        try {
+            return await callback();
+        } finally {
+            activeLifecycleOperation = null;
+        }
     };
 
     const getLocalImageDigests = async (dockerClient, image) => {
@@ -3799,26 +4422,124 @@ export function createWarden(options = {}) {
     };
 
     api.saveSetupConfig = async function saveSetupConfig(snapshot = {}, options = {}) {
-        const {
-            snapshot: persistedSnapshot,
-            path: persistedPath,
-            mirroredPaths = []
-        } = writeSetupConfigSnapshot(snapshot);
-        const loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
-            preferExisting: options?.replaceRuntime !== true,
-            persist: options?.persistRuntime === true,
-        });
-        writeRuntimeConfigSnapshot();
-        const selected = extractPersistedSetupSelectionFromSetupSnapshot(persistedSnapshot);
+        return withLifecycleOperation('apply setup config snapshot', async () => {
+            const previousSetupState = readSetupConfigSnapshot({refresh: true});
+            const previousRuntimeConfig = cloneRuntimeConfigState();
+            const {
+                snapshot: validatedSnapshot,
+                selectionState,
+            } = await validateAndNormalizeSetupConfigPayload(snapshot);
+            const applyRequested = options?.apply !== false;
+            let persistedSnapshot = null;
+            let persistedPath = null;
+            let mirroredPaths = [];
+            let loadedRuntimeConfig = [];
+            let restart = null;
 
-        return {
-            exists: true,
-            path: persistedPath,
-            mirroredPaths,
-            snapshot: persistedSnapshot,
-            selected,
-            runtime: loadedRuntimeConfig,
-        };
+            try {
+                ({
+                    snapshot: persistedSnapshot,
+                    path: persistedPath,
+                    mirroredPaths = [],
+                } = writeSetupConfigSnapshot(validatedSnapshot));
+                loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
+                    preferExisting: false,
+                    persist: true,
+                });
+                writeRuntimeConfigSnapshot();
+
+                if (applyRequested) {
+                    const stopped = await api.stopEcosystem({
+                        trackedOnly: false,
+                        remove: false,
+                    });
+                    const startOptions =
+                        selectionState.mode === 'minimal'
+                            ? {forceMinimal: true, setupCompleted: false}
+                            : selectionState.mode === 'selected'
+                                ? {
+                                    forceFull: true,
+                                    setupCompleted: true,
+                                    services: resolveLifecycleServiceNamesForSelectionState(selectionState),
+                                }
+                                : {};
+
+                    restart = {
+                        stopped,
+                        started: await api.startEcosystem(startOptions),
+                    };
+                }
+
+                return {
+                    exists: true,
+                    path: persistedPath,
+                    mirroredPaths,
+                    snapshot: persistedSnapshot,
+                    selected: selectionState.mode === 'selected' ? selectionState.selected : [],
+                    selectionMode:
+                        selectionState.mode === 'minimal'
+                            ? 'minimal'
+                            : selectionState.mode === 'selected'
+                                ? 'selected'
+                                : null,
+                    runtime: loadedRuntimeConfig,
+                    saved: true,
+                    restarted: applyRequested,
+                    rolledBack: false,
+                    ...(restart ? {restart} : {}),
+                };
+            } catch (error) {
+                const rollback = {
+                    snapshotRestored: false,
+                    runtimeRestored: false,
+                };
+
+                try {
+                    if (previousSetupState?.snapshot) {
+                        writeSetupConfigSnapshot(previousSetupState.snapshot);
+                        rollback.snapshotRestored = true;
+                    } else {
+                        const cleared = await clearSetupConfigSnapshot();
+                        rollback.snapshotRestored = cleared.deleted === true;
+                    }
+                } catch (rollbackError) {
+                    rollback.snapshotError =
+                        rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+                }
+
+                try {
+                    await restoreRuntimeConfigState(previousRuntimeConfig);
+                    rollback.runtimeRestored = true;
+                } catch (rollbackError) {
+                    rollback.runtimeError =
+                        rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+                }
+
+                const message = error instanceof Error ? error.message : String(error);
+                throw new WardenApplyError('Failed to apply setup config snapshot.', {
+                    cause: error,
+                    payload: {
+                        error: `Failed to apply setup config snapshot: ${message}`,
+                        saved: Boolean(persistedSnapshot),
+                        restarted: false,
+                        rolledBack: rollback.snapshotRestored === true && rollback.runtimeRestored === true,
+                        rollback,
+                        exists: Boolean(persistedSnapshot),
+                        path: persistedPath,
+                        mirroredPaths,
+                        snapshot: persistedSnapshot,
+                        selected: selectionState.mode === 'selected' ? selectionState.selected : [],
+                        selectionMode:
+                            selectionState.mode === 'minimal'
+                                ? 'minimal'
+                                : selectionState.mode === 'selected'
+                                    ? 'selected'
+                                    : null,
+                        runtime: loadedRuntimeConfig,
+                    },
+                });
+            }
+        });
     };
 
     Object.defineProperty(api, 'DEBUG', {
@@ -3847,6 +4568,7 @@ export function createWarden(options = {}) {
         applyEnvOverrides,
         applyStorageMountsForService,
         buildEffectiveServiceDescriptor,
+        buildWardenEnvConfig,
         cloneEnvConfig,
         cloneMeta,
         cloneServiceDescriptor,
@@ -3891,12 +4613,14 @@ export function createWarden(options = {}) {
         resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
+        validateAndNormalizeServiceConfigUpdate,
         runtimeDebugState,
         serviceCatalog,
         serviceName,
         setLoggerDebug,
         timestamp,
         trackedContainers,
+        withLifecycleOperation,
         writeRuntimeConfig,
     });
 
@@ -3941,6 +4665,7 @@ export function createWarden(options = {}) {
         requiredServiceSet,
         resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
+        resolvePersistedSetupSelectionState,
         serviceCatalog,
         startServiceUpdateTimer,
         stopServiceUpdateTimer,

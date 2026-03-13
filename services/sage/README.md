@@ -13,6 +13,7 @@ download/library routes for Moon and other clients.
 - [Route modules](routes/)
 - [Auth routes](routes/registerAuthRoutes.mjs)
 - [Raven routes](routes/registerRavenRoutes.mjs)
+- [Settings routes](routes/registerSettingsRoutes.mjs)
 - [Setup routes](routes/registerSetupRoutes.mjs)
 - [Managed Kavita setup client](clients/managedKavitaSetupClient.mjs)
 - [Downstream clients](clients/)
@@ -26,6 +27,7 @@ download/library routes for Moon and other clients.
 - Expose Discord setup validation helpers for Portal onboarding.
 - Own Moon auth state, Discord OAuth config, Discord callback handling, Discord-linked user/session management, and
   the default permission template used when a Discord user signs in for the first time.
+- Persist the admin-managed Discord onboarding message template used by Moon's manual copy/preview flow.
 - Proxy Raven search/download/library/status routes.
 - Serve Vault-backed recommendation and subscription records for Moon user pages.
 - Persist Vault-backed Raven naming and per-thread worker speed-limit settings for Moon.
@@ -72,9 +74,16 @@ download/library routes for Moon and other clients.
     users by stable lookup fields instead of serialized Mongo `_id` values so permission edits persist through Vault.
   - `/api/auth/users/default-permissions` reads and updates the default permission set used for new Discord-linked
     Moon accounts. Sage now enforces `moon_login`, `mySubscriptions`, and `myRecommendations` as baseline defaults.
+- Discord settings: `/api/settings/discord/*`
+    - `GET /api/settings/discord/onboarding-message` returns the seeded manual onboarding template stored in
+      `noona_settings`.
+    - `PUT /api/settings/discord/onboarding-message` updates that admin-only template, preserving line breaks for
+      Moon's preview/copy flow while rejecting blank content after trim.
 - Download settings: `/api/settings/downloads/*`
     - `/api/settings/downloads/naming` stores Raven naming templates in Vault. The default chapter filename pattern is
-      now `{title} c{chapter} (v01) [Noona].cbz`, with a default chapter pad of `3`.
+      now `{title} c{chapter} (v{volume}) [Noona].cbz`, with a default chapter pad of `3`, a default volume pad of
+      `2`, and new `{volume}` / `{volume_padded}` tokens that fall back to `v01` until Raven has a trusted
+      provider-backed chapter-to-volume map.
     - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
       It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write, and normalizes unlimited entries to `-1`.
   - `/api/settings/downloads/vpn` stores Raven PIA VPN settings in Vault (`downloads.vpn`) while masking
@@ -113,8 +122,11 @@ download/library routes for Moon and other clients.
       before queueing. If no confident Raven source can be recovered yet, Sage keeps the recommendation pending,
       stores the metadata plan plus a saved-for-later note, and returns that deferred state instead of failing the
       entire approval request. Portal later applies the stored metadata only after Raven finishes downloading and
-      Kavita can resolve the scanned title. The stored selection now also preserves `adultContent` when Portal/Komf
-      marked the picked metadata match as `Adult Content: yes`.
+      Kavita can resolve the scanned title. When the confirmed metadata selection includes an explicit provider match,
+      Sage now pre-creates/resolves the Raven title first, asks Portal to store the chapter-to-volume map with
+      `autoRename:false`, then queues Raven; if that pre-seed step fails, Sage still queues the download and relies on
+      Portal's deferred post-import rename flow later. The stored selection now also preserves `adultContent` when
+      Portal/Komf marked the picked metadata match as `Adult Content: yes`.
     - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores
       optional denial reason, and records a denial timeline event.
     - `POST /api/recommendations/:id/comments` requires `manageRecommendations` and appends an admin comment timeline

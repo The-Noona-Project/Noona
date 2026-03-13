@@ -666,7 +666,7 @@ public class DownloadService {
 
                 String sourceDomain = extractDomain(pageUrls.get(0));
                 Path chapterFolder = workingTitleFolder.resolve("temp_" + chapterNumber);
-                int pageCount = saveImagesToFolder(pageUrls, chapterFolder, naming, titleName, titleRecord.getType(), chapterNumber);
+                int pageCount = saveImagesToFolder(pageUrls, chapterFolder, naming, titleRecord, chapterNumber);
                 if (pageCount <= 0) {
                     logger.warn("DOWNLOAD", "⚠️ No files were saved for chapter " + chapterNumber + ". Leaving it pending.");
                     failedChapters.add(chapterNumber);
@@ -675,7 +675,7 @@ public class DownloadService {
                     continue;
                 }
 
-                String cbzName = formatChapterCbzName(naming, titleName, titleRecord.getType(), chapterNumber, pageCount, sourceDomain);
+                String cbzName = formatChapterCbzName(naming, titleRecord, chapterNumber, pageCount, sourceDomain);
                 Path cbzPath = workingTitleFolder.resolve(cbzName);
 
                 zipFolderAsCbz(chapterFolder, cbzPath);
@@ -689,6 +689,7 @@ public class DownloadService {
                 persistTaskSnapshot(progress);
                 titleRecord.setLastDownloaded(chapterNumber);
                 mergeDownloadedChapter(titleRecord, chapterNumber);
+                recordDownloadedChapterFile(titleRecord, chapterNumber, cbzName);
                 titleRecord.setChaptersDownloaded(Optional.ofNullable(titleRecord.getDownloadedChapterNumbers()).orElse(List.of()).size());
                 libraryService.addOrUpdateTitle(titleRecord, new NewChapter(chapterNumber));
             }
@@ -934,14 +935,41 @@ public class DownloadService {
             return;
         }
 
+        String normalizedChapterNumber = normalizeChapterNumber(chapterNumber);
+        if (normalizedChapterNumber == null || normalizedChapterNumber.isBlank() || "0".equals(normalizedChapterNumber)) {
+            return;
+        }
+
         List<String> current = titleRecord.getDownloadedChapterNumbers() == null
                 ? new ArrayList<>()
                 : new ArrayList<>(titleRecord.getDownloadedChapterNumbers());
-        if (!current.contains(chapterNumber)) {
-            current.add(chapterNumber);
+        if (!current.contains(normalizedChapterNumber)) {
+            current.add(normalizedChapterNumber);
             current.sort(this::compareChapterNumbers);
             titleRecord.setDownloadedChapterNumbers(current);
         }
+    }
+
+    private void recordDownloadedChapterFile(NewTitle titleRecord, String chapterNumber, String cbzName) {
+        if (titleRecord == null || cbzName == null || cbzName.isBlank()) {
+            return;
+        }
+
+        String normalizedChapterNumber = normalizeChapterNumber(chapterNumber);
+        if (normalizedChapterNumber == null || normalizedChapterNumber.isBlank() || "0".equals(normalizedChapterNumber)) {
+            return;
+        }
+
+        String normalizedFileName = sanitizeStoredFileName(cbzName);
+        if (normalizedFileName.isBlank()) {
+            return;
+        }
+
+        Map<String, String> current = titleRecord.getDownloadedChapterFiles() == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(titleRecord.getDownloadedChapterFiles());
+        current.put(normalizedChapterNumber, normalizedFileName);
+        titleRecord.setDownloadedChapterFiles(sortChapterFileMap(current));
     }
 
     private List<Map<String, String>> fetchAllChaptersWithRetry(String titleUrl) {
@@ -981,13 +1009,25 @@ public class DownloadService {
     }
 
     private String extractChapterNumberFull(String text) {
-        if (text == null || text.isEmpty()) return "0000";
+        if (text == null || text.isBlank()) {
+            return "0000";
+        }
 
-        Matcher m = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)").matcher(text);
-        if (m.find()) return m.group(1);
+        Matcher matcher = Pattern.compile("(?i)\\bc\\s*(\\d+(\\.\\d+)?)\\b").matcher(text);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
 
-        m = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
-        if (m.find()) return m.group(1);
+        matcher = Pattern.compile("(?i)\\bch(?:apter)?\\.?\\s*(\\d+(\\.\\d+)?)\\b").matcher(text);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        String stripped = stripTrailingFileDecorators(text);
+        matcher = Pattern.compile("(?i)(?:^|[^a-z])(\\d+(\\.\\d+)?)$").matcher(stripped);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
 
         return "0000";
     }
@@ -1084,18 +1124,26 @@ public class DownloadService {
         return sanitized;
     }
 
-    private String formatChapterCbzName(DownloadNamingSettings naming, String titleName, String type, String chapterNumber, int pageCount, String domain) {
-        String title = titleName == null ? "" : titleName.trim();
+    public String buildChapterArchiveName(NewTitle title, String chapterNumber, int pageCount, String domain) {
+        return formatChapterCbzName(settingsService.getDownloadNamingSettings(), title, chapterNumber, pageCount, domain);
+    }
+
+    private String formatChapterCbzName(DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber, int pageCount, String domain) {
+        String title = titleRecord != null && titleRecord.getTitleName() != null ? titleRecord.getTitleName().trim() : "";
+        String type = titleRecord != null ? titleRecord.getType() : null;
         String normalizedType = normalizeMediaType(type);
         String typeSlug = resolveMediaTypeFolder(type);
         String chapter = chapterNumber == null ? "" : chapterNumber.trim();
 
         int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 3;
         String chapterPadded = formatChapterPadded(chapter, chapterPad);
+        int volumePad = naming != null && naming.getVolumePad() != null ? Math.max(1, naming.getVolumePad()) : 2;
+        int volumeNumber = resolveChapterVolumeNumber(titleRecord, chapterNumber);
+        String volumePadded = formatVolumePadded(volumeNumber, volumePad);
 
         String template = naming != null ? naming.getChapterTemplate() : null;
         if (template == null || template.isBlank()) {
-            template = "{title} c{chapter} (v01) [Noona].cbz";
+            template = "{title} c{chapter} (v{volume}) [Noona].cbz";
         }
 
         Map<String, String> values = new HashMap<>();
@@ -1104,14 +1152,16 @@ public class DownloadService {
         values.put("type_slug", typeSlug != null ? typeSlug : "");
         values.put("chapter", chapterPadded);
         values.put("chapter_padded", chapterPadded);
+        values.put("volume", volumePadded);
+        values.put("volume_padded", volumePadded);
         values.put("pages", String.valueOf(pageCount));
         values.put("domain", domain != null ? domain : "");
 
         String raw = applyTemplate(template, values);
         if (raw == null || raw.isBlank()) {
             raw = title.isBlank()
-                    ? String.format("c%s (v01) [Noona].cbz", chapterPadded)
-                    : String.format("%s c%s (v01) [Noona].cbz", title, chapterPadded);
+                    ? String.format("c%s (v%s) [Noona].cbz", chapterPadded, volumePadded)
+                    : String.format("%s c%s (v%s) [Noona].cbz", title, chapterPadded, volumePadded);
         }
 
         String withExt = raw.trim();
@@ -1126,8 +1176,9 @@ public class DownloadService {
         return sanitized.isBlank() ? "Chapter.cbz" : sanitized;
     }
 
-    private String formatPageFileName(DownloadNamingSettings naming, String titleName, String type, String chapterNumber, int pageIndex, String ext) {
-        String title = titleName == null ? "" : titleName.trim();
+    private String formatPageFileName(DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber, int pageIndex, String ext) {
+        String title = titleRecord != null && titleRecord.getTitleName() != null ? titleRecord.getTitleName().trim() : "";
+        String type = titleRecord != null ? titleRecord.getType() : null;
         String normalizedType = normalizeMediaType(type);
         String typeSlug = resolveMediaTypeFolder(type);
         String chapter = chapterNumber == null ? "" : chapterNumber.trim();
@@ -1138,6 +1189,9 @@ public class DownloadService {
 
         int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 3;
         String chapterPadded = formatChapterPadded(chapter, chapterPad);
+        int volumePad = naming != null && naming.getVolumePad() != null ? Math.max(1, naming.getVolumePad()) : 2;
+        int volumeNumber = resolveChapterVolumeNumber(titleRecord, chapterNumber);
+        String volumePadded = formatVolumePadded(volumeNumber, volumePad);
 
         String template = naming != null ? naming.getPageTemplate() : null;
         if (template == null || template.isBlank()) {
@@ -1150,6 +1204,8 @@ public class DownloadService {
         values.put("type_slug", typeSlug != null ? typeSlug : "");
         values.put("chapter", chapterPadded);
         values.put("chapter_padded", chapterPadded);
+        values.put("volume", volumePadded);
+        values.put("volume_padded", volumePadded);
         values.put("page", String.valueOf(pageIndex));
         values.put("page_padded", pagePadded);
         values.put("ext", extension);
@@ -1194,6 +1250,39 @@ public class DownloadService {
         }
     }
 
+    private String formatVolumePadded(int volumeNumber, int width) {
+        return String.format("%0" + Math.max(1, width) + "d", Math.max(1, volumeNumber));
+    }
+
+    private int resolveChapterVolumeNumber(NewTitle titleRecord, String chapterNumber) {
+        if (titleRecord == null || titleRecord.getChapterVolumeMap() == null || titleRecord.getChapterVolumeMap().isEmpty()) {
+            return 1;
+        }
+
+        String normalizedChapter = normalizeChapterNumber(chapterNumber);
+        if (normalizedChapter == null || normalizedChapter.isBlank()) {
+            return 1;
+        }
+
+        Integer directMatch = titleRecord.getChapterVolumeMap().get(normalizedChapter);
+        if (directMatch != null && directMatch > 0) {
+            return directMatch;
+        }
+
+        for (Map.Entry<String, Integer> entry : titleRecord.getChapterVolumeMap().entrySet()) {
+            if (!Objects.equals(normalizeChapterNumber(entry.getKey()), normalizedChapter)) {
+                continue;
+            }
+
+            Integer value = entry.getValue();
+            if (value != null && value > 0) {
+                return value;
+            }
+        }
+
+        return 1;
+    }
+
     private String applyTemplate(String template, Map<String, String> values) {
         if (template == null) {
             return null;
@@ -1228,7 +1317,7 @@ public class DownloadService {
         return sanitizePathSegment(raw);
     }
 
-    protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
+    protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber) {
         int count = 0;
         int workerRateLimitKbps = getCurrentWorkerRateLimitKbps();
 
@@ -1239,7 +1328,7 @@ public class DownloadService {
 
             for (String url : urls) {
                 String ext = extractExtension(url);
-                String fileName = formatPageFileName(naming, titleName, type, chapterNumber, index, ext);
+                String fileName = formatPageFileName(naming, titleRecord, chapterNumber, index, ext);
                 if (fileName == null || fileName.isBlank() || usedNames.contains(fileName)) {
                     fileName = String.format("%03d%s", index, ext);
                 }
@@ -1514,7 +1603,7 @@ public class DownloadService {
             String domain = extractDomain(pages.get(0));
             Path chapterFolder = workingTitleFolder.resolve("temp_" + chapterNumber);
             Files.createDirectories(workingTitleFolder);
-            int count = saveImagesToFolder(pages, chapterFolder, naming, title.getTitleName(), title.getType(), chapterNumber);
+            int count = saveImagesToFolder(pages, chapterFolder, naming, title, chapterNumber);
             if (count <= 0) {
                 logger.warn("DOWNLOAD", "⚠️ No files were saved for chapter " + chapterNumber);
                 if (progress != null) {
@@ -1524,12 +1613,14 @@ public class DownloadService {
                 return false;
             }
 
-            String cbzName = formatChapterCbzName(naming, title.getTitleName(), title.getType(), chapterNumber, count, domain);
+            String cbzName = formatChapterCbzName(naming, title, chapterNumber, count, domain);
             Path cbzPath = workingTitleFolder.resolve(cbzName);
             zipFolderAsCbz(chapterFolder, cbzPath);
             deleteFolder(chapterFolder);
             promoteTitleFolder(workingTitleFolder, finalTitleFolder);
             title.setDownloadPath(finalTitleFolder.toString());
+            mergeDownloadedChapter(title, chapterNumber);
+            recordDownloadedChapterFile(title, chapterNumber, cbzName);
             completed = true;
             if (progress != null) {
                 progress.chapterCompleted(chapterNumber);
@@ -1679,6 +1770,61 @@ public class DownloadService {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private String sanitizeStoredFileName(String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            return "";
+        }
+
+        try {
+            return Path.of(rawName).getFileName().toString().trim();
+        } catch (Exception ignored) {
+            return rawName.trim();
+        }
+    }
+
+    private LinkedHashMap<String, String> sortChapterFileMap(Map<String, String> chapterFiles) {
+        LinkedHashMap<String, String> sorted = new LinkedHashMap<>();
+        if (chapterFiles == null || chapterFiles.isEmpty()) {
+            return sorted;
+        }
+
+        List<Map.Entry<String, String>> entries = new ArrayList<>();
+        for (Map.Entry<String, String> entry : chapterFiles.entrySet()) {
+            String normalizedChapter = normalizeChapterNumber(entry.getKey());
+            String normalizedFileName = sanitizeStoredFileName(entry.getValue());
+            if (normalizedChapter == null || normalizedChapter.isBlank() || normalizedFileName.isBlank()) {
+                continue;
+            }
+            entries.add(Map.entry(normalizedChapter, normalizedFileName));
+        }
+
+        entries.sort((left, right) -> compareChapterNumbers(left.getKey(), right.getKey()));
+        for (Map.Entry<String, String> entry : entries) {
+            sorted.put(entry.getKey(), entry.getValue());
+        }
+        return sorted;
+    }
+
+    private String stripTrailingFileDecorators(String rawText) {
+        String stripped = rawText == null ? "" : rawText.trim();
+        if (stripped.isBlank()) {
+            return stripped;
+        }
+
+        stripped = stripped.replaceFirst("(?i)\\.cbz$", "").trim();
+        boolean changed;
+        do {
+            changed = false;
+            String next = stripped.replaceFirst("\\s*(\\[[^\\]]*]|\\([^)]*\\))\\s*$", "").trim();
+            if (!next.equals(stripped)) {
+                stripped = next;
+                changed = true;
+            }
+        } while (changed);
+
+        return stripped;
     }
 
     private void migrateExistingTitleFolder(String titleName, String existingDownloadPath, Path finalTitleFolder) {

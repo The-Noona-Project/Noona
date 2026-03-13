@@ -20,6 +20,7 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.zip.ZipFile;
 
 /**
  * LibraryService manages Raven's manga library via VaultService.
@@ -57,11 +58,16 @@ public class LibraryService {
             effectiveLastDownloaded = "0";
         }
 
+        LinkedHashMap<String, String> downloadedChapterFiles = normalizeDownloadedChapterFileMap(title.getDownloadedChapterFiles());
         List<String> downloadedChapterNumbers = mergeDownloadedChapterNumbers(
-                title.getDownloadedChapterNumbers(),
+                mergeDownloadedChapterNumbers(title.getDownloadedChapterNumbers(), downloadedChapterFiles.keySet()),
                 chapterNumber
         );
+        LinkedHashMap<String, Integer> chapterVolumeMap = normalizeChapterVolumeMap(title.getChapterVolumeMap());
+
+        title.setDownloadedChapterFiles(downloadedChapterFiles);
         title.setDownloadedChapterNumbers(downloadedChapterNumbers);
+        title.setChapterVolumeMap(chapterVolumeMap);
         title.setLastDownloaded(effectiveLastDownloaded);
 
         Map<String, Object> set = new HashMap<>();
@@ -75,9 +81,9 @@ public class LibraryService {
             set.put("chapterCount", title.getChapterCount());
         }
 
-        if (!downloadedChapterNumbers.isEmpty()) {
-            set.put("downloadedChapterNumbers", downloadedChapterNumbers);
-        }
+        set.put("downloadedChapterNumbers", downloadedChapterNumbers);
+        set.put("downloadedChapterFiles", downloadedChapterFiles);
+        set.put("chapterVolumeMap", chapterVolumeMap);
 
         if (title.getChaptersDownloaded() == null && !downloadedChapterNumbers.isEmpty()) {
             title.setChaptersDownloaded(downloadedChapterNumbers.size());
@@ -130,6 +136,18 @@ public class LibraryService {
         List<Map<String, String>> relatedSeries = copyRelatedSeries(title.getRelatedSeries());
         if (!relatedSeries.isEmpty()) {
             set.put("relatedSeries", relatedSeries);
+        }
+
+        if (title.getMetadataProvider() != null && !title.getMetadataProvider().isBlank()) {
+            set.put("metadataProvider", title.getMetadataProvider().trim());
+        }
+
+        if (title.getMetadataProviderSeriesId() != null && !title.getMetadataProviderSeriesId().isBlank()) {
+            set.put("metadataProviderSeriesId", title.getMetadataProviderSeriesId().trim());
+        }
+
+        if (title.getMetadataMatchedAt() != null && !title.getMetadataMatchedAt().isBlank()) {
+            set.put("metadataMatchedAt", title.getMetadataMatchedAt().trim());
         }
 
         ensureKavitaLibraryForType(title.getType());
@@ -291,6 +309,7 @@ public class LibraryService {
 
         int deleted = 0;
         Set<String> requested = new HashSet<>();
+        Set<String> deletedNames = new LinkedHashSet<>();
         for (String rawName : names) {
             if (rawName == null || rawName.isBlank()) {
                 continue;
@@ -310,13 +329,233 @@ public class LibraryService {
                 if (Files.exists(candidate) && Files.isRegularFile(candidate)) {
                     Files.delete(candidate);
                     deleted++;
+                    deletedNames.add(candidate.getFileName().toString());
                 }
             } catch (Exception e) {
                 logger.warn("LIBRARY", "Failed to delete file " + fileName + ": " + e.getMessage());
             }
         }
 
+        if (deleted > 0) {
+            LinkedHashMap<String, String> downloadedChapterFiles = normalizeDownloadedChapterFileMap(title.getDownloadedChapterFiles());
+            if (!downloadedChapterFiles.isEmpty()) {
+                Set<String> deletedLookup = deletedNames.stream()
+                        .map((entry) -> entry.toLowerCase(Locale.ROOT))
+                        .collect(java.util.stream.Collectors.toSet());
+                downloadedChapterFiles.entrySet().removeIf((entry) ->
+                        deletedLookup.contains(Optional.ofNullable(entry.getValue()).orElse("").toLowerCase(Locale.ROOT)));
+                title.setDownloadedChapterFiles(downloadedChapterFiles);
+            }
+
+            Set<String> remaining = new LinkedHashSet<>(mergeDownloadedChapterNumbers(
+                    title.getDownloadedChapterNumbers(),
+                    downloadedChapterFiles.keySet()
+            ));
+            if (downloadedChapterFiles.isEmpty()) {
+                for (String deletedName : deletedNames) {
+                    String deletedChapter = normalizeChapterNumber(extractChapterNumberFromTitle(deletedName));
+                    if (deletedChapter != null && !deletedChapter.isBlank()) {
+                        remaining.remove(deletedChapter);
+                    }
+                }
+            } else {
+                remaining = new LinkedHashSet<>(downloadedChapterFiles.keySet());
+            }
+
+            List<String> remainingList = new ArrayList<>(remaining);
+            remainingList.sort(this::compareChapterNumbers);
+            title.setDownloadedChapterNumbers(remainingList);
+            title.setChaptersDownloaded(remainingList.size());
+            title.setLastDownloaded(resolveLatestDownloadedChapter(remainingList, "0"));
+            addOrUpdateTitle(title, null);
+        }
+
         return deleted;
+    }
+
+    public VolumeMapApplyResult applyTitleVolumeMap(
+            String uuid,
+            String provider,
+            String providerSeriesId,
+            Map<String, Integer> chapterVolumeMap,
+            Boolean autoRename
+    ) {
+        if (uuid == null || uuid.isBlank()) {
+            return null;
+        }
+
+        NewTitle title = getTitleByUuid(uuid.trim());
+        if (title == null) {
+            return null;
+        }
+
+        String normalizedProvider = Optional.ofNullable(provider).map(String::trim).orElse("");
+        String normalizedProviderSeriesId = Optional.ofNullable(providerSeriesId).map(String::trim).orElse("");
+
+        title.setChapterVolumeMap(normalizeChapterVolumeMap(chapterVolumeMap));
+        if (!normalizedProvider.isBlank()) {
+            title.setMetadataProvider(normalizedProvider);
+        }
+        if (!normalizedProviderSeriesId.isBlank()) {
+            title.setMetadataProviderSeriesId(normalizedProviderSeriesId);
+        }
+        title.setMetadataMatchedAt(ISO_FORMATTER.format(Instant.now()));
+
+        String downloadPath = resolveTitleFolderPath(title);
+        if (downloadPath != null && !downloadPath.isBlank()) {
+            title.setDownloadedChapterFiles(resolveDownloadedChapterFileIndex(title, Path.of(downloadPath), title.getTitleName()));
+        } else {
+            title.setDownloadedChapterFiles(normalizeDownloadedChapterFileMap(title.getDownloadedChapterFiles()));
+        }
+
+        List<String> downloadedChapterNumbers = mergeDownloadedChapterNumbers(
+                title.getDownloadedChapterNumbers(),
+                Optional.ofNullable(title.getDownloadedChapterFiles()).orElse(Map.of()).keySet()
+        );
+        title.setDownloadedChapterNumbers(downloadedChapterNumbers);
+        title.setChaptersDownloaded(downloadedChapterNumbers.size());
+
+        boolean shouldAutoRename = autoRename == null || autoRename;
+        RenameSummary renameSummary = shouldAutoRename
+                ? renameDownloadedChapterFiles(title)
+                : new RenameSummary(
+                false,
+                Optional.ofNullable(title.getDownloadedChapterFiles()).orElse(Map.of()).size(),
+                0,
+                Optional.ofNullable(title.getDownloadedChapterFiles()).orElse(Map.of()).size(),
+                0,
+                0,
+                "Stored the volume map without renaming existing files."
+        );
+
+        addOrUpdateTitle(title, null);
+        return new VolumeMapApplyResult(title, renameSummary);
+    }
+
+    private RenameSummary renameDownloadedChapterFiles(NewTitle title) {
+        String downloadPath = resolveTitleFolderPath(title);
+        if (downloadPath == null || downloadPath.isBlank()) {
+            return new RenameSummary(true, 0, 0, 0, 0, 0, "No downloaded files were available to rename.");
+        }
+
+        Path titleFolder = Path.of(downloadPath);
+        if (!Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
+            return new RenameSummary(true, 0, 0, 0, 0, 0, "No downloaded files were available to rename.");
+        }
+
+        LinkedHashMap<String, String> downloadedChapterFiles = resolveDownloadedChapterFileIndex(title, titleFolder, title.getTitleName());
+        title.setDownloadedChapterFiles(downloadedChapterFiles);
+        if (downloadedChapterFiles.isEmpty()) {
+            return new RenameSummary(true, 0, 0, 0, 0, 0, "No downloaded files were available to rename.");
+        }
+
+        int renamed = 0;
+        int unchanged = 0;
+        int missingFiles = 0;
+        int collisions = 0;
+        LinkedHashMap<String, String> updatedChapterFiles = new LinkedHashMap<>(downloadedChapterFiles);
+
+        for (Map.Entry<String, String> entry : downloadedChapterFiles.entrySet()) {
+            String chapterNumber = entry.getKey();
+            String sourceName = entry.getValue();
+            Path sourcePath = titleFolder.resolve(sourceName);
+            if (!Files.exists(sourcePath) || !Files.isRegularFile(sourcePath) || isNoonaManifestFile(sourcePath)) {
+                missingFiles++;
+                updatedChapterFiles.remove(chapterNumber);
+                continue;
+            }
+
+            String targetName = downloadService.buildChapterArchiveName(title, chapterNumber, countArchivePages(sourcePath), "");
+            if (targetName == null || targetName.isBlank()) {
+                unchanged++;
+                continue;
+            }
+
+            if (targetName.equals(sourceName)) {
+                unchanged++;
+                continue;
+            }
+
+            Path targetPath = titleFolder.resolve(targetName);
+            if (Files.exists(targetPath) && !sourcePath.normalize().equals(targetPath.normalize())) {
+                collisions++;
+                continue;
+            }
+
+            try {
+                Files.move(sourcePath, targetPath);
+                updatedChapterFiles.put(chapterNumber, targetName);
+                renamed++;
+            } catch (Exception e) {
+                collisions++;
+                logger.warn("LIBRARY", "Failed to rename [" + sourceName + "] to [" + targetName + "]: " + e.getMessage());
+            }
+        }
+
+        LinkedHashMap<String, String> normalizedChapterFiles = sortChapterFileMap(updatedChapterFiles);
+        List<String> downloadedChapterNumbers = new ArrayList<>(normalizedChapterFiles.keySet());
+        downloadedChapterNumbers.sort(this::compareChapterNumbers);
+
+        title.setDownloadedChapterFiles(normalizedChapterFiles);
+        title.setDownloadedChapterNumbers(downloadedChapterNumbers);
+        title.setChaptersDownloaded(downloadedChapterNumbers.size());
+        title.setLastDownloaded(resolveLatestDownloadedChapter(downloadedChapterNumbers, title.getLastDownloaded()));
+
+        return new RenameSummary(
+                true,
+                downloadedChapterFiles.size(),
+                renamed,
+                unchanged,
+                missingFiles,
+                collisions,
+                buildRenameSummaryMessage(downloadedChapterFiles.size(), renamed, unchanged, missingFiles, collisions)
+        );
+    }
+
+    private int countArchivePages(Path archivePath) {
+        if (archivePath == null || !Files.exists(archivePath) || !Files.isRegularFile(archivePath)) {
+            return 0;
+        }
+
+        try (ZipFile zipFile = new ZipFile(archivePath.toFile())) {
+            int count = 0;
+            Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                if (!entry.isDirectory()) {
+                    count++;
+                }
+            }
+            return count;
+        } catch (Exception e) {
+            logger.warn("LIBRARY", "Failed to count archive pages for [" + archivePath.getFileName() + "]: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    private String buildRenameSummaryMessage(int indexedFiles, int renamed, int unchanged, int missingFiles, int collisions) {
+        if (indexedFiles <= 0) {
+            return "No downloaded files were available to rename.";
+        }
+
+        if (renamed <= 0 && collisions <= 0 && missingFiles <= 0) {
+            return "Existing chapter files already matched the current naming settings.";
+        }
+
+        StringBuilder message = new StringBuilder("Processed ").append(indexedFiles).append(" downloaded file(s).");
+        if (renamed > 0) {
+            message.append(" Renamed ").append(renamed).append('.');
+        }
+        if (unchanged > 0) {
+            message.append(" Unchanged: ").append(unchanged).append('.');
+        }
+        if (collisions > 0) {
+            message.append(" Skipped collisions: ").append(collisions).append('.');
+        }
+        if (missingFiles > 0) {
+            message.append(" Missing files: ").append(missingFiles).append('.');
+        }
+        return message.toString();
     }
 
     public NewTitle resolveOrCreateTitle(String titleName, String sourceUrl) {
@@ -384,6 +623,11 @@ public class LibraryService {
         manifestTitle.setDownloadedChapterNumbers(
                 title.getDownloadedChapterNumbers() == null ? List.of() : new ArrayList<>(title.getDownloadedChapterNumbers())
         );
+        manifestTitle.setDownloadedChapterFiles(normalizeDownloadedChapterFileMap(title.getDownloadedChapterFiles()));
+        manifestTitle.setChapterVolumeMap(normalizeChapterVolumeMap(title.getChapterVolumeMap()));
+        manifestTitle.setMetadataProvider(title.getMetadataProvider());
+        manifestTitle.setMetadataProviderSeriesId(title.getMetadataProviderSeriesId());
+        manifestTitle.setMetadataMatchedAt(title.getMetadataMatchedAt());
 
         try {
             String payload = MANIFEST_OBJECT_MAPPER
@@ -531,12 +775,18 @@ public class LibraryService {
             return null;
         }
 
-        Matcher matcher = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)", Pattern.CASE_INSENSITIVE).matcher(chapterTitle);
+        Matcher matcher = Pattern.compile("(?i)\\bc\\s*(\\d+(\\.\\d+)?)\\b").matcher(chapterTitle);
         if (matcher.find()) {
             return matcher.group(1);
         }
 
-        matcher = Pattern.compile("(\\d+(\\.\\d+)?)\\s*(?:\\[[^\\]]*\\])?(?:\\.cbz)?$", Pattern.CASE_INSENSITIVE).matcher(chapterTitle);
+        matcher = Pattern.compile("(?i)\\bch(?:apter)?\\.?\\s*(\\d+(\\.\\d+)?)\\b").matcher(chapterTitle);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        String stripped = stripTrailingFileDecorators(chapterTitle);
+        matcher = Pattern.compile("(?i)(?:^|[^a-z])(\\d+(\\.\\d+)?)$").matcher(stripped);
         if (matcher.find()) {
             return matcher.group(1);
         }
@@ -557,7 +807,7 @@ public class LibraryService {
         return normalizeChapterNumber(extractChapterNumberFromTitle(chapter.get("chapter_title")));
     }
 
-    private List<String> mergeDownloadedChapterNumbers(List<String> existing, String nextChapter) {
+    private List<String> mergeDownloadedChapterNumbers(List<String> existing, Collection<String> chaptersToMerge) {
         LinkedHashSet<String> chapters = new LinkedHashSet<>();
         if (existing != null) {
             for (String chapterNumber : existing) {
@@ -568,14 +818,25 @@ public class LibraryService {
             }
         }
 
-        String normalizedNext = normalizeChapterNumber(nextChapter);
-        if (normalizedNext != null && !normalizedNext.isBlank() && !"0".equals(normalizedNext)) {
-            chapters.add(normalizedNext);
+        if (chaptersToMerge != null) {
+            for (String chapterNumber : chaptersToMerge) {
+                String normalizedNext = normalizeChapterNumber(chapterNumber);
+                if (normalizedNext != null && !normalizedNext.isBlank() && !"0".equals(normalizedNext)) {
+                    chapters.add(normalizedNext);
+                }
+            }
         }
 
         List<String> sorted = new ArrayList<>(chapters);
         sorted.sort(this::compareChapterNumbers);
         return sorted;
+    }
+
+    private List<String> mergeDownloadedChapterNumbers(List<String> existing, String nextChapter) {
+        return mergeDownloadedChapterNumbers(
+                existing,
+                nextChapter == null || nextChapter.isBlank() ? List.of() : List.of(nextChapter)
+        );
     }
 
     private String normalizeChapterNumber(String chapter) {
@@ -614,6 +875,90 @@ public class LibraryService {
         } catch (NumberFormatException ignored) {
             return normalizedLeft.compareToIgnoreCase(normalizedRight);
         }
+    }
+
+    private LinkedHashMap<String, Integer> normalizeChapterVolumeMap(Map<String, Integer> chapterVolumeMap) {
+        LinkedHashMap<String, Integer> normalized = new LinkedHashMap<>();
+        if (chapterVolumeMap == null || chapterVolumeMap.isEmpty()) {
+            return normalized;
+        }
+
+        List<Map.Entry<String, Integer>> entries = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : chapterVolumeMap.entrySet()) {
+            String chapterNumber = normalizeChapterNumber(entry.getKey());
+            Integer volumeNumber = entry.getValue();
+            if (chapterNumber == null || chapterNumber.isBlank() || volumeNumber == null || volumeNumber < 1) {
+                continue;
+            }
+            entries.add(Map.entry(chapterNumber, volumeNumber));
+        }
+
+        entries.sort((left, right) -> compareChapterNumbers(left.getKey(), right.getKey()));
+        for (Map.Entry<String, Integer> entry : entries) {
+            normalized.put(entry.getKey(), entry.getValue());
+        }
+
+        return normalized;
+    }
+
+    private LinkedHashMap<String, String> normalizeDownloadedChapterFileMap(Map<String, String> downloadedChapterFiles) {
+        return sortChapterFileMap(downloadedChapterFiles);
+    }
+
+    private LinkedHashMap<String, String> sortChapterFileMap(Map<String, String> downloadedChapterFiles) {
+        LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
+        if (downloadedChapterFiles == null || downloadedChapterFiles.isEmpty()) {
+            return normalized;
+        }
+
+        List<Map.Entry<String, String>> entries = new ArrayList<>();
+        for (Map.Entry<String, String> entry : downloadedChapterFiles.entrySet()) {
+            String chapterNumber = normalizeChapterNumber(entry.getKey());
+            String fileName = sanitizeStoredFileName(entry.getValue());
+            if (chapterNumber == null || chapterNumber.isBlank() || fileName.isBlank()) {
+                continue;
+            }
+            entries.add(Map.entry(chapterNumber, fileName));
+        }
+
+        entries.sort((left, right) -> compareChapterNumbers(left.getKey(), right.getKey()));
+        for (Map.Entry<String, String> entry : entries) {
+            normalized.put(entry.getKey(), entry.getValue());
+        }
+
+        return normalized;
+    }
+
+    private String sanitizeStoredFileName(String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            return "";
+        }
+
+        try {
+            return Path.of(rawName).getFileName().toString().trim();
+        } catch (Exception ignored) {
+            return rawName.trim();
+        }
+    }
+
+    private String stripTrailingFileDecorators(String rawText) {
+        String stripped = rawText == null ? "" : rawText.trim();
+        if (stripped.isBlank()) {
+            return stripped;
+        }
+
+        stripped = stripped.replaceFirst("(?i)\\.cbz$", "").trim();
+        boolean changed;
+        do {
+            changed = false;
+            String next = stripped.replaceFirst("\\s*(\\[[^\\]]*]|\\([^)]*\\))\\s*$", "").trim();
+            if (!next.equals(stripped)) {
+                stripped = next;
+                changed = true;
+            }
+        } while (changed);
+
+        return stripped;
     }
 
     private String resolveLatestChapterNumber(List<Map<String, String>> chapters) {
@@ -662,6 +1007,13 @@ public class LibraryService {
     }
 
     private Set<String> extractDownloadedChapterNumbers(NewTitle title) {
+        LinkedHashMap<String, String> downloadedChapterFiles = normalizeDownloadedChapterFileMap(
+                title != null ? title.getDownloadedChapterFiles() : null
+        );
+        if (!downloadedChapterFiles.isEmpty()) {
+            return new LinkedHashSet<>(downloadedChapterFiles.keySet());
+        }
+
         if (title != null && title.getDownloadedChapterNumbers() != null && !title.getDownloadedChapterNumbers().isEmpty()) {
             Set<String> indexed = new LinkedHashSet<>();
             for (String chapterNumber : title.getDownloadedChapterNumbers()) {
@@ -680,24 +1032,54 @@ public class LibraryService {
             return Set.of();
         }
 
-        return extractDownloadedChapterNumbersFromDirectory(Path.of(downloadPath), title != null ? title.getTitleName() : null);
+        return new LinkedHashSet<>(resolveDownloadedChapterFileIndex(
+                title,
+                Path.of(downloadPath),
+                title != null ? title.getTitleName() : null
+        ).keySet());
     }
 
-    private Set<String> extractDownloadedChapterNumbersFromDirectory(Path titleFolder, String titleName) {
+    private LinkedHashMap<String, String> resolveDownloadedChapterFileIndex(NewTitle title, Path titleFolder, String titleName) {
+        LinkedHashMap<String, String> stored = normalizeDownloadedChapterFileMap(title != null ? title.getDownloadedChapterFiles() : null);
         if (titleFolder == null || !Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
-            return Set.of();
+            return stored;
         }
 
-        Set<String> chapterNumbers = new LinkedHashSet<>();
+        LinkedHashMap<String, String> resolved = new LinkedHashMap<>();
+        Set<String> indexedNames = new HashSet<>();
+
+        for (Map.Entry<String, String> entry : stored.entrySet()) {
+            String fileName = entry.getValue();
+            if (fileName == null || fileName.isBlank()) {
+                continue;
+            }
+
+            Path candidate = titleFolder.resolve(fileName);
+            if (!Files.exists(candidate) || !Files.isRegularFile(candidate) || isNoonaManifestFile(candidate)) {
+                continue;
+            }
+
+            resolved.put(entry.getKey(), candidate.getFileName().toString());
+            indexedNames.add(candidate.getFileName().toString().toLowerCase(Locale.ROOT));
+        }
+
         try (Stream<Path> stream = Files.list(titleFolder)) {
             stream.filter(Files::isRegularFile)
                     .filter((path) -> !isNoonaManifestFile(path))
+                    .sorted(Comparator.comparing((Path path) -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
                     .forEach((path) -> {
                         String fileName = path.getFileName().toString();
-                        String chapter = normalizeChapterNumber(extractChapterNumberFromTitle(fileName));
-                        if (chapter != null && !chapter.isBlank()) {
-                            chapterNumbers.add(chapter);
+                        String lookupKey = fileName.toLowerCase(Locale.ROOT);
+                        if (indexedNames.contains(lookupKey)) {
+                            return;
                         }
+
+                        String chapter = normalizeChapterNumber(extractChapterNumberFromTitle(fileName));
+                        if (chapter == null || chapter.isBlank() || resolved.containsKey(chapter)) {
+                            return;
+                        }
+
+                        resolved.put(chapter, fileName);
                     });
         } catch (Exception e) {
             logger.warn(
@@ -705,7 +1087,7 @@ public class LibraryService {
                     "Failed to read existing chapter files for [" + Optional.ofNullable(titleName).orElse("Untitled") + "]: " + e.getMessage());
         }
 
-        return chapterNumbers;
+        return sortChapterFileMap(resolved);
     }
 
     private String resolveLatestDownloadedChapter(Collection<String> chapterNumbers, String fallback) {
@@ -789,18 +1171,21 @@ public class LibraryService {
         if (title.getType() == null || title.getType().isBlank()) {
             title.setType(inferMediaTypeFromTitleFolder(titleFolder));
         }
+        title.setChapterVolumeMap(normalizeChapterVolumeMap(title.getChapterVolumeMap()));
 
+        LinkedHashMap<String, String> discoveredDownloads = resolveDownloadedChapterFileIndex(title, titleFolder, title.getTitleName());
         List<String> manifestDownloaded = title.getDownloadedChapterNumbers() == null
                 ? List.of()
                 : new ArrayList<>(title.getDownloadedChapterNumbers());
-        Set<String> discoveredDownloads = extractDownloadedChapterNumbersFromDirectory(titleFolder, title.getTitleName());
-        if (discoveredDownloads.isEmpty() && !manifestDownloaded.isEmpty()) {
-            discoveredDownloads = new LinkedHashSet<>(mergeDownloadedChapterNumbers(manifestDownloaded, null));
-        }
+        List<String> mergedDownloads = mergeDownloadedChapterNumbers(manifestDownloaded, discoveredDownloads.keySet());
 
-        title.setDownloadedChapterNumbers(new ArrayList<>(discoveredDownloads));
-        title.setChaptersDownloaded(discoveredDownloads.size());
-        title.setLastDownloaded(resolveLatestDownloadedChapter(discoveredDownloads, title.getLastDownloaded()));
+        title.setDownloadedChapterFiles(discoveredDownloads);
+        title.setDownloadedChapterNumbers(mergedDownloads);
+        title.setChaptersDownloaded(Math.max(discoveredDownloads.size(), mergedDownloads.size()));
+        title.setLastDownloaded(resolveLatestDownloadedChapter(
+                !mergedDownloads.isEmpty() ? mergedDownloads : discoveredDownloads.keySet(),
+                title.getLastDownloaded()
+        ));
 
         return title;
     }
@@ -876,10 +1261,22 @@ public class LibraryService {
                 importedTitle.getLastDownloaded()
         ));
         target.setDownloadedChapterNumbers(
-                importedTitle.getDownloadedChapterNumbers() == null
-                        ? List.of()
-                        : new ArrayList<>(importedTitle.getDownloadedChapterNumbers())
+                mergeDownloadedChapterNumbers(
+                        importedTitle.getDownloadedChapterNumbers(),
+                        normalizeDownloadedChapterFileMap(importedTitle.getDownloadedChapterFiles()).keySet()
+                )
         );
+        target.setDownloadedChapterFiles(normalizeDownloadedChapterFileMap(importedTitle.getDownloadedChapterFiles()));
+        target.setChapterVolumeMap(normalizeChapterVolumeMap(importedTitle.getChapterVolumeMap()));
+        if (importedTitle.getMetadataProvider() != null && !importedTitle.getMetadataProvider().isBlank()) {
+            target.setMetadataProvider(importedTitle.getMetadataProvider().trim());
+        }
+        if (importedTitle.getMetadataProviderSeriesId() != null && !importedTitle.getMetadataProviderSeriesId().isBlank()) {
+            target.setMetadataProviderSeriesId(importedTitle.getMetadataProviderSeriesId().trim());
+        }
+        if (importedTitle.getMetadataMatchedAt() != null && !importedTitle.getMetadataMatchedAt().isBlank()) {
+            target.setMetadataMatchedAt(importedTitle.getMetadataMatchedAt().trim());
+        }
         if (target.getChaptersDownloaded() == null) {
             target.setChaptersDownloaded(target.getDownloadedChapterNumbers().size());
         }
@@ -1102,7 +1499,10 @@ public class LibraryService {
 
             title.setChapterCount(plan.sourceChapterCount());
             title.setLastDownloaded(nextLastDownloaded);
-            title.setDownloadedChapterNumbers(mergeDownloadedChapterNumbers(title.getDownloadedChapterNumbers(), null));
+            title.setDownloadedChapterNumbers(mergeDownloadedChapterNumbers(
+                    title.getDownloadedChapterNumbers(),
+                    Optional.ofNullable(title.getDownloadedChapterFiles()).orElse(Map.of()).keySet()
+            ));
             title.setChaptersDownloaded(Optional.ofNullable(title.getDownloadedChapterNumbers()).orElse(List.of()).size());
             addOrUpdateTitle(title, new NewChapter(nextLastDownloaded));
 
@@ -1449,6 +1849,23 @@ public class LibraryService {
             int scannedLibraries,
             List<LibraryImportResult> results,
             String message
+    ) {
+    }
+
+    public record RenameSummary(
+            boolean attempted,
+            int indexedFiles,
+            int renamed,
+            int unchanged,
+            int missingFiles,
+            int collisions,
+            String message
+    ) {
+    }
+
+    public record VolumeMapApplyResult(
+            NewTitle title,
+            RenameSummary renameSummary
     ) {
     }
 

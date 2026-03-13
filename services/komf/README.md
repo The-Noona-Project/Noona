@@ -1,5 +1,15 @@
 # Komga and Kavita Metadata Fetcher
 
+## Quick Navigation
+
+- [Service rules](AGENTS.md)
+- [Stack overview](../../README.md)
+- [Application entrypoint](komf-app/src/main/kotlin/snd/komf/app/Application.kt)
+- [Metadata routes](komf-app/src/main/kotlin/snd/komf/app/api/MetadataRoutes.kt)
+- [Application module build](komf-app/build.gradle.kts)
+- [Noona Portal metadata bridge](../portal/routes/registerPortalRoutes.mjs)
+- [Noona Moon Komf settings editor](../moon/src/components/noona/settings/KomfApplicationEditor.tsx)
+
 Download latest version from https://github.com/Snd-R/komf/releases
 
 ## Overview
@@ -9,6 +19,13 @@ It
 can automatically pick up added series and update their metadata and thumbnail.\
 You can also manually search and
 identify series, or match the entire library or a series.
+
+## Noona Notes
+
+- Noona now uses `GET /api/kavita/metadata/series-details` from
+  [komf-app/src/main/kotlin/snd/komf/app/api/MetadataRoutes.kt](komf-app/src/main/kotlin/snd/komf/app/api/MetadataRoutes.kt)
+  to expose normalized provider series books plus chapter coverage, which Portal then reduces into Raven
+  chapter-to-volume maps without coupling Raven to Komf directly.
 
 ### Komga and Kavita webui integration
 

@@ -170,6 +170,50 @@ public class LibraryController {
     public record DeleteTitleFilesRequest(List<String> names) {
     }
 
+    @PostMapping("/v1/library/title/{uuid}/volume-map")
+    public ResponseEntity<?> applyTitleVolumeMap(
+            @PathVariable String uuid,
+            @RequestBody(required = false) TitleVolumeMapRequest request
+    ) {
+        if (uuid == null || uuid.isBlank()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "uuid is required."));
+        }
+
+        if (request == null) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "provider and providerSeriesId are required."));
+        }
+
+        String provider = request.provider() != null ? request.provider().trim() : "";
+        String providerSeriesId = request.providerSeriesId() != null ? request.providerSeriesId().trim() : "";
+        if (provider.isBlank() || providerSeriesId.isBlank()) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("error", "provider and providerSeriesId are required."));
+        }
+
+        LibraryService.VolumeMapApplyResult result = libraryService.applyTitleVolumeMap(
+                uuid.trim(),
+                provider,
+                providerSeriesId,
+                request.chapterVolumeMap(),
+                request.autoRename()
+        );
+        if (result == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(java.util.Map.of(
+                "title", result.title(),
+                "renameSummary", result.renameSummary()
+        ));
+    }
+
+    public record TitleVolumeMapRequest(
+            String provider,
+            String providerSeriesId,
+            java.util.Map<String, Integer> chapterVolumeMap,
+            Boolean autoRename
+    ) {
+    }
+
     @PostMapping("/v1/library/title/{uuid}/checkForNew")
     public ResponseEntity<?> checkTitleForNewChapters(@PathVariable String uuid) {
         if (uuid == null || uuid.isBlank()) {

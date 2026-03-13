@@ -165,6 +165,14 @@ type DownloadNamingSettings = {
     pageTemplate?: string | null;
     pagePad?: number | null;
     chapterPad?: number | null;
+    volumePad?: number | null;
+    updatedAt?: string | null;
+    error?: string;
+};
+
+type DiscordOnboardingMessageSettings = {
+    key?: string | null;
+    template?: string | null;
     updatedAt?: string | null;
     error?: string;
 };
@@ -375,12 +383,55 @@ const TOKENS = [
     "{type_slug}",
     "{chapter}",
     "{chapter_padded}",
+    "{volume}",
+    "{volume_padded}",
     "{pages}",
     "{domain}",
     "{page}",
     "{page_padded}",
     "{ext}",
 ];
+const DEFAULT_DISCORD_ONBOARDING_TEMPLATE = [
+    "Welcome to {guild_name}!",
+    "",
+    "Start with Moon: {moon_url}",
+    "Read in Kavita: {kavita_url}",
+    "",
+    "Use /join in Discord to create your library access.",
+    "Server: {server_ip}",
+].join("\n");
+const DISCORD_ONBOARDING_PLACEHOLDERS = [
+    {
+        token: "{guild_name}",
+        label: "Guild name",
+        description: "Guild name from the latest successful Discord connection test in this browser session.",
+    },
+    {
+        token: "{guild_id}",
+        label: "Guild ID",
+        description: "Current Portal DISCORD_GUILD_ID value.",
+    },
+    {
+        token: "{moon_url}",
+        label: "Moon URL",
+        description: "Moon's published host URL from the current stack service catalog.",
+    },
+    {
+        token: "{kavita_url}",
+        label: "Kavita URL",
+        description: "Portal KAVITA_EXTERNAL_URL when set, otherwise Kavita's published host URL.",
+    },
+    {
+        token: "{server_ip}",
+        label: "Server IP",
+        description: "Warden SERVER_IP value from the updater settings.",
+    },
+] as const;
+type DiscordOnboardingPlaceholderToken = (typeof DISCORD_ONBOARDING_PLACEHOLDERS)[number]["token"];
+type DiscordOnboardingPreviewResult = {
+    preview: string;
+    unresolvedPlaceholders: string[];
+};
 
 const PORTAL_JOIN_DEFAULT_KEYS = new Set([
     "PORTAL_JOIN_DEFAULT_ROLES",
@@ -802,6 +853,89 @@ const FACTORY_RESET_REQUIRED_SERVICES = ["noona-warden", "noona-sage", "noona-mo
 const BG_SURFACE = "surface" as const;
 const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
 const BG_WARNING_ALPHA_WEAK = "warning-alpha-weak" as const;
+const DISCORD_ONBOARDING_PLACEHOLDER_SET = new Set<string>(
+    DISCORD_ONBOARDING_PLACEHOLDERS.map((entry) => entry.token),
+);
+const DISCORD_ONBOARDING_PLACEHOLDER_PATTERN = /\{[a-z0-9_]+\}/gi;
+
+const collectDistinctDiscordOnboardingPlaceholders = (template: string): string[] => {
+    const matches = template.match(DISCORD_ONBOARDING_PLACEHOLDER_PATTERN) ?? [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+
+    for (const entry of matches) {
+        const token = entry.trim();
+        if (!token || seen.has(token)) continue;
+        seen.add(token);
+        out.push(token);
+    }
+
+    return out;
+};
+const resolvePublishedServiceUrl = (
+    serviceName: string,
+    editors: Record<string, ServiceEditorState>,
+    catalogByName: Map<string, ServiceCatalogEntry>,
+): string =>
+    normalizeString(editors[serviceName]?.config?.hostServiceUrl ?? catalogByName.get(serviceName)?.hostServiceUrl).trim();
+const resolveDiscordOnboardingPreview = (
+    template: string,
+    values: Partial<Record<DiscordOnboardingPlaceholderToken, string>>,
+): DiscordOnboardingPreviewResult => {
+    let preview = template;
+    const unresolvedPlaceholders: string[] = [];
+
+    for (const placeholder of DISCORD_ONBOARDING_PLACEHOLDERS) {
+        const token = placeholder.token;
+        if (!template.includes(token)) {
+            continue;
+        }
+
+        const value = normalizeString(values[token]).trim();
+        if (value) {
+            preview = preview.split(token).join(value);
+            continue;
+        }
+
+        unresolvedPlaceholders.push(token);
+    }
+
+    for (const token of collectDistinctDiscordOnboardingPlaceholders(template)) {
+        if (!DISCORD_ONBOARDING_PLACEHOLDER_SET.has(token)) {
+            unresolvedPlaceholders.push(token);
+        }
+    }
+
+    return {
+        preview,
+        unresolvedPlaceholders: Array.from(new Set(unresolvedPlaceholders)),
+    };
+};
+const copyTextToClipboard = async (value: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+    }
+
+    if (typeof document === "undefined") {
+        throw new Error("Clipboard copy is unavailable in this browser.");
+    }
+
+    const element = document.createElement("textarea");
+    element.value = value;
+    element.setAttribute("readonly", "true");
+    element.style.position = "fixed";
+    element.style.opacity = "0";
+    document.body.appendChild(element);
+    element.select();
+
+    const copied = document.execCommand("copy");
+    document.body.removeChild(element);
+
+    if (!copied) {
+        throw new Error("Clipboard copy is unavailable in this browser.");
+    }
+};
 
 type SettingsPageProps = {
     selection: SettingsRouteSelection;
@@ -861,10 +995,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [namingError, setNamingError] = useState<string | null>(null);
     const [namingMessage, setNamingMessage] = useState<string | null>(null);
     const [titleTemplate, setTitleTemplate] = useState("{title}");
-    const [chapterTemplate, setChapterTemplate] = useState("{title} c{chapter} (v01) [Noona].cbz");
+    const [chapterTemplate, setChapterTemplate] = useState("{title} c{chapter} (v{volume}) [Noona].cbz");
     const [pageTemplate, setPageTemplate] = useState("{page_padded}{ext}");
     const [pagePad, setPagePad] = useState("3");
     const [chapterPad, setChapterPad] = useState("3");
+    const [volumePad, setVolumePad] = useState("2");
     const [downloadWorkerSettingsLoading, setDownloadWorkerSettingsLoading] = useState(false);
     const [downloadWorkerSettingsSaving, setDownloadWorkerSettingsSaving] = useState(false);
     const [downloadWorkerSettingsError, setDownloadWorkerSettingsError] = useState<string | null>(null);
@@ -907,6 +1042,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [discordValidating, setDiscordValidating] = useState(false);
     const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
     const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
+    const [discordOnboardingLoading, setDiscordOnboardingLoading] = useState(false);
+    const [discordOnboardingSaving, setDiscordOnboardingSaving] = useState(false);
+    const [discordOnboardingError, setDiscordOnboardingError] = useState<string | null>(null);
+    const [discordOnboardingMessage, setDiscordOnboardingMessage] = useState<string | null>(null);
+    const [discordOnboardingTemplate, setDiscordOnboardingTemplate] = useState(DEFAULT_DISCORD_ONBOARDING_TEMPLATE);
+    const [discordOnboardingUpdatedAt, setDiscordOnboardingUpdatedAt] = useState<string | null>(null);
     const [factoryResetConfirmation, setFactoryResetConfirmation] = useState("");
     const [factoryResetBusy, setFactoryResetBusy] = useState(false);
     const [factoryResetDeleteRavenDownloads, setFactoryResetDeleteRavenDownloads] = useState(false);
@@ -1076,6 +1217,36 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const portalEnvConfig = Array.isArray(portalEditor.config?.envConfig) ? portalEditor.config.envConfig : [];
     const portalDiscordFields = portalEnvConfig.filter((entry) => PORTAL_DISCORD_KEYS.has(normalizeString(entry?.key).trim()));
     const portalAccessFields = portalEnvConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
+    const discordGuildId = normalizeString(portalEditor.envDraft.DISCORD_GUILD_ID).trim();
+    const discordValidatedGuildName = useMemo(() => {
+        const validationGuildName = normalizeString(discordValidation?.guild?.name).trim();
+        const validationGuildId = normalizeString(discordValidation?.guild?.id).trim();
+        if (validationGuildName && (!discordGuildId || !validationGuildId || validationGuildId === discordGuildId)) {
+            return validationGuildName;
+        }
+
+        const guilds = Array.isArray(discordValidation?.guilds) ? discordValidation.guilds : [];
+        const matchedGuild = guilds.find((entry) => normalizeString(entry?.id).trim() === discordGuildId);
+        return normalizeString(matchedGuild?.name).trim();
+    }, [discordGuildId, discordValidation]);
+    const moonPublishedUrl = resolvePublishedServiceUrl("noona-moon", editors, catalogByName);
+    const fallbackKavitaPublishedUrl = resolvePublishedServiceUrl("noona-kavita", editors, catalogByName);
+    const kavitaPreviewUrl = normalizeString(portalEditor.envDraft.KAVITA_EXTERNAL_URL).trim() || fallbackKavitaPublishedUrl;
+    const serverIpPreviewValue = normalizeString(wardenEditor.envDraft.SERVER_IP).trim();
+    const discordOnboardingPlaceholderValues = useMemo(
+        (): Record<DiscordOnboardingPlaceholderToken, string> => ({
+            "{guild_name}": discordValidatedGuildName,
+            "{guild_id}": discordGuildId,
+            "{moon_url}": moonPublishedUrl,
+            "{kavita_url}": kavitaPreviewUrl,
+            "{server_ip}": serverIpPreviewValue,
+        }),
+        [discordGuildId, discordValidatedGuildName, kavitaPreviewUrl, moonPublishedUrl, serverIpPreviewValue],
+    );
+    const discordOnboardingPreview = useMemo(
+        () => resolveDiscordOnboardingPreview(discordOnboardingTemplate, discordOnboardingPlaceholderValues),
+        [discordOnboardingPlaceholderValues, discordOnboardingTemplate],
+    );
     const komfEditor = editors["noona-komf"] ?? defaultEditor();
     const komfEnvConfig = Array.isArray(komfEditor.config?.envConfig) ? komfEditor.config.envConfig : [];
     const kavitaUsersByIdentity = useMemo(() => {
@@ -1330,6 +1501,78 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setDiscordValidationError(msg);
         } finally {
             setDiscordValidating(false);
+        }
+    };
+    const loadDiscordOnboardingMessage = async () => {
+        setDiscordOnboardingLoading(true);
+        setDiscordOnboardingError(null);
+        setDiscordOnboardingMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/discord/onboarding-message", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as DiscordOnboardingMessageSettings | null;
+            if (!res.ok) {
+                setDiscordOnboardingError(parseError(json, `Failed to load onboarding message (HTTP ${res.status}).`));
+                return;
+            }
+
+            setDiscordOnboardingTemplate(
+                typeof json?.template === "string" && json.template.trim()
+                    ? json.template
+                    : DEFAULT_DISCORD_ONBOARDING_TEMPLATE,
+            );
+            setDiscordOnboardingUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordOnboardingError(msg);
+        } finally {
+            setDiscordOnboardingLoading(false);
+        }
+    };
+    const saveDiscordOnboardingMessage = async () => {
+        if (!discordOnboardingTemplate.trim()) {
+            setDiscordOnboardingError("Template must not be empty.");
+            setDiscordOnboardingMessage(null);
+            return;
+        }
+
+        setDiscordOnboardingSaving(true);
+        setDiscordOnboardingError(null);
+        setDiscordOnboardingMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/discord/onboarding-message", {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({template: discordOnboardingTemplate}),
+            });
+            const json = (await res.json().catch(() => null)) as DiscordOnboardingMessageSettings | null;
+            if (!res.ok) {
+                setDiscordOnboardingError(parseError(json, `Failed to save onboarding message (HTTP ${res.status}).`));
+                return;
+            }
+
+            setDiscordOnboardingTemplate(
+                typeof json?.template === "string" && json.template.trim()
+                    ? json.template
+                    : discordOnboardingTemplate,
+            );
+            setDiscordOnboardingUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
+            setDiscordOnboardingMessage("Onboarding message saved.");
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordOnboardingError(msg);
+        } finally {
+            setDiscordOnboardingSaving(false);
+        }
+    };
+    const copyDiscordOnboardingPreview = async () => {
+        setDiscordOnboardingError(null);
+        setDiscordOnboardingMessage(null);
+        try {
+            await copyTextToClipboard(discordOnboardingPreview.preview);
+            setDiscordOnboardingMessage("Preview copied.");
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordOnboardingError(msg);
         }
     };
     const updateEcosystemState = async (
@@ -1592,10 +1835,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setTitleTemplate(normalizeString(json?.titleTemplate).trim() || "{title}");
-            setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "{title} c{chapter} (v01) [Noona].cbz");
+            setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "{title} c{chapter} (v{volume}) [Noona].cbz");
             setPageTemplate(normalizeString(json?.pageTemplate).trim() || "{page_padded}{ext}");
             setPagePad(String(Number.isFinite(Number(json?.pagePad)) && Number(json?.pagePad) > 0 ? Math.floor(Number(json?.pagePad)) : 3));
             setChapterPad(String(Number.isFinite(Number(json?.chapterPad)) && Number(json?.chapterPad) > 0 ? Math.floor(Number(json?.chapterPad)) : 3));
+            setVolumePad(String(Number.isFinite(Number(json?.volumePad)) && Number(json?.volumePad) > 0 ? Math.floor(Number(json?.volumePad)) : 2));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setNamingError(msg);
@@ -1618,6 +1862,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     pageTemplate,
                     pagePad: Number(pagePad),
                     chapterPad: Number(chapterPad),
+                    volumePad: Number(volumePad),
                 }),
             });
             const json = await res.json().catch(() => null);
@@ -2831,7 +3076,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
             void loadUpdates();
             return;
         }
-        if (activeView === "discord" || activeView === "kavita") {
+        if (activeView === "discord") {
+            ensureServiceConfigGroupLoaded(["noona-portal", "noona-warden"]);
+            void loadDiscordOnboardingMessage();
+            return;
+        }
+        if (activeView === "kavita") {
             ensureServiceConfigLoaded("noona-portal");
             return;
         }
@@ -4201,6 +4451,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             <code>{`{chapter}`}</code> now uses the configured chapter
                             padding. <code>{`{chapter_padded}`}</code> remains available as the same padded value.
                         </Text>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            <code>{`{volume}`}</code> uses the stored Noona volume map when one exists and falls back
+                            to volume 1. <code>{`{volume_padded}`}</code> uses the configured volume padding width.
+                        </Text>
                         {namingError &&
                             <Text onBackground="danger-strong" variant="body-default-xs">{namingError}</Text>}
                         {namingMessage &&
@@ -4216,6 +4470,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                    onChange={(event) => setPagePad(event.target.value)}/>
                             <Input id="chapterPad" name="chapterPad" label="Chapter padding" type="number"
                                    value={chapterPad} onChange={(event) => setChapterPad(event.target.value)}/>
+                            <Input id="volumePad" name="volumePad" label="Volume padding" type="number"
+                                   value={volumePad} onChange={(event) => setVolumePad(event.target.value)}/>
                         </Row>
                     </Column>
                 </Card>
@@ -4785,6 +5041,140 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 ))}
                             </Row>
                         )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Column gap="4" style={{flex: "1 1 22rem", minWidth: 0}}>
+                                <Heading as="h2" variant="heading-strong-l">Onboarding message</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Save a reusable welcome message for manual copy and paste. v1 only previews and
+                                    copies the message; Portal does not send it automatically.
+                                </Text>
+                                {discordOnboardingUpdatedAt && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Updated {formatIso(discordOnboardingUpdatedAt)}
+                                    </Text>
+                                )}
+                            </Column>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button
+                                    variant="secondary"
+                                    disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                    onClick={() => void loadDiscordOnboardingMessage()}
+                                >
+                                    {discordOnboardingLoading ? "Reloading..." : "Reload"}
+                                </Button>
+                                <Button
+                                    variant="secondary"
+                                    disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                    onClick={() => void copyDiscordOnboardingPreview()}
+                                >
+                                    Copy preview
+                                </Button>
+                                <Button
+                                    variant="primary"
+                                    disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                    onClick={() => void saveDiscordOnboardingMessage()}
+                                >
+                                    {discordOnboardingSaving ? "Saving..." : "Save"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        {discordOnboardingError && (
+                            <Text onBackground="danger-strong" variant="body-default-xs">
+                                {discordOnboardingError}
+                            </Text>
+                        )}
+                        {discordOnboardingMessage && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                {discordOnboardingMessage}
+                            </Text>
+                        )}
+                        <Column gap="8">
+                            <Text variant="label-default-s">Template</Text>
+                            <textarea
+                                id="discordOnboardingTemplate"
+                                name="discordOnboardingTemplate"
+                                className={editorStyles.configTextarea}
+                                value={discordOnboardingTemplate}
+                                disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                aria-label="Discord onboarding message template"
+                                spellCheck={false}
+                                onChange={(event) => setDiscordOnboardingTemplate(event.target.value)}
+                            />
+                        </Column>
+                        <Column gap="8">
+                            <Text variant="label-default-s">Placeholder reference</Text>
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Supported placeholders use the current Discord validation result, Portal config, Warden
+                                config, and published service links.
+                            </Text>
+                            <div className={settingsStyles.defaultCardGrid}>
+                                {DISCORD_ONBOARDING_PLACEHOLDERS.map((placeholder) => {
+                                    const value = normalizeString(
+                                        discordOnboardingPlaceholderValues[placeholder.token],
+                                    ).trim();
+                                    return (
+                                        <Card
+                                            key={`discord-onboarding-placeholder-${placeholder.token}`}
+                                            fillWidth
+                                            background={BG_NEUTRAL_ALPHA_WEAK}
+                                            border="neutral-alpha-weak"
+                                            padding="m"
+                                            radius="l"
+                                        >
+                                            <Column gap="8">
+                                                <Text variant="label-default-s">
+                                                    <code>{placeholder.token}</code>
+                                                </Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    {placeholder.description}
+                                                </Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    {value ? `Preview value: ${value}` : "Preview value unavailable."}
+                                                </Text>
+                                            </Column>
+                                        </Card>
+                                    );
+                                })}
+                            </div>
+                        </Column>
+                        <Column gap="8">
+                            <Text variant="label-default-s">Rendered preview</Text>
+                            <Card
+                                fillWidth
+                                background={BG_NEUTRAL_ALPHA_WEAK}
+                                border="neutral-alpha-weak"
+                                padding="m"
+                                radius="l"
+                            >
+                                <Text
+                                    variant="body-default-s"
+                                    style={{
+                                        whiteSpace: "pre-wrap",
+                                        overflowWrap: "anywhere",
+                                        wordBreak: "break-word",
+                                    }}
+                                >
+                                    {discordOnboardingPreview.preview}
+                                </Text>
+                            </Card>
+                            {discordOnboardingPreview.unresolvedPlaceholders.length > 0 ? (
+                                <Text onBackground="warning-strong" variant="body-default-xs">
+                                    Unresolved
+                                    placeholders: {discordOnboardingPreview.unresolvedPlaceholders.join(", ")}.
+                                    They stay visible until the related config or Discord validation result is
+                                    available.
+                                </Text>
+                            ) : (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    All placeholders in this template currently resolve in the preview.
+                                </Text>
+                            )}
+                        </Column>
                     </Column>
                 </Card>
 

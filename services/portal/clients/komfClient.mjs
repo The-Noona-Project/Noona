@@ -141,6 +141,26 @@ export const createKomfClient = ({
                 },
             });
         },
+        getSeriesMetadataDetails: async ({provider, providerSeriesId, libraryId} = {}) => {
+            const normalizedProvider = normalizeString(provider);
+            if (!normalizedProvider) {
+                throw new Error('A metadata provider is required to load Komf series details.');
+            }
+
+            const normalizedProviderSeriesId = normalizeString(providerSeriesId);
+            if (!normalizedProviderSeriesId) {
+                throw new Error('A provider result id is required to load Komf series details.');
+            }
+
+            const parsedLibraryId = normalizePositiveInteger(libraryId);
+            return request('/api/kavita/metadata/series-details', {
+                query: {
+                    provider: normalizedProvider,
+                    providerSeriesId: normalizedProviderSeriesId,
+                    libraryId: parsedLibraryId != null ? String(parsedLibraryId) : undefined,
+                },
+            });
+        },
     };
 };
 

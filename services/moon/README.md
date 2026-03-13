@@ -35,6 +35,7 @@ frontend.
 - [Settings landing redirect](src/app/settings/page.tsx)
 - [Settings route group](src/app/settings/[...slug]/page.tsx)
 - [Settings navigation components](src/components/noona/settings)
+- [Settings page component](src/components/noona/SettingsPage.tsx)
 - [Setup wizard route](src/app/setupwizard/page.tsx)
 - [Setup summary route](src/app/setupwizard/summary/page.tsx)
 - [Discord callback route](src/app/discord/callback/page.tsx)
@@ -58,6 +59,7 @@ frontend.
 - [Raven source-title details proxy](src/app/api/noona/raven/title-details/route.ts)
 - [Raven library import proxy](src/app/api/noona/raven/library/imports/check/route.ts)
 - [Raven pause proxy](src/app/api/noona/raven/downloads/pause/route.ts)
+- [Discord onboarding message proxy](src/app/api/noona/settings/discord/onboarding-message/route.ts)
 - [Raven VPN settings proxy](src/app/api/noona/settings/downloads/vpn/route.ts)
 - [Raven VPN login test proxy](src/app/api/noona/settings/downloads/vpn/test-login/route.ts)
 - [Recommendations admin list proxy](src/app/api/noona/recommendations/route.ts)
@@ -103,7 +105,9 @@ frontend.
   rehydrate titles from on-disk `.noona` manifests, resync missing/new chapters from the source, and trigger a
   Kavita library scan for the affected media types. It now also exposes a `Find missing metadata` batch flow that
   opens a centered modal, loads Kavita series currently marked `notMatched`, filters them to Raven-linked library
-  titles, and lets admins confirm/apply Komf metadata one title at a time without leaving `/libraries`.
+  titles, and lets admins confirm/apply Komf metadata one title at a time without leaving `/libraries`. After each
+  apply, Moon now surfaces whether Raven stored the real chapter-to-volume map, renamed existing files, or had to keep
+  fallback `v01` naming because the matched provider did not expose usable chapter coverage.
 - `/downloads` - Download queueing, active status, workers summary, and history. The tab and direct page now require
   the `download_management` permission, and the add-download action now links to a dedicated `/downloads/add` page
   instead of an in-page modal. The page now also prioritizes Raven's persisted
@@ -157,14 +161,17 @@ frontend.
   controls, the dashboard-style Noona Docker updater with summary cards plus a full-width responsive service grid.
   Settings service-card grids now default to five columns on wide layouts and collapse responsively on smaller screens,
   and Raven naming templates now default to the Kavita-style chapter pattern
-  `{title} c{chapter} (v01) [Noona].cbz` with a default chapter pad of `3`, while `{chapter}` follows the configured
-  chapter padding width and
-  `{chapter_padded}` remains available as the same padded value,
+  `{title} c{chapter} (v{volume}) [Noona].cbz` with a default chapter pad of `3` and default volume pad of `2`, while
+  `{chapter}` follows the configured chapter padding width, `{chapter_padded}` remains available as the same padded
+  value, and `{volume}` / `{volume_padded}` use Raven's stored chapter-to-volume map when one exists and otherwise
+  fall back to `v01`,
   Discord bot validation plus per-command role fields for `/ding`,
   `/join`, `/scan`, `/search`, `/recommend`, and `/subscribe`, the managed
   Komf `/config/application.yml` editor, Vault-backed persistence for service overrides in `noona_settings`, default
-  permissions for first-time Discord sign-ins, Kavita default-role editing for new Portal-created users, per-user
-  Kavita role updates directly from `/settings/users`, and diagnostics.
+  permissions for first-time Discord sign-ins, a Vault-backed Discord onboarding-message editor with placeholder
+  preview/copy support for `{guild_name}`, `{guild_id}`, `{moon_url}`, `{kavita_url}`, and `{server_ip}`, Kavita
+  default-role editing for new Portal-created users, per-user Kavita role updates directly from `/settings/users`,
+  and diagnostics.
   Saving Moon's public `MOON_EXTERNAL_URL` from Service links now also triggers a managed Kavita restart when needed so
   Kavita's `Log in with Noona` button follows the updated Moon URL immediately instead of waiting for a separate
   Kavita restart.
@@ -235,7 +242,8 @@ frontend.
   directly instead of Kavita+. The metadata button opens a centered confirmation modal that lists returned Komf
   candidates with provider source links before applying the selected match, and applying a metadata match from the
   title page still sends the Raven title UUID so Portal can lock Kavita to the same Noona cover art that Moon is
-  rendering for that title. Title detail pages now also show Raven's stored downloaded-chapter index, the exact latest
+  rendering for that title while also storing any trusted chapter-to-volume map/rename result Portal can derive from
+  the matched provider. Title detail pages now also show Raven's stored downloaded-chapter index, the exact latest
   new/missing chapter plan returned by `Check new/missing`, the live cached Raven task when that task belongs to the
   current title, and source-title metadata such as associated names, release status/year, official translation,
   anime-adaptation flags, and related series links from Raven's source scrape.

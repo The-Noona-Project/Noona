@@ -447,10 +447,24 @@ export const createSageApp = ({
     const DEFAULT_NAMING_SETTINGS = Object.freeze({
         key: 'downloads.naming',
         titleTemplate: '{title}',
-        chapterTemplate: '{title} c{chapter} (v01) [Noona].cbz',
+        chapterTemplate: '{title} c{chapter} (v{volume}) [Noona].cbz',
         pageTemplate: '{page_padded}{ext}',
         pagePad: 3,
         chapterPad: 3,
+        volumePad: 2,
+    })
+    const DISCORD_ONBOARDING_MESSAGE_SETTINGS_KEY = 'discord.onboarding_message'
+    const DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS = Object.freeze({
+        key: DISCORD_ONBOARDING_MESSAGE_SETTINGS_KEY,
+        template: [
+            'Welcome to {guild_name}!',
+            '',
+            'Start with Moon: {moon_url}',
+            'Read in Kavita: {kavita_url}',
+            '',
+            'Use /join in Discord to create your library access.',
+            'Server: {server_ip}',
+        ].join('\n'),
     })
 
     const DEFAULT_DEBUG_SETTINGS = Object.freeze({
@@ -863,6 +877,8 @@ export const createSageApp = ({
         }
         return Math.max(1, Math.min(1440, Math.floor(parsed)))
     }
+    const hasNonEmptyDiscordOnboardingTemplate = (value) =>
+        typeof value === 'string' && value.trim().length > 0
     const sanitizeDownloadVpnSettingsForResponse = (settings = {}) => {
         const password = normalizeString(settings?.piaPassword)
         const maskedPassword = password ? '********' : ''
@@ -1957,6 +1973,23 @@ export const createSageApp = ({
             )
         }
 
+        const existingDiscordOnboardingMessage = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+        })
+        if (!existingDiscordOnboardingMessage) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key},
+                {
+                    $set: {
+                        ...DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS,
+                        updatedAt: timestamp,
+                    },
+                },
+                {upsert: true},
+            )
+        }
+
         const existingDebug = await vaultClient.mongo.findOne(settingsCollection, {
             key: DEFAULT_DEBUG_SETTINGS.key,
         })
@@ -2081,6 +2114,52 @@ export const createSageApp = ({
             permissions: nextPermissions,
             updatedAt,
         }
+    }
+    const readDiscordOnboardingMessageSetting = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+                template: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.template,
+                updatedAt: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+        })
+
+        return {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+            template: hasNonEmptyDiscordOnboardingTemplate(doc?.template)
+                ? doc.template
+                : DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.template,
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+        }
+    }
+    const writeDiscordOnboardingMessageSetting = async (template) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        if (!hasNonEmptyDiscordOnboardingTemplate(template)) {
+            throw new Error('template must not be empty.')
+        }
+
+        const updatedAt = new Date().toISOString()
+        const next = {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+            template,
+            updatedAt,
+        }
+
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key},
+            {$set: next},
+            {upsert: true},
+        )
+
+        return next
     }
     const readDownloadWorkerSettings = async () => {
         if (!vaultClient?.mongo?.findOne) {
@@ -2873,6 +2952,7 @@ export const createSageApp = ({
         createEmptyVerificationSummary,
         createSessionToken,
         defaultPermissionsForRole,
+        DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS,
         DEFAULT_DOWNLOAD_WORKER_SETTINGS,
         DEFAULT_DOWNLOAD_VPN_SETTINGS,
         DEFAULT_MEMBER_PERMISSIONS_SETTINGS,
@@ -2914,6 +2994,7 @@ export const createSageApp = ({
         publicUser,
         queueEcosystemRestart,
         ravenClient,
+        readDiscordOnboardingMessageSetting,
         readDefaultMemberPermissions,
         readDebugSetting,
         readDownloadWorkerSettings,
@@ -2953,6 +3034,7 @@ export const createSageApp = ({
         verifySessionPassword,
         wizardMetadata,
         wizardStateClient,
+        writeDiscordOnboardingMessageSetting,
         writeDefaultMemberPermissions,
         writeDownloadWorkerSettings,
         writeDownloadVpnSettings,

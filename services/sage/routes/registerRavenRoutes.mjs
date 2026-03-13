@@ -6,6 +6,7 @@ export function registerRavenRoutes(context = {}) {
         ensureMoonPermission,
         hasMoonPermission,
         logger,
+        portalClient,
         ravenClient,
         vaultClient,
         requireSessionIfSetupCompleted,
@@ -1470,6 +1471,42 @@ export function registerRavenRoutes(context = {}) {
             let resolvedQueueTarget = null
             let queueResult = null
             let usedRecoveredQueueTarget = false
+            let preseededTitleUuid = null
+            const preseedRecommendationVolumeMap = async ({title, sourceUrl} = {}) => {
+                if (!requestedMetadataSelection?.provider || !requestedMetadataSelection?.providerSeriesId) {
+                    return
+                }
+
+                if (!ravenClient?.createTitle || !portalClient?.applyRavenTitleVolumeMap) {
+                    return
+                }
+
+                const normalizedTitle = normalizeString(title)
+                if (!normalizedTitle) {
+                    return
+                }
+
+                try {
+                    const ravenTitle = await ravenClient.createTitle({
+                        title: normalizedTitle,
+                        sourceUrl: normalizeString(sourceUrl) || null,
+                    })
+                    const titleUuid = normalizeString(ravenTitle?.uuid)
+                    if (!titleUuid) {
+                        return
+                    }
+
+                    preseededTitleUuid = titleUuid
+                    await portalClient.applyRavenTitleVolumeMap({
+                        titleUuid,
+                        provider: requestedMetadataSelection.provider,
+                        providerSeriesId: requestedMetadataSelection.providerSeriesId,
+                        autoRename: false,
+                    })
+                } catch (error) {
+                    logger.warn?.(`[${serviceName}] Failed to pre-seed Raven volume mapping for recommendation ${id}: ${error.message}`)
+                }
+            }
             const tryRecoveredQueueTarget = async () => {
                 if (!requestedMetadataSelection) {
                     return false
@@ -1485,6 +1522,10 @@ export function registerRavenRoutes(context = {}) {
                 }
 
                 usedRecoveredQueueTarget = true
+                await preseedRecommendationVolumeMap({
+                    title: resolvedQueueTarget?.title || recommendation?.title || requestedMetadataSelection?.title,
+                    sourceUrl: resolvedQueueTarget?.href || recommendation?.href || null,
+                })
                 queueResult = await ravenClient.queueDownload({
                     searchId: resolvedQueueTarget.searchId,
                     optionIndex: resolvedQueueTarget.optionIndex,
@@ -1494,6 +1535,10 @@ export function registerRavenRoutes(context = {}) {
 
             if (storedSearchId && Number.isFinite(storedSelectedOptionIndex)) {
                 try {
+                    await preseedRecommendationVolumeMap({
+                        title: recommendation?.title || requestedMetadataSelection?.title,
+                        sourceUrl: recommendation?.href || null,
+                    })
                     queueResult = await ravenClient.queueDownload({
                         searchId: storedSearchId,
                         optionIndex: storedSelectedOptionIndex,
@@ -1566,7 +1611,7 @@ export function registerRavenRoutes(context = {}) {
                 ? normalizeRecommendationMetadataSelection({
                     ...requestedMetadataSelection,
                     queuedAt: approvedAt,
-                    titleUuid: resolveQueuedRecommendationTitleUuid(queueResult),
+                    titleUuid: resolveQueuedRecommendationTitleUuid(queueResult) || preseededTitleUuid,
                     lastAttemptedAt: null,
                     lastError: null,
                 })
