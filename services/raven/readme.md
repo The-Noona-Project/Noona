@@ -9,6 +9,10 @@ Raven is Noona's downloader and library worker service. It searches supported so
 - [Stack overview](../../README.md)
 - [Spring entrypoint](src/main/java/com/paxkun/raven/RavenApplication.java)
 - [Controllers](src/main/java/com/paxkun/raven/controller/)
+- [Download orchestrator](src/main/java/com/paxkun/raven/service/DownloadService.java)
+- [Worker launcher](src/main/java/com/paxkun/raven/service/RavenWorkerLauncher.java)
+- [Worker runtime switches](src/main/java/com/paxkun/raven/service/RavenRuntimeProperties.java)
+- [Linux CPU affinity helper](src/main/java/com/paxkun/raven/service/LinuxCpuAffinity.java)
 - [Download services](src/main/java/com/paxkun/raven/service/download/)
 - [VPN manager](src/main/java/com/paxkun/raven/service/VPNServices.java)
 - [Library services](src/main/java/com/paxkun/raven/service/library/)
@@ -21,8 +25,8 @@ Raven is Noona's downloader and library worker service. It searches supported so
 2. Select a source option.
 3. Queue chapter downloads into the `downloading/` workspace under Raven's downloads root.
 4. Zip finished chapters there, then move completed title folders into `downloaded/`.
-5. Track progress/status, persist the current task into Vault-backed Mongo plus the Redis current-task cache, and
-   update local library metadata.
+5. Track progress/status in Vault-backed Mongo task documents, mirror the latest snapshot into Redis for compatibility,
+   and update local library metadata.
 6. Write a `<uuid>.noona` manifest beside the completed title's `.cbz` files so Noona can rebuild that title later if
    the library database needs to be restored.
 7. Ask Portal/Kavita to scan the matching library after successful imports so new titles appear in Kavita.
@@ -105,17 +109,24 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
   that login test.
 - Raven's container now includes `openvpn`. For managed Docker installs, keep Warden's Raven tunnel capability enabled
   (`NET_ADMIN` + `/dev/net/tun`) so OpenVPN can establish the tunnel.
+- On Linux, Raven's main server now acts as the queue/API/VPN coordinator and launches one child Raven worker process
+  per active worker slot. Each child can apply `sched_setaffinity` to its configured Linux CPU core, and that process
+  affinity is inherited by ChromeDriver/Chrome descendants both on bare metal and inside Docker.
+- Raven worker settings now come from Vault key `downloads.workers` with both `threadRateLimitsKbps` and
+  `cpuCoreIds`. Raven normalizes both arrays to `RAVEN_DOWNLOAD_THREADS`, and `cpuCoreIds: -1` means the worker stays
+  process-isolated but is not affinity-pinned.
 - Raven now persists the latest tracked download/sync task into Vault collection `raven_download_tasks` and mirrors the
-  current snapshot into Redis key `raven:download:current-task`. Interrupted tasks are resumed on startup when Raven
-  comes back after a crash or power loss.
+  current snapshot into Redis key `raven:download:current-task`. Task documents now carry `workerIndex`, `cpuCoreId`,
+  `workerPid`, `executionMode`, and `pauseRequested`, and those Mongo documents are the source of truth for
+  `/status`, `/history`, restore-on-startup, and main-process worker supervision.
 - Raven now retries transient Vault read failures (for persisted task restore, current-task snapshot reads, and
   settings fetches) so startup races where Vault is still warming up do not immediately fail Raven recovery/state
   loading.
-- Raven pause requests now stop active downloads at chapter boundaries: the chapter currently in progress is allowed to
-  finish, then Raven marks the task `paused` and keeps remaining chapters in the persisted task snapshot for later
-  resume.
-- Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming plus per-thread
-  speed limits without editing container env.
+- Raven pause requests now use the persisted `pauseRequested` flag on the task document. Workers observe that flag
+  before starting and again at chapter boundaries, then mark the task `paused` while keeping remaining chapters in the
+  persisted snapshot for later resume.
+- Raven reads `downloads.naming` and `downloads.workers` from Vault so Moon can control chapter naming, per-worker
+  speed limits, and Linux CPU-core assignments without editing container env.
 - New Raven naming defaults now follow a Kavita-style manga chapter pattern:
   `{title} c{chapter} (v{volume}) [Noona].cbz`, with the default chapter padding set to `3` so chapter `3` becomes
   `c003` and the default volume padding set to `2` so fallback volume `1` renders as `v01`.
@@ -147,9 +158,10 @@ docker run -p 8080:8080 -v <host_downloads_dir>:/app/downloads -v <host_logs_dir
 - `POST /v1/library/imports/check` replays those `.noona` manifests on demand: Raven recreates missing library rows,
   rechecks the source for missing/new chapters using the files already present on disk, downloads anything still
   missing, and then requests Kavita scans for the affected media types.
-- `GET /v1/download/status/summary` exposes the active download title, current library-check title, idle state, and
-  the effective worker rate-limit array plus the current persisted task snapshot so Portal and Moon can surface live
-  activity and recovery state after restarts.
+- `GET /v1/download/status/summary` now exposes the active download title, current library-check title, idle state,
+  the effective worker rate-limit array, configured worker CPU-core ids, Raven's currently allowed Linux CPU ids,
+  active worker process handles, the service-wide worker execution mode, and the current persisted task snapshot so
+  Portal and Moon can surface live activity, affinity layout, and recovery state after restarts.
 
 ## Documentation Rule
 

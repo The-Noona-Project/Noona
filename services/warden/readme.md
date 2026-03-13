@@ -193,11 +193,11 @@ HTTP API.
   safer provider list where credentialed providers such as `mal` and `comicVine` start disabled until Moon's Komf
   settings editor is used to enable them with valid credentials.
 - The Portal descriptor in [docker/noonaDockers.mjs](docker/noonaDockers.mjs) now includes `PORTAL_JOIN_DEFAULT_ROLES`
-  and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the `/join` defaults exposed in Moon's Portal settings tab. Managed
-  installs default those values to `*,-admin` and `*`, and Warden injects Portal's Vault credential through the
-  generated `VAULT_API_TOKEN` field instead of asking users to type a Vault token during setup.
+  and `PORTAL_JOIN_DEFAULT_LIBRARIES`, which drive the website onboarding defaults exposed in Moon's Portal settings
+  tab. Managed installs default those values to `*,-admin` and `*`, and Warden injects Portal's Vault credential
+  through the generated `VAULT_API_TOKEN` field instead of asking users to type a Vault token during setup.
 - The same Portal descriptor also publishes `REQUIRED_GUILD_ID` and `REQUIRED_ROLE_<COMMAND>` fields so Moon can edit
-  per-command Discord access for `/ding`, `/join`, `/scan`, `/search`, `/recommend`, and `/subscribe`.
+  per-command Discord access for `/ding`, `/scan`, `/search`, `/recommend`, and `/subscribe`.
 - Generic service config overrides saved from Moon now persist into Vault Mongo's `noona_settings` collection under
   `services.config.*` keys, and Warden reloads them during full boot before launching the rest of the managed stack.
 - Warden now also mirrors the effective runtime service overrides to

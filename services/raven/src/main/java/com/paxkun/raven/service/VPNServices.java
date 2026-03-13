@@ -61,6 +61,8 @@ public class VPNServices {
     private final SettingsService settingsService;
     private final DownloadService downloadService;
     private final LoggerService logger;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private RavenRuntimeProperties runtimeProperties = new RavenRuntimeProperties();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor((runnable) -> {
         Thread thread = new Thread(runnable);
         thread.setName("raven-vpn-scheduler");
@@ -92,13 +94,21 @@ public class VPNServices {
 
     @PostConstruct
     public void start() {
-        scheduler.scheduleWithFixedDelay(this::runScheduleTick, 10, 30, TimeUnit.SECONDS);
+        if (runtimeProperties != null && runtimeProperties.isWorkerMode()) {
+            return;
+        }
+
+        scheduleTickLoop();
     }
 
     @PreDestroy
     public void stop() {
         scheduler.shutdownNow();
         disconnectOpenVpn();
+    }
+
+    protected void scheduleTickLoop() {
+        scheduler.scheduleWithFixedDelay(this::runScheduleTick, 10, 30, TimeUnit.SECONDS);
     }
 
     public VpnRuntimeStatus getStatus() {

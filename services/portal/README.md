@@ -1,8 +1,8 @@
 # Portal (Noona Stack 2.2)
 
-Portal coordinates Discord onboarding with Kavita and Vault. It exposes HTTP onboarding routes and Discord slash
-commands that provision Kavita users, surface Kavita library/title metadata, store onboarding tokens, and assign
-default Discord roles.
+Portal coordinates website onboarding and Discord integrations with Kavita and Vault. It exposes HTTP onboarding
+routes plus Discord slash commands that surface Kavita library/title metadata, store onboarding tokens, and bridge
+recommendation and subscription flows.
 
 ## Quick Navigation
 
@@ -35,8 +35,8 @@ default Discord roles.
 - Validate runtime config for Discord, Kavita, Vault, and Redis-backed onboarding tokens.
 - Handle onboarding and Kavita option discovery over HTTP (`/api/portal/*`).
 - Proxy Raven-triggered Kavita library scans so completed imports can surface in Kavita without direct bot access.
-- Register and execute Discord slash commands for Kavita account creation, library scans, title search workflows, and
-  Raven-backed recommendation intake.
+- Register and execute Discord slash commands for library scans, title search workflows, Raven-backed recommendation
+  intake, and subscription management.
 - Poll Raven and Warden so the Discord bot presence reflects active downloads, title checks, and service updates.
 - Persist portal credentials plus recommendation/subscription documents in Vault, assign Discord roles when configured,
   DM recommendation requesters when approvals/admin comments/completed imports are detected, and DM subscribers when
@@ -102,17 +102,14 @@ default Discord roles.
 - `POST /api/portal/kavita/login-tokens/consume` - redeem a short-lived one-time Kavita login token issued by the
   Noona handoff flow.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
-  picker.
-- `POST /api/portal/onboard` - create a Kavita user, store an onboarding token, and optionally persist the credential.
+  picker and the website onboarding flow.
+- `POST /api/portal/onboard` - create a Kavita user for website onboarding, store an onboarding token, and optionally
+  persist the credential.
 - `POST /api/portal/tokens/consume` - redeem an onboarding token.
 
 ## Slash Commands
 
 - `/ding` - health check response.
-- `/join username:<name> password:<password> confirm_password:<password> email:<email>` - create a Kavita user with the
-  configured default roles/libraries, store the credential metadata, and assign the default Discord role when
-  configured. `PORTAL_JOIN_DEFAULT_ROLES` supports `*` plus exclusions like `*,-admin`, and
-  `PORTAL_JOIN_DEFAULT_LIBRARIES` supports `*` for all available libraries.
 - `/scan` - autocomplete Kavita libraries in Discord and queue a scan for the selected library.
 - `/search` - search Kavita series titles by name and return matching series results.
 - `/recommend title:<name>` - search Raven for up to five title matches, ask the user to confirm the intended title
@@ -147,30 +144,31 @@ default Discord roles.
 - Subscription follow-up DMs: Portal polls active `portal_subscriptions` documents and DM-notifies each subscriber
   whenever Raven exposes new `completedChapterNumbers` for a matched title task.
 - Boot behavior: when Discord is configured, Portal logs in, clears current-app global commands, clears the guild
-  command list, then re-registers all current slash command definitions for the configured guild. If Discord env vars
-  are omitted, Portal starts in HTTP-only mode.
+  command list, then re-registers all current slash command definitions for the configured guild. That boot-time sync
+  is what removes stale `/join` registrations after upgrading. If Discord env vars are omitted, Portal starts in
+  HTTP-only mode.
 
 ## Key Environment Variables
 
-| Variable                                                              | Purpose                                                                                                        |
-|-----------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                                              |
-| `DISCORD_BOT_TOKEN` / `DISCORD_CLIENT_ID` / `DISCORD_GUILD_ID`        | Optional Discord integration (all-or-none). If omitted, Portal still boots with HTTP routes only.              |
-| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                                                 |
-| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`)                       |
-| `KAVITA_EXTERNAL_URL`                                                 | Optional public Kavita URL used in Moon buttons and Discord recommendation links                               |
-| `KOMF_BASE_URL`                                                       | Komf metadata helper URL (`http://noona-komf:8085` by default for managed installs)                            |
-| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` (`*,-admin` for roles and `*` for libraries by default)                      |
-| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs                 |
-| `RAVEN_BASE_URL` / `WARDEN_BASE_URL`                                  | Optional activity-poll targets for Discord bot presence                                                        |
-| `WARDEN_API_TOKEN`                                                    | Bearer token Portal uses for Warden activity polling                                                           |
-| `MOON_BASE_URL`                                                       | Optional direct Moon URL override for recommendation DMs (fallback uses Warden service URLs)                   |
-| `PORTAL_ACTIVITY_POLL_MS`                                             | Poll interval for Discord presence refreshes (default `15000`)                                                 |
-| `PORTAL_RECOMMENDATION_POLL_MS`                                       | Poll interval for recommendation and subscription DM checks (default `30000`)                                  |
-| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                                                |
-| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                                                 |
-| `REQUIRED_GUILD_ID` / `REQUIRED_ROLE_<COMMAND>`                       | Optional per-command Discord access gates for `/ding`, `/join`, `/scan`, `/search`, `/recommend`, `/subscribe` |
-| `NOONA_LOG_DIR`                                                       | Optional directory for Portal's `latest.log`; Warden-managed installs mount `/var/log/noona`                   |
+| Variable                                                              | Purpose                                                                                               |
+|-----------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| `PORTAL_PORT` or `API_PORT`                                           | HTTP listen port (default `3003`)                                                                     |
+| `DISCORD_BOT_TOKEN` / `DISCORD_CLIENT_ID` / `DISCORD_GUILD_ID`        | Optional Discord integration (all-or-none). If omitted, Portal still boots with HTTP routes only.     |
+| `DISCORD_GUILD_ROLE_ID` / `DISCORD_DEFAULT_ROLE_ID`                   | Default role assignment target                                                                        |
+| `KAVITA_BASE_URL` / `KAVITA_API_KEY`                                  | Kavita API connection (`KAVITA_BASE_URL` defaults to managed `http://noona-kavita:5000`)              |
+| `KAVITA_EXTERNAL_URL`                                                 | Optional public Kavita URL used in Moon buttons and Discord recommendation links                      |
+| `KOMF_BASE_URL`                                                       | Komf metadata helper URL (`http://noona-komf:8085` by default for managed installs)                   |
+| `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for website onboarding (`*,-admin` for roles and `*` for libraries by default)  |
+| `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs        |
+| `RAVEN_BASE_URL` / `WARDEN_BASE_URL`                                  | Optional activity-poll targets for Discord bot presence                                               |
+| `WARDEN_API_TOKEN`                                                    | Bearer token Portal uses for Warden activity polling                                                  |
+| `MOON_BASE_URL`                                                       | Optional direct Moon URL override for recommendation DMs (fallback uses Warden service URLs)          |
+| `PORTAL_ACTIVITY_POLL_MS`                                             | Poll interval for Discord presence refreshes (default `15000`)                                        |
+| `PORTAL_RECOMMENDATION_POLL_MS`                                       | Poll interval for recommendation and subscription DM checks (default `30000`)                         |
+| `PORTAL_REDIS_NAMESPACE` / `PORTAL_TOKEN_TTL`                         | Token storage namespace and TTL                                                                       |
+| `PORTAL_HTTP_TIMEOUT`                                                 | Upstream request timeout in ms                                                                        |
+| `REQUIRED_GUILD_ID` / `REQUIRED_ROLE_<COMMAND>`                       | Optional per-command Discord access gates for `/ding`, `/scan`, `/search`, `/recommend`, `/subscribe` |
+| `NOONA_LOG_DIR`                                                       | Optional directory for Portal's `latest.log`; Warden-managed installs mount `/var/log/noona`          |
 
 ## Local Commands
 

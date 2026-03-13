@@ -132,6 +132,10 @@ public class DownloadController {
         payload.put("activeDownloads", downloadService.getActiveDownloadCount());
         payload.put("maxThreads", downloadService.getConfiguredDownloadThreads());
         payload.put("threadRateLimitsKbps", downloadService.getThreadRateLimitsKbps());
+        payload.put("workerExecutionMode", downloadService.getWorkerExecutionMode());
+        payload.put("workerCpuCoreIds", downloadService.getWorkerCpuCoreIds());
+        payload.put("availableCpuIds", downloadService.getAvailableCpuIds());
+        payload.put("activeWorkers", downloadService.getActiveWorkers());
         if (currentTask != null) {
             payload.put("currentTask", toTaskPayload(currentTask));
         }
@@ -228,6 +232,11 @@ public class DownloadController {
         payload.put("remainingChapterNumbers", progress.getRemainingChapterNumbers());
         payload.put("newChapterNumbers", progress.getNewChapterNumbers());
         payload.put("missingChapterNumbers", progress.getMissingChapterNumbers());
+        payload.put("workerIndex", progress.getWorkerIndex());
+        payload.put("cpuCoreId", progress.getCpuCoreId());
+        payload.put("workerPid", progress.getWorkerPid());
+        payload.put("executionMode", progress.getExecutionMode());
+        payload.put("pauseRequested", progress.isPauseRequested());
         return payload;
     }
 

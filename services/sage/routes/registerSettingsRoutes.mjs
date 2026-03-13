@@ -27,6 +27,7 @@ export function registerSettingsRoutes(context = {}) {
         serviceName,
         settingsCollection,
         setupClient,
+        validateCpuCoreIdsInput,
         validateThreadRateLimitsInput,
         vaultClient,
         vaultErrorMessage,
@@ -257,6 +258,7 @@ export function registerSettingsRoutes(context = {}) {
             res.json({
                 key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                 threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],
+                cpuCoreIds: Array.isArray(settings?.cpuCoreIds) ? settings.cpuCoreIds : [],
                 updatedAt: settings?.updatedAt || null,
             })
         } catch (error) {
@@ -276,12 +278,21 @@ export function registerSettingsRoutes(context = {}) {
             res.status(400).json({error: parsedThreadRateLimits.error})
             return
         }
+        const parsedCpuCoreIds = validateCpuCoreIdsInput(req.body?.cpuCoreIds)
+        if (!parsedCpuCoreIds.ok) {
+            res.status(400).json({error: parsedCpuCoreIds.error})
+            return
+        }
 
         try {
-            const settings = await writeDownloadWorkerSettings(parsedThreadRateLimits.threadRateLimitsKbps)
+            const settings = await writeDownloadWorkerSettings(
+                parsedThreadRateLimits.threadRateLimitsKbps,
+                parsedCpuCoreIds.cpuCoreIds,
+            )
             res.json({
                 key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                 threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],
+                cpuCoreIds: Array.isArray(settings?.cpuCoreIds) ? settings.cpuCoreIds : [],
                 updatedAt: settings?.updatedAt || null,
             })
         } catch (error) {

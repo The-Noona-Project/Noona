@@ -6243,7 +6243,7 @@ test('settings Discord onboarding message route returns the seeded default templ
         'Start with Moon: {moon_url}',
         'Read in Kavita: {kavita_url}',
         '',
-        'Use /join in Discord to create your library access.',
+        'Use the website onboarding flow to create your library access.',
         'Server: {server_ip}',
     ].join('\n')
     const vault = createVaultAuthStub()
@@ -6399,6 +6399,7 @@ test('settings download worker routes read and update per-thread rate limits', a
         settings: [{
             key: 'downloads.workers',
             threadRateLimitsKbps: [128, 0, 1024 * 1024],
+            cpuCoreIds: [2, -1],
             updatedAt: '2026-01-01T00:00:00.000Z',
         }],
     })
@@ -6406,6 +6407,9 @@ test('settings download worker routes read and update per-thread rate limits', a
     const app = createSageApp({
         serviceName: 'test-sage',
         vaultClient: vault.client,
+        ravenClient: {
+            getDownloadSummary: async () => ({maxThreads: 5}),
+        },
     })
 
     const {server, baseUrl} = await listen(app)
@@ -6419,7 +6423,8 @@ test('settings download worker routes read and update per-thread rate limits', a
     assert.equal(getResponse.status, 200)
     assert.deepEqual(await getResponse.json(), {
         key: 'downloads.workers',
-        threadRateLimitsKbps: [128, -1, 1024 * 1024],
+        threadRateLimitsKbps: [128, -1, 1024 * 1024, -1, -1],
+        cpuCoreIds: [2, -1, -1, -1, -1],
         updatedAt: '2026-01-01T00:00:00.000Z',
     })
 
@@ -6431,17 +6436,20 @@ test('settings download worker routes read and update per-thread rate limits', a
         },
         body: JSON.stringify({
             threadRateLimitsKbps: [512, -1, '10mb', '1gb', '0'],
+            cpuCoreIds: [3, -1, '7', '8', 9.8],
         }),
     })
     assert.equal(putResponse.status, 200)
     const putPayload = await putResponse.json()
     assert.equal(putPayload.key, 'downloads.workers')
     assert.deepEqual(putPayload.threadRateLimitsKbps, [512, -1, 10 * 1024, 1024 * 1024, -1])
+    assert.deepEqual(putPayload.cpuCoreIds, [3, -1, 7, 8, 9])
     assert.ok(typeof putPayload.updatedAt === 'string')
 
     const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.workers')
     assert.ok(stored)
     assert.deepEqual(stored.threadRateLimitsKbps, [512, -1, 10 * 1024, 1024 * 1024, -1])
+    assert.deepEqual(stored.cpuCoreIds, [3, -1, 7, 8, 9])
 })
 
 test('settings download worker routes reject invalid unit strings', async (t) => {
@@ -6471,6 +6479,39 @@ test('settings download worker routes reject invalid unit strings', async (t) =>
     assert.equal(putResponse.status, 400)
     const payload = await putResponse.json()
     assert.equal(payload.error, 'Thread 1 rate limit must be a number in KB/s, may use `mb`/`gb`, or `-1` for unlimited.')
+})
+
+test('settings download worker routes reject invalid cpu core assignments', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: {
+            getDownloadSummary: async () => ({maxThreads: 3}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            threadRateLimitsKbps: [512, -1, -1],
+            cpuCoreIds: [0, 'left', -1],
+        }),
+    })
+
+    assert.equal(putResponse.status, 400)
+    const payload = await putResponse.json()
+    assert.equal(payload.error, 'Thread 2 CPU core must be `-1` or a non-negative integer CPU ID.')
 })
 
 test('settings VPN routes read and update masked PIA credentials', async (t) => {

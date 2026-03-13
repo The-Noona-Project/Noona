@@ -84,8 +84,6 @@ export const startPortal = async (overrides = {}) => {
             vault,
             moonBaseUrl: config.moon?.baseUrl,
             kavitaExternalUrl: config.kavita?.externalUrl,
-            onboardingStore,
-            joinDefaults: config.join,
         });
 
         discord = createDiscordClient({

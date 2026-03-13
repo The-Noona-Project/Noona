@@ -230,6 +230,21 @@ public class VaultService {
         sendPacket(packet);
     }
 
+    public void delete(String collection, Map<String, Object> query) {
+        Map<String, Object> payload = Map.of(
+                "collection", collection,
+                "query", query
+        );
+
+        Map<String, Object> packet = Map.of(
+                "storageType", "mongo",
+                "operation", "delete",
+                "payload", payload
+        );
+
+        sendPacket(packet);
+    }
+
     public void setRedisValue(String key, Object value) {
         setRedisValue(key, value, null);
     }

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +28,18 @@ class VPNServicesTest {
 
     @Mock
     private LoggerService loggerService;
+
+    @Test
+    void workerModeSkipsVpnSchedulerStartup() {
+        TestableVPNServices vpnServices = spy(new TestableVPNServices(settingsService, downloadService, loggerService));
+        RavenRuntimeProperties runtimeProperties = new RavenRuntimeProperties();
+        runtimeProperties.setWorkerMode(true);
+        ReflectionTestUtils.setField(vpnServices, "runtimeProperties", runtimeProperties);
+
+        vpnServices.start();
+
+        assertThat(vpnServices.scheduleCount).isZero();
+    }
 
     @Test
     void captureLocalRouteSpecsFiltersOutDefaultVpnAndLoopbackRoutes() throws Exception {
@@ -105,5 +118,18 @@ class VPNServicesTest {
         inOrder.verify(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
         inOrder.verify(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
         inOrder.verify(downloadService).resumePausedDownloads();
+    }
+
+    static class TestableVPNServices extends VPNServices {
+        private int scheduleCount;
+
+        TestableVPNServices(SettingsService settingsService, DownloadService downloadService, LoggerService loggerService) {
+            super(settingsService, downloadService, loggerService);
+        }
+
+        @Override
+        protected void scheduleTickLoop() {
+            scheduleCount++;
+        }
     }
 }

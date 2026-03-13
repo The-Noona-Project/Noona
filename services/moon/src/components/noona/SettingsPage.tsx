@@ -49,6 +49,7 @@ import {
     type SettingsViewId as ViewId,
     TAB_LABELS,
 } from "./settings";
+import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -180,7 +181,15 @@ type DiscordOnboardingMessageSettings = {
 type DownloadWorkerSettings = {
     key?: string | null;
     threadRateLimitsKbps?: number[] | null;
+    cpuCoreIds?: number[] | null;
     updatedAt?: string | null;
+    error?: string;
+};
+
+type RavenWorkerRuntimeSummary = {
+    workerExecutionMode?: string | null;
+    workerCpuCoreIds?: number[] | null;
+    availableCpuIds?: number[] | null;
     error?: string;
 };
 
@@ -397,7 +406,7 @@ const DEFAULT_DISCORD_ONBOARDING_TEMPLATE = [
     "Start with Moon: {moon_url}",
     "Read in Kavita: {kavita_url}",
     "",
-    "Use /join in Discord to create your library access.",
+    "Use the website onboarding flow to create your library access.",
     "Server: {server_ip}",
 ].join("\n");
 const DISCORD_ONBOARDING_PLACEHOLDERS = [
@@ -448,7 +457,6 @@ const PORTAL_DISCORD_KEYS = new Set([
 const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_GUILD_ID",
     "REQUIRED_ROLE_DING",
-    "REQUIRED_ROLE_JOIN",
     "REQUIRED_ROLE_SCAN",
     "REQUIRED_ROLE_SEARCH",
     "REQUIRED_ROLE_RECOMMEND",
@@ -1006,6 +1014,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [downloadWorkerSettingsMessage, setDownloadWorkerSettingsMessage] = useState<string | null>(null);
     const [downloadWorkerSettingsUpdatedAt, setDownloadWorkerSettingsUpdatedAt] = useState<string | null>(null);
     const [downloadWorkerRateLimits, setDownloadWorkerRateLimits] = useState<string[]>([THREAD_RATE_LIMIT_UNLIMITED]);
+    const [downloadWorkerCpuCoreIds, setDownloadWorkerCpuCoreIds] = useState<string[]>([CPU_CORE_UNPINNED]);
+    const [downloadWorkerAvailableCpuIds, setDownloadWorkerAvailableCpuIds] = useState<number[]>([]);
+    const [downloadWorkerExecutionMode, setDownloadWorkerExecutionMode] = useState<string>("thread");
     const [vpnLoading, setVpnLoading] = useState(false);
     const [vpnSaving, setVpnSaving] = useState(false);
     const [vpnRotating, setVpnRotating] = useState(false);
@@ -1879,6 +1890,25 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
+    const loadDownloadWorkerRuntimeSummary = async () => {
+        try {
+            const res = await fetch("/api/noona/raven/downloads/summary", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as RavenWorkerRuntimeSummary | null;
+            if (!res.ok) {
+                return;
+            }
+
+            const availableCpuIds = Array.isArray(json?.availableCpuIds)
+                ? json.availableCpuIds.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
+                : [];
+            setDownloadWorkerAvailableCpuIds(availableCpuIds);
+            setDownloadWorkerExecutionMode(normalizeString(json?.workerExecutionMode).trim() || "thread");
+        } catch {
+            setDownloadWorkerAvailableCpuIds([]);
+            setDownloadWorkerExecutionMode("thread");
+        }
+    };
+
     const loadDownloadWorkerSettings = async () => {
         setDownloadWorkerSettingsLoading(true);
         setDownloadWorkerSettingsError(null);
@@ -1892,7 +1922,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setDownloadWorkerRateLimits(normalizeThreadRateLimitDrafts(json?.threadRateLimitsKbps, ravenThreadCount));
+            setDownloadWorkerCpuCoreIds(normalizeCpuCoreIdDrafts(json?.cpuCoreIds, ravenThreadCount));
             setDownloadWorkerSettingsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+            await loadDownloadWorkerRuntimeSummary();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setDownloadWorkerSettingsError(msg);
@@ -1907,11 +1939,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
         setDownloadWorkerSettingsMessage(null);
         try {
             const normalizedRateLimits = normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount);
+            const normalizedCpuCoreIds = normalizeCpuCoreIdDrafts(downloadWorkerCpuCoreIds, ravenThreadCount);
             const res = await fetch("/api/noona/settings/downloads/workers", {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     threadRateLimitsKbps: normalizedRateLimits,
+                    cpuCoreIds: normalizedCpuCoreIds,
                 }),
             });
             const json = (await res.json().catch(() => null)) as DownloadWorkerSettings | null;
@@ -1921,8 +1955,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setDownloadWorkerRateLimits(normalizeThreadRateLimitDrafts(json?.threadRateLimitsKbps, ravenThreadCount));
+            setDownloadWorkerCpuCoreIds(normalizeCpuCoreIdDrafts(json?.cpuCoreIds, ravenThreadCount));
             setDownloadWorkerSettingsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
-            setDownloadWorkerSettingsMessage("Thread speed limits saved.");
+            await loadDownloadWorkerRuntimeSummary();
+            setDownloadWorkerSettingsMessage("Worker settings saved.");
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setDownloadWorkerSettingsError(msg);
@@ -3109,6 +3145,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
     useEffect(() => {
         setDownloadWorkerRateLimits((prev) => normalizeThreadRateLimitDrafts(prev, ravenThreadCount));
+        setDownloadWorkerCpuCoreIds((prev) => normalizeCpuCoreIdDrafts(prev, ravenThreadCount));
     }, [ravenThreadCount]);
 
     useEffect(() => {
@@ -3430,7 +3467,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 {renderFieldBlock(
                                     "Discord bot",
                                     portalDiscordFields,
-                                    "These values control which Discord application Portal logs into and which Discord role is assigned after /join.",
+                                    "These values control which Discord application Portal logs into and which Discord role is assigned after website onboarding.",
                                     "discord",
                                 )}
                             </Column>
@@ -3486,14 +3523,14 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                         <Column gap="12">
                             <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                <Heading as="h3" variant="heading-strong-l">Join defaults</Heading>
+                                <Heading as="h3" variant="heading-strong-l">Website onboarding defaults</Heading>
                                 <Button variant="secondary" disabled={portalJoinOptionsLoading}
                                         onClick={() => void loadPortalJoinOptions()}>
                                     {portalJoinOptionsLoading ? "Loading..." : "Reload choices"}
                                 </Button>
                             </Row>
                             <Text onBackground="neutral-weak" variant="body-default-xs">
-                                These defaults are applied when `/join` creates a Kavita account from Discord.
+                                These defaults are applied when website onboarding provisions a Kavita account.
                             </Text>
                             {portalJoinOptionsError && (
                                 <Text onBackground="danger-strong"
@@ -3504,7 +3541,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     <Text onBackground="neutral-weak" variant="label-default-s">Kavita role
                                         reference</Text>
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        These are the Kavita roles Portal can assign through `/join`, with a short
+                                        These are the Kavita roles Portal can assign during website onboarding, with a
+                                        short
                                         summary of what each one unlocks.
                                     </Text>
                                     <Column gap="8">
@@ -3540,7 +3578,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     <Input
                                         id={`${currentService}:join:${normalizeString(portalJoinRoleField.key).trim()}`}
                                         name={`${currentService}:join:${normalizeString(portalJoinRoleField.key).trim()}`}
-                                        label={normalizeString(portalJoinRoleField.label).trim() || "Default /join Roles"}
+                                        label={normalizeString(portalJoinRoleField.label).trim() || "Website onboarding default roles"}
                                         value={getFieldValue(portalJoinRoleField)}
                                         onChange={(event) =>
                                             updateEnvDraft(
@@ -3579,7 +3617,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     <Input
                                         id={`${currentService}:join:${normalizeString(portalJoinLibraryField.key).trim()}`}
                                         name={`${currentService}:join:${normalizeString(portalJoinLibraryField.key).trim()}`}
-                                        label={normalizeString(portalJoinLibraryField.label).trim() || "Default /join Libraries"}
+                                        label={normalizeString(portalJoinLibraryField.label).trim() || "Website onboarding default libraries"}
                                         value={getFieldValue(portalJoinLibraryField)}
                                         onChange={(event) =>
                                             updateEnvDraft(
@@ -4480,15 +4518,23 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     <Column gap="12">
                         <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                             <Column gap="4">
-                                <Heading as="h2" variant="heading-strong-l">Thread speed limits</Heading>
+                                <Heading as="h2" variant="heading-strong-l">Worker lanes</Heading>
                                 <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                    Set a per-thread download cap in KB/s, or type values like 10mb or 1gb. Use -1 for
-                                    unlimited speed.
+                                    Set a per-worker download cap in KB/s and an optional Linux CPU core ID. Use -1
+                                    for unlimited speed or an unpinned worker slot.
                                 </Text>
                                 <Text onBackground="neutral-weak" variant="body-default-xs">
                                     Raven is currently configured
                                     for {ravenThreadCount} thread{ravenThreadCount === 1 ? "" : "s"}.
                                 </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Execution mode: {downloadWorkerExecutionMode || "thread"}
+                                </Text>
+                                {downloadWorkerAvailableCpuIds.length > 0 && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Available CPU IDs: {downloadWorkerAvailableCpuIds.join(", ")}
+                                    </Text>
+                                )}
                                 {downloadWorkerSettingsUpdatedAt && (
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
                                         Updated {formatIso(downloadWorkerSettingsUpdatedAt)}
@@ -4505,7 +4551,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     disabled={downloadWorkerSettingsLoading || downloadWorkerSettingsSaving}
                                     onClick={() => void saveDownloadWorkerSettings()}
                                 >
-                                    {downloadWorkerSettingsSaving ? "Saving..." : "Save speed limits"}
+                                    {downloadWorkerSettingsSaving ? "Saving..." : "Save worker settings"}
                                 </Button>
                             </Row>
                         </Row>
@@ -4513,23 +4559,67 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                                               variant="body-default-xs">{downloadWorkerSettingsError}</Text>}
                         {downloadWorkerSettingsMessage && <Text onBackground="neutral-weak"
                                                                 variant="body-default-xs">{downloadWorkerSettingsMessage}</Text>}
+                        {downloadWorkerAvailableCpuIds.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {downloadWorkerAvailableCpuIds.map((cpuId) => (
+                                    <Badge key={`raven-worker-cpu-${cpuId}`} background={BG_NEUTRAL_ALPHA_WEAK}
+                                           onBackground="neutral-strong">
+                                        CPU {cpuId}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
                         <Column gap="12">
-                            {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => (
-                                <Input
-                                    key={`raven-thread-rate-limit-${index + 1}`}
-                                    id={`raven-thread-rate-limit-${index + 1}`}
-                                    name={`raven-thread-rate-limit-${index + 1}`}
-                                    label={`Thread ${index + 1} speed limit`}
-                                    type="text"
-                                    placeholder="512, 10mb, 1gb, or -1"
-                                    value={value}
-                                    onChange={(event) => setDownloadWorkerRateLimits((prev) => {
-                                        const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
-                                        next[index] = event.target.value;
-                                        return next;
-                                    })}
-                                />
-                            ))}
+                            {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => {
+                                const cpuCoreDraft = normalizeCpuCoreIdDrafts(downloadWorkerCpuCoreIds, ravenThreadCount)[index];
+                                return (
+                                    <Card
+                                        key={`raven-worker-settings-${index + 1}`}
+                                        fillWidth
+                                        background={BG_SURFACE}
+                                        border="neutral-alpha-weak"
+                                        padding="m"
+                                        radius="l"
+                                    >
+                                        <Column gap="12">
+                                            <Heading as="h3" variant="heading-strong-s">
+                                                Worker {index + 1}
+                                            </Heading>
+                                            <Row gap="12" style={{flexWrap: "wrap"}}>
+                                                <Input
+                                                    id={`raven-thread-rate-limit-${index + 1}`}
+                                                    name={`raven-thread-rate-limit-${index + 1}`}
+                                                    label="Speed limit"
+                                                    type="text"
+                                                    placeholder="512, 10mb, 1gb, or -1"
+                                                    value={value}
+                                                    onChange={(event) => setDownloadWorkerRateLimits((prev) => {
+                                                        const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
+                                                        next[index] = event.target.value;
+                                                        return next;
+                                                    })}
+                                                />
+                                                <Input
+                                                    id={`raven-thread-cpu-core-${index + 1}`}
+                                                    name={`raven-thread-cpu-core-${index + 1}`}
+                                                    label="CPU core ID"
+                                                    type="text"
+                                                    placeholder="-1 or 0"
+                                                    value={cpuCoreDraft}
+                                                    onChange={(event) => setDownloadWorkerCpuCoreIds((prev) => {
+                                                        const next = normalizeCpuCoreIdDrafts(prev, ravenThreadCount);
+                                                        next[index] = event.target.value;
+                                                        return next;
+                                                    })}
+                                                />
+                                            </Row>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                Use -1 to leave this worker unpinned while still process-isolated.
+                                            </Text>
+                                        </Column>
+                                    </Card>
+                                );
+                            })}
                         </Column>
                     </Column>
                 </Card>

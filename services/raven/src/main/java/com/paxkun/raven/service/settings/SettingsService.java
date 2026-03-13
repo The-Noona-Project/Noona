@@ -179,16 +179,24 @@ public class SettingsService {
 
         int normalizedThreadCount = Math.max(1, threadCount);
         List<Integer> nextRateLimits = new java.util.ArrayList<>();
+        List<Integer> nextCpuCoreIds = new java.util.ArrayList<>();
         List<Integer> currentRateLimits = out.getThreadRateLimitsKbps();
+        List<Integer> currentCpuCoreIds = out.getCpuCoreIds();
 
         for (int index = 0; index < normalizedThreadCount; index++) {
             Integer current = currentRateLimits != null && index < currentRateLimits.size()
                     ? currentRateLimits.get(index)
                     : 0;
             nextRateLimits.add(current != null && current > 0 ? current : 0);
+
+            Integer cpuCoreId = currentCpuCoreIds != null && index < currentCpuCoreIds.size()
+                    ? currentCpuCoreIds.get(index)
+                    : -1;
+            nextCpuCoreIds.add(cpuCoreId != null && cpuCoreId >= 0 ? cpuCoreId : -1);
         }
 
         out.setThreadRateLimitsKbps(nextRateLimits);
+        out.setCpuCoreIds(nextCpuCoreIds);
         return out;
     }
 

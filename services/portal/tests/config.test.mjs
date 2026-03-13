@@ -51,7 +51,7 @@ test('safeLoadPortalConfig uses VAULT_API_TOKEN when override is provided', () =
     assert.equal(config.vault.token, 'api-token-override');
 });
 
-test('safeLoadPortalConfig parses join defaults from csv env values', () => {
+test('safeLoadPortalConfig parses website onboarding defaults from csv env values', () => {
     const config = safeLoadPortalConfig({
         ...REQUIRED_ENV,
         VAULT_ACCESS_TOKEN: 'vault-token',
@@ -137,7 +137,7 @@ test('safeLoadPortalConfig defaults Kavita base URL to the managed noona-kavita 
     assert.equal(config.kavita.baseUrl, 'http://noona-kavita:5000/');
 });
 
-test('safeLoadPortalConfig defaults /join access to all non-admin roles and all libraries', () => {
+test('safeLoadPortalConfig defaults website onboarding access to all non-admin roles and all libraries', () => {
     const config = safeLoadPortalConfig({
         DISCORD_BOT_TOKEN: 'bot-token',
         DISCORD_CLIENT_ID: 'client-id',

@@ -149,7 +149,6 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         'DISCORD_DEFAULT_ROLE_ID',
         'REQUIRED_GUILD_ID',
         'REQUIRED_ROLE_DING',
-        'REQUIRED_ROLE_JOIN',
         'REQUIRED_ROLE_SCAN',
         'REQUIRED_ROLE_SEARCH',
         'REQUIRED_ROLE_RECOMMEND',

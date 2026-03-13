@@ -8,7 +8,8 @@
     "build": "next build",
     "biome-write": "npx @biomejs/biome format --write .",
     "start": "node scripts/runNext.mjs start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --test tests/**/*.test.mjs"
   },
   "dependencies": {
     "@once-ui-system/core": "^1.6.3",

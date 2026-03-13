@@ -20,6 +20,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -55,6 +56,12 @@ class DownloadServiceTest {
     private SettingsService settingsService;
 
     @Mock
+    private VaultService vaultService;
+
+    @Mock
+    private RavenRuntimeProperties runtimeProperties;
+
+    @Mock
     private VPNServices vpnServices;
 
     @InjectMocks
@@ -87,6 +94,8 @@ class DownloadServiceTest {
         );
         lenient().when(settingsService.getDownloadNamingSettings()).thenReturn(naming);
         lenient().when(settingsService.getDownloadVpnSettings()).thenReturn(vpnSettings);
+        lenient().when(runtimeProperties.isWorkerMode()).thenReturn(false);
+        lenient().when(runtimeProperties.useProcessWorkers()).thenReturn(false);
         lenient().when(vpnServices.getStatus()).thenReturn(new VpnRuntimeStatus(
                 false,
                 true,
@@ -530,6 +539,134 @@ class DownloadServiceTest {
         assertThat(pauseResult.getAffectedTasks()).isEqualTo(1);
 
         waitForStatus("Solo Leveling", "paused");
+    }
+
+    @Test
+    void workerModeSkipsExecutorAndRestoreBootstrapping() {
+        when(runtimeProperties.isWorkerMode()).thenReturn(true);
+
+        downloadService.initExecutor();
+
+        assertThat(ReflectionTestUtils.getField(downloadService, "executor")).isNull();
+        verify(vaultService, never()).findMany(anyString(), anyMap());
+    }
+
+    @Test
+    void persistedSnapshotsIncludeWorkerMetadataAndPauseFlag() {
+        DownloadProgress progress = new DownloadProgress("Solo Leveling");
+        progress.ensureTaskId("task-1");
+        progress.attachTaskContext(
+                "task-1",
+                "library-download",
+                "uuid-1",
+                "http://example.com/solo",
+                "manhwa",
+                "http://example.com/cover.jpg",
+                "Summary"
+        );
+        progress.assignWorker(1, 6, 43210L, "process");
+        progress.setPauseRequested(true);
+
+        downloadService.updateTrackedTask(progress);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> updateCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(vaultService).update(eq("raven_download_tasks"), eq(Map.of("taskId", "task-1")), updateCaptor.capture(), eq(true));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> document = (Map<String, Object>) updateCaptor.getValue().get("$set");
+        assertThat(document)
+                .containsEntry("workerIndex", 1)
+                .containsEntry("cpuCoreId", 6)
+                .containsEntry("workerPid", 43210L)
+                .containsEntry("executionMode", "process")
+                .containsEntry("pauseRequested", true);
+    }
+
+    @Test
+    void workerModeHonorsPauseRequestBeforeStartingDownload() {
+        when(runtimeProperties.isWorkerMode()).thenReturn(true);
+
+        AtomicBoolean pauseRequested = new AtomicBoolean(true);
+        mockPersistedWorkerTaskReads("task-1", pauseRequested, "http://example.com/solo");
+
+        downloadService.runPersistedTaskInWorker("task-1", 0, 4, "process");
+
+        verifyNoInteractions(libraryService);
+        assertThat(downloadService.getDownloadStatuses())
+                .anySatisfy(progress -> {
+                    assertThat(progress.getTaskId()).isEqualTo("task-1");
+                    assertThat(progress.getStatus()).isEqualTo("paused");
+                    assertThat(progress.isPauseRequested()).isTrue();
+                    assertThat(progress.getCpuCoreId()).isEqualTo(4);
+                });
+    }
+
+    @Test
+    void workerModePausesAtChapterBoundaryWhenPauseFlagAppears() {
+        when(runtimeProperties.isWorkerMode()).thenReturn(true);
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(
+                        Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1"),
+                        Map.of("chapter_title", "Chapter 2", "href", "http://example.com/solo/2")
+                ));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        AtomicBoolean pauseRequested = new AtomicBoolean(false);
+        mockPersistedWorkerTaskReads("task-1", pauseRequested, "http://example.com/solo");
+        AtomicBoolean firstChapter = new AtomicBoolean(false);
+        downloadService.setBeforeSaveImagesHook(() -> {
+            if (firstChapter.compareAndSet(false, true)) {
+                pauseRequested.set(true);
+            }
+        });
+
+        downloadService.runPersistedTaskInWorker("task-1", 1, 7, "process");
+
+        assertThat(downloadService.getDownloadStatuses())
+                .anySatisfy(progress -> {
+                    assertThat(progress.getTaskId()).isEqualTo("task-1");
+                    assertThat(progress.getStatus()).isEqualTo("paused");
+                    assertThat(progress.getCompletedChapterNumbers()).contains("1");
+                    assertThat(progress.getRemainingChapterNumbers()).contains("2");
+                    assertThat(progress.isPauseRequested()).isTrue();
+                    assertThat(progress.getWorkerIndex()).isEqualTo(1);
+                    assertThat(progress.getCpuCoreId()).isEqualTo(7);
+                    assertThat(progress.getExecutionMode()).isEqualTo("process");
+                });
+    }
+
+    private void mockPersistedWorkerTaskReads(String taskId, AtomicBoolean pauseRequested, String sourceUrl) {
+        lenient().when(vaultService.findOne("raven_download_tasks", Map.of("taskId", taskId)))
+                .thenAnswer(invocation -> Map.of("taskId", taskId, "pauseRequested", pauseRequested.get()));
+        lenient().when(vaultService.parseJson(any(Map.class), eq(DownloadProgress.class)))
+                .thenAnswer(invocation -> {
+                    DownloadProgress progress = new DownloadProgress("Solo Leveling");
+                    progress.ensureTaskId(taskId);
+                    progress.attachTaskContext(
+                            taskId,
+                            "library-download",
+                            "uuid",
+                            sourceUrl,
+                            "manhwa",
+                            "http://example.com/cover.jpg",
+                            "Summary"
+                    );
+                    progress.applyChapterPlan(List.of("1", "2"), List.of("1", "2"), List.of(), "2", 2, "Queued in Raven.");
+                    if (pauseRequested.get()) {
+                        progress.setPauseRequested(true);
+                    }
+                    return progress;
+                });
     }
 
     private void waitForStatus(String titleName, String expectedStatus) throws InterruptedException {

@@ -462,7 +462,7 @@ export const createSageApp = ({
             'Start with Moon: {moon_url}',
             'Read in Kavita: {kavita_url}',
             '',
-            'Use /join in Discord to create your library access.',
+            'Use the website onboarding flow to create your library access.',
             'Server: {server_ip}',
         ].join('\n'),
     })
@@ -693,6 +693,7 @@ export const createSageApp = ({
     const DEFAULT_DOWNLOAD_WORKER_SETTINGS = Object.freeze({
         key: DOWNLOAD_WORKER_SETTINGS_KEY,
         threadRateLimitsKbps: [],
+        cpuCoreIds: [],
     })
     const DEFAULT_DOWNLOAD_VPN_SETTINGS = Object.freeze({
         key: DOWNLOAD_VPN_SETTINGS_KEY,
@@ -707,6 +708,8 @@ export const createSageApp = ({
     })
     const UNLIMITED_THREAD_RATE_LIMIT_KBPS = -1
     const MAX_THREAD_RATE_LIMIT_KBPS = 2_147_483_647
+    const UNPINNED_CPU_CORE_ID = -1
+    const DEFAULT_RAVEN_DOWNLOAD_THREADS = 3
     const THREAD_RATE_LIMIT_SUFFIX_MULTIPLIERS = Object.freeze({
         '': 1,
         k: 1,
@@ -861,6 +864,92 @@ export const createSageApp = ({
         }
 
         return {ok: true, threadRateLimitsKbps: normalized}
+    }
+    const parseCpuCoreIdEntry = (value, {strict = false} = {}) => {
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) {
+                return strict
+                    ? {ok: false, error: 'must be an integer CPU ID or `-1`.'}
+                    : {ok: true, value: UNPINNED_CPU_CORE_ID}
+            }
+
+            const normalized = Math.floor(value)
+            if (normalized < UNPINNED_CPU_CORE_ID) {
+                return strict
+                    ? {ok: false, error: 'must be `-1` or a non-negative integer CPU ID.'}
+                    : {ok: true, value: UNPINNED_CPU_CORE_ID}
+            }
+            return {ok: true, value: normalized}
+        }
+
+        const raw = normalizeString(value).trim()
+        if (!raw) {
+            return strict
+                ? {ok: false, error: 'must not be empty. Use `-1` or a Linux CPU ID.'}
+                : {ok: true, value: UNPINNED_CPU_CORE_ID}
+        }
+        if (!/^-?\d+$/.test(raw)) {
+            return strict
+                ? {ok: false, error: 'must be `-1` or a non-negative integer CPU ID.'}
+                : {ok: true, value: UNPINNED_CPU_CORE_ID}
+        }
+
+        const normalized = Number.parseInt(raw, 10)
+        if (!Number.isFinite(normalized) || normalized < UNPINNED_CPU_CORE_ID) {
+            return strict
+                ? {ok: false, error: 'must be `-1` or a non-negative integer CPU ID.'}
+                : {ok: true, value: UNPINNED_CPU_CORE_ID}
+        }
+        return {ok: true, value: normalized}
+    }
+    const normalizeCpuCoreIds = (value) => {
+        if (!Array.isArray(value)) {
+            return []
+        }
+
+        return value.map((entry) => parseCpuCoreIdEntry(entry).value)
+    }
+    const validateCpuCoreIdsInput = (value) => {
+        if (!Array.isArray(value)) {
+            return {ok: false, error: 'cpuCoreIds must be provided as an array.'}
+        }
+
+        const normalized = []
+        for (let index = 0; index < value.length; index += 1) {
+            const parsed = parseCpuCoreIdEntry(value[index], {strict: true})
+            if (!parsed.ok) {
+                return {ok: false, error: `Thread ${index + 1} CPU core ${parsed.error}`}
+            }
+            normalized.push(parsed.value)
+        }
+
+        return {ok: true, cpuCoreIds: normalized}
+    }
+    const normalizeWorkerSettingArray = (value, slotCount, fallbackValue, normalizer) => {
+        const normalizedSlotCount = Math.max(1, Math.floor(slotCount || DEFAULT_RAVEN_DOWNLOAD_THREADS))
+        const source = Array.isArray(value) ? normalizer(value) : []
+        return Array.from({length: normalizedSlotCount}, (_, index) => (
+            index < source.length ? source[index] : fallbackValue
+        ))
+    }
+    const resolveDownloadWorkerSlotCount = async () => {
+        try {
+            if (ravenClient?.getDownloadSummary) {
+                const summary = await ravenClient.getDownloadSummary()
+                const maxThreads = Number(summary?.maxThreads)
+                if (Number.isFinite(maxThreads) && maxThreads > 0) {
+                    return Math.max(1, Math.floor(maxThreads))
+                }
+            }
+        } catch {
+            // Fall back to local environment defaults below.
+        }
+
+        const envValue = Number(process.env.RAVEN_DOWNLOAD_THREADS)
+        if (Number.isFinite(envValue) && envValue > 0) {
+            return Math.max(1, Math.floor(envValue))
+        }
+        return DEFAULT_RAVEN_DOWNLOAD_THREADS
     }
     const normalizeVpnProvider = (value) => {
         const normalized = normalizeString(value).toLowerCase()
@@ -2162,10 +2251,22 @@ export const createSageApp = ({
         return next
     }
     const readDownloadWorkerSettings = async () => {
+        const slotCount = await resolveDownloadWorkerSlotCount()
         if (!vaultClient?.mongo?.findOne) {
             return {
                 key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
-                threadRateLimitsKbps: normalizeThreadRateLimits(DEFAULT_DOWNLOAD_WORKER_SETTINGS.threadRateLimitsKbps),
+                threadRateLimitsKbps: normalizeWorkerSettingArray(
+                    DEFAULT_DOWNLOAD_WORKER_SETTINGS.threadRateLimitsKbps,
+                    slotCount,
+                    UNLIMITED_THREAD_RATE_LIMIT_KBPS,
+                    normalizeThreadRateLimits,
+                ),
+                cpuCoreIds: normalizeWorkerSettingArray(
+                    DEFAULT_DOWNLOAD_WORKER_SETTINGS.cpuCoreIds,
+                    slotCount,
+                    UNPINNED_CPU_CORE_ID,
+                    normalizeCpuCoreIds,
+                ),
                 updatedAt: null,
             }
         }
@@ -2176,16 +2277,39 @@ export const createSageApp = ({
 
         return {
             key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
-            threadRateLimitsKbps: normalizeThreadRateLimits(doc?.threadRateLimitsKbps),
+            threadRateLimitsKbps: normalizeWorkerSettingArray(
+                doc?.threadRateLimitsKbps,
+                slotCount,
+                UNLIMITED_THREAD_RATE_LIMIT_KBPS,
+                normalizeThreadRateLimits,
+            ),
+            cpuCoreIds: normalizeWorkerSettingArray(
+                doc?.cpuCoreIds,
+                slotCount,
+                UNPINNED_CPU_CORE_ID,
+                normalizeCpuCoreIds,
+            ),
             updatedAt: normalizeString(doc?.updatedAt) || null,
         }
     }
-    const writeDownloadWorkerSettings = async (threadRateLimitsKbps) => {
+    const writeDownloadWorkerSettings = async (threadRateLimitsKbps, cpuCoreIds) => {
         if (!vaultClient?.mongo?.update) {
             throw new Error('Vault storage is not configured.')
         }
 
-        const nextThreadRateLimitsKbps = normalizeThreadRateLimits(threadRateLimitsKbps)
+        const slotCount = await resolveDownloadWorkerSlotCount()
+        const nextThreadRateLimitsKbps = normalizeWorkerSettingArray(
+            threadRateLimitsKbps,
+            slotCount,
+            UNLIMITED_THREAD_RATE_LIMIT_KBPS,
+            normalizeThreadRateLimits,
+        )
+        const nextCpuCoreIds = normalizeWorkerSettingArray(
+            cpuCoreIds,
+            slotCount,
+            UNPINNED_CPU_CORE_ID,
+            normalizeCpuCoreIds,
+        )
         const updatedAt = new Date().toISOString()
         await vaultClient.mongo.update(
             settingsCollection,
@@ -2194,6 +2318,7 @@ export const createSageApp = ({
                 $set: {
                     key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                     threadRateLimitsKbps: nextThreadRateLimitsKbps,
+                    cpuCoreIds: nextCpuCoreIds,
                     updatedAt,
                 },
             },
@@ -2203,6 +2328,7 @@ export const createSageApp = ({
         return {
             key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
             threadRateLimitsKbps: nextThreadRateLimitsKbps,
+            cpuCoreIds: nextCpuCoreIds,
             updatedAt,
         }
     }
@@ -3023,6 +3149,7 @@ export const createSageApp = ({
         sortMoonPermissions,
         toSessionUser,
         updateAuthUser,
+        validateCpuCoreIdsInput,
         validatePermissionListInput,
         validateThreadRateLimitsInput,
         vaultClient,

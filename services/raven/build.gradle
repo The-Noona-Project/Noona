@@ -54,6 +54,7 @@ dependencies {
     implementation 'commons-io:commons-io:2.15.1'
     implementation 'org.apache.commons:commons-lang3:3.18.0'
     implementation 'com.google.guava:guava:33.2.0-jre'
+    implementation 'net.java.dev.jna:jna:5.17.0'
 
     // ───── Selenium & WebDriverManager ─────
     implementation 'org.seleniumhq.selenium:selenium-java:4.16.1'

@@ -37,7 +37,7 @@ test('listApplicationCommands fetches global and guild commands and sorts them',
 
             if (route === Routes.applicationGuildCommands('client-123', 'guild-456')) {
                 return [
-                    {id: '3', name: 'join', description: 'Onboard', type: 1},
+                    {id: '3', name: 'recommend', description: 'Recommend title', type: 1},
                     {id: '4', name: 'ding', description: 'Guild health', type: 1},
                 ];
             }
@@ -59,7 +59,7 @@ test('listApplicationCommands fetches global and guild commands and sorts them',
     ]);
 
     assert.deepEqual(inventory.globalCommands.map(command => command.name), ['ding', 'scan']);
-    assert.deepEqual(inventory.guildCommands.map(command => command.name), ['ding', 'join']);
+    assert.deepEqual(inventory.guildCommands.map(command => command.name), ['ding', 'recommend']);
 });
 
 test('summarizeCommandInventory reports duplicate names across scopes', () => {
@@ -71,7 +71,7 @@ test('summarizeCommandInventory reports duplicate names across scopes', () => {
         ],
         guildCommands: [
             {id: '2', name: 'ding', description: 'Guild health'},
-            {id: '3', name: 'join', description: 'Onboard'},
+            {id: '3', name: 'recommend', description: 'Recommend title'},
         ],
     });
 
@@ -88,7 +88,7 @@ test('formatCommandInventory prints a readable report', () => {
             {id: '1', name: 'ding', description: 'Health check'},
         ],
         guildCommands: [
-            {id: '2', name: 'join', description: 'Onboard member'},
+            {id: '2', name: 'scan', description: 'Scan libraries'},
         ],
     });
 
@@ -97,5 +97,5 @@ test('formatCommandInventory prints a readable report', () => {
     assert.match(report, /Global commands: 1/);
     assert.match(report, /Guild commands: 1/);
     assert.match(report, /\/ding :: Health check/);
-    assert.match(report, /\/join :: Onboard member/);
+    assert.match(report, /\/scan :: Scan libraries/);
 });

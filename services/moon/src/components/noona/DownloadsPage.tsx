@@ -30,13 +30,33 @@ type RavenDownloadProgress = {
     remainingChapterNumbers?: string[] | null;
     newChapterNumbers?: string[] | null;
     missingChapterNumbers?: string[] | null;
+    workerIndex?: number | null;
+    cpuCoreId?: number | null;
+    workerPid?: number | null;
+    executionMode?: string | null;
+    pauseRequested?: boolean | null;
     lastUpdated?: number | null;
+};
+
+type RavenActiveWorker = {
+    taskId?: string | null;
+    title?: string | null;
+    status?: string | null;
+    workerIndex?: number | null;
+    cpuCoreId?: number | null;
+    workerPid?: number | null;
+    executionMode?: string | null;
+    pauseRequested?: boolean | null;
 };
 
 type RavenDownloadSummary = {
     activeDownloads?: number;
     maxThreads?: number;
     threadRateLimitsKbps?: number[] | null;
+    workerExecutionMode?: string | null;
+    workerCpuCoreIds?: number[] | null;
+    availableCpuIds?: number[] | null;
+    activeWorkers?: RavenActiveWorker[] | null;
     state?: string | null;
     statusText?: string | null;
     currentTask?: RavenDownloadProgress | null;
@@ -77,6 +97,11 @@ type ResolvedTaskView = {
     recovered: boolean;
     recoveryState: string;
     sourceChapterCount: number | null;
+    workerIndex: number | null;
+    cpuCoreId: number | null;
+    workerPid: number | null;
+    executionMode: string;
+    pauseRequested: boolean;
     queuedAtLabel: string;
     updatedAtLabel: string;
     completedAtLabel: string;
@@ -254,6 +279,20 @@ const resolveTaskView = (entry: RavenDownloadProgress, fallbackIndex = 0): Resol
             typeof entry.sourceChapterCount === "number" && Number.isFinite(entry.sourceChapterCount)
                 ? entry.sourceChapterCount
                 : null,
+        workerIndex:
+            typeof entry.workerIndex === "number" && Number.isFinite(entry.workerIndex)
+                ? entry.workerIndex
+                : null,
+        cpuCoreId:
+            typeof entry.cpuCoreId === "number" && Number.isFinite(entry.cpuCoreId)
+                ? entry.cpuCoreId
+                : null,
+        workerPid:
+            typeof entry.workerPid === "number" && Number.isFinite(entry.workerPid)
+                ? entry.workerPid
+                : null,
+        executionMode: normalizeString(entry.executionMode).trim() || "thread",
+        pauseRequested: entry.pauseRequested === true,
         queuedAtLabel: formatEpochMs(entry.queuedAt),
         updatedAtLabel: formatEpochMs(entry.lastUpdated ?? entry.startedAt),
         completedAtLabel: formatEpochMs(entry.completedAt),
@@ -555,6 +594,16 @@ export function DownloadsPage() {
                                         <Badge background={statusBadgeBackground(focusTask.statusRaw)}>
                                             {focusTask.statusRaw}
                                         </Badge>
+                                        {focusTask.workerIndex != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                worker {focusTask.workerIndex + 1}
+                                            </Badge>
+                                        )}
+                                        {focusTask.cpuCoreId != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                CPU {focusTask.cpuCoreId >= 0 ? focusTask.cpuCoreId : "auto"}
+                                            </Badge>
+                                        )}
                                         {focusTask.recovered && (
                                             <Badge background="brand-alpha-weak">
                                                 recovered
@@ -810,6 +859,16 @@ export function DownloadsPage() {
                                         <Badge background="neutral-alpha-weak">
                                             {task.taskType || "download"}
                                         </Badge>
+                                        {task.workerIndex != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                worker {task.workerIndex + 1}
+                                            </Badge>
+                                        )}
+                                        {task.cpuCoreId != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                CPU {task.cpuCoreId >= 0 ? task.cpuCoreId : "auto"}
+                                            </Badge>
+                                        )}
                                         {task.recovered && (
                                             <Badge background="brand-alpha-weak">
                                                 recovered
@@ -914,7 +973,29 @@ export function DownloadsPage() {
                             <Badge background="neutral-alpha-weak">
                                 max threads: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
                             </Badge>
+                            <Badge background="neutral-alpha-weak">
+                                mode: {normalizeString(summary?.workerExecutionMode).trim() || "thread"}
+                            </Badge>
                         </Row>
+                        {Array.isArray(summary?.availableCpuIds) && summary.availableCpuIds.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {summary.availableCpuIds.map((cpuId) => (
+                                    <Badge key={`available-cpu-${cpuId}`} background="neutral-alpha-weak">
+                                        CPU {cpuId}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
+                        {Array.isArray(summary?.workerCpuCoreIds) && summary.workerCpuCoreIds.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {summary.workerCpuCoreIds.map((cpuCoreId, index) => (
+                                    <Badge key={`worker-core-${index}`} background="neutral-alpha-weak">
+                                        worker {index + 1}:
+                                        CPU {typeof cpuCoreId === "number" && cpuCoreId >= 0 ? cpuCoreId : "auto"}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
                         {Array.isArray(summary?.threadRateLimitsKbps) && summary.threadRateLimitsKbps.length > 0 ? (
                             <Row gap="8" style={{flexWrap: "wrap"}}>
                                 {summary.threadRateLimitsKbps.map((limit, index) => (
@@ -927,6 +1008,52 @@ export function DownloadsPage() {
                             <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
                                 No worker speed limits are currently exposed by Raven.
                             </Text>
+                        )}
+                        {Array.isArray(summary?.activeWorkers) && summary.activeWorkers.length > 0 && (
+                            <Column gap="8">
+                                {summary.activeWorkers.map((worker, index) => (
+                                    <Card
+                                        key={normalizeString(worker.taskId).trim() || `active-worker-${index}`}
+                                        fillWidth
+                                        background="surface"
+                                        border="neutral-alpha-weak"
+                                        padding="m"
+                                        radius="l"
+                                    >
+                                        <Column gap="8">
+                                            <Row horizontal="between" vertical="center" gap="12"
+                                                 style={{flexWrap: "wrap"}}>
+                                                <Text variant="body-strong-s" wrap="balance">
+                                                    {normalizeString(worker.title).trim() || "Idle worker"}
+                                                </Text>
+                                                <Badge
+                                                    background={statusBadgeBackground(normalizeString(worker.status).trim() || "queued")}>
+                                                    {normalizeString(worker.status).trim() || "queued"}
+                                                </Badge>
+                                            </Row>
+                                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                <Badge background="neutral-alpha-weak">
+                                                    worker {typeof worker.workerIndex === "number" ? worker.workerIndex + 1 : index + 1}
+                                                </Badge>
+                                                <Badge background="neutral-alpha-weak">
+                                                    CPU {typeof worker.cpuCoreId === "number" && worker.cpuCoreId >= 0 ? worker.cpuCoreId : "auto"}
+                                                </Badge>
+                                                <Badge background="neutral-alpha-weak">
+                                                    PID {typeof worker.workerPid === "number" ? worker.workerPid : "unknown"}
+                                                </Badge>
+                                                <Badge background="neutral-alpha-weak">
+                                                    {normalizeString(worker.executionMode).trim() || "thread"}
+                                                </Badge>
+                                                {worker.pauseRequested === true && (
+                                                    <Badge background="warning-alpha-weak">
+                                                        pause queued
+                                                    </Badge>
+                                                )}
+                                            </Row>
+                                        </Column>
+                                    </Card>
+                                ))}
+                            </Column>
                         )}
                     </Column>
                 )}

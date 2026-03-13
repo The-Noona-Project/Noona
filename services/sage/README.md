@@ -30,7 +30,7 @@ download/library routes for Moon and other clients.
 - Persist the admin-managed Discord onboarding message template used by Moon's manual copy/preview flow.
 - Proxy Raven search/download/library/status routes.
 - Serve Vault-backed recommendation and subscription records for Moon user pages.
-- Persist Vault-backed Raven naming and per-thread worker speed-limit settings for Moon.
+- Persist Vault-backed Raven naming plus per-worker speed-limit and Linux CPU-core settings for Moon.
 - Normalize downstream failures into consistent API responses.
 
 ## Common Endpoint Groups
@@ -84,8 +84,10 @@ download/library routes for Moon and other clients.
       now `{title} c{chapter} (v{volume}) [Noona].cbz`, with a default chapter pad of `3`, a default volume pad of
       `2`, and new `{volume}` / `{volume_padded}` tokens that fall back to `v01` until Raven has a trusted
       provider-backed chapter-to-volume map.
-    - `/api/settings/downloads/workers` stores per-thread Raven speed limits (`threadRateLimitsKbps`) in Vault.
-      It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write, and normalizes unlimited entries to `-1`.
+  - `/api/settings/downloads/workers` stores Raven worker lane settings in Vault with both
+    `threadRateLimitsKbps` and `cpuCoreIds`. It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write,
+    normalizes unlimited rate-limit entries to `-1`, normalizes unpinned CPU slots to `-1`, and pads both arrays to
+    Raven's current worker-slot count before returning them to Moon.
   - `/api/settings/downloads/vpn` stores Raven PIA VPN settings in Vault (`downloads.vpn`) while masking
     the persisted password in responses. It now also stores `onlyDownloadWhenVpnOn`, which keeps queued Raven
     downloads waiting until the VPN is actually connected.

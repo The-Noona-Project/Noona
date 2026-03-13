@@ -1,7 +1,7 @@
 {
   "name": "noona-portal",
   "version": "2.0.0",
-  "description": "Noona Portal service responsible for coordinating Discord onboarding with Kavita and Vault services.",
+  "description": "Noona Portal service responsible for coordinating website onboarding and Discord integrations with Kavita and Vault services.",
   "main": "initPortal.mjs",
   "type": "module",
   "scripts": {

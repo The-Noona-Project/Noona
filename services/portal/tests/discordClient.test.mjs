@@ -109,6 +109,35 @@ test('createDiscordClient clears global and guild commands before registering sl
     assert.deepEqual(registerCall.definitions, [{name: 'ding', description: 'Test ding'}]);
 });
 
+test('createDiscordClient syncs the current Portal slash commands without the legacy join command', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+
+    const commands = createPortalSlashCommands();
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands,
+        clientFactory: () => fakeClient,
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    assert.equal(fakeClient.application.commands.calls.length, 3);
+
+    const registerCall = fakeClient.application.commands.calls[2];
+    assert.equal(registerCall.guildId, 'guild-123');
+    assert.deepEqual(
+        registerCall.definitions.map(definition => definition.name),
+        ['ding', 'scan', 'search', 'recommend', 'subscribe'],
+    );
+    assert.equal(registerCall.definitions.some(definition => definition.name === 'join'), false);
+});
+
 test('createDiscordClient clears global and guild commands on login when no handlers are defined', async () => {
     const fakeClient = new FakeClient();
     fakeClient.user = {tag: 'TestBot#0001'};

@@ -6,38 +6,6 @@ import {test} from 'node:test';
 import createPortalSlashCommands from '../commands/index.mjs';
 import {createRecommendCommand} from '../commands/recommendCommand.mjs';
 
-const createJoinInteraction = ({
-                                   username = 'reader',
-                                   password = 'hunter2',
-                                   confirmPassword = password,
-                                   email = 'reader@example.com',
-                                   discordId = 'discord-user-1',
-                               } = {}) => {
-    const edits = [];
-    const interaction = {
-        user: {id: discordId},
-        deferred: false,
-        replied: false,
-        options: {
-            getString: name => ({
-                username,
-                password,
-                confirm_password: confirmPassword,
-                email,
-            }[name] ?? null),
-        },
-        deferReply: async () => {
-            interaction.deferred = true;
-        },
-        editReply: async payload => {
-            interaction.replied = true;
-            edits.push(payload);
-        },
-    };
-
-    return {interaction, edits};
-};
-
 const createScanInteraction = ({library = null, force = false} = {}) => {
     const edits = [];
     const interaction = {
@@ -193,114 +161,11 @@ const createRecommendButtonInteraction = ({
     return {interaction, edits, replies, dms};
 };
 
-test('join command definition requires username, password, confirm password, and email', () => {
-    const commands = createPortalSlashCommands({
-        kavita: {createUser: async () => ({})},
-    });
-    const command = commands.get('join');
+test('portal slash command registry excludes the legacy join command', () => {
+    const commands = createPortalSlashCommands();
 
-    assert.ok(command, 'Expected join command to be registered.');
-    assert.equal(command.definition.description, 'Create a Kavita account with the configured default access.');
-    assert.deepEqual(command.definition.options, [
-        {
-            name: 'username',
-            description: 'Username to create in Kavita.',
-            type: 3,
-            required: true,
-        },
-        {
-            name: 'password',
-            description: 'Password for the new Kavita account.',
-            type: 3,
-            required: true,
-        },
-        {
-            name: 'confirm_password',
-            description: 'Repeat the password to confirm it.',
-            type: 3,
-            required: true,
-        },
-        {
-            name: 'email',
-            description: 'Email address for the Kavita account.',
-            type: 3,
-            required: true,
-        },
-    ]);
-});
-
-test('join command rejects mismatched passwords', async () => {
-    const commands = createPortalSlashCommands({
-        kavita: {
-            createUser: async () => {
-                throw new Error('createUser should not run for mismatched passwords');
-            },
-        },
-    });
-    const command = commands.get('join');
-    const {interaction, edits} = createJoinInteraction({
-        password: 'hunter2',
-        confirmPassword: 'hunter3',
-    });
-
-    await command.execute(interaction);
-
-    assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, undefined);
-    assert.match(edits[0].content, /must match/i);
-});
-
-test('join command creates a Kavita user with configured defaults', async () => {
-    const createUserCalls = [];
-    const vaultWrites = [];
-    const assignedRoles = [];
-    const commands = createPortalSlashCommands({
-        kavita: {
-            createUser: async payload => {
-                createUserCalls.push(payload);
-                return {
-                    username: payload.username,
-                    email: payload.email,
-                    roles: ['Pleb'],
-                    libraries: [2],
-                };
-            },
-        },
-        vault: {
-            storePortalCredential: async (discordId, credential) => {
-                vaultWrites.push({discordId, credential});
-            },
-        },
-        discord: {
-            assignDefaultRole: async discordId => {
-                assignedRoles.push(discordId);
-            },
-        },
-        joinDefaults: {
-            defaultRoles: ['Pleb'],
-            defaultLibraries: ['Light Novels'],
-        },
-    });
-    const command = commands.get('join');
-    const {interaction, edits} = createJoinInteraction();
-
-    await command.execute(interaction);
-
-    assert.deepEqual(createUserCalls, [{
-        username: 'reader',
-        email: 'reader@example.com',
-        password: 'hunter2',
-        roles: ['Pleb'],
-        libraries: ['Light Novels'],
-    }]);
-    assert.deepEqual(assignedRoles, ['discord-user-1']);
-    assert.equal(vaultWrites.length, 1);
-    assert.equal(vaultWrites[0].discordId, 'discord-user-1');
-    assert.deepEqual(vaultWrites[0].credential.roles, ['Pleb']);
-    assert.deepEqual(vaultWrites[0].credential.libraries, [2]);
-    assert.equal(edits.length, 1);
-    assert.equal(edits[0].ephemeral, undefined);
-    assert.match(edits[0].content, /Created Kavita account \*\*reader\*\*/);
+    assert.deepEqual([...commands.keys()], ['ding', 'scan', 'search', 'recommend', 'subscribe']);
+    assert.equal(commands.has('join'), false);
 });
 
 test('scan command definition requires an autocompleted library option', () => {

@@ -365,17 +365,17 @@ const serviceDefs = rawList.map(name => {
             },
             {
                 key: 'PORTAL_JOIN_DEFAULT_ROLES',
-                label: 'Default /join Roles',
+                label: 'Website Onboarding Default Roles',
                 description:
-                    'Comma-separated Kavita roles applied when the Discord /join command creates a user. Supports "*" for all roles and exclusions like "*,-admin".',
+                    'Comma-separated Kavita roles applied when website onboarding creates a user. Supports "*" for all roles and exclusions like "*,-admin".',
                 defaultValue: '*,-admin',
                 required: false,
             },
             {
                 key: 'PORTAL_JOIN_DEFAULT_LIBRARIES',
-                label: 'Default /join Libraries',
+                label: 'Website Onboarding Default Libraries',
                 description:
-                    'Comma-separated Kavita library names or ids granted when the Discord /join command creates a user. Use "*" to grant every available library.',
+                    'Comma-separated Kavita library names or ids granted when website onboarding creates a user. Use "*" to grant every available library.',
                 defaultValue: '*',
                 required: false,
             },
@@ -437,12 +437,6 @@ const serviceDefs = rawList.map(name => {
                 key: 'REQUIRED_ROLE_DING',
                 label: 'Required Role for /ding',
                 description: 'Discord role ID required to execute the /ding command.',
-                required: false,
-            },
-            {
-                key: 'REQUIRED_ROLE_JOIN',
-                label: 'Required Role for /join',
-                description: 'Discord role ID required to execute the /join command.',
                 required: false,
             },
             {

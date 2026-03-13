@@ -35,6 +35,11 @@ public class DownloadProgress {
     private List<String> completedChapterNumbers;
     private List<String> newChapterNumbers;
     private List<String> missingChapterNumbers;
+    private Integer workerIndex;
+    private Integer cpuCoreId;
+    private Long workerPid;
+    private String executionMode;
+    private boolean pauseRequested;
     private long lastUpdated;
 
     /**
@@ -80,6 +85,11 @@ public class DownloadProgress {
             List<String> completedChapterNumbers,
             List<String> newChapterNumbers,
             List<String> missingChapterNumbers,
+            Integer workerIndex,
+            Integer cpuCoreId,
+            Long workerPid,
+            String executionMode,
+            boolean pauseRequested,
             long lastUpdated) {
         this.title = title;
         this.queuedAt = queuedAt;
@@ -107,6 +117,11 @@ public class DownloadProgress {
         this.completedChapterNumbers = dedupeChapterList(completedChapterNumbers);
         this.newChapterNumbers = dedupeChapterList(newChapterNumbers);
         this.missingChapterNumbers = dedupeChapterList(missingChapterNumbers);
+        this.workerIndex = workerIndex;
+        this.cpuCoreId = cpuCoreId;
+        this.workerPid = workerPid;
+        this.executionMode = executionMode;
+        this.pauseRequested = pauseRequested;
         this.lastUpdated = lastUpdated;
     }
 
@@ -194,6 +209,7 @@ public class DownloadProgress {
         this.totalChapters = totalChapters;
         this.startedAt = now();
         this.status = "downloading";
+        this.pauseRequested = false;
         this.lastUpdated = this.startedAt;
     }
 
@@ -227,6 +243,7 @@ public class DownloadProgress {
     public synchronized void markCompleted() {
         long now = now();
         this.status = "completed";
+        this.pauseRequested = false;
         this.currentChapter = null;
         this.currentChapterNumber = null;
         this.completedAt = now;
@@ -237,6 +254,7 @@ public class DownloadProgress {
         long now = now();
         this.status = "failed";
         this.errorMessage = message;
+        this.pauseRequested = false;
         this.currentChapter = null;
         this.currentChapterNumber = null;
         this.completedAt = now;
@@ -248,6 +266,7 @@ public class DownloadProgress {
         this.status = "interrupted";
         this.message = message;
         this.errorMessage = message;
+        this.pauseRequested = false;
         this.currentChapter = null;
         this.currentChapterNumber = null;
         this.completedAt = now;
@@ -258,6 +277,7 @@ public class DownloadProgress {
         long now = now();
         this.status = "paused";
         this.message = message;
+        this.pauseRequested = true;
         this.errorMessage = null;
         this.currentChapter = null;
         this.currentChapterNumber = null;
@@ -269,24 +289,18 @@ public class DownloadProgress {
         this.recoveredFromCache = true;
         this.recoveryState = state;
         this.status = "recovering";
+        this.pauseRequested = false;
         this.lastUpdated = now();
     }
 
-    public synchronized boolean hasCompletedChapter(String chapterNumber) {
-        if (chapterNumber == null || chapterNumber.isBlank()) {
-            return false;
+    public synchronized void assignWorker(Integer nextWorkerIndex, Integer nextCpuCoreId, Long nextWorkerPid, String nextExecutionMode) {
+        this.workerIndex = nextWorkerIndex;
+        this.cpuCoreId = nextCpuCoreId;
+        this.workerPid = nextWorkerPid;
+        if (nextExecutionMode != null && !nextExecutionMode.isBlank()) {
+            this.executionMode = nextExecutionMode.trim();
         }
-        return completedChapterNumbers.contains(chapterNumber.trim());
-    }
-
-    public synchronized List<String> getRemainingChapterNumbers() {
-        List<String> remaining = new ArrayList<>();
-        for (String chapterNumber : queuedChapterNumbers) {
-            if (!completedChapterNumbers.contains(chapterNumber)) {
-                remaining.add(chapterNumber);
-            }
-        }
-        return remaining;
+        this.lastUpdated = now();
     }
 
     public synchronized DownloadProgress copy() {
@@ -317,7 +331,33 @@ public class DownloadProgress {
                 completedChapterNumbers,
                 newChapterNumbers,
                 missingChapterNumbers,
+                workerIndex,
+                cpuCoreId,
+                workerPid,
+                executionMode,
+                pauseRequested,
                 lastUpdated);
+    }
+
+    public synchronized boolean hasCompletedChapter(String chapterNumber) {
+        if (chapterNumber == null || chapterNumber.isBlank()) {
+            return false;
+        }
+        return completedChapterNumbers.contains(chapterNumber.trim());
+    }
+
+    public synchronized List<String> getRemainingChapterNumbers() {
+        List<String> remaining = new ArrayList<>();
+        for (String chapterNumber : queuedChapterNumbers) {
+            if (!completedChapterNumbers.contains(chapterNumber)) {
+                remaining.add(chapterNumber);
+            }
+        }
+        return remaining;
+    }
+
+    public synchronized Integer getWorkerIndex() {
+        return workerIndex;
     }
 
     public synchronized String getTaskId() {
@@ -427,6 +467,27 @@ public class DownloadProgress {
 
     public synchronized List<String> getMissingChapterNumbers() {
         return new ArrayList<>(missingChapterNumbers);
+    }
+
+    public synchronized Integer getCpuCoreId() {
+        return cpuCoreId;
+    }
+
+    public synchronized Long getWorkerPid() {
+        return workerPid;
+    }
+
+    public synchronized String getExecutionMode() {
+        return executionMode;
+    }
+
+    public synchronized boolean isPauseRequested() {
+        return pauseRequested;
+    }
+
+    public synchronized void setPauseRequested(boolean pauseRequested) {
+        this.pauseRequested = pauseRequested;
+        this.lastUpdated = now();
     }
 
     public synchronized long getLastUpdated() {

@@ -17,4 +17,5 @@ import java.util.List;
 public class DownloadWorkerSettings {
     private String key;
     private List<Integer> threadRateLimitsKbps = new ArrayList<>();
+    private List<Integer> cpuCoreIds = new ArrayList<>();
 }

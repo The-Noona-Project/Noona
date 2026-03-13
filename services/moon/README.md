@@ -36,6 +36,9 @@ frontend.
 - [Settings route group](src/app/settings/[...slug]/page.tsx)
 - [Settings navigation components](src/components/noona/settings)
 - [Settings page component](src/components/noona/SettingsPage.tsx)
+- [Worker settings proxy](src/app/api/noona/settings/downloads/workers/route.ts)
+- [Worker settings helper](src/components/noona/downloadWorkerSettings.mjs)
+- [Worker settings smoke test](tests/downloadWorkerSettings.test.mjs)
 - [Setup wizard route](src/app/setupwizard/page.tsx)
 - [Setup summary route](src/app/setupwizard/summary/page.tsx)
 - [Discord callback route](src/app/discord/callback/page.tsx)
@@ -116,7 +119,8 @@ frontend.
   slide-deck view: one primary focus board for the hottest task, a stacked live queue panel, a slimmer worker rail,
   and card-based history summaries for finished/interrupted runs. Active download cards still expose a
   `Pause downloads` action that asks Raven to finish the chapter in progress and persist the remaining chapter queue as
-  a paused task.
+  a paused task. The worker rail now also shows Raven's worker execution mode, configured CPU-core assignments,
+  available Linux CPU ids, and live worker PIDs for active process workers.
 - `/downloads/add` - Dedicated Raven search/select/queue page for adding downloads. It keeps keyboard shortcuts,
   supports quick single-result queueing, and stores recent search queries for faster repeat queue sessions.
 - `/recommendations` and `/recommendations/[id]` - admin-only recommendation management and detail timeline routes.
@@ -166,7 +170,7 @@ frontend.
   value, and `{volume}` / `{volume_padded}` use Raven's stored chapter-to-volume map when one exists and otherwise
   fall back to `v01`,
   Discord bot validation plus per-command role fields for `/ding`,
-  `/join`, `/scan`, `/search`, `/recommend`, and `/subscribe`, the managed
+  `/scan`, `/search`, `/recommend`, and `/subscribe`, the managed
   Komf `/config/application.yml` editor, Vault-backed persistence for service overrides in `noona_settings`, default
   permissions for first-time Discord sign-ins, a Vault-backed Discord onboarding-message editor with placeholder
   preview/copy support for `{guild_name}`, `{guild_id}`, `{moon_url}`, `{kavita_url}`, and `{server_ip}`, Kavita
@@ -181,7 +185,9 @@ frontend.
   `myRecommendations`, and `manageRecommendations` roles while still normalizing the legacy Raven permission names
   returned by older records.
   Raven worker speed-limit inputs now accept raw KB/s values
-  or `mb` / `gb` suffixes, and `-1` means unlimited speed. Moon's Portal-backed Kavita metadata-match proxy now also
+  or `mb` / `gb` suffixes, and `-1` means unlimited speed. Downloader settings now also expose per-worker Linux
+  `cpuCoreIds`, show Raven's currently allowed CPU ids from the live status summary, and use `-1` to keep a worker
+  process isolated but not affinity-pinned. Moon's Portal-backed Kavita metadata-match proxy now also
   includes a PIA VPN panel under Downloader settings so admins can store PIA credentials in Vault, pick a Raven VPN
   region endpoint, run a direct login test, trigger immediate IP rotation, configure scheduled auto-rotation
   intervals, and toggle whether Raven should keep queued downloads waiting until the VPN is actually connected.
@@ -204,8 +210,9 @@ frontend.
   metadata providers can be tuned before install, starting from the safer MangaUpdates-only default template. The
   services tab groups the managed stack into `Storage`, `Library
   Management`, and `External APIs`, and install payloads follow the Warden lifecycle order (`mongo -> redis -> vault
-  -> kavita -> raven -> komf -> portal`). Portal defaults now prefill `/join` access as `*,-admin` for roles and `*`
-  for libraries, and the managed Vault token is injected automatically instead of being entered by hand. The install
+  -> kavita -> raven -> komf -> portal`). Portal defaults now prefill website onboarding access as `*,-admin` for
+  roles and `*` for libraries, and the managed Vault token is injected automatically instead of being entered by
+  hand. The install
   tab now starts installs asynchronously, keeps progress polling even if the original request fails after Warden has
   started, reads the current installation-session history instead of generic `noona-warden` service logs, saves the
   same setup JSON payload to Warden (`/api/setup/config`) that users can download for backup/restore (including Kavita
@@ -324,12 +331,14 @@ cd services/moon
 npm install
 npm run dev
 npm run lint
+npm test
 npm run build
 npm run start
 ```
 
 Set `WEBGUI_PORT` before `npm run dev` or `npm run start` when Moon should bind to a non-default port.
 `npm run lint` uses the flat ESLint config in [eslint.config.mjs](eslint.config.mjs).
+`npm test` runs the lightweight Node smoke tests under [tests](tests/) for shared UI worker-setting logic.
 
 ## Documentation Rule
 
