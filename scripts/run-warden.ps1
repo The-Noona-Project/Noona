@@ -10,7 +10,7 @@ param(
 
 if (-not $NetworkName) { $NetworkName = 'noona-network' }
 if (-not $ContainerName) { $ContainerName = 'noona-warden' }
-if (-not $WardenImage) { $WardenImage = 'captainpax/noona-warden:latest' }
+if (-not $WardenImage) { $WardenImage = 'docker.darkmatterservers.com/the-noona-project/noona-warden:latest' }
 if (-not $DebugMode)
 {
     $DebugMode = 'false'

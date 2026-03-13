@@ -3,7 +3,7 @@ set -euo pipefail
 
 NETWORK_NAME="${1:-${NOONA_NETWORK:-noona-network}}"
 CONTAINER_NAME="${2:-${WARDEN_CONTAINER_NAME:-noona-warden}}"
-WARDEN_IMAGE="${3:-${WARDEN_IMAGE:-captainpax/noona-warden:latest}}"
+WARDEN_IMAGE="${3:-${WARDEN_IMAGE:-docker.darkmatterservers.com/the-noona-project/noona-warden:latest}}"
 DEBUG_MODE="${4:-${DEBUG:-true}}"
 DOCKER_SOCK_PATH="${5:-${DOCKER_SOCK_PATH:-}}"
 WARDEN_PORT="${6:-${WARDEN_PORT:-4001}}"
