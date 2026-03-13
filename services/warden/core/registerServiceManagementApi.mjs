@@ -12,6 +12,7 @@ const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
 const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
+const SENSITIVE_ENV_PLACEHOLDER = '********';
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -245,16 +246,12 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     const isWardenConfigName = (name) => normalizeString(name) === WARDEN_CONFIG_SERVICE_NAME;
-    const buildWardenServiceConfig = () => {
-        const runtime = resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME);
-        const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
-        const effectiveServerIp = normalizeString(resolveCurrentServerIp?.());
-        const effectiveHostServiceBase = normalizeString(resolveCurrentHostServiceBase?.());
-        const envConfig = cloneEnvConfig([
+    const buildWardenEnvConfig = () =>
+        cloneEnvConfig([
             {
                 key: 'SERVER_IP',
                 label: 'Server IP / Hostname',
-                defaultValue: effectiveServerIp,
+                defaultValue: normalizeString(resolveCurrentServerIp?.()),
                 description:
                     'Host IP address or hostname Warden should publish in Noona links such as Kavita buttons and setup summary URLs.',
                 warning:
@@ -265,7 +262,7 @@ export function registerServiceManagementApi(context = {}) {
             {
                 key: 'AUTO_UPDATES',
                 label: 'Auto updates',
-                defaultValue: autoUpdatesEnabled ? 'true' : 'false',
+                defaultValue: resolveCurrentAutoUpdatesEnabled?.() === true ? 'true' : 'false',
                 description:
                     'When enabled, Warden pulls newer Docker images during startup and restarts installed services that changed.',
                 warning:
@@ -274,6 +271,113 @@ export function registerServiceManagementApi(context = {}) {
                 readOnly: false,
             },
         ]);
+
+    const buildEnvFieldMap = (envConfig = []) => {
+        const map = new Map();
+
+        for (const field of Array.isArray(envConfig) ? envConfig : []) {
+            const key = normalizeString(field?.key);
+            if (!key) {
+                continue;
+            }
+
+            map.set(key, field);
+        }
+
+        return map;
+    };
+
+    const resolveCurrentEnvSnapshot = (name) => {
+        const trimmedName = normalizeString(name);
+        if (!trimmedName) {
+            return {};
+        }
+
+        if (isWardenConfigName(trimmedName)) {
+            const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
+            return {
+                SERVER_IP: normalizeString(resolveCurrentServerIp?.()),
+                AUTO_UPDATES: autoUpdatesEnabled ? 'true' : 'false',
+            };
+        }
+
+        const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
+        return parseEnvEntries(descriptor.env);
+    };
+
+    const sanitizeRequestedEnvMap = (name, envCandidate, {currentEnv = null} = {}) => {
+        if (!envCandidate || typeof envCandidate !== 'object' || Array.isArray(envCandidate)) {
+            throw new Error('Environment overrides must be provided as an object map.');
+        }
+
+        const trimmedName = normalizeString(name);
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const envConfig = isWardenConfigName(trimmedName)
+            ? buildWardenEnvConfig()
+            : cloneEnvConfig(buildEffectiveServiceDescriptor(trimmedName).descriptor.envConfig);
+        const fieldMap = buildEnvFieldMap(envConfig);
+        const allowUnmodeledKeys = fieldMap.size === 0;
+        const current = currentEnv && typeof currentEnv === 'object'
+            ? currentEnv
+            : resolveCurrentEnvSnapshot(trimmedName);
+        const sanitized = {};
+
+        for (const [rawKey, rawValue] of Object.entries(envCandidate)) {
+            const key = normalizeString(rawKey);
+            if (!key) {
+                continue;
+            }
+
+            const field = fieldMap.get(key) || null;
+            const incomingValue = rawValue == null ? '' : String(rawValue);
+            const currentValue = Object.prototype.hasOwnProperty.call(current, key)
+                ? (current[key] == null ? '' : String(current[key]))
+                : '';
+            const resolvedValue =
+                field?.sensitive === true && incomingValue === SENSITIVE_ENV_PLACEHOLDER
+                    ? currentValue
+                    : incomingValue;
+
+            if (!field) {
+                if (allowUnmodeledKeys) {
+                    sanitized[key] = resolvedValue;
+                    continue;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(current, key)) {
+                    sanitized[key] = resolvedValue;
+                    continue;
+                }
+
+                if (resolvedValue === currentValue) {
+                    continue;
+                }
+
+                throw new Error(`${key} is not a supported setting for ${trimmedName}.`);
+            }
+
+            if (field.serverManaged === true || field.readOnly === true) {
+                if (resolvedValue !== currentValue) {
+                    throw new Error(`${key} is managed by Warden and cannot be changed.`);
+                }
+                continue;
+            }
+
+            sanitized[key] = resolvedValue;
+        }
+
+        return sanitized;
+    };
+
+    const buildWardenServiceConfig = () => {
+        const runtime = resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME);
+        const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
+        const effectiveServerIp = normalizeString(resolveCurrentServerIp?.());
+        const effectiveHostServiceBase = normalizeString(resolveCurrentHostServiceBase?.());
+        const envConfig = buildWardenEnvConfig();
 
         return {
             name: WARDEN_CONFIG_SERVICE_NAME,
@@ -1102,28 +1206,25 @@ export function registerServiceManagementApi(context = {}) {
                 continue;
             }
 
+            let normalizedEnv = null;
+            if (candidate.env) {
+                try {
+                    normalizedEnv = sanitizeRequestedEnvMap(rawName, candidate.env);
+                } catch (error) {
+                    invalidEntries.push({
+                        name: rawName,
+                        status: 'error',
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                    continue;
+                }
+            }
+
             register(rawName);
 
-            if (candidate.env) {
-                const normalized = {};
-
-                for (const [key, value] of Object.entries(candidate.env)) {
-                    if (typeof key !== 'string') {
-                        continue;
-                    }
-
-                    const trimmedKey = key.trim();
-                    if (!trimmedKey) {
-                        continue;
-                    }
-
-                    normalized[trimmedKey] = value == null ? '' : String(value);
-                }
-
-                if (Object.keys(normalized).length > 0) {
-                    const existing = envOverrides.get(rawName) || {};
-                    envOverrides.set(rawName, {...existing, ...normalized});
-                }
+            if (normalizedEnv && Object.keys(normalizedEnv).length > 0) {
+                const existing = envOverrides.get(rawName) || {};
+                envOverrides.set(rawName, {...existing, ...normalizedEnv});
             }
         }
 
@@ -1760,7 +1861,11 @@ export function registerServiceManagementApi(context = {}) {
                 throw new Error('noona-warden does not support hostPort overrides.');
             }
 
-            const envUpdates = normalizeEnvOverrideMap(updates?.env);
+            const envUpdates = Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')
+                ? sanitizeRequestedEnvMap(trimmedName, updates?.env ?? {}, {
+                    currentEnv: resolveCurrentEnvSnapshot(trimmedName),
+                })
+                : {};
             const nextServerIp = normalizeString(envUpdates.SERVER_IP);
             const nextAutoUpdates = normalizeBooleanSettingValue(envUpdates.AUTO_UPDATES, 'AUTO_UPDATES');
             const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, {
@@ -1784,6 +1889,8 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         const runtime = resolveRuntimeConfig(trimmedName);
+        const {descriptor: currentDescriptor} = buildEffectiveServiceDescriptor(trimmedName);
+        const currentEnv = parseEnvEntries(currentDescriptor.env);
         const nextRuntime = {
             env: {...runtime.env},
             hostPort: runtime.hostPort,
@@ -1794,7 +1901,7 @@ export function registerServiceManagementApi(context = {}) {
                 : '';
 
         if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
-            nextRuntime.env = normalizeEnvOverrideMap(updates?.env);
+            nextRuntime.env = sanitizeRequestedEnvMap(trimmedName, updates?.env ?? {}, {currentEnv});
         }
 
         if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort')) {

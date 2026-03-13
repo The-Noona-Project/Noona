@@ -124,6 +124,7 @@ export class UserLoginComponent implements OnInit {
     this.route.queryParamMap.subscribe(params => {
       const noonaToken = params.get('noonaToken');
       if (noonaToken != null && noonaToken.length > 0) {
+        this.clearHandledLoginQueryParams('noonaToken');
         this.noonaLogin(noonaToken);
         return;
       }
@@ -145,6 +146,20 @@ export class UserLoginComponent implements OnInit {
       } else {
         this.toastr.error(error);
       }
+    });
+  }
+
+  private clearHandledLoginQueryParams(...keys: Array<string>) {
+    const queryParams = keys.reduce<Record<string, null>>((acc, key) => {
+      acc[key] = null;
+      return acc;
+    }, {});
+
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams,
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
     });
   }
 

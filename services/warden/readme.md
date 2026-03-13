@@ -47,6 +47,11 @@ mode.
 
 ## Main API Endpoints
 
+All `/api/*` routes now require `Authorization: Bearer <token>`. Warden generates and persists those service tokens for
+its trusted callers, with `noona-sage` holding full control-plane access and `noona-portal` limited to read-only
+activity/status endpoints. Config and setup-snapshot responses also redact sensitive env values before they leave the
+HTTP API.
+
 - `GET /health` - Warden process health.
 - `GET /api/services` - service catalog + status.
 - `GET /api/storage/layout` - resolved Noona storage root plus per-service host/container folder mappings.
@@ -72,6 +77,8 @@ mode.
 |---------------------------------------------------|------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|
 | `DEBUG`                                           | Boot profile + log verbosity                                                                         | `false`                                                   |
 | `WARDEN_API_PORT`                                 | Warden API listen port                                                                               | `4001`                                                    |
+| `WARDEN_API_HOST`                                 | Optional bind host override for the Warden HTTP listener                                             | Node default (`0.0.0.0` when unset)                       |
+| `WARDEN_API_TOKEN_MAP`                            | Optional `service:token` map for Warden API callers (`noona-sage`, `noona-portal`)                   | generated from Warden's persisted token registry          |
 | `SERVER_IP`                                       | Optional LAN IP/hostname Warden uses for host-facing service URLs and shared runtime env             | unset                                                     |
 | `AUTO_UPDATES`                                    | Pull newer images during Warden startup and restart installed services whose image changed           | `false`                                                   |
 | `HOST_SERVICE_URL`                                | Explicit host-facing URL prefix override used in generated links (takes precedence over `SERVER_IP`) | `http://localhost`                                        |
@@ -84,7 +91,7 @@ mode.
 | `RAVEN_VAULT_URL`                                 | Vault URL injected into Raven runtime                                                                | `http://noona-vault:3005`                                 |
 | `RAVEN_VPN_ENABLE_TUN`                            | Enables Raven OpenVPN Docker capabilities (`NET_ADMIN`, `/dev/net/tun`) on non-Windows hosts         | `true` (non-Windows), ignored on Windows                  |
 | `KAVITA_ADMIN_*`                                  | Optional managed `noona-kavita` first-admin defaults passed through on install/start                 | unset                                                     |
-| `*_VAULT_TOKEN`                                   | Optional per-service token override                                                                  | generated in descriptors                                  |
+| `*_VAULT_TOKEN` / `*_WARDEN_API_TOKEN`            | Optional per-service token overrides for Vault or Warden API auth                                    | generated in descriptors                                  |
 
 ## Development Commands
 
@@ -96,6 +103,9 @@ mode.
 
 - Warden tracks service histories and buffered logs for diagnostics.
 - Vault token maps are generated from descriptor lists in `docker/noonaDockers.mjs`.
+- Warden now also persists its own Vault credential and the Warden-API caller registry through the shared token-store
+  helpers in `docker/vaultTokens.mjs`, `docker/wardenApiTokens.mjs`, and `docker/serviceAuthRegistry.mjs`. That keeps
+  service identity stable across restarts instead of relying on transient in-process token generation.
 - Managed `noona-komf` now materializes `/config/application.yml` from the stored `KOMF_APPLICATION_YML` service
   setting before container start. Moon's setup wizard and Portal settings page edit that managed file through Warden's
   normal service-config flow. The baked-in managed template now follows the current Komf sample more closely by

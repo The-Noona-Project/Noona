@@ -32,6 +32,64 @@ test('searchTitle requests the Raven search endpoint and returns the payload', a
     assert.equal(new URL(calls[0].url).pathname, '/v1/download/search/Solo%20Leveling');
 });
 
+test('getTitleDetails requests the Raven title-details endpoint and normalizes adult-content', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                sourceUrl: 'https://source.example/solo-leveling',
+                summary: 'A hunter rises.',
+                type: 'Manhwa',
+                adultContent: 'yes',
+                associatedNames: ['Only I level up'],
+                status: 'Complete',
+                released: '2018',
+                officialTranslation: 'yes',
+                animeAdaptation: 'yes',
+                relatedSeries: [
+                    {
+                        title: 'Solo Leveling: Ragnarok',
+                        sourceUrl: 'https://source.example/ragnarok',
+                        relation: 'Sequel',
+                    },
+                ],
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const payload = await raven.getTitleDetails('https://source.example/solo-leveling');
+
+    assert.deepEqual(payload, {
+        sourceUrl: 'https://source.example/solo-leveling',
+        summary: 'A hunter rises.',
+        type: 'Manhwa',
+        adultContent: true,
+        associatedNames: ['Only I level up'],
+        status: 'Complete',
+        released: '2018',
+        officialTranslation: true,
+        animeAdaptation: true,
+        relatedSeries: [
+            {
+                title: 'Solo Leveling: Ragnarok',
+                sourceUrl: 'https://source.example/ragnarok',
+                relation: 'Sequel',
+            },
+        ],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'GET');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/download/title-details');
+    assert.equal(new URL(calls[0].url).searchParams.get('url'), 'https://source.example/solo-leveling');
+});
+
 test('getLibrary requests the Raven library endpoint and returns titles', async () => {
     const calls = [];
     const raven = createPortalRavenClient({

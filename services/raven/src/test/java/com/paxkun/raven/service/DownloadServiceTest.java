@@ -7,7 +7,9 @@ import com.paxkun.raven.service.download.TitleScraper;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import com.paxkun.raven.service.settings.DownloadNamingSettings;
+import com.paxkun.raven.service.settings.DownloadVpnSettings;
 import com.paxkun.raven.service.settings.SettingsService;
+import com.paxkun.raven.service.vpn.VpnRuntimeStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -52,6 +54,9 @@ class DownloadServiceTest {
     @Mock
     private SettingsService settingsService;
 
+    @Mock
+    private VPNServices vpnServices;
+
     @InjectMocks
     private TestableDownloadService downloadService;
 
@@ -63,12 +68,38 @@ class DownloadServiceTest {
         DownloadNamingSettings naming = new DownloadNamingSettings(
                 "downloads.naming",
                 "{title}",
-                "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz",
+                "{title} c{chapter} (v01) [Noona].cbz",
                 "{page_padded}{ext}",
                 3,
-                4
+                3
+        );
+        DownloadVpnSettings vpnSettings = new DownloadVpnSettings(
+                "downloads.vpn",
+                "pia",
+                false,
+                false,
+                true,
+                30,
+                "us_california",
+                "",
+                ""
         );
         lenient().when(settingsService.getDownloadNamingSettings()).thenReturn(naming);
+        lenient().when(settingsService.getDownloadVpnSettings()).thenReturn(vpnSettings);
+        lenient().when(vpnServices.getStatus()).thenReturn(new VpnRuntimeStatus(
+                false,
+                true,
+                false,
+                false,
+                "pia",
+                "us_california",
+                30,
+                null,
+                null,
+                null,
+                null,
+                "idle"
+        ));
     }
 
     @Test
@@ -236,7 +267,7 @@ class DownloadServiceTest {
             assertThat(stream.toList())
                     .hasSize(1)
                     .allSatisfy(path -> assertThat(path.getFileName().toString())
-                            .isEqualTo("Chapter 0001 [Pages 1 example.com - Noona].cbz"));
+                            .isEqualTo("Solo Leveling c001 (v01) [Noona].cbz"));
         }
         assertThat(Files.exists(downloadingTitleFolder)).isFalse();
         assertThat(resolvedTitle.getDownloadPath()).isEqualTo(downloadedTitleFolder.toString());
@@ -322,6 +353,116 @@ class DownloadServiceTest {
         assertThat(paused.getMessage()).contains("Pause requested");
     }
 
+    @Test
+    void queuedDownloadsWaitForVpnConnectionWhenRequired() throws Exception {
+        AtomicBoolean vpnConnected = new AtomicBoolean(false);
+        when(settingsService.getDownloadVpnSettings()).thenReturn(new DownloadVpnSettings(
+                "downloads.vpn",
+                "pia",
+                true,
+                true,
+                true,
+                30,
+                "us_california",
+                "pia-user",
+                "pia-secret"
+        ));
+        when(vpnServices.getStatus()).thenAnswer(invocation -> new VpnRuntimeStatus(
+                true,
+                true,
+                false,
+                vpnConnected.get(),
+                "pia",
+                "us_california",
+                30,
+                vpnConnected.get() ? "198.51.100.12" : null,
+                null,
+                null,
+                null,
+                vpnConnected.get() ? "connected" : "idle"
+        ));
+
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForMessage("Solo Leveling", "Waiting for Raven VPN connection before download starts.");
+
+        DownloadProgress waiting = downloadService.getDownloadStatuses().stream()
+                .filter(progress -> "Solo Leveling".equals(progress.getTitle()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(waiting.getStatus()).isEqualTo("queued");
+
+        vpnConnected.set(true);
+        waitForStatus("Solo Leveling", "completed");
+    }
+
+    @Test
+    void pauseRequestCanStopQueuedDownloadWhileWaitingForVpn() throws Exception {
+        AtomicBoolean vpnConnected = new AtomicBoolean(false);
+        when(settingsService.getDownloadVpnSettings()).thenReturn(new DownloadVpnSettings(
+                "downloads.vpn",
+                "pia",
+                true,
+                true,
+                true,
+                30,
+                "us_california",
+                "pia-user",
+                "pia-secret"
+        ));
+        when(vpnServices.getStatus()).thenAnswer(invocation -> new VpnRuntimeStatus(
+                true,
+                true,
+                false,
+                vpnConnected.get(),
+                "pia",
+                "us_california",
+                30,
+                null,
+                null,
+                null,
+                null,
+                vpnConnected.get() ? "connected" : "idle"
+        ));
+
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForMessage("Solo Leveling", "Waiting for Raven VPN connection before download starts.");
+
+        DownloadService.PauseRequestResult pauseResult = downloadService.requestPauseActiveDownloads();
+        assertThat(pauseResult.getAffectedTasks()).isEqualTo(1);
+
+        waitForStatus("Solo Leveling", "paused");
+    }
+
     private void waitForStatus(String titleName, String expectedStatus) throws InterruptedException {
         for (int attempt = 0; attempt < 50; attempt++) {
             List<DownloadProgress> statuses = downloadService.getDownloadStatuses();
@@ -334,6 +475,20 @@ class DownloadServiceTest {
             Thread.sleep(100);
         }
         throw new AssertionError("Timed out waiting for status=" + expectedStatus + " for title=" + titleName);
+    }
+
+    private void waitForMessage(String titleName, String expectedMessage) throws InterruptedException {
+        for (int attempt = 0; attempt < 50; attempt++) {
+            List<DownloadProgress> statuses = downloadService.getDownloadStatuses();
+            boolean match = statuses.stream()
+                    .anyMatch(progress -> titleName.equals(progress.getTitle())
+                            && expectedMessage.equals(progress.getMessage()));
+            if (match) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Timed out waiting for message=" + expectedMessage + " for title=" + titleName);
     }
 
     static class TestableDownloadService extends DownloadService {

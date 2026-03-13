@@ -196,6 +196,14 @@ export const createRavenClient = ({
             return await parseResponsePayload(response)
         },
 
+        async checkAvailableLibraryImports() {
+            const response = await fetchFromRaven('/v1/library/imports/check', {
+                method: 'POST',
+                headers: {Accept: 'application/json'},
+            })
+            return await parseResponsePayload(response)
+        },
+
         async getTitle(uuid) {
             const normalized = typeof uuid === 'string' ? uuid.trim() : ''
             if (!normalized) {
@@ -362,6 +370,17 @@ export const createRavenClient = ({
 
             const encodedQuery = encodeURIComponent(query)
             const response = await fetchFromRaven(`/v1/download/search/${encodedQuery}`)
+            return await parseResponsePayload(response)
+        },
+
+        async getTitleDetails(sourceUrl) {
+            const normalized = typeof sourceUrl === 'string' ? sourceUrl.trim() : ''
+            if (!normalized) {
+                throw new Error('sourceUrl is required.')
+            }
+
+            const encodedSourceUrl = encodeURIComponent(normalized)
+            const response = await fetchFromRaven(`/v1/download/title-details?url=${encodedSourceUrl}`)
             return await parseResponsePayload(response)
         },
 

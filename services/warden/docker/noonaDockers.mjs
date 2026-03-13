@@ -3,6 +3,7 @@
 import {resolveHostServiceBase, resolveSharedHostEnvEntries} from './hostServiceUrl.mjs';
 import {resolveNoonaImage} from './imageRegistry.mjs';
 import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
+import {buildWardenApiTokenRegistry} from './wardenApiTokens.mjs';
 
 const DEBUG = process.env.DEBUG || 'false';
 const HOST_SERVICE_URL = resolveHostServiceBase();
@@ -98,6 +99,16 @@ const rawList = [
     'noona-portal',
     'noona-vault'
 ];
+const VAULT_AUTH_SERVICE_NAMES = [
+    'noona-warden',
+    'noona-sage',
+    'noona-raven',
+    'noona-portal',
+];
+const WARDEN_API_CLIENT_NAMES = [
+    'noona-sage',
+    'noona-portal',
+];
 
 const SERVICE_DESCRIPTIONS = Object.freeze({
     'noona-moon': 'Moon is the Noona web UI (front-end).',
@@ -108,7 +119,8 @@ const SERVICE_DESCRIPTIONS = Object.freeze({
     'noona-oracle': 'Oracle provides optional automation and helper services.',
 });
 
-const tokensByService = buildVaultTokenRegistry(rawList);
+const tokensByService = buildVaultTokenRegistry(VAULT_AUTH_SERVICE_NAMES);
+const wardenApiTokensByService = buildWardenApiTokenRegistry(WARDEN_API_CLIENT_NAMES);
 
 const createEnvField = (key, defaultValue, {
     label = key,
@@ -116,6 +128,8 @@ const createEnvField = (key, defaultValue, {
     warning = null,
     required = true,
     readOnly = false,
+    sensitive = false,
+    serverManaged = false,
 } = {}) => ({
     key,
     label,
@@ -124,6 +138,8 @@ const createEnvField = (key, defaultValue, {
     warning,
     required,
     readOnly,
+    sensitive,
+    serverManaged,
 });
 
 const serviceDefs = rawList.map(name => {
@@ -138,6 +154,7 @@ const serviceDefs = rawList.map(name => {
 
     const internalPort = name === 'noona-raven' ? 8080 : portMap[name];
     const token = tokensByService[name];
+    const wardenApiToken = wardenApiTokensByService[name];
 
     const env = [
         `DEBUG=${DEBUG}`,
@@ -155,6 +172,7 @@ const serviceDefs = rawList.map(name => {
             label: 'Service Name',
             readOnly: true,
             description: 'Identifier used for the container and internal routing.',
+            serverManaged: true,
         }),
     ];
 
@@ -165,16 +183,29 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault API Token',
                 readOnly: true,
                 description: 'Auto-generated token used for secure communication with Vault.',
+                sensitive: true,
+                serverManaged: true,
             }),
         );
     }
 
     if (name === 'noona-sage') {
         env.push(`WARDEN_BASE_URL=${DOCKER_WARDEN_URL}`);
+        if (wardenApiToken) {
+            env.push(`WARDEN_API_TOKEN=${wardenApiToken}`);
+        }
         envConfig.push(
             createEnvField('WARDEN_BASE_URL', DOCKER_WARDEN_URL, {
                 label: 'Warden Base URL',
                 warning: 'Adjust only if Warden is reachable at a custom URL within the Docker network.',
+            }),
+            createEnvField('WARDEN_API_TOKEN', wardenApiToken || '', {
+                label: 'Warden API Token',
+                readOnly: true,
+                description: 'Auto-generated token Sage uses to authenticate to Warden.',
+                sensitive: true,
+                serverManaged: true,
+                required: false,
             }),
         );
     }
@@ -215,6 +246,7 @@ const serviceDefs = rawList.map(name => {
                 label: 'Kavita API Key',
                 description: 'API key Raven can use to create Kavita libraries for new media types.',
                 required: false,
+                sensitive: true,
             }),
             createEnvField('KAVITA_LIBRARY_ROOT', DEFAULT_RAVEN_KAVITA_LIBRARY_ROOT, {
                 label: 'Kavita Library Root',
@@ -282,6 +314,7 @@ const serviceDefs = rawList.map(name => {
                 key: 'DISCORD_BOT_TOKEN',
                 label: 'Discord Bot Token',
                 description: 'Authentication token for the Discord bot used by the portal.',
+                sensitive: true,
             },
             {
                 key: 'DISCORD_CLIENT_ID',
@@ -292,6 +325,7 @@ const serviceDefs = rawList.map(name => {
                 key: 'DISCORD_CLIENT_SECRET',
                 label: 'Discord Client Secret',
                 description: 'OAuth2 client secret for Discord social login and callback testing.',
+                sensitive: true,
             },
             {
                 key: 'DISCORD_GUILD_ID',
@@ -327,6 +361,7 @@ const serviceDefs = rawList.map(name => {
                 key: 'KAVITA_API_KEY',
                 label: 'Kavita API Key',
                 description: 'API key used by the portal when communicating with Kavita.',
+                sensitive: true,
             },
             {
                 key: 'PORTAL_JOIN_DEFAULT_ROLES',
@@ -444,9 +479,24 @@ const serviceDefs = rawList.map(name => {
                     label: field.label,
                     description: field.description,
                     required: field.required !== false,
+                    sensitive: field.sensitive === true,
                 }),
             );
         });
+
+        if (wardenApiToken) {
+            env.push(`WARDEN_API_TOKEN=${wardenApiToken}`);
+            envConfig.push(
+                createEnvField('WARDEN_API_TOKEN', wardenApiToken, {
+                    label: 'Warden API Token',
+                    readOnly: true,
+                    description: 'Auto-generated token Portal uses for Warden activity polling.',
+                    sensitive: true,
+                    serverManaged: true,
+                    required: false,
+                }),
+            );
+        }
     }
 
     if (name === 'noona-vault') {
@@ -470,6 +520,8 @@ const serviceDefs = rawList.map(name => {
                 label: 'Vault Token Map',
                 readOnly: true,
                 description: 'Serialized lookup table allowing other services to authenticate with Vault.',
+                sensitive: true,
+                serverManaged: true,
             }),
             createEnvField('VAULT_DATA_FOLDER', DEFAULT_VAULT_DATA_FOLDER, {
                 label: 'Vault Data Folder',
@@ -498,6 +550,7 @@ const serviceDefs = rawList.map(name => {
                 label: 'MongoDB URI',
                 description: 'MongoDB connection URI used by Vault for persistent storage.',
                 warning: 'Defaults to Mongo auth on noona-mongo:27017/admin?authSource=admin inside the Docker network.',
+                sensitive: true,
             }),
             createEnvField('REDIS_HOST', DEFAULT_VAULT_REDIS_HOST, {
                 label: 'Redis Host',

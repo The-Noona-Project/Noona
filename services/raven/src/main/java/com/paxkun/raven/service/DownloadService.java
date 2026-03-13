@@ -4,7 +4,9 @@ import com.paxkun.raven.service.download.*;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import com.paxkun.raven.service.settings.DownloadNamingSettings;
+import com.paxkun.raven.service.settings.DownloadVpnSettings;
 import com.paxkun.raven.service.settings.SettingsService;
+import com.paxkun.raven.service.vpn.VpnRuntimeStatus;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.openqa.selenium.StaleElementReferenceException;
@@ -41,6 +43,7 @@ public class DownloadService {
     private static final String TASK_COLLECTION = "raven_download_tasks";
     private static final String CURRENT_TASK_REDIS_KEY = "raven:download:current-task";
     private static final long VAULT_SNAPSHOT_WARNING_COOLDOWN_MS = TimeUnit.SECONDS.toMillis(30);
+    private static final long VPN_CONNECTION_WAIT_POLL_MS = 1000L;
     private static final Set<String> TERMINAL_STATUSES = Set.of(
             "completed",
             "failed",
@@ -58,6 +61,9 @@ public class DownloadService {
     private VaultService vaultService;
     @Autowired
     private SettingsService settingsService;
+    @Autowired
+    @Lazy
+    private VPNServices vpnServices;
 
     private static final String USER_AGENT = "Mozilla/5.0";
     private static final String REFERER = "https://weebcentral.com";
@@ -181,6 +187,10 @@ public class DownloadService {
                         " | searchId=" + sanitizeForLog(searchId));
 
         return new SearchTitle(searchId, searchResults);
+    }
+
+    public TitleDetails getTitleDetails(String titleUrl) {
+        return titleScraper.getTitleDetails(titleUrl);
     }
 
     private Map<String, String> buildSelectedTitle(DownloadProgress progress) {
@@ -513,6 +523,11 @@ public class DownloadService {
         DownloadChapter result = new DownloadChapter();
 
         try {
+            if (!waitForVpnConnectionIfRequired(titleName, progress)) {
+                result.setStatus("⏸️ Download waiting stopped.");
+                return;
+            }
+
             String titleUrl = selectedTitle.get("href");
             progress.ensureTaskId(UUID.randomUUID().toString());
             logger.info("DOWNLOAD", "🚀 Starting download for [" + titleName + "]");
@@ -536,10 +551,7 @@ public class DownloadService {
                 titleRecord.setType(normalizedType);
             }
 
-            String summary = titleScraper.getSummary(titleUrl);
-            if (summary != null && !summary.isBlank()) {
-                titleRecord.setSummary(summary);
-            }
+            applyTitleDetailsMetadata(titleRecord, titleScraper.getTitleDetails(titleUrl));
             progress.attachTaskContext(
                     progress.getTaskId(),
                     Optional.ofNullable(progress.getTaskType()).orElse("library-download"),
@@ -718,6 +730,44 @@ public class DownloadService {
         }
     }
 
+    private boolean waitForVpnConnectionIfRequired(String titleName, DownloadProgress progress) {
+        boolean waitingMessagePublished = false;
+        String waitingMessage = "Waiting for Raven VPN connection before download starts.";
+
+        while (shouldWaitForVpnConnection()) {
+            if (shouldPauseBeforeDownloadStart(titleName, progress)) {
+                return false;
+            }
+
+            if (!waitingMessagePublished || !waitingMessage.equals(progress.getMessage())) {
+                progress.setMessage(waitingMessage);
+                persistTaskSnapshot(progress);
+                waitingMessagePublished = true;
+            }
+
+            try {
+                Thread.sleep(VPN_CONNECTION_WAIT_POLL_MS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                progress.markInterrupted("Interrupted while waiting for Raven VPN connection.");
+                persistTaskSnapshot(progress);
+                return false;
+            }
+        }
+
+        return !shouldPauseBeforeDownloadStart(titleName, progress);
+    }
+
+    private boolean shouldWaitForVpnConnection() {
+        DownloadVpnSettings vpnSettings = settingsService.getDownloadVpnSettings();
+        if (vpnSettings == null || !Boolean.TRUE.equals(vpnSettings.getOnlyDownloadWhenVpnOn())) {
+            return false;
+        }
+
+        VpnRuntimeStatus status = vpnServices != null ? vpnServices.getStatus() : null;
+        return status == null || !status.isConnected();
+    }
+
     private void finalizeProgress(String titleName, DownloadProgress progress) {
         DownloadProgress snapshot = progress.copy();
         downloadProgress.remove(titleName);
@@ -778,6 +828,16 @@ public class DownloadService {
         document.put("missingChapterNumbers", progress.getMissingChapterNumbers());
         document.put("lastUpdated", progress.getLastUpdated());
         return document;
+    }
+
+    private boolean shouldPauseBeforeDownloadStart(String titleName, DownloadProgress progress) {
+        if (titleName == null || titleName.isBlank() || progress == null || !pauseRequestedDownloads.contains(titleName)) {
+            return false;
+        }
+
+        progress.markPaused("Pause requested before download started. Task saved for later.");
+        persistTaskSnapshot(progress);
+        return true;
     }
 
     private boolean shouldPauseAtChapterBoundary(String titleName, DownloadProgress progress) {
@@ -1030,12 +1090,12 @@ public class DownloadService {
         String typeSlug = resolveMediaTypeFolder(type);
         String chapter = chapterNumber == null ? "" : chapterNumber.trim();
 
-        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 4;
+        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 3;
         String chapterPadded = formatChapterPadded(chapter, chapterPad);
 
         String template = naming != null ? naming.getChapterTemplate() : null;
         if (template == null || template.isBlank()) {
-            template = "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz";
+            template = "{title} c{chapter} (v01) [Noona].cbz";
         }
 
         Map<String, String> values = new HashMap<>();
@@ -1049,7 +1109,9 @@ public class DownloadService {
 
         String raw = applyTemplate(template, values);
         if (raw == null || raw.isBlank()) {
-            raw = String.format("Chapter %s [Pages %d %s - Noona].cbz", chapter, pageCount, domain);
+            raw = title.isBlank()
+                    ? String.format("c%s (v01) [Noona].cbz", chapterPadded)
+                    : String.format("%s c%s (v01) [Noona].cbz", title, chapterPadded);
         }
 
         String withExt = raw.trim();
@@ -1074,7 +1136,7 @@ public class DownloadService {
         int pagePad = naming != null && naming.getPagePad() != null ? Math.max(1, naming.getPagePad()) : 3;
         String pagePadded = String.format("%0" + pagePad + "d", pageIndex);
 
-        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 4;
+        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 3;
         String chapterPadded = formatChapterPadded(chapter, chapterPad);
 
         String template = naming != null ? naming.getPageTemplate() : null;
@@ -1735,6 +1797,54 @@ public class DownloadService {
             case "manhua" -> "Manhua";
             default -> prettifyLabel(cleaned);
         };
+    }
+
+    private void applyTitleDetailsMetadata(NewTitle titleRecord, TitleDetails details) {
+        if (titleRecord == null || details == null) {
+            return;
+        }
+
+        if (details.getSummary() != null && !details.getSummary().isBlank()) {
+            titleRecord.setSummary(details.getSummary().trim());
+        }
+
+        String normalizedType = normalizeMediaType(details.getType());
+        if (normalizedType != null) {
+            titleRecord.setType(normalizedType);
+        }
+
+        if (details.getAssociatedNames() != null && !details.getAssociatedNames().isEmpty()) {
+            titleRecord.setAssociatedNames(new ArrayList<>(details.getAssociatedNames()));
+        }
+
+        if (details.getStatus() != null && !details.getStatus().isBlank()) {
+            titleRecord.setStatus(details.getStatus().trim());
+        }
+
+        if (details.getReleased() != null && !details.getReleased().isBlank()) {
+            titleRecord.setReleased(details.getReleased().trim());
+        }
+
+        if (details.getOfficialTranslation() != null) {
+            titleRecord.setOfficialTranslation(details.getOfficialTranslation());
+        }
+
+        if (details.getAnimeAdaptation() != null) {
+            titleRecord.setAnimeAdaptation(details.getAnimeAdaptation());
+        }
+
+        if (details.getRelatedSeries() != null && !details.getRelatedSeries().isEmpty()) {
+            List<Map<String, String>> relatedSeries = new ArrayList<>();
+            for (Map<String, String> entry : details.getRelatedSeries()) {
+                if (entry == null || entry.isEmpty()) {
+                    continue;
+                }
+                relatedSeries.add(new LinkedHashMap<>(entry));
+            }
+            if (!relatedSeries.isEmpty()) {
+                titleRecord.setRelatedSeries(relatedSeries);
+            }
+        }
     }
 
     private String prettifyLabel(String value) {

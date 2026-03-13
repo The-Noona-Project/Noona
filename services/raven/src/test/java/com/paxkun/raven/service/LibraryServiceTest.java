@@ -100,6 +100,84 @@ class LibraryServiceTest {
     }
 
     @Test
+    void addOrUpdateTitleWritesNoonaManifestBesideChapterFiles() throws Exception {
+        Path titleFolder = tempDir.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Files.createDirectories(titleFolder);
+
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setUuid("uuid-123");
+        title.setSourceUrl("http://source");
+        title.setType("Manhwa");
+        title.setSummary("Hunter drama");
+        title.setCoverUrl("https://covers.example/solo.jpg");
+        title.setLastDownloaded("2");
+        title.setDownloadPath(titleFolder.toString());
+        title.setAssociatedNames(List.of("Only I level up"));
+        title.setStatus("Complete");
+        title.setReleased("2018");
+        title.setOfficialTranslation(true);
+        title.setAnimeAdaptation(true);
+        title.setRelatedSeries(List.of(Map.of(
+                "title", "Solo Leveling: Ragnarok",
+                "sourceUrl", "https://source.example/ragnarok",
+                "relation", "Sequel"
+        )));
+        title.setDownloadedChapterNumbers(List.of("1", "2"));
+        title.setChaptersDownloaded(2);
+
+        libraryService.addOrUpdateTitle(title, new NewChapter("2"));
+
+        Path manifestPath = titleFolder.resolve("uuid-123.noona");
+        assertThat(manifestPath).exists();
+        String manifest = Files.readString(manifestPath);
+        assertThat(manifest)
+                .contains("\"uuid\" : \"uuid-123\"")
+                .contains("\"title\" : \"Solo Leveling\"")
+                .contains("\"sourceUrl\" : \"http://source\"")
+                .contains("\"status\" : \"Complete\"")
+                .contains("\"officialTranslation\" : true")
+                .contains("\"downloadPath\" : \"" + titleFolder.toString().replace("\\", "\\\\") + "\"");
+    }
+
+    @Test
+    void addOrUpdateTitlePersistsExtendedSourceMetadata() {
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setUuid("uuid-meta");
+        title.setSourceUrl("http://source");
+        title.setStatus("Complete");
+        title.setReleased("2018");
+        title.setOfficialTranslation(true);
+        title.setAnimeAdaptation(true);
+        title.setAssociatedNames(List.of("Only I level up"));
+        title.setRelatedSeries(List.of(Map.of(
+                "title", "Solo Leveling: Ragnarok",
+                "sourceUrl", "https://source.example/ragnarok",
+                "relation", "Sequel"
+        )));
+
+        libraryService.addOrUpdateTitle(title, new NewChapter("100"));
+
+        verify(vaultService).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), mapCaptor.capture(), eq(true));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) mapCaptor.getValue().get("$set");
+        assertThat(set)
+                .containsEntry("status", "Complete")
+                .containsEntry("released", "2018")
+                .containsEntry("officialTranslation", true)
+                .containsEntry("animeAdaptation", true);
+        assertThat((List<String>) set.get("associatedNames")).containsExactly("Only I level up");
+        @SuppressWarnings("unchecked")
+        List<Map<String, String>> relatedSeries = (List<Map<String, String>>) set.get("relatedSeries");
+        assertThat(relatedSeries)
+                .singleElement()
+                .satisfies(entry -> assertThat(entry)
+                        .containsEntry("title", "Solo Leveling: Ragnarok")
+                        .containsEntry("relation", "Sequel"));
+    }
+
+    @Test
     void checkForNewChaptersReturnsWarningWhenNoTitles() {
         when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of());
         when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(Collections.emptyList());
@@ -206,6 +284,69 @@ class LibraryServiceTest {
         assertEquals(1, result.missingChaptersQueued());
         verify(downloadService).downloadSingleChapter(eq(title), eq("2"), any());
         verify(downloadService, never()).downloadSingleChapter(eq(title), eq("86"), any());
+    }
+
+    @Test
+    void listDownloadedFilesExcludesNoonaManifestFiles() throws Exception {
+        Path titleFolder = tempDir.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Files.createDirectories(titleFolder);
+        Files.createFile(titleFolder.resolve("uuid-123.noona"));
+        Files.createFile(titleFolder.resolve("Chapter 0001 [Pages 1 example.com - Noona].cbz"));
+
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setDownloadPath(titleFolder.toString());
+
+        List<com.paxkun.raven.service.library.DownloadedFile> files = libraryService.listDownloadedFiles(title, 20);
+
+        assertThat(files).hasSize(1);
+        assertThat(files.getFirst().name()).endsWith(".cbz");
+    }
+
+    @Test
+    void checkAvailableImportsRehydratesTitleFromNoonaManifestAndQueuesMissingChapters() throws Exception {
+        Path downloadsRoot = tempDir;
+        Path titleFolder = downloadsRoot.resolve("downloaded").resolve("manhwa").resolve("Solo Leveling");
+        Files.createDirectories(titleFolder);
+        Files.writeString(titleFolder.resolve("uuid-import.noona"), """
+                {
+                  "title": "Solo Leveling",
+                  "uuid": "uuid-import",
+                  "sourceUrl": "http://solo",
+                  "lastDownloaded": "2",
+                  "type": "Manhwa",
+                  "summary": "Hunter drama",
+                  "coverUrl": "https://covers.example/solo.jpg"
+                }
+                """);
+        Files.createFile(titleFolder.resolve("Chapter 0001 [Pages 1 example.com - Noona].cbz"));
+
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(downloadService.fetchChapters("http://solo")).thenReturn(List.of(
+                Map.of("chapter_number", "1", "chapter_title", "Chapter 1", "href", "http://solo/1"),
+                Map.of("chapter_number", "2", "chapter_title", "Chapter 2", "href", "http://solo/2")
+        ));
+        when(downloadService.startTrackedTask(any(NewTitle.class), anyString(), anyList(), anyList(), anyList(), anyString(), anyInt(), anyString()))
+                .thenAnswer(invocation -> new DownloadProgress(invocation.<NewTitle>getArgument(0).getTitleName()));
+        when(downloadService.downloadSingleChapter(argThat((NewTitle entry) -> "Solo Leveling".equals(entry.getTitleName())), eq("2"), any()))
+                .thenReturn(true);
+
+        LibraryService.LibraryImportSummary result = libraryService.checkAvailableImports();
+
+        assertEquals(1, result.manifestsFound());
+        assertEquals(1, result.importedTitles());
+        assertEquals(0, result.failedImports());
+        assertEquals(1, result.queuedChapters());
+        assertEquals(0, result.newChaptersQueued());
+        assertEquals(1, result.missingChaptersQueued());
+        assertThat(result.message()).contains("Imported 1 title(s)");
+        verify(downloadService).downloadSingleChapter(argThat((NewTitle entry) ->
+                        "Solo Leveling".equals(entry.getTitleName())
+                                && "uuid-import".equals(entry.getUuid())
+                                && titleFolder.toString().equals(entry.getDownloadPath())),
+                eq("2"),
+                any());
+        verify(kavitaSyncService, atLeastOnce()).scanLibraryForType("Manhwa", "manhwa");
     }
 
     @Test

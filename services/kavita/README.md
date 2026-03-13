@@ -48,6 +48,9 @@ needed, Portal creates or refreshes the matching Kavita account with a generated
 short-lived handoff token through `NOONA_PORTAL_BASE_URL` and completes a normal Kavita JWT login without exposing the
 generated password in the browser. The button now sends Moon an explicit public `/kavita/complete` callback URL plus
 the exact public Kavita `/login` target, which avoids proxy-related 404s after Discord auth succeeds on Moon.
+Kavita now strips the `noonaToken` query param from `/login` with `replaceUrl` as soon as it starts the handoff so
+refreshes or copied URLs do not keep replaying an expired token, and the backend now falls back to the token email if
+the resolved username is missing during the final account lookup.
 
 When `NOONA_MOON_BASE_URL` is missing, the managed build now falls back to the current host metadata in this order:
 `HOST_SERVICE_URL`, `SERVER_IP`, then the active request host, always targeting Moon's configured/default web port.

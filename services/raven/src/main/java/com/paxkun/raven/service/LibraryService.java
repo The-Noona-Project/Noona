@@ -1,5 +1,6 @@
 package com.paxkun.raven.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.reflect.TypeToken;
 import com.paxkun.raven.service.download.DownloadProgress;
 import com.paxkun.raven.service.library.NewChapter;
@@ -12,6 +13,7 @@ import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -29,6 +31,8 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 public class LibraryService {
     private static final String DOWNLOADED_FOLDER_NAME = "downloaded";
+    private static final String NOONA_MANIFEST_EXTENSION = ".noona";
+    private static final ObjectMapper MANIFEST_OBJECT_MAPPER = new ObjectMapper();
 
     private final VaultService vaultService;
     private final @Lazy DownloadService downloadService;
@@ -103,6 +107,31 @@ public class LibraryService {
             set.put("type", title.getType());
         }
 
+        if (title.getAssociatedNames() != null && !title.getAssociatedNames().isEmpty()) {
+            set.put("associatedNames", new ArrayList<>(title.getAssociatedNames()));
+        }
+
+        if (title.getStatus() != null && !title.getStatus().isBlank()) {
+            set.put("status", title.getStatus());
+        }
+
+        if (title.getReleased() != null && !title.getReleased().isBlank()) {
+            set.put("released", title.getReleased());
+        }
+
+        if (title.getOfficialTranslation() != null) {
+            set.put("officialTranslation", title.getOfficialTranslation());
+        }
+
+        if (title.getAnimeAdaptation() != null) {
+            set.put("animeAdaptation", title.getAnimeAdaptation());
+        }
+
+        List<Map<String, String>> relatedSeries = copyRelatedSeries(title.getRelatedSeries());
+        if (!relatedSeries.isEmpty()) {
+            set.put("relatedSeries", relatedSeries);
+        }
+
         ensureKavitaLibraryForType(title.getType());
 
         title.setLastDownloadedAt(now);
@@ -111,6 +140,7 @@ public class LibraryService {
 
         vaultService.update(COLLECTION, query, update, true);
         logger.info("LIBRARY", "Updated title [" + title.getTitleName() + "] to chapter " + effectiveLastDownloaded);
+        writeTitleImportManifest(title);
     }
 
     public List<NewTitle> getAllTitleObjects() {
@@ -212,6 +242,7 @@ public class LibraryService {
         try (Stream<Path> stream = Files.list(titleFolder)) {
             return stream
                     .filter(Files::isRegularFile)
+                    .filter((path) -> !isNoonaManifestFile(path))
                     .sorted((a, b) -> {
                         try {
                             return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a));
@@ -313,6 +344,70 @@ public class LibraryService {
         created.setLastDownloaded("0");
         addOrUpdateTitle(created, new NewChapter("0"));
         return created;
+    }
+
+    private void writeTitleImportManifest(NewTitle title) {
+        if (title == null) {
+            return;
+        }
+
+        String uuid = Optional.ofNullable(title.getUuid()).map(String::trim).orElse("");
+        String downloadPath = resolveTitleFolderPath(title);
+        if (uuid.isBlank() || downloadPath == null || downloadPath.isBlank()) {
+            return;
+        }
+
+        Path titleFolder = Path.of(downloadPath);
+        if (!Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
+            return;
+        }
+
+        Path manifestPath = titleFolder.resolve(uuid + NOONA_MANIFEST_EXTENSION);
+        NewTitle manifestTitle = new NewTitle();
+        manifestTitle.setTitleName(title.getTitleName());
+        manifestTitle.setUuid(title.getUuid());
+        manifestTitle.setSourceUrl(title.getSourceUrl());
+        manifestTitle.setLastDownloaded(title.getLastDownloaded());
+        manifestTitle.setLastDownloadedAt(title.getLastDownloadedAt());
+        manifestTitle.setChapterCount(title.getChapterCount());
+        manifestTitle.setChaptersDownloaded(title.getChaptersDownloaded());
+        manifestTitle.setDownloadPath(titleFolder.toString());
+        manifestTitle.setSummary(title.getSummary());
+        manifestTitle.setCoverUrl(title.getCoverUrl());
+        manifestTitle.setType(title.getType());
+        manifestTitle.setAssociatedNames(title.getAssociatedNames() == null ? List.of() : new ArrayList<>(title.getAssociatedNames()));
+        manifestTitle.setStatus(title.getStatus());
+        manifestTitle.setReleased(title.getReleased());
+        manifestTitle.setOfficialTranslation(title.getOfficialTranslation());
+        manifestTitle.setAnimeAdaptation(title.getAnimeAdaptation());
+        manifestTitle.setRelatedSeries(copyRelatedSeries(title.getRelatedSeries()));
+        manifestTitle.setDownloadedChapterNumbers(
+                title.getDownloadedChapterNumbers() == null ? List.of() : new ArrayList<>(title.getDownloadedChapterNumbers())
+        );
+
+        try {
+            String payload = MANIFEST_OBJECT_MAPPER
+                    .writerWithDefaultPrettyPrinter()
+                    .writeValueAsString(manifestTitle);
+            Files.writeString(
+                    manifestPath,
+                    payload,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            );
+        } catch (Exception e) {
+            logger.warn("LIBRARY", "Failed to write .noona manifest for [" + title.getTitleName() + "]: " + e.getMessage());
+        }
+    }
+
+    private boolean isNoonaManifestFile(Path path) {
+        if (path == null || path.getFileName() == null) {
+            return false;
+        }
+
+        String fileName = path.getFileName().toString().trim().toLowerCase(Locale.ROOT);
+        return fileName.endsWith(NOONA_MANIFEST_EXTENSION);
     }
 
     private String resolveDownloadPath(String titleName, String type) {
@@ -558,6 +653,14 @@ public class LibraryService {
         return downloadPath;
     }
 
+    private Path resolveDownloadedRoot() {
+        Path root = logger.getDownloadsRoot();
+        if (root == null) {
+            return null;
+        }
+        return root.resolve(DOWNLOADED_FOLDER_NAME);
+    }
+
     private Set<String> extractDownloadedChapterNumbers(NewTitle title) {
         if (title != null && title.getDownloadedChapterNumbers() != null && !title.getDownloadedChapterNumbers().isEmpty()) {
             Set<String> indexed = new LinkedHashSet<>();
@@ -577,27 +680,212 @@ public class LibraryService {
             return Set.of();
         }
 
-        Path titleFolder = Path.of(downloadPath);
-        if (!Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
+        return extractDownloadedChapterNumbersFromDirectory(Path.of(downloadPath), title != null ? title.getTitleName() : null);
+    }
+
+    private Set<String> extractDownloadedChapterNumbersFromDirectory(Path titleFolder, String titleName) {
+        if (titleFolder == null || !Files.exists(titleFolder) || !Files.isDirectory(titleFolder)) {
             return Set.of();
         }
 
         Set<String> chapterNumbers = new LinkedHashSet<>();
         try (Stream<Path> stream = Files.list(titleFolder)) {
-            stream.filter(Files::isRegularFile).forEach((path) -> {
-                String fileName = path.getFileName().toString();
-                String chapter = normalizeChapterNumber(extractChapterNumberFromTitle(fileName));
-                if (chapter != null && !chapter.isBlank()) {
-                    chapterNumbers.add(chapter);
-                }
-            });
+            stream.filter(Files::isRegularFile)
+                    .filter((path) -> !isNoonaManifestFile(path))
+                    .forEach((path) -> {
+                        String fileName = path.getFileName().toString();
+                        String chapter = normalizeChapterNumber(extractChapterNumberFromTitle(fileName));
+                        if (chapter != null && !chapter.isBlank()) {
+                            chapterNumbers.add(chapter);
+                        }
+                    });
         } catch (Exception e) {
             logger.warn(
                     "LIBRARY",
-                    "Failed to read existing chapter files for [" + title.getTitleName() + "]: " + e.getMessage());
+                    "Failed to read existing chapter files for [" + Optional.ofNullable(titleName).orElse("Untitled") + "]: " + e.getMessage());
         }
 
         return chapterNumbers;
+    }
+
+    private String resolveLatestDownloadedChapter(Collection<String> chapterNumbers, String fallback) {
+        String latest = normalizeChapterNumber(fallback);
+        if (latest == null || latest.isBlank()) {
+            latest = "0";
+        }
+
+        if (chapterNumbers == null) {
+            return latest;
+        }
+
+        for (String chapterNumber : chapterNumbers) {
+            String normalized = normalizeChapterNumber(chapterNumber);
+            if (normalized == null || normalized.isBlank()) {
+                continue;
+            }
+
+            if (compareChapterNumbers(normalized, latest) > 0) {
+                latest = normalized;
+            }
+        }
+
+        return latest;
+    }
+
+    private String inferMediaTypeFromTitleFolder(Path titleFolder) {
+        if (titleFolder == null) {
+            return null;
+        }
+
+        Path typeFolder = titleFolder.getParent();
+        if (typeFolder == null || typeFolder.getFileName() == null) {
+            return null;
+        }
+
+        return normalizeMediaType(typeFolder.getFileName().toString());
+    }
+
+    private List<Path> listAvailableImportManifests(Path downloadedRoot) {
+        if (downloadedRoot == null || !Files.exists(downloadedRoot) || !Files.isDirectory(downloadedRoot)) {
+            return List.of();
+        }
+
+        try (Stream<Path> stream = Files.walk(downloadedRoot)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .filter(this::isNoonaManifestFile)
+                    .sorted(Comparator.comparing(Path::toString))
+                    .toList();
+        } catch (Exception e) {
+            logger.warn("LIBRARY", "Failed to list available .noona imports: " + e.getMessage());
+            return List.of();
+        }
+    }
+
+    private NewTitle readTitleImportManifest(Path manifestPath) throws Exception {
+        if (manifestPath == null || !Files.exists(manifestPath) || !Files.isRegularFile(manifestPath)) {
+            throw new IllegalStateException("Manifest file does not exist.");
+        }
+
+        NewTitle title = MANIFEST_OBJECT_MAPPER.readValue(Files.readString(manifestPath), NewTitle.class);
+        if (title == null) {
+            throw new IllegalStateException("Manifest did not contain a valid title object.");
+        }
+
+        Path titleFolder = manifestPath.getParent();
+        String fileName = manifestPath.getFileName() != null ? manifestPath.getFileName().toString() : "";
+        String uuidFromFile = fileName.endsWith(NOONA_MANIFEST_EXTENSION)
+                ? fileName.substring(0, fileName.length() - NOONA_MANIFEST_EXTENSION.length())
+                : fileName;
+
+        if (title.getUuid() == null || title.getUuid().isBlank()) {
+            title.setUuid(uuidFromFile);
+        }
+        if (title.getTitleName() == null || title.getTitleName().isBlank()) {
+            title.setTitleName(titleFolder != null && titleFolder.getFileName() != null ? titleFolder.getFileName().toString() : "Untitled");
+        }
+
+        title.setDownloadPath(titleFolder != null ? titleFolder.toString() : title.getDownloadPath());
+        if (title.getType() == null || title.getType().isBlank()) {
+            title.setType(inferMediaTypeFromTitleFolder(titleFolder));
+        }
+
+        List<String> manifestDownloaded = title.getDownloadedChapterNumbers() == null
+                ? List.of()
+                : new ArrayList<>(title.getDownloadedChapterNumbers());
+        Set<String> discoveredDownloads = extractDownloadedChapterNumbersFromDirectory(titleFolder, title.getTitleName());
+        if (discoveredDownloads.isEmpty() && !manifestDownloaded.isEmpty()) {
+            discoveredDownloads = new LinkedHashSet<>(mergeDownloadedChapterNumbers(manifestDownloaded, null));
+        }
+
+        title.setDownloadedChapterNumbers(new ArrayList<>(discoveredDownloads));
+        title.setChaptersDownloaded(discoveredDownloads.size());
+        title.setLastDownloaded(resolveLatestDownloadedChapter(discoveredDownloads, title.getLastDownloaded()));
+
+        return title;
+    }
+
+    private NewTitle importTitleFromManifest(NewTitle importedTitle) {
+        if (importedTitle == null) {
+            return null;
+        }
+
+        NewTitle existing = null;
+        String importedUuid = Optional.ofNullable(importedTitle.getUuid()).map(String::trim).orElse("");
+        if (!importedUuid.isBlank()) {
+            existing = getTitleByUuid(importedUuid);
+        }
+        if (existing == null) {
+            String titleName = Optional.ofNullable(importedTitle.getTitleName()).map(String::trim).orElse("");
+            if (!titleName.isBlank()) {
+                existing = getTitle(titleName);
+            }
+        }
+
+        NewTitle target = existing != null ? existing : new NewTitle();
+        if ((target.getUuid() == null || target.getUuid().isBlank()) && !importedUuid.isBlank()) {
+            target.setUuid(importedUuid);
+        }
+        if (target.getTitleName() == null || target.getTitleName().isBlank()) {
+            target.setTitleName(importedTitle.getTitleName());
+        }
+        if (importedTitle.getSourceUrl() != null && !importedTitle.getSourceUrl().isBlank()) {
+            target.setSourceUrl(importedTitle.getSourceUrl());
+        }
+        if (importedTitle.getSummary() != null && !importedTitle.getSummary().isBlank()) {
+            target.setSummary(importedTitle.getSummary());
+        }
+        if (importedTitle.getCoverUrl() != null && !importedTitle.getCoverUrl().isBlank()) {
+            target.setCoverUrl(importedTitle.getCoverUrl());
+        }
+        if (importedTitle.getType() != null && !importedTitle.getType().isBlank()) {
+            target.setType(importedTitle.getType());
+        }
+        if (importedTitle.getAssociatedNames() != null && !importedTitle.getAssociatedNames().isEmpty()) {
+            target.setAssociatedNames(new ArrayList<>(importedTitle.getAssociatedNames()));
+        }
+        if (importedTitle.getStatus() != null && !importedTitle.getStatus().isBlank()) {
+            target.setStatus(importedTitle.getStatus());
+        }
+        if (importedTitle.getReleased() != null && !importedTitle.getReleased().isBlank()) {
+            target.setReleased(importedTitle.getReleased());
+        }
+        if (importedTitle.getOfficialTranslation() != null) {
+            target.setOfficialTranslation(importedTitle.getOfficialTranslation());
+        }
+        if (importedTitle.getAnimeAdaptation() != null) {
+            target.setAnimeAdaptation(importedTitle.getAnimeAdaptation());
+        }
+        if (importedTitle.getRelatedSeries() != null && !importedTitle.getRelatedSeries().isEmpty()) {
+            target.setRelatedSeries(copyRelatedSeries(importedTitle.getRelatedSeries()));
+        }
+        if (importedTitle.getDownloadPath() != null && !importedTitle.getDownloadPath().isBlank()) {
+            target.setDownloadPath(importedTitle.getDownloadPath());
+        }
+        if (importedTitle.getChapterCount() != null) {
+            target.setChapterCount(importedTitle.getChapterCount());
+        }
+        if (importedTitle.getChaptersDownloaded() != null) {
+            target.setChaptersDownloaded(importedTitle.getChaptersDownloaded());
+        }
+        if (importedTitle.getLastDownloadedAt() != null && !importedTitle.getLastDownloadedAt().isBlank()) {
+            target.setLastDownloadedAt(importedTitle.getLastDownloadedAt());
+        }
+        target.setLastDownloaded(resolveLatestDownloadedChapter(
+                importedTitle.getDownloadedChapterNumbers(),
+                importedTitle.getLastDownloaded()
+        ));
+        target.setDownloadedChapterNumbers(
+                importedTitle.getDownloadedChapterNumbers() == null
+                        ? List.of()
+                        : new ArrayList<>(importedTitle.getDownloadedChapterNumbers())
+        );
+        if (target.getChaptersDownloaded() == null) {
+            target.setChaptersDownloaded(target.getDownloadedChapterNumbers().size());
+        }
+
+        addOrUpdateTitle(target, null);
+        return target;
     }
 
     private String buildTitleSyncMessage(int totalQueued, int newQueued, int missingQueued) {
@@ -939,6 +1227,126 @@ public class LibraryService {
         );
     }
 
+    public LibraryImportSummary checkAvailableImports() {
+        Path downloadedRoot = resolveDownloadedRoot();
+        List<Path> manifests = listAvailableImportManifests(downloadedRoot);
+        if (manifests.isEmpty()) {
+            return new LibraryImportSummary(0, 0, 0, 0, 0, 0, 0, List.of(), "No available .noona imports were found.");
+        }
+
+        List<LibraryImportResult> results = new ArrayList<>();
+        Set<String> scanTypes = new LinkedHashSet<>();
+        int importedTitles = 0;
+        int failedImports = 0;
+        int queuedChapters = 0;
+        int newChaptersQueued = 0;
+        int missingChaptersQueued = 0;
+
+        try {
+            for (int index = 0; index < manifests.size(); index++) {
+                Path manifestPath = manifests.get(index);
+                String titleLabel = manifestPath.getParent() != null && manifestPath.getParent().getFileName() != null
+                        ? manifestPath.getParent().getFileName().toString()
+                        : manifestPath.getFileName().toString();
+                updateCurrentCheckActivity("imports", titleLabel, index, manifests.size());
+
+                try {
+                    NewTitle manifestTitle = readTitleImportManifest(manifestPath);
+                    NewTitle importedTitle = importTitleFromManifest(manifestTitle);
+                    if (importedTitle == null) {
+                        failedImports++;
+                        results.add(new LibraryImportResult(
+                                manifestTitle.getUuid(),
+                                manifestTitle.getTitleName(),
+                                manifestPath.toString(),
+                                "error",
+                                0,
+                                0,
+                                0,
+                                "Manifest did not produce an importable title."
+                        ));
+                        continue;
+                    }
+
+                    importedTitles++;
+                    if (importedTitle.getType() != null && !importedTitle.getType().isBlank()) {
+                        scanTypes.add(importedTitle.getType());
+                    }
+
+                    TitleSyncResult syncResult = syncTitleChapters(importedTitle);
+                    queuedChapters += syncResult.totalQueued();
+                    newChaptersQueued += syncResult.newChaptersQueued();
+                    missingChaptersQueued += syncResult.missingChaptersQueued();
+                    results.add(new LibraryImportResult(
+                            syncResult.uuid(),
+                            syncResult.title(),
+                            manifestPath.toString(),
+                            syncResult.status(),
+                            syncResult.totalQueued(),
+                            syncResult.newChaptersQueued(),
+                            syncResult.missingChaptersQueued(),
+                            syncResult.message()
+                    ));
+                } catch (Exception e) {
+                    failedImports++;
+                    results.add(new LibraryImportResult(
+                            null,
+                            titleLabel,
+                            manifestPath.toString(),
+                            "error",
+                            0,
+                            0,
+                            0,
+                            "Unable to import manifest: " + e.getMessage()
+                    ));
+                }
+            }
+        } finally {
+            clearCurrentCheckActivity();
+        }
+
+        for (String type : scanTypes) {
+            scanKavitaLibraryForType(type);
+        }
+
+        StringBuilder message = new StringBuilder()
+                .append("Imported ")
+                .append(importedTitles)
+                .append(" title(s) from ")
+                .append(manifests.size())
+                .append(" .noona file(s).");
+        if (queuedChapters > 0) {
+            message.append(" Queued ")
+                    .append(queuedChapters)
+                    .append(" chapter(s)")
+                    .append(" (")
+                    .append(newChaptersQueued)
+                    .append(" new, ")
+                    .append(missingChaptersQueued)
+                    .append(" missing).");
+        }
+        if (!scanTypes.isEmpty()) {
+            message.append(" Requested ")
+                    .append(scanTypes.size())
+                    .append(" Kavita scan(s).");
+        }
+        if (failedImports > 0) {
+            message.append(" Failed imports: ").append(failedImports).append('.');
+        }
+
+        return new LibraryImportSummary(
+                manifests.size(),
+                importedTitles,
+                failedImports,
+                queuedChapters,
+                newChaptersQueued,
+                missingChaptersQueued,
+                scanTypes.size(),
+                results,
+                message.toString()
+        );
+    }
+
     private boolean isNewer(String latest, String current) {
         return compareChapterNumbers(latest, current) > 0;
     }
@@ -959,6 +1367,22 @@ public class LibraryService {
 
     private void clearCurrentCheckActivity() {
         currentCheckActivity = null;
+    }
+
+    private List<Map<String, String>> copyRelatedSeries(List<Map<String, String>> relatedSeries) {
+        if (relatedSeries == null || relatedSeries.isEmpty()) {
+            return List.of();
+        }
+
+        List<Map<String, String>> copied = new ArrayList<>();
+        for (Map<String, String> entry : relatedSeries) {
+            if (entry == null || entry.isEmpty()) {
+                continue;
+            }
+            copied.add(new LinkedHashMap<>(entry));
+        }
+
+        return copied.isEmpty() ? List.of() : copied;
     }
 
     private record TitleSyncComputation(
@@ -999,6 +1423,31 @@ public class LibraryService {
             int newChaptersQueued,
             int missingChaptersQueued,
             List<TitleSyncResult> results,
+            String message
+    ) {
+    }
+
+    public record LibraryImportResult(
+            String uuid,
+            String title,
+            String manifestPath,
+            String status,
+            int totalQueued,
+            int newChaptersQueued,
+            int missingChaptersQueued,
+            String message
+    ) {
+    }
+
+    public record LibraryImportSummary(
+            int manifestsFound,
+            int importedTitles,
+            int failedImports,
+            int queuedChapters,
+            int newChaptersQueued,
+            int missingChaptersQueued,
+            int scannedLibraries,
+            List<LibraryImportResult> results,
             String message
     ) {
     }

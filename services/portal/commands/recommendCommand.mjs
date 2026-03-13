@@ -4,13 +4,41 @@ import {errMSG} from '../../../utilities/etc/logger.mjs';
 import {resolveDiscordId, respondWithError} from './utils.mjs';
 
 const MAX_VISIBLE_RESULTS = 5;
+const MAX_BUTTONS_PER_ROW = 5;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const SESSION_PREFIX = 'recommend';
 const TITLE_LIMIT = 72;
+const MISSING_TITLE_LABEL = 'Can\'t find your title?';
+const SAVED_FOR_LATER_MESSAGE = 'We\'re working to expand our content reach, and this will be saved for later.';
 const MOON_SERVICE_NAMES = new Set(['noona-moon', 'moon']);
 const DEFAULT_MOON_RECOMMENDATION_PATH_PREFIX = '/myrecommendations/';
 
 const normalizeString = value => (typeof value === 'string' ? value.trim() : '');
+const normalizeBoolean = value => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        if (value === 1) return true;
+        if (value === 0) return false;
+    }
+
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === '1') {
+        return true;
+    }
+
+    if (normalized === 'false' || normalized === 'no' || normalized === 'n' || normalized === '0') {
+        return false;
+    }
+
+    return null;
+};
 const normalizeTitleKey = value => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim();
 const normalizeSeriesInteger = value => {
     const parsed = Number.parseInt(String(value), 10);
@@ -153,26 +181,51 @@ const normalizeSearchOptions = (options = []) => Array.isArray(options)
         .filter(Boolean)
     : [];
 
-const buildRecommendationSummary = (query, options) => [
-    `Select the Raven match to recommend for "${query}":`,
-    ...options.map((option, idx) => `${idx + 1}. ${truncate(option.title)}${option.href ? ` | ${option.href}` : ''}`),
-    'This selection expires in 10 minutes.',
-].join('\n');
+const buildRecommendationSummary = (query, options) => {
+    if (!options.length) {
+        return [
+            `No Raven titles were found for "${query}".`,
+            `Use "${MISSING_TITLE_LABEL}" below to save it for later.`,
+            'This selection expires in 10 minutes.',
+        ].join('\n');
+    }
+
+    return [
+        `Select the Raven match to recommend for "${query}":`,
+        ...options.map((option, idx) => `${idx + 1}. ${truncate(option.title)}${option.href ? ` | ${option.href}` : ''}`),
+        `If none of these match, use "${MISSING_TITLE_LABEL}" below.`,
+        'This selection expires in 10 minutes.',
+    ].join('\n');
+};
 
 const createSessionId = () => crypto.randomBytes(6).toString('hex');
 
 const selectCustomId = (sessionId, slot) => `${SESSION_PREFIX}:select:${sessionId}:${slot}`;
+const missingCustomId = sessionId => `${SESSION_PREFIX}:missing:${sessionId}`;
 const cancelCustomId = sessionId => `${SESSION_PREFIX}:cancel:${sessionId}`;
 
 const buildComponents = (sessionId, options) => {
-    const selectionRow = new ActionRowBuilder().addComponents(
+    const selectionButtons = [
         ...options.map((option, idx) =>
             new ButtonBuilder()
                 .setCustomId(selectCustomId(sessionId, option.slot))
                 .setLabel(String(idx + 1))
                 .setStyle(ButtonStyle.Secondary),
         ),
-    );
+        new ButtonBuilder()
+            .setCustomId(missingCustomId(sessionId))
+            .setLabel(MISSING_TITLE_LABEL)
+            .setStyle(ButtonStyle.Primary),
+    ];
+
+    const selectionRows = [];
+    for (let index = 0; index < selectionButtons.length; index += MAX_BUTTONS_PER_ROW) {
+        selectionRows.push(
+            new ActionRowBuilder().addComponents(
+                ...selectionButtons.slice(index, index + MAX_BUTTONS_PER_ROW),
+            ),
+        );
+    }
 
     const cancelRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -181,7 +234,7 @@ const buildComponents = (sessionId, options) => {
             .setStyle(ButtonStyle.Danger),
     );
 
-    return [selectionRow, cancelRow];
+    return [...selectionRows, cancelRow];
 };
 
 const updateComponentReply = async (interaction, payload) => {
@@ -381,7 +434,7 @@ export const createRecommendCommand = ({
         }
     };
     const resolveDiscordClient = () => discord ?? getDiscord?.() ?? null;
-    const sendRecommendationReceiptDm = async ({interaction, title, recommendationId}) => {
+    const sendRecommendationReceiptDm = async ({interaction, title, recommendationId, savedForLater = false}) => {
         const discordUserId = resolveDiscordId(interaction);
         const discordUser = interaction?.user;
         const liveDiscordClient = resolveDiscordClient();
@@ -390,7 +443,9 @@ export const createRecommendCommand = ({
         const normalizedRecommendationId = resolveRecommendationId(recommendationId);
         const lines = [
             `Thanks for your recommendation for **${title}**.`,
-            `I'll send you a message when it's approved or denied.`,
+            savedForLater
+                ? `We couldn't find a Raven source for it yet. ${SAVED_FOR_LATER_MESSAGE}`
+                : `I'll send you a message when it's approved or denied.`,
         ];
         if (moonRecommendationUrl) {
             lines.push(`Track it in Moon: ${moonRecommendationUrl}`);
@@ -411,6 +466,84 @@ export const createRecommendCommand = ({
         } catch (error) {
             errMSG(`[Portal/Discord] Failed to send initial recommendation DM for "${title}": ${error.message}`);
             return {sent: false, reason: error instanceof Error ? error.message : String(error), moonRecommendationUrl};
+        }
+    };
+    const storePendingRecommendation = async ({
+                                                  interaction,
+                                                  session,
+                                                  sessionId,
+                                                  selected = null,
+                                              } = {}) => {
+        const recommendationTitle = selected?.title || session?.query;
+        const recommendationHref = selected?.href || null;
+        const selectedOptionIndex = selected?.optionIndex ?? null;
+        const recommendationSearchId = selected ? session?.searchId ?? null : null;
+        const requestedAtIso = new Date(Number(now())).toISOString();
+        let sourceAdultContent = null;
+        if (recommendationHref && typeof raven?.getTitleDetails === 'function') {
+            try {
+                const sourceDetails = await raven.getTitleDetails(recommendationHref);
+                sourceAdultContent = normalizeBoolean(sourceDetails?.adultContent);
+            } catch (error) {
+                errMSG(`[Portal/Discord] Failed to fetch Raven title details for "${recommendationTitle}": ${error.message}`);
+            }
+        }
+
+        const recommendation = {
+            source: 'discord',
+            status: 'pending',
+            requestedAt: requestedAtIso,
+            query: session?.query || recommendationTitle,
+            searchId: recommendationSearchId,
+            selectedOptionIndex,
+            title: recommendationTitle,
+            href: recommendationHref,
+            sourceAdultContent,
+            requestedBy: {
+                discordId: session?.requestedById || null,
+                tag: session?.requestedByTag || null,
+            },
+            discordContext: {
+                guildId: session?.guildId || null,
+                channelId: session?.channelId || null,
+            },
+        };
+
+        try {
+            const result = await vault.storeRecommendation(recommendation);
+            pendingSessions.delete(sessionId);
+            const recommendationId = resolveRecommendationId(result?.insertedId);
+            const insertedId = recommendationId ? ` (id: ${recommendationId})` : '';
+            const savedForLater = !selected;
+            const receiptDm = await sendRecommendationReceiptDm({
+                interaction,
+                title: recommendationTitle,
+                recommendationId,
+                savedForLater,
+            });
+            const dmSuffix = receiptDm.sent
+                ? '\nI also sent this as a DM.'
+                : '\nI could not DM you. Check Discord privacy settings if you want direct updates there.';
+            const content = savedForLater
+                ? `Thanks for your recommendation for **${recommendationTitle}**${insertedId}. ${SAVED_FOR_LATER_MESSAGE}${dmSuffix}`
+                : `Thanks for your recommendation for **${recommendationTitle}**${insertedId}. I'll send you a message when it's approved or denied.${dmSuffix}`;
+            await updateComponentReply(interaction, {
+                content,
+                components: [],
+            });
+        } catch (error) {
+            errMSG(`[Portal/Discord] Failed to store recommendation "${recommendationTitle}": ${error.message}`);
+            const errorText = normalizeString(error?.body?.error)
+                || normalizeString(error?.message);
+            const looksTransient =
+                /internal server error|timed out|timeout|temporarily unavailable|service unavailable/i.test(errorText);
+            const content = looksTransient
+                ? `Recommendation storage is still starting. Please try /recommend again in a few seconds.`
+                : `Failed to save recommendation for **${recommendationTitle}**. Try again.`;
+            await updateComponentReply(interaction, {
+                content,
+                components: buildComponents(sessionId, session?.options ?? []),
+            });
         }
     };
 
@@ -451,14 +584,6 @@ export const createRecommendCommand = ({
             }
 
             const options = normalizeSearchOptions(searchResult?.options).slice(0, MAX_VISIBLE_RESULTS);
-            if (!options.length) {
-                await interaction.editReply?.({
-                    content: `No Raven titles found for "${query}".`,
-                    components: [],
-                });
-                return;
-            }
-
             const sessionId = createSessionId();
             pendingSessions.set(sessionId, {
                 sessionId,
@@ -510,6 +635,20 @@ export const createRecommendCommand = ({
                 await interaction.reply?.({
                     content: 'Only the user who started this recommendation can confirm it.',
                     flags: MessageFlags.Ephemeral,
+                });
+                return true;
+            }
+
+            if (action === 'missing') {
+                if (!vault?.storeRecommendation) {
+                    throw new Error('Vault client is not configured for recommendations.');
+                }
+
+                await storePendingRecommendation({
+                    interaction,
+                    session,
+                    sessionId,
+                    selected: null,
                 });
                 return true;
             }
@@ -569,58 +708,12 @@ export const createRecommendCommand = ({
                 return true;
             }
 
-            const requestedAtIso = new Date(Number(now())).toISOString();
-            const recommendation = {
-                source: 'discord',
-                status: 'pending',
-                requestedAt: requestedAtIso,
-                query: session.query,
-                searchId: session.searchId,
-                selectedOptionIndex: selected.optionIndex,
-                title: selected.title,
-                href: selected.href || null,
-                requestedBy: {
-                    discordId: session.requestedById,
-                    tag: session.requestedByTag,
-                },
-                discordContext: {
-                    guildId: session.guildId,
-                    channelId: session.channelId,
-                },
-            };
-
-            try {
-                const result = await vault.storeRecommendation(recommendation);
-                pendingSessions.delete(sessionId);
-                const recommendationId = resolveRecommendationId(result?.insertedId);
-                const insertedId = recommendationId ? ` (id: ${recommendationId})` : '';
-                const receiptDm = await sendRecommendationReceiptDm({
-                    interaction,
-                    title: selected.title,
-                    recommendationId,
-                });
-                const dmSuffix = receiptDm.sent
-                    ? '\nI also sent this as a DM.'
-                    : '\nI could not DM you. Check Discord privacy settings if you want direct updates there.';
-                await updateComponentReply(interaction, {
-                    content: `Thanks for your recommendation for **${selected.title}**${insertedId}. I'll send you a message when it's approved or denied.${dmSuffix}`,
-                    components: [],
-                });
-            } catch (error) {
-                errMSG(`[Portal/Discord] Failed to store recommendation "${selected.title}": ${error.message}`);
-                const errorText = normalizeString(error?.body?.error)
-                    || normalizeString(error?.message);
-                const looksTransient =
-                    /internal server error|timed out|timeout|temporarily unavailable|service unavailable/i.test(errorText);
-                const content = looksTransient
-                    ? `Recommendation storage is still starting. Please try /recommend again in a few seconds.`
-                    : `Failed to save recommendation for **${selected.title}**. Try again.`;
-                await updateComponentReply(interaction, {
-                    content,
-                    components: buildComponents(sessionId, session.options),
-                });
-            }
-
+            await storePendingRecommendation({
+                interaction,
+                session,
+                sessionId,
+                selected,
+            });
             return true;
         },
     };

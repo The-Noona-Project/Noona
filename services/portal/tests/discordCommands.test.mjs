@@ -738,6 +738,13 @@ test('recommend command searches Raven and stores the selected recommendation in
                     ],
                 };
             },
+            getTitleDetails: async (sourceUrl) => {
+                assert.equal(sourceUrl, 'https://source.example/solo-leveling');
+                return {
+                    sourceUrl,
+                    adultContent: true,
+                };
+            },
         },
         vault: {
             storeRecommendation: async recommendation => {
@@ -757,8 +764,9 @@ test('recommend command searches Raven and stores the selected recommendation in
     assert.equal(edits[0].components.length, 2);
 
     const [selectionRow] = edits[0].components.map(row => row.toJSON());
-    assert.equal(selectionRow.components.length, 2);
+    assert.equal(selectionRow.components.length, 3);
     const firstButton = selectionRow.components[0];
+    assert.equal(selectionRow.components[2].label, "Can't find your title?");
 
     const button = createRecommendButtonInteraction({customId: firstButton.custom_id});
     await command.handleComponent(button.interaction);
@@ -773,6 +781,7 @@ test('recommend command searches Raven and stores the selected recommendation in
         selectedOptionIndex: 1,
         title: 'Solo Leveling',
         href: 'https://source.example/solo-leveling',
+        sourceAdultContent: true,
         requestedBy: {
             discordId: 'discord-user-1',
             tag: 'Member#0001',
@@ -790,6 +799,101 @@ test('recommend command searches Raven and stores the selected recommendation in
     assert.equal(button.dms.length, 1);
     assert.match(button.dms[0].content, /Thanks for your recommendation for \*\*Solo Leveling\*\*/i);
     assert.match(button.dms[0].content, /approved or denied/i);
+});
+
+test('recommend command saves an unmatched recommendation when the user cannot find the title', async () => {
+    const storedRecommendations = [];
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async () => ({
+                searchId: 'search-missing-42',
+                options: [
+                    {index: '1', title: 'Solo Leveling', href: 'https://source.example/solo-leveling'},
+                    {index: '2', title: 'Solo Leveling: Side Story', href: 'https://source.example/solo-leveling-side'},
+                ],
+            }),
+        },
+        vault: {
+            storeRecommendation: async recommendation => {
+                storedRecommendations.push(recommendation);
+                return {insertedId: 'missing-100'};
+            },
+        },
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction({title: 'Only I Level Up'});
+
+    await command.execute(interaction);
+
+    const [selectionRow] = edits[0].components.map(row => row.toJSON());
+    const missingButton = selectionRow.components.find((component) => component.label === "Can't find your title?");
+    assert.ok(missingButton);
+
+    const button = createRecommendButtonInteraction({customId: missingButton.custom_id});
+    await command.handleComponent(button.interaction);
+
+    assert.deepEqual(storedRecommendations, [
+        {
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2026-03-04T00:00:00.000Z',
+            query: 'Only I Level Up',
+            searchId: null,
+            selectedOptionIndex: null,
+            title: 'Only I Level Up',
+            href: null,
+            sourceAdultContent: null,
+            requestedBy: {
+                discordId: 'discord-user-1',
+                tag: 'Member#0001',
+            },
+            discordContext: {
+                guildId: 'guild-1',
+                channelId: 'channel-1',
+            },
+        },
+    ]);
+    assert.equal(button.edits.length, 1);
+    assert.match(button.edits[0].content, /expand our content reach/i);
+    assert.equal(button.dms.length, 1);
+    assert.match(button.dms[0].content, /couldn't find a Raven source/i);
+});
+
+test('recommend command lets users save titles for later when Raven returns no matches', async () => {
+    const storedRecommendations = [];
+    const command = createRecommendCommand({
+        raven: {
+            searchTitle: async () => ({
+                searchId: null,
+                options: [],
+            }),
+        },
+        vault: {
+            storeRecommendation: async recommendation => {
+                storedRecommendations.push(recommendation);
+                return {insertedId: 'missing-101'};
+            },
+        },
+        now: () => Date.parse('2026-03-04T00:00:00.000Z'),
+    });
+    const {interaction, edits} = createRecommendInteraction({title: 'Unknown Hunter Story'});
+
+    await command.execute(interaction);
+
+    assert.equal(edits.length, 1);
+    assert.match(edits[0].content, /No Raven titles were found/i);
+    const [selectionRow] = edits[0].components.map(row => row.toJSON());
+    assert.equal(selectionRow.components.length, 1);
+    assert.equal(selectionRow.components[0].label, "Can't find your title?");
+
+    const button = createRecommendButtonInteraction({customId: selectionRow.components[0].custom_id});
+    await command.handleComponent(button.interaction);
+
+    assert.equal(storedRecommendations.length, 1);
+    assert.equal(storedRecommendations[0].title, 'Unknown Hunter Story');
+    assert.equal(storedRecommendations[0].searchId, null);
+    assert.equal(storedRecommendations[0].selectedOptionIndex, null);
+    assert.match(button.edits[0].content, /saved for later/i);
 });
 
 test('recommend command initial DM includes a Moon myrecommendations link when MOON_BASE_URL is configured', async () => {

@@ -40,6 +40,8 @@ default Discord roles.
 - Persist portal credentials plus recommendation/subscription documents in Vault, assign Discord roles when configured,
   DM recommendation requesters when approvals/admin comments/completed imports are detected, and DM subscribers when
   Raven finishes new chapters for tracked titles.
+- Poll Warden through a dedicated Warden API bearer token instead of anonymous control-plane reads. Portal's Warden
+  client is intentionally limited to read-only activity endpoints.
 - Queue outbound Discord DMs through Vault Redis packet APIs so per-user recommendation notifications stay in-order.
   Portal now prefers Redis list packets (`rpush`/`lpop`) for FIFO queueing, with a compatibility fallback to legacy
   Redis `set`/`get`/`del` packets when needed.
@@ -52,12 +54,18 @@ default Discord roles.
 - `GET /api/portal/kavita/info` - return the Kavita link base URL for Moon buttons, preferring `KAVITA_EXTERNAL_URL`
   when configured, plus managed-service hints.
 - `GET /api/portal/kavita/title-search` - search Kavita series and return direct Kavita title URLs for Moon title pages.
+- `GET /api/portal/kavita/series-metadata` - return Kavita metadata-match status entries for Moon batch metadata
+  flows, including direct series URLs plus the current matched vs `notMatched` state.
 - `GET /api/portal/kavita/title-cover/:titleUuid` - proxy the stored Noona cover art for a Raven title so Kavita can
   download and lock the same cover image Moon displays.
 - `POST /api/portal/kavita/libraries/ensure` - idempotently create or reuse a Kavita library for Raven-managed media
   folders and merge in any missing Raven folder roots on existing libraries.
 - `POST /api/portal/kavita/libraries/scan` - resolve a Kavita library by name and trigger a scan for Raven-managed
   imports.
+- `POST /api/portal/kavita/title-match/search` - fetch standalone Komf metadata candidates for a Moon recommendation
+  approval before the title exists in Kavita, returning the same normalized provider/result fields Moon later stores as
+  a deferred metadata plan on the recommendation record. Portal now also normalizes `adultContent` when Komf exposes
+  fields such as `Adult Content: yes`, so Moon can warn admins before approval.
 - `POST /api/portal/kavita/title-match` - fetch Komf metadata candidates for the selected Kavita series id and Moon
   title query. Portal now queries Komf directly through `/api/kavita/metadata/search`, normalizes Komf provider/result
   ids into Moon's flat match shape, and returns compact operator-facing `500` guidance when Komf fails server-side.
@@ -81,6 +89,9 @@ default Discord roles.
   `Username already taken`, Portal now looks up existing users and remaps the handoff to a matching existing account
   (preferring email matches), preserving that account's roles, libraries, and age restriction. Portal also persists
   the generated handoff password in Vault and reuses a stored Vault password as `oldPassword` on future updates.
+  Vault credential reads/writes are now best-effort during this flow, so a valid one-time login token can still be
+  issued when Vault is temporarily unavailable. If token storage itself returns a malformed record without a token,
+  Portal now fails the request with an explicit `502` instead of sending Moon an unusable response.
 - `POST /api/portal/kavita/login-tokens/consume` - redeem a short-lived one-time Kavita login token issued by the
   Noona handoff flow.
 - `GET /api/portal/join-options` - list Kavita roles, role descriptions, and libraries used by Moon's Portal settings
@@ -99,10 +110,14 @@ default Discord roles.
 - `/search` - search Kavita series titles by name and return matching series results.
 - `/recommend title:<name>` - search Raven for up to five title matches, ask the user to confirm the intended title
   with Discord buttons, then insert a pending recommendation document into Vault's `portal_recommendations`
-  collection. After insertion Portal sends an immediate DM receipt to the requester confirming the recommendation and,
-  when Moon URL discovery succeeds, includes a direct `/myrecommendations/<id>` link. If the confirmed title already
-  exists in Raven's library, Portal skips insertion and responds that the title is already on the server plus a Kavita
-  title link when one can be resolved (preferring `KAVITA_EXTERNAL_URL`).
+  collection. The Discord picker now also includes a `Can't find your title?` fallback action so users can save a
+  recommendation even when none of Raven's current source results match. After insertion Portal sends an immediate DM
+  receipt to the requester confirming the recommendation and, when Moon URL discovery succeeds, includes a direct
+  `/myrecommendations/<id>` link. If the confirmed title already exists in Raven's library, Portal skips insertion and
+  responds that the title is already on the server plus a Kavita title link when one can be resolved (preferring
+  `KAVITA_EXTERNAL_URL`). When Raven can inspect the selected source title page, Portal also stores
+  `sourceAdultContent` from the source site's `Adult Content` tag on the recommendation document so Moon admins can be
+  warned before approval.
 - `/subscribe title:<name>` - subscribe the Discord user to a Raven title and store the subscription in Vault's
   `portal_subscriptions` collection. Portal sends the subscriber a DM whenever Raven reports newly completed chapter
   numbers for that title.
@@ -117,7 +132,9 @@ default Discord roles.
   when an admin adds a recommendation timeline comment, including a direct Moon link to `/myrecommendations/<id>`.
   The same poller now mirrors Raven download activity into each recommendation timeline by appending
   `download-started`, periodic `download-progress` milestones, and `download-completed` system events before
-  completion DMs go out.
+  completion DMs go out. When Sage/Moon stored a confirmed `metadataSelection` during approval, Portal now waits until
+  Raven's imported title is visible and Kavita can resolve the scanned series, then applies that saved metadata match
+  through Komf/Kavita and records the apply result back onto the recommendation before completion messaging finishes.
 - Subscription follow-up DMs: Portal polls active `portal_subscriptions` documents and DM-notifies each subscriber
   whenever Raven exposes new `completedChapterNumbers` for a matched title task.
 - Boot behavior: when Discord is configured, Portal logs in, clears current-app global commands, clears the guild
@@ -137,6 +154,7 @@ default Discord roles.
 | `PORTAL_JOIN_DEFAULT_ROLES` / `PORTAL_JOIN_DEFAULT_LIBRARIES`         | Default Kavita access for `/join` (`*,-admin` for roles and `*` for libraries by default)                      |
 | `VAULT_BASE_URL` / `VAULT_ACCESS_TOKEN` (`VAULT_API_TOKEN` supported) | Vault API connection; Warden injects a generated `VAULT_API_TOKEN` for managed Portal installs                 |
 | `RAVEN_BASE_URL` / `WARDEN_BASE_URL`                                  | Optional activity-poll targets for Discord bot presence                                                        |
+| `WARDEN_API_TOKEN`                                                    | Bearer token Portal uses for Warden activity polling                                                           |
 | `MOON_BASE_URL`                                                       | Optional direct Moon URL override for recommendation DMs (fallback uses Warden service URLs)                   |
 | `PORTAL_ACTIVITY_POLL_MS`                                             | Poll interval for Discord presence refreshes (default `15000`)                                                 |
 | `PORTAL_RECOMMENDATION_POLL_MS`                                       | Poll interval for recommendation and subscription DM checks (default `30000`)                                  |

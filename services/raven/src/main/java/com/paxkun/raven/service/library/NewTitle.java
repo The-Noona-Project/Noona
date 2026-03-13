@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents a manga title stored in the Raven library.
@@ -69,6 +70,36 @@ public class NewTitle {
      * Optional title type scraped from the source site (ex: Manga, Manhwa).
      */
     private String type;
+
+    /**
+     * Alternate names listed on the source title page.
+     */
+    private List<String> associatedNames;
+
+    /**
+     * Source-site release status (ex: Ongoing, Complete).
+     */
+    private String status;
+
+    /**
+     * Source-site release year or label.
+     */
+    private String released;
+
+    /**
+     * Whether the source marks this title as officially translated.
+     */
+    private Boolean officialTranslation;
+
+    /**
+     * Whether the source marks this title as having an anime adaptation.
+     */
+    private Boolean animeAdaptation;
+
+    /**
+     * Related series links scraped from the source title page.
+     */
+    private List<Map<String, String>> relatedSeries;
 
     /**
      * Canonical downloaded chapter index used for missing-chapter detection.

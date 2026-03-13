@@ -195,6 +195,52 @@ export function registerSetupRoutes(context = {}) {
         }
     })
 
+    app.get('/api/setup/layout', async (_req, res) => {
+        try {
+            const layout = await setupClient.getStorageLayout()
+            res.json(layout ?? {root: null, services: []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load storage layout: ${error.message}`)
+            res.status(502).json({error: 'Unable to load storage layout.'})
+        }
+    })
+
+    app.get('/api/setup/config', async (_req, res) => {
+        try {
+            const config = await setupClient.getSetupConfig()
+            res.json(config ?? {
+                exists: false,
+                path: null,
+                snapshot: null,
+                error: null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load setup config snapshot: ${error.message}`)
+            res.status(502).json({error: 'Unable to load setup config snapshot.'})
+        }
+    })
+
+    app.post('/api/setup/config', async (req, res) => {
+        const body = req.body ?? {}
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            res.status(400).json({error: 'Setup config payload must be a JSON object.'})
+            return
+        }
+
+        try {
+            const config = await setupClient.saveSetupConfig(body)
+            res.json(config ?? {})
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({error: error.message})
+                return
+            }
+
+            logger.error(`[${serviceName}] ⚠️ Failed to persist setup config snapshot: ${error.message}`)
+            res.status(502).json({error: 'Unable to persist setup config snapshot.'})
+        }
+    })
+
     app.post('/api/setup/install', async (req, res) => {
         try {
             const asyncRequested = ['1', 'true', 'yes', 'on'].includes(String(req.query?.async ?? '').trim().toLowerCase())

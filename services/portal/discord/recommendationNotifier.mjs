@@ -375,13 +375,13 @@ const hasTimelineEventType = (entry = {}, type = '') =>
     recommendationTimelineEvents(entry).some(event => normalizeTimelineType(event) === type);
 const createTimelineEventId = (type = 'event') =>
     `${type}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10) || 'timeline'}`;
-const createSystemTimelineEvent = ({id, type, body, createdAt} = {}) => ({
+const createSystemTimelineEvent = ({id, type, body, createdAt, username = 'Raven'} = {}) => ({
     id: normalizeString(id) || createTimelineEventId(type),
     type,
     createdAt: normalizeTimelineTimestamp(createdAt) || new Date().toISOString(),
     actor: {
         role: 'system',
-        username: 'Raven',
+        username: normalizeString(username) || 'Raven',
         discordId: null,
         tag: null,
     },
@@ -402,6 +402,117 @@ const normalizePositiveInteger = value => {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
+const normalizeMetadataIdentifier = value => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return String(value);
+    }
+
+    const normalized = normalizeString(value);
+    return normalized || null;
+};
+const normalizeRecommendationMetadataStatus = value => {
+    const normalized = normalizeString(value).toLowerCase();
+    if (normalized === 'applied' || normalized === 'failed') {
+        return normalized;
+    }
+
+    return 'pending';
+};
+const normalizeRecommendationMetadataAdultContent = value => {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        if (value === 1) {
+            return true;
+        }
+        if (value === 0) {
+            return false;
+        }
+    }
+
+    const normalized = normalizeString(value).toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === '1') {
+        return true;
+    }
+
+    if (normalized === 'false' || normalized === 'no' || normalized === 'n' || normalized === '0') {
+        return false;
+    }
+
+    return null;
+};
+const normalizeRecommendationMetadataSelection = entry => {
+    const source = entry?.metadataSelection;
+    if (!source || typeof source !== 'object') {
+        return null;
+    }
+
+    const aliases = normalizeStringArray(source?.aliases);
+    const selection = {
+        status: normalizeRecommendationMetadataStatus(source?.status),
+        query: normalizeString(source?.query) || null,
+        title: normalizeString(source?.title) || null,
+        aliases,
+        provider: normalizeString(source?.provider) || null,
+        providerSeriesId: normalizeMetadataIdentifier(source?.providerSeriesId),
+        aniListId: normalizeMetadataIdentifier(source?.aniListId),
+        malId: normalizeMetadataIdentifier(source?.malId),
+        cbrId: normalizeMetadataIdentifier(source?.cbrId),
+        summary: normalizeString(source?.summary) || null,
+        sourceUrl: normalizeAbsoluteUrl(source?.sourceUrl),
+        coverImageUrl: normalizeAbsoluteUrl(source?.coverImageUrl),
+        adultContent: normalizeRecommendationMetadataAdultContent(
+            source?.adultContent ?? source?.adult_content ?? source?.['Adult Content'],
+        ),
+        selectedAt: normalizeTimelineTimestamp(source?.selectedAt),
+        selectedBy: source?.selectedBy && typeof source.selectedBy === 'object'
+            ? {
+                username: normalizeString(source.selectedBy?.username) || null,
+                discordId: normalizeString(source.selectedBy?.discordId) || null,
+            }
+            : null,
+        queuedAt: normalizeTimelineTimestamp(source?.queuedAt),
+        titleUuid: normalizeString(source?.titleUuid) || null,
+        appliedAt: normalizeTimelineTimestamp(source?.appliedAt),
+        appliedSeriesId: normalizeSeriesInteger(source?.appliedSeriesId),
+        appliedLibraryId: normalizeSeriesInteger(source?.appliedLibraryId),
+        appliedTitle: normalizeString(source?.appliedTitle) || null,
+        lastAttemptedAt: normalizeTimelineTimestamp(source?.lastAttemptedAt),
+        lastError: normalizeString(source?.lastError) || null,
+    };
+
+    const hasUsefulData = Boolean(
+        selection.query
+        || selection.title
+        || aliases.length > 0
+        || selection.provider
+        || selection.providerSeriesId
+        || selection.aniListId
+        || selection.malId
+        || selection.cbrId
+        || selection.summary
+        || selection.sourceUrl
+        || selection.coverImageUrl
+        || selection.adultContent != null,
+    );
+
+    return hasUsefulData ? selection : null;
+};
+const recommendationMetadataHasIdentifiers = selection => Boolean(
+    (
+        normalizeString(selection?.provider)
+        && normalizeMetadataIdentifier(selection?.providerSeriesId)
+    )
+    || normalizeMetadataIdentifier(selection?.aniListId)
+    || normalizeMetadataIdentifier(selection?.malId)
+    || normalizeMetadataIdentifier(selection?.cbrId),
+);
 const resolveDownloadTaskTimestamp = (task = {}) =>
     normalizeTimelineTimestamp(task?.completedAt)
     || normalizeTimelineTimestamp(task?.startedAt)
@@ -625,6 +736,7 @@ export const createRecommendationNotifier = ({
                                                  vaultClient,
                                                  ravenClient,
                                                  kavitaClient,
+                                                 komfClient,
                                                  wardenClient,
                                                  moonBaseUrl,
                                                  kavitaBaseUrl,
@@ -665,6 +777,39 @@ export const createRecommendationNotifier = ({
         }
 
         return false;
+    };
+    const persistMetadataSelectionUpdate = async ({entry, metadataSelection, timelineEvent = null} = {}) => {
+        const normalizedSelection = metadataSelection && typeof metadataSelection === 'object'
+            ? metadataSelection
+            : null;
+        if (!normalizedSelection) {
+            return false;
+        }
+
+        const nextTimeline = timelineEvent
+            ? sortTimelineEvents([
+                ...recommendationTimelineEvents(entry),
+                timelineEvent,
+            ])
+            : null;
+        const update = {
+            $set: {
+                metadataSelection: normalizedSelection,
+            },
+        };
+        if (nextTimeline) {
+            update.$set.timeline = nextTimeline;
+        }
+
+        const persisted = await persistRecommendationUpdate(entry, update);
+        if (persisted) {
+            entry.metadataSelection = normalizedSelection;
+            if (nextTimeline) {
+                entry.timeline = nextTimeline;
+            }
+        }
+
+        return persisted;
     };
     const resolveMoonBaseUrl = async () => {
         if (cachedMoonBaseUrl) {
@@ -1008,6 +1153,143 @@ export const createRecommendationNotifier = ({
             inFlightNotifications.delete(key);
         }
     };
+    const applyDeferredRecommendationMetadata = async ({entry, existingTitle} = {}) => {
+        if (!isApprovedStatus(entry?.status) || !existingTitle) {
+            return;
+        }
+
+        const metadataSelection = normalizeRecommendationMetadataSelection(entry);
+        if (!metadataSelection || metadataSelection.status === 'applied' || !recommendationMetadataHasIdentifiers(metadataSelection)) {
+            return;
+        }
+
+        if (typeof kavitaClient?.searchTitles !== 'function') {
+            return;
+        }
+
+        const titleName = getLibraryTitleName(existingTitle) || recommendationTitle(entry);
+        if (!titleName) {
+            return;
+        }
+
+        let searchPayload;
+        try {
+            searchPayload = await kavitaClient.searchTitles(titleName);
+        } catch (error) {
+            logger.warn?.(`[Portal/Discord] Failed to search Kavita titles for deferred recommendation metadata "${titleName}": ${error.message}`);
+            return;
+        }
+
+        const selectedSeries = pickPreferredKavitaSeries(
+            Array.isArray(searchPayload?.series) ? searchPayload.series : [],
+            titleName,
+        );
+        const seriesId = normalizeSeriesInteger(selectedSeries?.seriesId);
+        if (!seriesId) {
+            return;
+        }
+
+        const libraryId = normalizeSeriesInteger(selectedSeries?.libraryId);
+        const attemptedAt = new Date().toISOString();
+        const titleUuid = metadataSelection.titleUuid || normalizeString(existingTitle?.uuid) || null;
+
+        try {
+            if (metadataSelection.provider && metadataSelection.providerSeriesId) {
+                if (typeof komfClient?.identifySeriesMetadata !== 'function') {
+                    return;
+                }
+
+                await komfClient.identifySeriesMetadata({
+                    seriesId,
+                    libraryId,
+                    provider: metadataSelection.provider,
+                    providerSeriesId: metadataSelection.providerSeriesId,
+                });
+            } else if (metadataSelection.aniListId || metadataSelection.malId || metadataSelection.cbrId) {
+                if (typeof kavitaClient?.applySeriesMetadataMatch !== 'function') {
+                    return;
+                }
+
+                await kavitaClient.applySeriesMetadataMatch({
+                    seriesId,
+                    aniListId: metadataSelection.aniListId,
+                    malId: metadataSelection.malId,
+                    cbrId: metadataSelection.cbrId,
+                });
+            } else {
+                return;
+            }
+
+            let coverUrl = metadataSelection.coverImageUrl || normalizeAbsoluteUrl(existingTitle?.coverUrl);
+            if (!normalizeAbsoluteUrl(existingTitle?.coverUrl) && metadataSelection.coverImageUrl && titleUuid && typeof ravenClient?.updateTitle === 'function') {
+                try {
+                    const updatedTitle = await ravenClient.updateTitle(titleUuid, {
+                        coverUrl: metadataSelection.coverImageUrl,
+                    });
+                    coverUrl = normalizeAbsoluteUrl(updatedTitle?.coverUrl) || coverUrl;
+                } catch (error) {
+                    logger.warn?.(`[Portal/Discord] Failed to backfill recommendation cover art for ${titleUuid}: ${error.message}`);
+                }
+            }
+
+            if (coverUrl && typeof kavitaClient?.setSeriesCover === 'function') {
+                await kavitaClient.setSeriesCover({
+                    seriesId,
+                    url: coverUrl,
+                    lockCover: true,
+                });
+            }
+
+            const providerLabel = normalizeString(metadataSelection.provider).toUpperCase();
+            const providerDetail = providerLabel
+                ? providerLabel
+                : metadataSelection.aniListId
+                    ? `AniList ${metadataSelection.aniListId}`
+                    : metadataSelection.malId
+                        ? `MyAnimeList ${metadataSelection.malId}`
+                        : metadataSelection.cbrId
+                            ? `ComicBookResources ${metadataSelection.cbrId}`
+                            : 'saved metadata ids';
+            const appliedSelection = {
+                ...metadataSelection,
+                status: 'applied',
+                titleUuid,
+                appliedAt: attemptedAt,
+                appliedSeriesId: seriesId,
+                appliedLibraryId: libraryId,
+                appliedTitle:
+                    normalizeString(selectedSeries?.name)
+                    || normalizeString(selectedSeries?.localizedName)
+                    || normalizeString(selectedSeries?.originalName)
+                    || titleName,
+                lastAttemptedAt: attemptedAt,
+                lastError: null,
+            };
+            const timelineEvent = createSystemTimelineEvent({
+                type: 'comment',
+                body: `Noona applied the saved metadata selection (${providerDetail}) to Kavita after Raven finished the import.`,
+                createdAt: attemptedAt,
+                username: 'Portal',
+            });
+            await persistMetadataSelectionUpdate({
+                entry,
+                metadataSelection: appliedSelection,
+                timelineEvent,
+            });
+        } catch (error) {
+            logger.warn?.(`[Portal/Discord] Failed to apply deferred recommendation metadata for "${titleName}": ${error.message}`);
+            await persistMetadataSelectionUpdate({
+                entry,
+                metadataSelection: {
+                    ...metadataSelection,
+                    status: 'pending',
+                    titleUuid,
+                    lastAttemptedAt: attemptedAt,
+                    lastError: error instanceof Error ? error.message : String(error),
+                },
+            });
+        }
+    };
 
     const refresh = async () => {
         if (!running) {
@@ -1063,12 +1345,22 @@ export const createRecommendationNotifier = ({
                     continue;
                 }
 
+                const existingTitle = resolveExistingLibraryTitle({
+                    library: Array.isArray(library) ? library : [],
+                    selectedTitle: recommendation?.title,
+                    selectedHref: recommendation?.href,
+                });
+
                 await notifyApprovedRecommendation(recommendation);
                 await notifyAdminCommentEvents(recommendation);
                 await syncRecommendationDownloadTimeline({
                     entry: recommendation,
                     activeDownloads,
                     downloadHistory,
+                });
+                await applyDeferredRecommendationMetadata({
+                    entry: recommendation,
+                    existingTitle,
                 });
                 await notifyCompletedRecommendation({
                     entry: recommendation,

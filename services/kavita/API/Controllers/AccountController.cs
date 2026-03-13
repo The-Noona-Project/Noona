@@ -239,6 +239,29 @@ public class AccountController : BaseApiController
         }
     }
 
+    private IQueryable<AppUser> BuildNoonaLoginUserQuery()
+    {
+        return _userManager.Users
+            .Include(u => u.UserPreferences)
+            .Include(u => u.AuthKeys)
+            .AsSplitQuery();
+    }
+
+    private async Task<AppUser?> FindNoonaLoginUserAsync(string username, string? email)
+    {
+        var normalizedUsername = username.Trim().ToUpperInvariant();
+        var user = await BuildNoonaLoginUserQuery()
+            .SingleOrDefaultAsync(x => x.NormalizedUserName == normalizedUsername);
+        if (user != null) return user;
+
+        var normalizedEmail = email?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedEmail)) return null;
+
+        _logger.LogWarning("Noona login token username lookup failed for {UserName}; falling back to email lookup", username);
+        return await BuildNoonaLoginUserQuery()
+            .SingleOrDefaultAsync(x => x.NormalizedEmail == normalizedEmail.ToUpperInvariant());
+    }
+
     /// <summary>
     /// Returns true if OIDC authentication cookies are present and the <see cref="IdentityServiceExtensions.OpenIdConnect"/>
     /// scheme has been registered
@@ -507,11 +530,7 @@ public class AccountController : BaseApiController
         }
 
         var lookupUsername = consumeResult.Record.Username!.Trim();
-        var user = await _userManager.Users
-            .Include(u => u.UserPreferences)
-            .Include(u => u.AuthKeys)
-            .AsSplitQuery()
-            .SingleOrDefaultAsync(x => x.NormalizedUserName == lookupUsername.ToUpperInvariant());
+        var user = await FindNoonaLoginUserAsync(lookupUsername, consumeResult.Record.Email);
 
         if (user == null)
         {

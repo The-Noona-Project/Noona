@@ -2,15 +2,19 @@
 import http from 'node:http';
 import {URL} from 'node:url';
 
+import {buildWardenApiTokenRegistry, stringifyServiceTokenMap} from '../docker/wardenApiTokens.mjs';
 import {errMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 
-const defaultPort = () => Number.parseInt(process.env.WARDEN_API_PORT ?? '4001', 10);
+const SENSITIVE_ENV_PLACEHOLDER = '********';
+const DEFAULT_WARDEN_API_CLIENTS = Object.freeze(['noona-sage', 'noona-portal']);
+const defaultPort = (env = process.env) => Number.parseInt(env.WARDEN_API_PORT ?? '4001', 10);
 
-const DEFAULT_HEADERS = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-};
+const DEFAULT_HEADERS = Object.freeze({
+    'Content-Type': 'application/json',
+});
+const OPTIONS_HEADERS = Object.freeze({
+    Allow: 'GET,POST,PUT,DELETE,OPTIONS',
+});
 
 const resolveLogger = (overrides = {}) => ({
     error: errMSG,
@@ -107,9 +111,326 @@ const parseJsonBody = (req) => new Promise((resolve, reject) => {
     req.on('error', (error) => reject(error));
 });
 
+const normalizeString = (value) => {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    return value.trim();
+};
+
+const parseTokenMap = (tokenMapString = '') => {
+    const tokenPairs = tokenMapString
+        .split(',')
+        .map((pair) => pair.trim())
+        .filter(Boolean)
+        .map((pair) => {
+            const [serviceName, token] = pair.split(':');
+            return [serviceName?.trim(), token?.trim()];
+        })
+        .filter(([serviceName, token]) => Boolean(serviceName && token));
+
+    return {
+        tokenPairs,
+        serviceByToken: Object.fromEntries(tokenPairs.map(([serviceName, token]) => [token, serviceName])),
+    };
+};
+
+const resolveWardenTokenMap = (env = process.env) => {
+    const configuredTokenMap = normalizeString(env?.WARDEN_API_TOKEN_MAP);
+    if (configuredTokenMap) {
+        return configuredTokenMap;
+    }
+
+    return stringifyServiceTokenMap(buildWardenApiTokenRegistry(DEFAULT_WARDEN_API_CLIENTS));
+};
+
+const extractBearerToken = (req) => {
+    const authorization = req.headers?.authorization;
+    if (typeof authorization !== 'string') {
+        return null;
+    }
+
+    const [scheme, token] = authorization.split(' ');
+    if (!scheme || scheme.toLowerCase() !== 'bearer' || !token) {
+        return null;
+    }
+
+    return token.trim();
+};
+
+const isSecretLikeEnvKey = (key) => /TOKEN|PASSWORD|API_KEY|SECRET|PRIVATE_KEY|MONGO_URI/i.test(key);
+
+const buildEnvFieldMap = (envConfig = []) => {
+    const map = new Map();
+
+    for (const field of Array.isArray(envConfig) ? envConfig : []) {
+        const key = normalizeString(field?.key);
+        if (!key) {
+            continue;
+        }
+
+        map.set(key, field);
+    }
+
+    return map;
+};
+
+const isConfiguredEnvValue = (value) => normalizeString(value).length > 0;
+
+const redactEnvValue = (key, value, field) => {
+    const normalizedValue = value == null ? '' : String(value);
+    if (!(field?.sensitive === true || isSecretLikeEnvKey(key))) {
+        return normalizedValue;
+    }
+
+    return isConfiguredEnvValue(normalizedValue) ? SENSITIVE_ENV_PLACEHOLDER : '';
+};
+
+const redactEnvMap = (env, envConfig = []) => {
+    if (!env || typeof env !== 'object' || Array.isArray(env)) {
+        return {};
+    }
+
+    const fieldMap = buildEnvFieldMap(envConfig);
+    const redacted = {};
+
+    for (const [key, value] of Object.entries(env)) {
+        const normalizedKey = normalizeString(key);
+        if (!normalizedKey) {
+            continue;
+        }
+
+        redacted[normalizedKey] = redactEnvValue(normalizedKey, value, fieldMap.get(normalizedKey));
+    }
+
+    return redacted;
+};
+
+const redactEnvConfig = (envConfig = [], envValues = {}) => {
+    const values = envValues && typeof envValues === 'object' && !Array.isArray(envValues) ? envValues : {};
+
+    return (Array.isArray(envConfig) ? envConfig : []).map((field) => {
+        const key = normalizeString(field?.key);
+        if (!key) {
+            return field;
+        }
+
+        if (!(field?.sensitive === true || isSecretLikeEnvKey(key))) {
+            return field;
+        }
+
+        const currentValue = Object.prototype.hasOwnProperty.call(values, key)
+            ? values[key]
+            : field?.defaultValue;
+
+        return {
+            ...field,
+            defaultValue: redactEnvValue(key, currentValue, field),
+            configured: isConfiguredEnvValue(currentValue),
+        };
+    });
+};
+
+const redactServiceConfig = (config = {}) => {
+    const envConfig = Array.isArray(config?.envConfig) ? config.envConfig : [];
+    const env = redactEnvMap(config?.env, envConfig);
+    const runtimeEnv = redactEnvMap(config?.runtimeConfig?.env, envConfig);
+
+    return {
+        ...config,
+        env,
+        envConfig: redactEnvConfig(envConfig, config?.env),
+        runtimeConfig: {
+            hostPort: config?.runtimeConfig?.hostPort ?? null,
+            env: runtimeEnv,
+        },
+    };
+};
+
+const redactServiceList = (services = []) =>
+    (Array.isArray(services) ? services : []).map((service) => ({
+        ...service,
+        envConfig: redactEnvConfig(service?.envConfig, {}),
+    }));
+
+const resolveServiceConfigForSecurity = (warden, serviceName, cache = new Map()) => {
+    const normalizedName = normalizeString(serviceName);
+    if (!normalizedName) {
+        return null;
+    }
+
+    if (cache.has(normalizedName)) {
+        return cache.get(normalizedName);
+    }
+
+    try {
+        const config = typeof warden?.getServiceConfig === 'function'
+            ? warden.getServiceConfig(normalizedName)
+            : null;
+        cache.set(normalizedName, config ?? null);
+    } catch {
+        cache.set(normalizedName, null);
+    }
+
+    return cache.get(normalizedName);
+};
+
+const redactSetupSnapshot = (snapshot, warden, cache = new Map()) => {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+        return snapshot ?? null;
+    }
+
+    const values = {};
+    const rawValues = snapshot?.values;
+
+    if (rawValues && typeof rawValues === 'object' && !Array.isArray(rawValues)) {
+        for (const [serviceName, env] of Object.entries(rawValues)) {
+            const serviceConfig = resolveServiceConfigForSecurity(warden, serviceName, cache);
+            values[serviceName] = redactEnvMap(env, serviceConfig?.envConfig);
+        }
+    }
+
+    return {
+        ...snapshot,
+        values,
+    };
+};
+
+const redactSetupConfigResponse = (payload, warden) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return payload ?? null;
+    }
+
+    const cache = new Map();
+    const runtime = Array.isArray(payload?.runtime)
+        ? payload.runtime.map((entry) => {
+            const serviceName = normalizeString(entry?.service);
+            const serviceConfig = resolveServiceConfigForSecurity(warden, serviceName, cache);
+            return {
+                ...entry,
+                env: redactEnvMap(entry?.env, serviceConfig?.envConfig),
+            };
+        })
+        : payload?.runtime ?? null;
+
+    return {
+        ...payload,
+        snapshot: redactSetupSnapshot(payload?.snapshot, warden, cache),
+        ...(payload?.runtime !== undefined ? {runtime} : {}),
+    };
+};
+
+const sanitizeSetupSnapshotEnvMap = (candidate, {envConfig = [], currentEnv = {}, currentSnapshotEnv = {}} = {}) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        return {};
+    }
+
+    const fieldMap = buildEnvFieldMap(envConfig);
+    const sanitized = {};
+
+    for (const [rawKey, rawValue] of Object.entries(candidate)) {
+        const key = normalizeString(rawKey);
+        if (!key) {
+            continue;
+        }
+
+        const field = fieldMap.get(key);
+        if (!field) {
+            continue;
+        }
+
+        if (field.serverManaged === true || field.readOnly === true) {
+            continue;
+        }
+
+        const incomingValue = rawValue == null ? '' : String(rawValue);
+        if (field.sensitive === true && incomingValue === SENSITIVE_ENV_PLACEHOLDER) {
+            const currentValue = Object.prototype.hasOwnProperty.call(currentSnapshotEnv, key)
+                ? currentSnapshotEnv[key]
+                : currentEnv[key];
+            sanitized[key] = currentValue == null ? '' : String(currentValue);
+            continue;
+        }
+
+        sanitized[key] = incomingValue;
+    }
+
+    return sanitized;
+};
+
+const sanitizeSetupConfigPayload = (payload, warden) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return payload;
+    }
+
+    const currentSetupConfig = typeof warden?.getSetupConfig === 'function'
+        ? warden.getSetupConfig({refresh: true})
+        : null;
+    const currentSnapshotValues =
+        currentSetupConfig?.snapshot?.values && typeof currentSetupConfig.snapshot.values === 'object'
+            ? currentSetupConfig.snapshot.values
+            : {};
+    const configCache = new Map();
+    const rawValues = payload?.values;
+
+    if (!rawValues || typeof rawValues !== 'object' || Array.isArray(rawValues)) {
+        return payload;
+    }
+
+    const values = {};
+    for (const [serviceName, env] of Object.entries(rawValues)) {
+        const serviceConfig = resolveServiceConfigForSecurity(warden, serviceName, configCache);
+        if (!serviceConfig) {
+            continue;
+        }
+
+        values[serviceName] = sanitizeSetupSnapshotEnvMap(env, {
+            envConfig: serviceConfig.envConfig,
+            currentEnv: serviceConfig.env,
+            currentSnapshotEnv:
+                currentSnapshotValues?.[serviceName] && typeof currentSnapshotValues[serviceName] === 'object'
+                    ? currentSnapshotValues[serviceName]
+                    : {},
+        });
+    }
+
+    return {
+        ...payload,
+        values,
+    };
+};
+
+const isPublicRoute = (method, pathname) => method === 'GET' && pathname === '/health';
+
+const isAllowedPortalRoute = (method, pathname, segments = []) =>
+    (method === 'GET' && pathname === '/api/services')
+    || (method === 'GET' && pathname === '/api/services/install/progress')
+    || (
+        method === 'GET'
+        && segments.length === 4
+        && segments[0] === 'api'
+        && segments[1] === 'services'
+        && segments[3] === 'logs'
+    );
+
+const isAuthorizedServiceRoute = (serviceName, method, pathname, segments = []) => {
+    if (serviceName === 'noona-sage') {
+        return true;
+    }
+
+    if (serviceName === 'noona-portal') {
+        return isAllowedPortalRoute(method, pathname, segments);
+    }
+
+    return false;
+};
+
 export const startWardenServer = ({
                                       warden,
-                                      port = defaultPort(),
+                                      port: portOption,
+                                      host,
+                                      env = process.env,
                                       logger: loggerOverrides,
                                   } = {}) => {
     if (!warden) {
@@ -117,7 +438,16 @@ export const startWardenServer = ({
     }
 
     const logger = resolveLogger(loggerOverrides);
+    const port = portOption ?? defaultPort(env);
+    const listenHost = normalizeString(host) || normalizeString(env?.WARDEN_API_HOST) || undefined;
     let activeInstallPromise = null;
+    const {tokenPairs, serviceByToken} = parseTokenMap(resolveWardenTokenMap(env));
+
+    if (tokenPairs.length === 0) {
+        logger.warn?.('[Warden API] No service tokens were loaded. Protected routes will reject all requests.');
+    } else {
+        logger.log?.(`[Warden API] Loaded service tokens for: ${tokenPairs.map(([serviceName]) => serviceName).join(', ')}`);
+    }
 
     const server = http.createServer(async (req, res) => {
         if (!req.url) {
@@ -125,17 +455,40 @@ export const startWardenServer = ({
             return;
         }
 
+        const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+        const segments = url.pathname.split('/').filter(Boolean);
+
         if (req.method === 'OPTIONS') {
-            res.writeHead(204, DEFAULT_HEADERS);
+            res.writeHead(204, OPTIONS_HEADERS);
             res.end();
             return;
         }
 
-        const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
-        const segments = url.pathname.split('/').filter(Boolean);
-
-        if (req.method === 'GET' && url.pathname === '/health') {
+        if (isPublicRoute(req.method, url.pathname)) {
             sendJson(res, 200, {status: 'ok'});
+            return;
+        }
+
+        const token = extractBearerToken(req);
+        if (!token) {
+            res.writeHead(401, {
+                ...DEFAULT_HEADERS,
+                'WWW-Authenticate': 'Bearer',
+            });
+            res.end(JSON.stringify({error: 'Missing or invalid Authorization header.'}));
+            return;
+        }
+
+        const requesterServiceName = serviceByToken[token];
+        if (!requesterServiceName) {
+            logger.warn?.('[Warden API] Rejected request with an unknown service token.');
+            sendJson(res, 401, {error: 'Unauthorized service token.'});
+            return;
+        }
+
+        if (!isAuthorizedServiceRoute(requesterServiceName, req.method, url.pathname, segments)) {
+            logger.warn?.(`[Warden API] ${requesterServiceName} is not allowed to access ${req.method} ${url.pathname}`);
+            sendJson(res, 403, {error: 'Forbidden for this service identity.'});
             return;
         }
 
@@ -340,7 +693,7 @@ export const startWardenServer = ({
                     : false;
 
                 const services = await warden.listServices({includeInstalled});
-                sendJson(res, 200, {services});
+                sendJson(res, 200, {services: redactServiceList(services)});
             } catch (error) {
                 logger.error(`[Warden API] Failed to list services: ${error.message}`);
                 sendJson(res, 500, {error: 'Unable to list services.'});
@@ -362,7 +715,7 @@ export const startWardenServer = ({
         if (req.method === 'GET' && url.pathname === '/api/setup/config') {
             try {
                 const config = await warden.getSetupConfig?.();
-                sendJson(res, 200, config ?? {
+                sendJson(res, 200, redactSetupConfigResponse(config, warden) ?? {
                     exists: false,
                     path: null,
                     snapshot: null,
@@ -391,8 +744,8 @@ export const startWardenServer = ({
             }
 
             try {
-                const config = await warden.saveSetupConfig?.(body);
-                sendJson(res, 200, config ?? {});
+                const config = await warden.saveSetupConfig?.(sanitizeSetupConfigPayload(body, warden));
+                sendJson(res, 200, redactSetupConfigResponse(config, warden) ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to persist setup config snapshot: ${error.message}`);
                 sendJson(res, 500, {error: 'Unable to persist setup config snapshot.'});
@@ -479,7 +832,7 @@ export const startWardenServer = ({
                     return;
                 }
 
-                sendJson(res, 200, config);
+                sendJson(res, 200, redactServiceConfig(config));
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to load config for ${serviceName}: ${error.message}`);
                 sendJson(res, 500, {error: `Unable to retrieve configuration for ${serviceName}.`});
@@ -506,6 +859,14 @@ export const startWardenServer = ({
 
             try {
                 const result = await warden.updateServiceConfig?.(serviceName, body);
+                if (result && typeof result === 'object' && result.service && typeof result.service === 'object') {
+                    sendJson(res, 200, {
+                        ...result,
+                        service: redactServiceConfig(result.service),
+                    });
+                    return;
+                }
+
                 sendJson(res, 200, result ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to update config for ${serviceName}: ${error.message}`);
@@ -713,7 +1074,7 @@ export const startWardenServer = ({
         sendJson(res, 404, {error: 'Not Found'});
     });
 
-    server.listen(port, () => {
+    server.listen(port, listenHost, () => {
         logger.log(`[Warden API] Listening on port ${server.address().port}`);
     });
 

@@ -6,7 +6,6 @@ export function registerRavenRoutes(context = {}) {
         ensureMoonPermission,
         hasMoonPermission,
         logger,
-        portalClient,
         ravenClient,
         vaultClient,
         requireSessionIfSetupCompleted,
@@ -15,6 +14,7 @@ export function registerRavenRoutes(context = {}) {
 
     const RECOMMENDATIONS_COLLECTION = 'portal_recommendations'
     const SUBSCRIPTIONS_COLLECTION = 'portal_subscriptions'
+    const SAVED_FOR_LATER_MESSAGE = 'Noona could not find a matching Raven source yet. We are working to expand our content reach, and this will be saved for later.'
     const APPROVED_RECOMMENDATION_STATUSES = new Set(['approved', 'accepted'])
     const DENIED_RECOMMENDATION_STATUSES = new Set(['denied', 'rejected', 'declined'])
     const PENDING_RECOMMENDATION_STATUSES = new Set(['pending', 'new', 'requested'])
@@ -30,10 +30,64 @@ export function registerRavenRoutes(context = {}) {
     const MAX_RECOMMENDATION_COMMENT_LENGTH = 2000
 
     const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '')
-    const normalizeLowerTitleKey = (value) => normalizeString(value).toLowerCase().replace(/\s+/g, ' ').trim()
+    const normalizeDistinctStrings = (...values) => {
+        const out = []
+        const seen = new Set()
+
+        for (const value of values) {
+            if (Array.isArray(value)) {
+                for (const nestedValue of value) {
+                    const normalizedNested = normalizeString(nestedValue)
+                    if (!normalizedNested) {
+                        continue
+                    }
+
+                    const nestedKey = normalizedNested.toLowerCase()
+                    if (seen.has(nestedKey)) {
+                        continue
+                    }
+
+                    seen.add(nestedKey)
+                    out.push(normalizedNested)
+                }
+                continue
+            }
+
+            const normalized = normalizeString(value)
+            if (!normalized) {
+                continue
+            }
+
+            const key = normalized.toLowerCase()
+            if (seen.has(key)) {
+                continue
+            }
+
+            seen.add(key)
+            out.push(normalized)
+        }
+
+        return out
+    }
+    const normalizeRecommendationTitleKey = (value) =>
+        normalizeString(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()
     const normalizePositiveInteger = (value) => {
         const parsed = Number.parseInt(String(value), 10)
         return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+    }
+    const normalizeComparableUrl = (value) => {
+        const normalized = normalizeString(value)
+        if (!normalized) {
+            return null
+        }
+
+        try {
+            const parsed = new URL(normalized)
+            parsed.hash = ''
+            return parsed.toString()
+        } catch {
+            return null
+        }
     }
     const normalizeRecommendationIsoTimestamp = (value) => {
         const iso = normalizeString(value)
@@ -144,6 +198,167 @@ export function registerRavenRoutes(context = {}) {
             actor: normalizeRecommendationActor(actor, eventType === 'created' ? 'user' : 'system'),
             body: commentBody || null,
         }
+    }
+    const normalizeMetadataIdentifier = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return String(value)
+        }
+
+        const normalized = normalizeString(value)
+        return normalized || null
+    }
+    const normalizeRecommendationMetadataStatus = (value) => {
+        const normalized = normalizeString(value).toLowerCase()
+        if (normalized === 'applied' || normalized === 'failed') {
+            return normalized
+        }
+
+        return 'pending'
+    }
+    const normalizeRecommendationMetadataAdultContent = (value) => {
+        if (typeof value === 'boolean') {
+            return value
+        }
+
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            if (value === 1) return true
+            if (value === 0) return false
+        }
+
+        const normalized = normalizeString(value).toLowerCase()
+        if (!normalized) {
+            return null
+        }
+
+        if (normalized === 'true' || normalized === 'yes' || normalized === 'y' || normalized === '1') {
+            return true
+        }
+
+        if (normalized === 'false' || normalized === 'no' || normalized === 'n' || normalized === '0') {
+            return false
+        }
+
+        return null
+    }
+    const normalizeRecommendationSourceAdultContent = (value) =>
+        normalizeRecommendationMetadataAdultContent(value)
+    const normalizeRecommendationMetadataSelection = (value = {}) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return null
+        }
+
+        const selectedBySource = value?.selectedBy && typeof value.selectedBy === 'object' ? value.selectedBy : {}
+        const query = normalizeString(value?.query) || null
+        const title = normalizeString(value?.title ?? value?.name) || null
+        const aliases = normalizeDistinctStrings(
+            value?.aliases,
+            value?.Aliases,
+            value?.alternativeTitles,
+            value?.AlternativeTitles,
+            value?.alternateTitles,
+            value?.AlternateTitles,
+        ).filter((alias) => normalizeRecommendationTitleKey(alias) !== normalizeRecommendationTitleKey(title))
+        const provider = normalizeString(value?.provider) || null
+        const providerSeriesId = normalizeMetadataIdentifier(value?.providerSeriesId ?? value?.resultId)
+        const aniListId = normalizeMetadataIdentifier(value?.aniListId ?? value?.AniListId)
+        const malId = normalizeMetadataIdentifier(value?.malId ?? value?.MALId ?? value?.MalId)
+        const cbrId = normalizeMetadataIdentifier(value?.cbrId ?? value?.CbrId)
+        const summary = normalizeString(value?.summary) || null
+        const sourceUrl = normalizeString(value?.sourceUrl) || null
+        const coverImageUrl = normalizeString(value?.coverImageUrl) || null
+        const adultContent = normalizeRecommendationMetadataAdultContent(
+            value?.adultContent ?? value?.adult_content ?? value?.['Adult Content'],
+        )
+        const hasUsefulData = Boolean(
+            query
+            || title
+            || aliases.length > 0
+            || provider
+            || providerSeriesId
+            || aniListId
+            || malId
+            || cbrId
+            || summary
+            || sourceUrl
+            || coverImageUrl
+            || adultContent != null
+        )
+        if (!hasUsefulData) {
+            return null
+        }
+
+        return {
+            status: normalizeRecommendationMetadataStatus(value?.status),
+            query,
+            title,
+            aliases,
+            provider,
+            providerSeriesId,
+            aniListId,
+            malId,
+            cbrId,
+            summary,
+            sourceUrl,
+            coverImageUrl,
+            adultContent,
+            selectedAt: normalizeRecommendationIsoTimestamp(value?.selectedAt) || null,
+            selectedBy: {
+                username: normalizeString(selectedBySource?.username) || null,
+                discordId: normalizeString(selectedBySource?.discordId) || null,
+            },
+            queuedAt: normalizeRecommendationIsoTimestamp(value?.queuedAt) || null,
+            titleUuid: normalizeString(value?.titleUuid) || null,
+            appliedAt: normalizeRecommendationIsoTimestamp(value?.appliedAt) || null,
+            appliedSeriesId: normalizePositiveInteger(value?.appliedSeriesId),
+            appliedLibraryId: normalizePositiveInteger(value?.appliedLibraryId),
+            appliedTitle: normalizeString(value?.appliedTitle) || null,
+            lastAttemptedAt: normalizeRecommendationIsoTimestamp(value?.lastAttemptedAt) || null,
+            lastError: normalizeString(value?.lastError) || null,
+        }
+    }
+    const recommendationMetadataHasIdentifiers = (selection = {}) => {
+        const provider = normalizeString(selection?.provider)
+        const providerSeriesId = normalizeMetadataIdentifier(selection?.providerSeriesId)
+        if (provider && providerSeriesId) {
+            return true
+        }
+
+        return Boolean(
+            normalizeMetadataIdentifier(selection?.aniListId)
+            || normalizeMetadataIdentifier(selection?.malId)
+            || normalizeMetadataIdentifier(selection?.cbrId),
+        )
+    }
+    const createRecommendationMetadataSelectionTimelineEvent = (selection = {}) => {
+        const metadataSelection = normalizeRecommendationMetadataSelection(selection)
+        if (!metadataSelection || !recommendationMetadataHasIdentifiers(metadataSelection)) {
+            return null
+        }
+
+        const providerLabel = normalizeString(metadataSelection?.provider).toUpperCase()
+        const providerSeriesId = normalizeString(metadataSelection?.providerSeriesId)
+        const selectedTitle = normalizeString(metadataSelection?.title)
+        const selectionLabel = selectedTitle || normalizeString(metadataSelection?.query) || 'the selected metadata match'
+        const providerDetail = providerLabel && providerSeriesId
+            ? `${providerLabel} (${providerSeriesId})`
+            : providerLabel
+                ? providerLabel
+                : normalizeString(metadataSelection?.aniListId)
+                    ? `AniList ${normalizeString(metadataSelection?.aniListId)}`
+                    : normalizeString(metadataSelection?.malId)
+                        ? `MyAnimeList ${normalizeString(metadataSelection?.malId)}`
+                        : normalizeString(metadataSelection?.cbrId)
+                            ? `ComicBookResources ${normalizeString(metadataSelection?.cbrId)}`
+                            : 'the saved provider ids'
+
+        return createRecommendationTimelineEvent({
+            type: 'comment',
+            actor: {
+                role: 'system',
+                username: 'Moon',
+            },
+            body: `Queued metadata plan for ${selectionLabel} using ${providerDetail}. Noona will apply it after Raven finishes downloading and Kavita has scanned the title.`,
+        })
     }
     const normalizeRecommendationTimelineEvent = (entry = {}, index = 0) => {
         const normalizedType = normalizeString(entry?.type || entry?.event).toLowerCase()
@@ -298,6 +513,10 @@ export function registerRavenRoutes(context = {}) {
         const selectedOptionIndexRaw = Number(entry?.selectedOptionIndex)
         const timeline = resolveRecommendationTimeline(entry)
         const denialReason = normalizeString(entry?.denialReason) || null
+        const metadataSelection = normalizeRecommendationMetadataSelection(entry?.metadataSelection)
+        const sourceAdultContent = normalizeRecommendationSourceAdultContent(
+            entry?.sourceAdultContent ?? entry?.source_adult_content ?? entry?.adultContent ?? entry?.['Adult Content'],
+        )
 
         return {
             id: resolveRecommendationId(entry?._id),
@@ -309,6 +528,7 @@ export function registerRavenRoutes(context = {}) {
             selectedOptionIndex: Number.isFinite(selectedOptionIndexRaw) ? selectedOptionIndexRaw : null,
             title: normalizeString(entry?.title) || null,
             href: normalizeString(entry?.href) || null,
+            sourceAdultContent,
             approvedAt: normalizeRecommendationIsoTimestamp(entry?.approvedAt) || null,
             approvedBy: {
                 username: normalizeString(approvedBy?.username) || null,
@@ -330,6 +550,7 @@ export function registerRavenRoutes(context = {}) {
                 channelId: normalizeString(discordContext?.channelId) || null,
             },
             timeline,
+            metadataSelection,
         }
     }
     const buildRecommendationDocumentQueries = (entry = {}) => {
@@ -631,86 +852,6 @@ export function registerRavenRoutes(context = {}) {
     }
     const resolveRecommendationMetadataQuery = (entry = {}) =>
         normalizeString(entry?.title) || normalizeString(entry?.query) || null
-    const selectPreferredKavitaSeries = (series = [], query = '') => {
-        const candidates = Array.isArray(series)
-            ? series.filter((entry) => entry && typeof entry === 'object')
-            : []
-        if (candidates.length === 0) {
-            return null
-        }
-
-        const queryKey = normalizeLowerTitleKey(query)
-        if (!queryKey) {
-            return candidates[0]
-        }
-
-        const exactMatch = candidates.find((entry) => {
-            const titleKeys = [
-                normalizeLowerTitleKey(entry?.name),
-                normalizeLowerTitleKey(entry?.localizedName),
-                normalizeLowerTitleKey(entry?.originalName),
-            ].filter(Boolean)
-            return titleKeys.includes(queryKey)
-        })
-        return exactMatch || candidates[0]
-    }
-    const resolveMetadataIdentifier = (value) => {
-        if (typeof value === 'number' && Number.isFinite(value)) {
-            return value
-        }
-
-        const normalized = normalizeString(value)
-        return normalized || null
-    }
-    const resolveMetadataProviderSeriesId = (match = {}) =>
-        resolveMetadataIdentifier(
-            match?.providerSeriesId
-            ?? match?.ProviderSeriesId
-            ?? match?.resultId
-            ?? match?.ResultId,
-        )
-    const resolveMetadataAniListId = (match = {}) =>
-        resolveMetadataIdentifier(match?.aniListId ?? match?.AniListId)
-    const resolveMetadataMalId = (match = {}) =>
-        resolveMetadataIdentifier(match?.malId ?? match?.MALId ?? match?.MalId)
-    const resolveMetadataCbrId = (match = {}) =>
-        resolveMetadataIdentifier(match?.cbrId ?? match?.CbrId)
-    const metadataMatchIsApplicable = (match = {}) => {
-        const provider = normalizeString(match?.provider)
-        const providerSeriesId = resolveMetadataProviderSeriesId(match)
-        if (provider && providerSeriesId != null && `${providerSeriesId}`.trim()) {
-            return true
-        }
-
-        return (
-            resolveMetadataAniListId(match) != null
-            || resolveMetadataMalId(match) != null
-            || resolveMetadataCbrId(match) != null
-        )
-    }
-    const selectPreferredMetadataMatch = (matches = [], query = '') => {
-        const candidates = Array.isArray(matches)
-            ? matches.filter((entry) => entry && typeof entry === 'object' && metadataMatchIsApplicable(entry))
-            : []
-        if (candidates.length === 0) {
-            return null
-        }
-
-        const queryKey = normalizeLowerTitleKey(query)
-        if (!queryKey) {
-            return candidates[0]
-        }
-
-        const exactTitleMatch = candidates.find((entry) => {
-            const titleKeys = [
-                normalizeLowerTitleKey(entry?.title),
-                normalizeLowerTitleKey(entry?.name),
-            ].filter(Boolean)
-            return titleKeys.includes(queryKey)
-        })
-
-        return exactTitleMatch || candidates[0]
-    }
     const resolveQueuedRecommendationTitleUuid = (queueResult = {}) => {
         if (!queueResult || typeof queueResult !== 'object') {
             return null
@@ -732,141 +873,164 @@ export function registerRavenRoutes(context = {}) {
 
         return null
     }
-    const runRecommendationMetadataAutoApply = async ({recommendation = {}, queueResult = null} = {}) => {
-        if (
-            !portalClient?.searchKavitaTitles
-            || !portalClient?.fetchTitleMetadataMatches
-            || !portalClient?.applyTitleMetadataMatch
-        ) {
-            return {
-                status: 'skipped',
-                message: 'Portal metadata client is not configured.',
-            }
-        }
+    const normalizeRavenSearchOptionIndex = (value, fallbackIndex) => {
+        const parsed = Number.parseInt(String(value), 10)
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : fallbackIndex
+    }
+    const normalizeRavenSearchPayload = (payload = {}) => {
+        const searchId = normalizeString(payload?.searchId)
+        const rawOptions = Array.isArray(payload?.options) ? payload.options : []
 
-        const metadataQuery = resolveRecommendationMetadataQuery(recommendation)
-        if (!metadataQuery) {
-            return {
-                status: 'skipped',
-                message: 'Recommendation does not have a metadata query.',
-            }
-        }
+        return {
+            searchId,
+            options: rawOptions
+                .map((entry, index) => {
+                    const title = normalizeString(entry?.title)
+                    if (!title) {
+                        return null
+                    }
 
-        try {
-            const titleSearchPayload = await portalClient.searchKavitaTitles(metadataQuery)
-            const selectedSeries = selectPreferredKavitaSeries(titleSearchPayload?.series, metadataQuery)
-            const seriesId = normalizePositiveInteger(selectedSeries?.seriesId)
-            if (!seriesId) {
-                return {
-                    status: 'skipped',
-                    message: 'No matching Kavita series was found for auto metadata apply.',
-                }
-            }
-
-            const metadataMatchesPayload = await portalClient.fetchTitleMetadataMatches({
-                seriesId,
-                query: metadataQuery,
-            })
-            const selectedMatch = selectPreferredMetadataMatch(metadataMatchesPayload?.matches, metadataQuery)
-            if (!selectedMatch) {
-                return {
-                    status: 'skipped',
-                    message: 'No metadata candidates were available for auto apply.',
-                }
-            }
-
-            const provider = normalizeString(selectedMatch?.provider)
-            const providerSeriesId = resolveMetadataProviderSeriesId(selectedMatch)
-            const aniListId = resolveMetadataAniListId(selectedMatch)
-            const malId = resolveMetadataMalId(selectedMatch)
-            const cbrId = resolveMetadataCbrId(selectedMatch)
-            const titleUuid = resolveQueuedRecommendationTitleUuid(queueResult)
-            const libraryId = normalizePositiveInteger(selectedSeries?.libraryId)
-            const coverImageUrl = normalizeString(selectedMatch?.coverImageUrl) || null
-
-            const applyPayload = {
-                seriesId,
-            }
-            if (libraryId) {
-                applyPayload.libraryId = libraryId
-            }
-            if (titleUuid) {
-                applyPayload.titleUuid = titleUuid
-            }
-            if (provider && providerSeriesId != null && `${providerSeriesId}`.trim()) {
-                applyPayload.provider = provider
-                applyPayload.providerSeriesId = `${providerSeriesId}`.trim()
-            }
-            if (aniListId != null && `${aniListId}`.trim()) {
-                applyPayload.aniListId = aniListId
-            }
-            if (malId != null && `${malId}`.trim()) {
-                applyPayload.malId = malId
-            }
-            if (cbrId != null && `${cbrId}`.trim()) {
-                applyPayload.cbrId = cbrId
-            }
-            if (coverImageUrl) {
-                applyPayload.coverImageUrl = coverImageUrl
-            }
-
-            const applyResult = await portalClient.applyTitleMetadataMatch(applyPayload)
-            return {
-                status: 'applied',
-                provider: provider || null,
-                providerSeriesId: providerSeriesId != null ? `${providerSeriesId}` : null,
-                seriesId,
-                libraryId,
-                message: normalizeString(applyResult?.message) || 'Applied metadata match.',
-            }
-        } catch (error) {
-            return {
-                status: 'failed',
-                message: error instanceof Error ? error.message : String(error),
-            }
+                    return {
+                        title,
+                        href: normalizeString(entry?.href) || null,
+                        optionIndex: normalizeRavenSearchOptionIndex(
+                            entry?.optionIndex ?? entry?.option_number ?? entry?.index,
+                            index + 1,
+                        ),
+                    }
+                })
+                .filter(Boolean),
         }
     }
-    const createRecommendationMetadataTimelineEvent = (metadataResult = {}) => {
-        const status = normalizeString(metadataResult?.status).toLowerCase()
-        if (status === 'applied') {
-            const provider = normalizeString(metadataResult?.provider).toUpperCase()
-            const providerSeriesId = normalizeString(metadataResult?.providerSeriesId)
-            const message = normalizeString(metadataResult?.message)
-            const details = provider && providerSeriesId
-                ? `Provider: ${provider} (${providerSeriesId}).`
-                : provider
-                    ? `Provider: ${provider}.`
-                    : ''
-            const body = [
-                'Noona auto-applied metadata after approval.',
-                details,
-                message,
-            ].filter(Boolean).join(' ')
-
-            return createRecommendationTimelineEvent({
-                type: 'comment',
-                actor: {
-                    role: 'system',
-                    username: 'Portal',
-                },
-                body,
-            })
+    const buildRecommendationSourceSearchCandidates = ({
+                                                           recommendation = {},
+                                                           metadataSelection = null,
+                                                           metadataQuery = '',
+                                                       } = {}) =>
+        normalizeDistinctStrings(
+            normalizeString(metadataSelection?.title),
+            metadataSelection?.aliases,
+            normalizeString(metadataSelection?.query),
+            normalizeString(metadataQuery),
+            normalizeString(recommendation?.title),
+            normalizeString(recommendation?.query),
+        )
+    const optionMatchesRecommendationCandidates = (option = {}, candidateKeys = new Set(), recommendationHref = null) => {
+        const titleKey = normalizeRecommendationTitleKey(option?.title)
+        if (titleKey && candidateKeys.has(titleKey)) {
+            return true
         }
 
-        if (status === 'failed') {
-            const message = normalizeString(metadataResult?.message) || 'Unknown metadata apply failure.'
-            return createRecommendationTimelineEvent({
-                type: 'comment',
-                actor: {
-                    role: 'system',
-                    username: 'Portal',
-                },
-                body: `Noona could not auto-apply metadata after approval: ${message}`,
-            })
+        const optionHref = normalizeComparableUrl(option?.href)
+        return Boolean(recommendationHref && optionHref && optionHref === recommendationHref)
+    }
+    const resolveRavenRecommendationQueueTarget = async ({
+                                                             recommendation = {},
+                                                             metadataSelection = null,
+                                                             metadataQuery = '',
+                                                         } = {}) => {
+        if (typeof ravenClient?.searchTitle !== 'function') {
+            return null
+        }
+
+        const candidates = buildRecommendationSourceSearchCandidates({
+            recommendation,
+            metadataSelection,
+            metadataQuery,
+        })
+        if (candidates.length === 0) {
+            return null
+        }
+
+        const candidateKeys = new Set(
+            candidates
+                .map((value) => normalizeRecommendationTitleKey(value))
+                .filter(Boolean),
+        )
+        const recommendationHref = normalizeComparableUrl(recommendation?.href)
+
+        for (const query of candidates) {
+            let searchPayload = null
+            try {
+                searchPayload = await ravenClient.searchTitle(query)
+            } catch (error) {
+                logger.warn?.(`[${serviceName}] Failed to search Raven for recommendation recovery "${query}": ${error.message}`)
+                continue
+            }
+
+            const normalizedPayload = normalizeRavenSearchPayload(searchPayload)
+            if (!normalizedPayload.searchId || normalizedPayload.options.length === 0) {
+                continue
+            }
+
+            for (const option of normalizedPayload.options) {
+                if (optionMatchesRecommendationCandidates(option, candidateKeys, recommendationHref)) {
+                    let sourceAdultContent = null
+                    if (option.href && typeof ravenClient?.getTitleDetails === 'function') {
+                        try {
+                            const details = await ravenClient.getTitleDetails(option.href)
+                            sourceAdultContent = normalizeRecommendationSourceAdultContent(details?.adultContent)
+                        } catch (error) {
+                            logger.warn?.(`[${serviceName}] Failed to inspect Raven title details for recommendation recovery "${option.title}": ${error.message}`)
+                        }
+                    }
+
+                    return {
+                        searchId: normalizedPayload.searchId,
+                        optionIndex: option.optionIndex,
+                        title: option.title,
+                        href: option.href,
+                        sourceAdultContent,
+                    }
+                }
+            }
+
+            if (typeof ravenClient?.getTitleDetails !== 'function') {
+                continue
+            }
+
+            for (const option of normalizedPayload.options) {
+                if (!option?.href) {
+                    continue
+                }
+
+                try {
+                    const details = await ravenClient.getTitleDetails(option.href)
+                    const associatedNames = normalizeDistinctStrings(details?.associatedNames)
+                    const associatedNameKeys = new Set(
+                        associatedNames
+                            .map((value) => normalizeRecommendationTitleKey(value))
+                            .filter(Boolean),
+                    )
+                    const matchesAlias = [...associatedNameKeys].some((key) => candidateKeys.has(key))
+                    if (!matchesAlias) {
+                        continue
+                    }
+
+                    return {
+                        searchId: normalizedPayload.searchId,
+                        optionIndex: option.optionIndex,
+                        title: option.title,
+                        href: option.href,
+                        sourceAdultContent: normalizeRecommendationSourceAdultContent(details?.adultContent),
+                    }
+                } catch (error) {
+                    logger.warn?.(`[${serviceName}] Failed to inspect Raven aliases for recommendation recovery "${option.title}": ${error.message}`)
+                }
+            }
         }
 
         return null
     }
+    const createSavedForLaterTimelineEvent = () =>
+        createRecommendationTimelineEvent({
+            type: 'comment',
+            actor: {
+                role: 'system',
+                username: 'Moon',
+            },
+            body: SAVED_FOR_LATER_MESSAGE,
+        })
 
     app.use('/api/raven', requireSessionIfSetupCompleted)
     app.use('/api/recommendations', requireSessionIfSetupCompleted)
@@ -1262,40 +1426,158 @@ export function registerRavenRoutes(context = {}) {
                 return
             }
 
-            const searchId = normalizeString(recommendation?.searchId)
-            const selectedOptionIndex = Number(target?.selectedOptionIndex ?? recommendation?.selectedOptionIndex)
-            if (!searchId || !Number.isFinite(selectedOptionIndex)) {
-                res.status(409).json({error: 'Recommendation is missing Raven queue details.'})
-                return
-            }
-
-            let queueResult = null
-            try {
-                queueResult = await ravenClient.queueDownload({searchId, optionIndex: selectedOptionIndex})
-            } catch (error) {
-                logger.error(`[${serviceName}] Failed to queue approved recommendation ${id}: ${error.message}`)
-                res.status(502).json({error: 'Unable to queue Raven download for this recommendation.'})
-                return
-            }
-
-            const metadataResult = await runRecommendationMetadataAutoApply({
-                recommendation,
-                queueResult,
-            })
-            if (normalizeString(metadataResult?.status).toLowerCase() === 'failed') {
-                logger.warn?.(
-                    `[${serviceName}] Recommendation ${id} metadata auto-apply failed: ${normalizeString(metadataResult?.message) || 'Unknown error'}`,
-                )
-            }
-
+            const requestBody =
+                req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+                    ? req.body
+                    : {}
             const approvedAt = new Date().toISOString()
             const approvedBy = recommendationActorFromSession(session, 'admin')
+            const metadataQuery = normalizeString(requestBody?.metadataQuery) || resolveRecommendationMetadataQuery(recommendation)
+            const metadataSelectionInput =
+                requestBody?.metadataSelection && typeof requestBody.metadataSelection === 'object'
+                    ? requestBody.metadataSelection
+                    : null
+            const requestedMetadataSelection = metadataSelectionInput
+                ? normalizeRecommendationMetadataSelection({
+                    ...metadataSelectionInput,
+                    status: 'pending',
+                    query: normalizeString(metadataSelectionInput?.query) || metadataQuery,
+                    selectedAt: approvedAt,
+                    selectedBy: {
+                        username: approvedBy.username,
+                        discordId: approvedBy.discordId,
+                    },
+                })
+                : null
+            if (metadataSelectionInput && (!requestedMetadataSelection || !recommendationMetadataHasIdentifiers(requestedMetadataSelection))) {
+                res.status(400).json({error: 'A valid metadata selection is required when approving with metadata.'})
+                return
+            }
+
+            const storedSearchId = normalizeString(recommendation?.searchId)
+            const storedSelectedOptionIndexRaw = target?.selectedOptionIndex ?? recommendation?.selectedOptionIndex
+            const storedSelectedOptionIndex =
+                typeof storedSelectedOptionIndexRaw === 'number'
+                    ? storedSelectedOptionIndexRaw
+                    : typeof storedSelectedOptionIndexRaw === 'string' && storedSelectedOptionIndexRaw.trim()
+                        ? Number(storedSelectedOptionIndexRaw)
+                        : Number.NaN
+            if ((!storedSearchId || !Number.isFinite(storedSelectedOptionIndex)) && !requestedMetadataSelection) {
+                res.status(409).json({error: 'Recommendation needs a saved metadata match before Noona can search alternate Raven titles.'})
+                return
+            }
+
+            let resolvedQueueTarget = null
+            let queueResult = null
+            let usedRecoveredQueueTarget = false
+            const tryRecoveredQueueTarget = async () => {
+                if (!requestedMetadataSelection) {
+                    return false
+                }
+
+                resolvedQueueTarget = await resolveRavenRecommendationQueueTarget({
+                    recommendation,
+                    metadataSelection: requestedMetadataSelection,
+                    metadataQuery,
+                })
+                if (!resolvedQueueTarget?.searchId || !Number.isFinite(resolvedQueueTarget?.optionIndex)) {
+                    return false
+                }
+
+                usedRecoveredQueueTarget = true
+                queueResult = await ravenClient.queueDownload({
+                    searchId: resolvedQueueTarget.searchId,
+                    optionIndex: resolvedQueueTarget.optionIndex,
+                })
+                return true
+            }
+
+            if (storedSearchId && Number.isFinite(storedSelectedOptionIndex)) {
+                try {
+                    queueResult = await ravenClient.queueDownload({
+                        searchId: storedSearchId,
+                        optionIndex: storedSelectedOptionIndex,
+                    })
+                } catch (error) {
+                    if (!requestedMetadataSelection) {
+                        logger.error(`[${serviceName}] Failed to queue approved recommendation ${id}: ${error.message}`)
+                        res.status(502).json({error: 'Unable to queue Raven download for this recommendation.'})
+                        return
+                    }
+
+                    logger.warn?.(`[${serviceName}] Failed to queue stored Raven target for recommendation ${id}; retrying through metadata recovery: ${error.message}`)
+                }
+            }
+
+            if (!queueResult) {
+                try {
+                    const recovered = await tryRecoveredQueueTarget()
+                    if (!recovered) {
+                        const savedMetadataSelection = requestedMetadataSelection
+                            ? normalizeRecommendationMetadataSelection({
+                                ...requestedMetadataSelection,
+                                lastAttemptedAt: approvedAt,
+                                lastError: SAVED_FOR_LATER_MESSAGE,
+                            })
+                            : null
+                        const metadataTimelineEvent = createRecommendationMetadataSelectionTimelineEvent(savedMetadataSelection)
+                        const savedForLaterTimelineEvent = createSavedForLaterTimelineEvent()
+                        const nextTimeline = [
+                            ...appendRecommendationTimelineEvent(target, savedForLaterTimelineEvent),
+                            ...(metadataTimelineEvent ? [metadataTimelineEvent] : []),
+                        ]
+
+                        const updatePersisted = await persistRecommendationDocumentUpdate(target, {
+                            $set: {
+                                metadataSelection: savedMetadataSelection,
+                                timeline: nextTimeline,
+                            },
+                        })
+                        if (!updatePersisted) {
+                            res.status(502).json({error: 'Vault did not persist the saved recommendation state.'})
+                            return
+                        }
+
+                        const refreshedDocuments = await loadRecommendationDocuments()
+                        const refreshedTarget = findRecommendationDocumentById(refreshedDocuments, id)
+                        if (!refreshedTarget) {
+                            res.status(502).json({error: 'Vault did not persist the saved recommendation state.'})
+                            return
+                        }
+
+                        res.status(202).json({
+                            ok: true,
+                            id,
+                            savedForLater: true,
+                            message: SAVED_FOR_LATER_MESSAGE,
+                            metadataSelection: savedMetadataSelection,
+                            recommendation: normalizeRecommendationDoc(refreshedTarget),
+                        })
+                        return
+                    }
+                } catch (error) {
+                    logger.error(`[${serviceName}] Failed to recover Raven queue details for recommendation ${id}: ${error.message}`)
+                    res.status(502).json({error: 'Unable to queue Raven download for this recommendation.'})
+                    return
+                }
+            }
+
+            const metadataSelection = requestedMetadataSelection
+                ? normalizeRecommendationMetadataSelection({
+                    ...requestedMetadataSelection,
+                    queuedAt: approvedAt,
+                    titleUuid: resolveQueuedRecommendationTitleUuid(queueResult),
+                    lastAttemptedAt: null,
+                    lastError: null,
+                })
+                : null
+
             const approvedTimelineEvent = createRecommendationTimelineEvent({
                 type: 'approved',
                 actor: approvedBy,
                 createdAt: approvedAt,
             })
-            const metadataTimelineEvent = createRecommendationMetadataTimelineEvent(metadataResult)
+            const metadataTimelineEvent = createRecommendationMetadataSelectionTimelineEvent(metadataSelection)
             const nextTimeline = [
                 ...appendRecommendationTimelineEvent(target, approvedTimelineEvent),
                 ...(metadataTimelineEvent ? [metadataTimelineEvent] : []),
@@ -1311,7 +1593,27 @@ export function registerRavenRoutes(context = {}) {
                     deniedAt: null,
                     deniedBy: null,
                     denialReason: null,
+                    searchId: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.searchId ?? null
+                        : storedSearchId,
+                    selectedOptionIndex: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.optionIndex ?? null
+                        : storedSelectedOptionIndex,
+                    title: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.title ?? recommendation?.title ?? null
+                        : recommendation?.title ?? null,
+                    href: usedRecoveredQueueTarget
+                        ? resolvedQueueTarget?.href ?? recommendation?.href ?? null
+                        : recommendation?.href ?? null,
+                    sourceAdultContent: usedRecoveredQueueTarget
+                        ? (
+                            resolvedQueueTarget?.sourceAdultContent != null
+                                ? resolvedQueueTarget.sourceAdultContent
+                                : recommendation?.sourceAdultContent ?? null
+                        )
+                        : recommendation?.sourceAdultContent ?? null,
                     timeline: nextTimeline,
+                    metadataSelection,
                 },
             })
 
@@ -1337,7 +1639,7 @@ export function registerRavenRoutes(context = {}) {
                 ok: true,
                 id,
                 queueResult,
-                metadata: metadataResult,
+                metadataSelection,
                 recommendation: persistedRecommendation,
             })
         } catch (error) {
@@ -1643,6 +1945,20 @@ export function registerRavenRoutes(context = {}) {
         }
     })
 
+    app.post('/api/raven/library/imports/check', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
+            return
+        }
+
+        try {
+            const result = await ravenClient.checkAvailableLibraryImports()
+            res.status(202).json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to check Raven library imports: ${error.message}`)
+            res.status(502).json({error: 'Unable to check Raven library imports.'})
+        }
+    })
+
     app.get('/api/raven/title/:uuid', async (req, res) => {
         if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
             return
@@ -1850,6 +2166,26 @@ export function registerRavenRoutes(context = {}) {
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to search Raven for "${query}": ${error.message}`)
             res.status(502).json({error: 'Unable to search Raven library.'})
+        }
+    })
+
+    app.get('/api/raven/title-details', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'library_management', 'Library management permission is required.')) {
+            return
+        }
+        const sourceUrl = typeof req.query?.url === 'string' ? req.query.url.trim() : ''
+
+        if (!sourceUrl) {
+            res.status(400).json({error: 'url is required.'})
+            return
+        }
+
+        try {
+            const details = await ravenClient.getTitleDetails(sourceUrl)
+            res.json(details ?? {sourceUrl})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load Raven title details for ${sourceUrl}: ${error.message}`)
+            res.status(502).json({error: 'Unable to retrieve Raven title details.'})
         }
     })
 

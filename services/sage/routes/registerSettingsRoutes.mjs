@@ -316,14 +316,32 @@ export function registerSettingsRoutes(context = {}) {
                 return
             }
 
+            const currentSettings = await readDownloadVpnSettings()
+            const requestRegion = normalizeString(req.body?.region)
+            const requestPiaUsername = normalizeString(req.body?.piaUsername)
+            const requestPiaPassword = normalizeString(req.body?.piaPassword)
+            const savedRegion = normalizeString(currentSettings?.region)
+            const savedPiaUsername = normalizeString(currentSettings?.piaUsername)
+            const savedPiaPassword = normalizeString(currentSettings?.piaPassword)
+            const resolvedPiaUsername = requestPiaUsername || savedPiaUsername
+            const resolvedPiaPassword =
+                !requestPiaPassword || requestPiaPassword === '********'
+                    ? savedPiaPassword
+                    : requestPiaPassword
+
+            if (!resolvedPiaUsername || !resolvedPiaPassword) {
+                res.status(400).json({error: 'PIA username and password are required to test VPN login.'})
+                return
+            }
+
             const result = await ravenClient.testVpnLogin({
                 triggeredBy:
                     typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
                         ? req.body.triggeredBy.trim()
                         : 'manual',
-                region: normalizeString(req.body?.region),
-                piaUsername: normalizeString(req.body?.piaUsername),
-                piaPassword: normalizeString(req.body?.piaPassword),
+                region: requestRegion || savedRegion,
+                piaUsername: resolvedPiaUsername,
+                piaPassword: resolvedPiaPassword,
             })
 
             res.status(200).json(result ?? {ok: false, message: 'Raven VPN login test did not return a payload.'})

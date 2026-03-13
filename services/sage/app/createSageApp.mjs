@@ -447,10 +447,10 @@ export const createSageApp = ({
     const DEFAULT_NAMING_SETTINGS = Object.freeze({
         key: 'downloads.naming',
         titleTemplate: '{title}',
-        chapterTemplate: 'Chapter {chapter} [Pages {pages} {domain} - Noona].cbz',
+        chapterTemplate: '{title} c{chapter} (v01) [Noona].cbz',
         pageTemplate: '{page_padded}{ext}',
         pagePad: 3,
-        chapterPad: 4,
+        chapterPad: 3,
     })
 
     const DEFAULT_DEBUG_SETTINGS = Object.freeze({
@@ -684,6 +684,7 @@ export const createSageApp = ({
         key: DOWNLOAD_VPN_SETTINGS_KEY,
         provider: 'pia',
         enabled: false,
+        onlyDownloadWhenVpnOn: false,
         autoRotate: true,
         rotateEveryMinutes: 30,
         region: 'us_california',
@@ -869,6 +870,7 @@ export const createSageApp = ({
             key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
             provider: normalizeVpnProvider(settings?.provider),
             enabled: parseBooleanInput(settings?.enabled) === true,
+            onlyDownloadWhenVpnOn: parseBooleanInput(settings?.onlyDownloadWhenVpnOn) === true,
             autoRotate: parseBooleanInput(settings?.autoRotate) !== false,
             rotateEveryMinutes: normalizeVpnRotateEveryMinutes(settings?.rotateEveryMinutes),
             region: normalizeVpnRegion(settings?.region),
@@ -2021,6 +2023,8 @@ export const createSageApp = ({
                         ...DEFAULT_DOWNLOAD_VPN_SETTINGS,
                         provider: normalizeVpnProvider(DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
                         enabled: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.enabled) === true,
+                        onlyDownloadWhenVpnOn:
+                            parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.onlyDownloadWhenVpnOn) === true,
                         autoRotate: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.autoRotate) !== false,
                         rotateEveryMinutes: normalizeVpnRotateEveryMinutes(DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes),
                         region: normalizeVpnRegion(DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
@@ -2129,6 +2133,8 @@ export const createSageApp = ({
                 ...DEFAULT_DOWNLOAD_VPN_SETTINGS,
                 provider: normalizeVpnProvider(DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
                 enabled: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.enabled) === true,
+                onlyDownloadWhenVpnOn:
+                    parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.onlyDownloadWhenVpnOn) === true,
                 autoRotate: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.autoRotate) !== false,
                 rotateEveryMinutes: normalizeVpnRotateEveryMinutes(DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes),
                 region: normalizeVpnRegion(DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
@@ -2146,6 +2152,7 @@ export const createSageApp = ({
             key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
             provider: normalizeVpnProvider(doc?.provider ?? DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
             enabled: parseBooleanInput(doc?.enabled) === true,
+            onlyDownloadWhenVpnOn: parseBooleanInput(doc?.onlyDownloadWhenVpnOn) === true,
             autoRotate: parseBooleanInput(doc?.autoRotate) !== false,
             rotateEveryMinutes: normalizeVpnRotateEveryMinutes(
                 doc?.rotateEveryMinutes,
@@ -2166,6 +2173,10 @@ export const createSageApp = ({
         const nextEnabled = (() => {
             const parsed = parseBooleanInput(payload?.enabled)
             return parsed == null ? current.enabled : parsed
+        })()
+        const nextOnlyDownloadWhenVpnOn = (() => {
+            const parsed = parseBooleanInput(payload?.onlyDownloadWhenVpnOn)
+            return parsed == null ? parseBooleanInput(current.onlyDownloadWhenVpnOn) === true : parsed
         })()
         const nextAutoRotate = (() => {
             const parsed = parseBooleanInput(payload?.autoRotate)
@@ -2207,6 +2218,7 @@ export const createSageApp = ({
             key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
             provider: nextProvider,
             enabled: nextEnabled,
+            onlyDownloadWhenVpnOn: nextOnlyDownloadWhenVpnOn,
             autoRotate: nextAutoRotate,
             rotateEveryMinutes: nextRotateEveryMinutes,
             region: nextRegion,

@@ -201,6 +201,7 @@ type DownloadVpnSettings = {
     key?: string | null;
     provider?: string | null;
     enabled?: boolean;
+    onlyDownloadWhenVpnOn?: boolean;
     autoRotate?: boolean;
     rotateEveryMinutes?: number | null;
     region?: string | null;
@@ -860,10 +861,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [namingError, setNamingError] = useState<string | null>(null);
     const [namingMessage, setNamingMessage] = useState<string | null>(null);
     const [titleTemplate, setTitleTemplate] = useState("{title}");
-    const [chapterTemplate, setChapterTemplate] = useState("Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
+    const [chapterTemplate, setChapterTemplate] = useState("{title} c{chapter} (v01) [Noona].cbz");
     const [pageTemplate, setPageTemplate] = useState("{page_padded}{ext}");
     const [pagePad, setPagePad] = useState("3");
-    const [chapterPad, setChapterPad] = useState("4");
+    const [chapterPad, setChapterPad] = useState("3");
     const [downloadWorkerSettingsLoading, setDownloadWorkerSettingsLoading] = useState(false);
     const [downloadWorkerSettingsSaving, setDownloadWorkerSettingsSaving] = useState(false);
     const [downloadWorkerSettingsError, setDownloadWorkerSettingsError] = useState<string | null>(null);
@@ -877,6 +878,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [vpnError, setVpnError] = useState<string | null>(null);
     const [vpnMessage, setVpnMessage] = useState<string | null>(null);
     const [vpnEnabled, setVpnEnabled] = useState(false);
+    const [vpnOnlyDownloadWhenOn, setVpnOnlyDownloadWhenOn] = useState(false);
     const [vpnAutoRotate, setVpnAutoRotate] = useState(true);
     const [vpnRotateEveryMinutes, setVpnRotateEveryMinutes] = useState(DEFAULT_VPN_ROTATE_MINUTES);
     const [vpnRegion, setVpnRegion] = useState(DEFAULT_VPN_REGION);
@@ -1590,10 +1592,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setTitleTemplate(normalizeString(json?.titleTemplate).trim() || "{title}");
-            setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
+            setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "{title} c{chapter} (v01) [Noona].cbz");
             setPageTemplate(normalizeString(json?.pageTemplate).trim() || "{page_padded}{ext}");
             setPagePad(String(Number.isFinite(Number(json?.pagePad)) && Number(json?.pagePad) > 0 ? Math.floor(Number(json?.pagePad)) : 3));
-            setChapterPad(String(Number.isFinite(Number(json?.chapterPad)) && Number(json?.chapterPad) > 0 ? Math.floor(Number(json?.chapterPad)) : 4));
+            setChapterPad(String(Number.isFinite(Number(json?.chapterPad)) && Number(json?.chapterPad) > 0 ? Math.floor(Number(json?.chapterPad)) : 3));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setNamingError(msg);
@@ -1717,6 +1719,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setVpnEnabled(json?.enabled === true);
+            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
             setVpnAutoRotate(json?.autoRotate !== false);
             setVpnRotateEveryMinutes(
                 String(
@@ -1758,6 +1761,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     enabled: vpnEnabled,
+                    onlyDownloadWhenVpnOn: vpnOnlyDownloadWhenOn,
                     autoRotate: vpnAutoRotate,
                     rotateEveryMinutes,
                     region: vpnRegion,
@@ -1773,6 +1777,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
             setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
             setVpnEnabled(json?.enabled === true);
+            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
             setVpnAutoRotate(json?.autoRotate !== false);
             setVpnRotateEveryMinutes(
                 String(
@@ -4337,6 +4342,15 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 onToggle={() => setVpnEnabled((prev) => !prev)}
                             />
                             <Text variant="body-default-xs">Enable VPN for Raven downloads</Text>
+                        </Row>
+                        <Row gap="12" style={{flexWrap: "wrap"}}>
+                            <Switch
+                                isChecked={vpnOnlyDownloadWhenOn}
+                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                ariaLabel="Only download when Raven VPN is connected"
+                                onToggle={() => setVpnOnlyDownloadWhenOn((prev) => !prev)}
+                            />
+                            <Text variant="body-default-xs">Only download when VPN is on</Text>
                         </Row>
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
