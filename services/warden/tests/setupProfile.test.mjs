@@ -32,6 +32,7 @@ test("normalizeSetupProfileSnapshot derives the v3 service contract from the pub
             clientId: "client-id",
             clientSecret: "client-secret",
             guildId: "guild-id",
+            superuserId: "123456789012345678",
         },
     });
 
@@ -43,6 +44,7 @@ test("normalizeSetupProfileSnapshot derives the v3 service contract from the pub
     assert.equal(normalized.values["noona-vault"], undefined);
     assert.equal(normalized.values["noona-komf"].KOMF_APPLICATION_YML, "server:\n  port: 8085");
     assert.equal(normalized.values["noona-portal"].DISCORD_BOT_TOKEN, "bot-token");
+    assert.equal(normalized.values["noona-portal"].DISCORD_SUPERUSER_ID, "123456789012345678");
 });
 
 test("normalizeSetupProfileSnapshot imports legacy snapshots into the v3 profile model", () => {
@@ -104,6 +106,7 @@ test("toPublicSetupSnapshot masks secrets and masked imports restore from the cu
             clientId: "client-id",
             clientSecret: "client-secret",
             guildId: "guild-id",
+            superuserId: "123456789012345678",
         },
     });
 
@@ -112,10 +115,12 @@ test("toPublicSetupSnapshot masks secrets and masked imports restore from the cu
     assert.equal(masked.kavita.account.password, SETUP_PROFILE_SECRET_PLACEHOLDER);
     assert.equal(masked.discord.botToken, SETUP_PROFILE_SECRET_PLACEHOLDER);
     assert.equal(masked.discord.clientSecret, SETUP_PROFILE_SECRET_PLACEHOLDER);
+    assert.equal(masked.discord.superuserId, "123456789012345678");
 
     const restored = normalizeSetupProfileSnapshot(masked, {currentSnapshot: current});
     assert.equal(restored.kavita.apiKey, "kavita-key");
     assert.equal(restored.kavita.account.password, "admin-pass");
     assert.equal(restored.discord.botToken, "bot-token");
     assert.equal(restored.discord.clientSecret, "client-secret");
+    assert.equal(restored.discord.superuserId, "123456789012345678");
 });

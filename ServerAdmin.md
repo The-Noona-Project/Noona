@@ -88,6 +88,11 @@ service.
 
 - Moon sign-in is Discord-first.
 - During first-run setup, configure Discord OAuth for Moon and the Portal bot settings you want to use.
+- If you want one trusted Discord account to run Portal's private bulk queue command, set `DISCORD_SUPERUSER_ID` in
+  Moon under `Admin -> Integrations -> Discord`.
+- The configured superuser can DM the bot `downloadall type:manga nsfw:false titlegroup:a`.
+  Portal accepts `downloadall`, `/downloadall`, or `!downloadall` only in DMs and ignores the same syntax from anyone
+  else.
 - On the finish or summary step, use the Discord login flow to create the first Noona admin session.
 - Managed Kavita admin credentials are separate. If you provide Kavita admin defaults during setup, Warden can seed the
   managed Kavita admin and API-key flow for you.
@@ -183,6 +188,8 @@ The current Moon permission set is:
 Also in Moon:
 
 - `Admin -> Integrations -> Discord` manages Discord bot validation, onboarding defaults, and per-command role gates.
+- That same Discord settings screen also carries the optional `DISCORD_SUPERUSER_ID` field for the private DM-only
+  `downloadall` command.
 - `Admin -> Integrations -> Kavita` manages Kavita-related defaults and external link settings.
 
 Use Moon's default-permissions controls if you want new Discord-linked users to start with a standard role set.
@@ -220,6 +227,8 @@ Downloads, Kavita, or metadata flows fail after a reboot:
 
 - confirm the storage root persisted across the reboot
 - check service health and logs from Moon or Warden before changing settings by hand
+- Raven now keeps fractional chapters such as `101.1` and `101.5` as separate chapters during queueing and sync, so
+  seeing those alongside `101` is expected behavior rather than a duplicate-collapse bug
 
 Moon background music does not play:
 

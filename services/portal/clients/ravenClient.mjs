@@ -3,7 +3,7 @@
  * Related files:
  * - app/portalRuntime.mjs
  * - tests/ravenClient.test.mjs
- * Times this file has been edited: 9
+ * Times this file has been edited: 10
  */
 
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -65,6 +65,10 @@ const normalizeString = (value) => {
     const trimmed = value.trim();
     return trimmed || null;
 };
+const normalizeCount = (value) => {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+};
 
 const normalizeStringList = (value) => {
     if (!Array.isArray(value)) {
@@ -101,6 +105,27 @@ const normalizeRelatedSeries = (value) => {
             };
         })
         .filter(Boolean);
+};
+const normalizeBulkQueueResult = (value, request) => {
+    const payload = value && typeof value === 'object' ? value : {};
+    const filters = payload.filters && typeof payload.filters === 'object' ? payload.filters : {};
+    return {
+        status: normalizeString(payload.status) ?? 'unknown',
+        message: normalizeString(payload.message) ?? null,
+        filters: {
+            type: normalizeString(filters.type) ?? normalizeString(request?.type),
+            nsfw: normalizeBoolean(filters.nsfw ?? request?.nsfw),
+            titlePrefix: normalizeString(filters.titlePrefix) ?? normalizeString(request?.titlePrefix),
+        },
+        pagesScanned: normalizeCount(payload.pagesScanned),
+        matchedCount: normalizeCount(payload.matchedCount),
+        queuedCount: normalizeCount(payload.queuedCount),
+        skippedActiveCount: normalizeCount(payload.skippedActiveCount),
+        failedCount: normalizeCount(payload.failedCount),
+        queuedTitles: normalizeStringList(payload.queuedTitles),
+        skippedActiveTitles: normalizeStringList(payload.skippedActiveTitles),
+        failedTitles: normalizeStringList(payload.failedTitles),
+    };
 };
 
 const parseResponsePayload = async (response) => {
@@ -345,6 +370,38 @@ export const createPortalRavenClient = ({
                 body: JSON.stringify(payload),
                 acceptStatuses: [404],
             });
+        },
+        bulkQueueDownload: async ({type, nsfw, titlePrefix} = {}) => {
+            const normalizedType = normalizeString(type);
+            if (!normalizedType) {
+                throw new Error('type is required.');
+            }
+
+            const normalizedNsfw = normalizeBoolean(nsfw);
+            if (normalizedNsfw == null) {
+                throw new Error('nsfw must be true or false.');
+            }
+
+            const normalizedTitlePrefix = normalizeString(titlePrefix);
+            if (!normalizedTitlePrefix) {
+                throw new Error('titlePrefix is required.');
+            }
+
+            const requestBody = {
+                type: normalizedType,
+                nsfw: normalizedNsfw,
+                titlePrefix: normalizedTitlePrefix,
+            };
+            const payload = await request('/v1/download/bulk-queue', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestBody),
+                acceptStatuses: [409],
+            });
+
+            return normalizeBulkQueueResult(payload, requestBody);
         },
     };
 };

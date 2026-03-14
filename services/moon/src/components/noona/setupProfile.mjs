@@ -102,6 +102,7 @@ export const buildSetupProfileSnapshot = ({
             guildId: trimString(getEnvValue(sourceValues, 'noona-portal', 'DISCORD_GUILD_ID')),
             guildRoleId: trimString(getEnvValue(sourceValues, 'noona-portal', 'DISCORD_GUILD_ROLE_ID')),
             defaultRoleId: trimString(getEnvValue(sourceValues, 'noona-portal', 'DISCORD_DEFAULT_ROLE_ID')),
+            superuserId: trimString(getEnvValue(sourceValues, 'noona-portal', 'DISCORD_SUPERUSER_ID')),
             requiredRoleDing: trimString(getEnvValue(sourceValues, 'noona-portal', 'REQUIRED_ROLE_DING')),
             requiredRoleScan: trimString(getEnvValue(sourceValues, 'noona-portal', 'REQUIRED_ROLE_SCAN')),
             requiredRoleSearch: trimString(getEnvValue(sourceValues, 'noona-portal', 'REQUIRED_ROLE_SEARCH')),
@@ -193,6 +194,7 @@ export const hydrateSetupProfileState = ({
     setEnvValue(nextValues, 'noona-portal', 'DISCORD_GUILD_ID', normalizeString(discord.guildId));
     setEnvValue(nextValues, 'noona-portal', 'DISCORD_GUILD_ROLE_ID', normalizeString(discord.guildRoleId));
     setEnvValue(nextValues, 'noona-portal', 'DISCORD_DEFAULT_ROLE_ID', normalizeString(discord.defaultRoleId));
+    setEnvValue(nextValues, 'noona-portal', 'DISCORD_SUPERUSER_ID', normalizeString(discord.superuserId));
     setEnvValue(nextValues, 'noona-portal', 'REQUIRED_ROLE_DING', normalizeString(discord.requiredRoleDing));
     setEnvValue(nextValues, 'noona-portal', 'REQUIRED_ROLE_SCAN', normalizeString(discord.requiredRoleScan));
     setEnvValue(nextValues, 'noona-portal', 'REQUIRED_ROLE_SEARCH', normalizeString(discord.requiredRoleSearch));

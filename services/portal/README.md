@@ -18,6 +18,7 @@ and Kavita account handoff features.
 
 - connects Noona to Discord
 - handles onboarding and recommendation-related messaging
+- optionally accepts a DM-only `downloadall` admin command for one configured Discord superuser
 - bridges Moon and Kavita for account and metadata flows
 - stores its shared state through Vault's internal service API instead of direct database access
 - exposes the public-facing Portal HTTP endpoints used by the stack
@@ -30,6 +31,7 @@ and Kavita account handoff features.
 ## When An Admin Needs To Care
 
 - when setting up or changing the Discord bot
+- when configuring or rotating the Discord superuser allowed to run the private `downloadall` DM command
 - when user onboarding or recommendation notifications break
 - when Kavita handoff or metadata bridge features fail
 

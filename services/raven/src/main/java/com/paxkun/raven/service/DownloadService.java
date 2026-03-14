@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
- * Times this file has been edited: 32
+ * Times this file has been edited: 33
  */
 package com.paxkun.raven.service;
 
@@ -301,6 +301,133 @@ public class DownloadService {
 
     public TitleDetails getTitleDetails(String titleUrl) {
         return titleScraper.getTitleDetails(titleUrl);
+    }
+
+    /**
+     * Queues every title matching the supplied browse filters.
+     *
+     * @param type        The requested content type.
+     * @param nsfw        Whether adult-only titles should be matched.
+     * @param titlePrefix The visible title prefix.
+     * @return The resulting bulk queue summary.
+     */
+    public BulkQueueDownloadResult queueBulkDownload(String type, boolean nsfw, String titlePrefix) {
+        String normalizedType = normalizeMediaType(type);
+        String normalizedPrefix = normalizeBulkTitlePrefix(titlePrefix);
+        BulkQueueDownloadResult.Filters filters = new BulkQueueDownloadResult.Filters(
+                normalizedType != null ? normalizedType : normalizeQueueTitle(type),
+                nsfw,
+                normalizedPrefix == null ? "" : normalizedPrefix
+        );
+
+        if (normalizedType == null || normalizedPrefix == null) {
+            return new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_INVALID_REQUEST,
+                    "type and titlePrefix are required.",
+                    filters,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        if (maintenancePauseActive.get()) {
+            return new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_MAINTENANCE_PAUSED,
+                    "Raven is temporarily pausing new downloads while VPN rotation completes.",
+                    filters,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        logger.debug(
+                "DOWNLOAD_SERVICE",
+                "Bulk queue browse starting | type=" + sanitizeForLog(normalizedType) +
+                        " | nsfw=" + nsfw +
+                        " | titlePrefix=" + sanitizeForLog(normalizedPrefix));
+
+        TitleScraper.BrowseResult browseResult = titleScraper.browseTitlesAlphabetically(normalizedType, nsfw);
+        List<Map<String, String>> matchedTitles = filterTitlesByPrefix(
+                browseResult != null ? browseResult.titles() : List.of(),
+                normalizedPrefix
+        );
+        int pagesScanned = browseResult != null ? browseResult.pagesScanned() : 0;
+        if (matchedTitles.isEmpty()) {
+            return new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_EMPTY_RESULTS,
+                    "No titles matched the supplied filters.",
+                    filters,
+                    pagesScanned,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        List<String> queuedTitles = new ArrayList<>();
+        List<String> skippedActiveTitles = new ArrayList<>();
+        List<String> failedTitles = new ArrayList<>();
+
+        for (Map<String, String> selectedTitle : matchedTitles) {
+            String titleName = normalizeQueueTitle(selectedTitle != null ? selectedTitle.get("title") : null);
+            String titleUrl = selectedTitle != null ? selectedTitle.get("href") : null;
+            String sanitizedTitle = sanitizeForLog(titleName);
+
+            if (titleUrl == null || titleUrl.isBlank()) {
+                failedTitles.add(titleName);
+                logger.warn("DOWNLOAD_SERVICE", "Skipping bulk queue entry with missing href for title=" + sanitizedTitle);
+                continue;
+            }
+
+            if (isTaskActive(titleName)) {
+                skippedActiveTitles.add(titleName);
+                logger.info("DOWNLOAD", "Skipping already active download: " + titleName);
+                continue;
+            }
+
+            try {
+                DownloadProgress progress = createQueuedProgress(titleName, selectedTitle, "library-download");
+                queueProgressForExecution(titleName, selectedTitle, progress);
+                queuedTitles.add(titleName);
+            } catch (Exception e) {
+                failedTitles.add(titleName);
+                logger.warn(
+                        "DOWNLOAD_SERVICE",
+                        "Bulk queue failed for title=" + sanitizedTitle + " | reason=" + sanitizeForLog(e.getMessage()));
+            }
+        }
+
+        String status = resolveBulkQueueStatus(queuedTitles, skippedActiveTitles, failedTitles);
+        String message = buildBulkQueueMessage(queuedTitles, skippedActiveTitles, failedTitles, matchedTitles.size());
+        return new BulkQueueDownloadResult(
+                status,
+                message,
+                filters,
+                pagesScanned,
+                matchedTitles.size(),
+                queuedTitles.size(),
+                skippedActiveTitles.size(),
+                failedTitles.size(),
+                queuedTitles,
+                skippedActiveTitles,
+                failedTitles
+        );
     }
 
     private Map<String, String> buildSelectedTitle(DownloadProgress progress) {
@@ -2809,9 +2936,10 @@ public class DownloadService {
 
         String lower = cleaned.toLowerCase(Locale.ROOT);
         return switch (lower) {
-            case "manga" -> "Manga";
+            case "manga", "managa" -> "Manga";
             case "manhwa" -> "Manhwa";
             case "manhua" -> "Manhua";
+            case "oel" -> "OEL";
             default -> prettifyLabel(cleaned);
         };
     }
@@ -2972,6 +3100,106 @@ public class DownloadService {
             return "Download already in progress for: " + skippedTitles.get(0);
         }
         return "Downloads already in progress for: " + String.join(", ", skippedTitles);
+    }
+
+    private String normalizeBulkTitlePrefix(String value) {
+        if (value == null) {
+            return null;
+        }
+
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private List<Map<String, String>> filterTitlesByPrefix(List<Map<String, String>> titles, String titlePrefix) {
+        if (titles == null || titles.isEmpty() || titlePrefix == null || titlePrefix.isBlank()) {
+            return List.of();
+        }
+
+        String normalizedPrefix = titlePrefix.toLowerCase(Locale.ROOT);
+        List<Map<String, String>> matched = new ArrayList<>();
+        for (Map<String, String> title : titles) {
+            if (title == null || title.isEmpty()) {
+                continue;
+            }
+
+            String comparableTitle = normalizePrefixComparableTitle(title.get("title"));
+            if (comparableTitle == null || comparableTitle.isBlank()) {
+                continue;
+            }
+
+            if (comparableTitle.toLowerCase(Locale.ROOT).startsWith(normalizedPrefix)) {
+                matched.add(new HashMap<>(title));
+            }
+        }
+
+        return matched.isEmpty() ? List.of() : List.copyOf(matched);
+    }
+
+    private String normalizePrefixComparableTitle(String rawTitle) {
+        if (rawTitle == null) {
+            return null;
+        }
+
+        String trimmed = rawTitle.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+
+        int index = 0;
+        while (index < trimmed.length()) {
+            char candidate = trimmed.charAt(index);
+            if (Character.isWhitespace(candidate) || !Character.isLetterOrDigit(candidate)) {
+                index++;
+                continue;
+            }
+            break;
+        }
+
+        String normalized = trimmed.substring(Math.min(index, trimmed.length())).trim();
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String resolveBulkQueueStatus(
+            List<String> queuedTitles,
+            List<String> skippedActiveTitles,
+            List<String> failedTitles
+    ) {
+        boolean hasQueued = queuedTitles != null && !queuedTitles.isEmpty();
+        boolean hasSkipped = skippedActiveTitles != null && !skippedActiveTitles.isEmpty();
+        boolean hasFailed = failedTitles != null && !failedTitles.isEmpty();
+
+        if (hasQueued && !hasSkipped && !hasFailed) {
+            return BulkQueueDownloadResult.STATUS_QUEUED;
+        }
+        if (!hasQueued && hasSkipped && !hasFailed) {
+            return BulkQueueDownloadResult.STATUS_ALREADY_ACTIVE;
+        }
+        return BulkQueueDownloadResult.STATUS_PARTIAL;
+    }
+
+    private String buildBulkQueueMessage(
+            List<String> queuedTitles,
+            List<String> skippedActiveTitles,
+            List<String> failedTitles,
+            int matchedCount
+    ) {
+        int queuedCount = queuedTitles == null ? 0 : queuedTitles.size();
+        int skippedCount = skippedActiveTitles == null ? 0 : skippedActiveTitles.size();
+        int failedCount = failedTitles == null ? 0 : failedTitles.size();
+
+        if (matchedCount <= 0) {
+            return "No titles matched the supplied filters.";
+        }
+        if (queuedCount > 0 && skippedCount == 0 && failedCount == 0) {
+            return "Queued " + queuedCount + " title(s) for download.";
+        }
+        if (queuedCount == 0 && skippedCount > 0 && failedCount == 0) {
+            return buildAlreadyActiveMessage(skippedActiveTitles);
+        }
+
+        return "Queued " + queuedCount + " title(s). Skipped " + skippedCount
+                + " already-active title(s). Failed " + failedCount + " title(s).";
     }
 
     private record ActiveWorkerProcess(

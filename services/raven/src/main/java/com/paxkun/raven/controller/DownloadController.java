@@ -5,19 +5,14 @@
  * - src/main/java/com/paxkun/raven/service/LibraryService.java
  * - src/main/java/com/paxkun/raven/service/LoggerService.java
  * - src/main/java/com/paxkun/raven/service/download/DownloadSearchRequest.java
- * Times this file has been edited: 14
+ * Times this file has been edited: 15
  */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
-import com.paxkun.raven.service.download.DownloadSearchRequest;
-import com.paxkun.raven.service.download.DownloadProgress;
-import com.paxkun.raven.service.download.QueueDownloadRequest;
-import com.paxkun.raven.service.download.QueueDownloadResult;
-import com.paxkun.raven.service.download.SearchTitle;
-import com.paxkun.raven.service.download.TitleDetails;
+import com.paxkun.raven.service.download.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -162,6 +157,57 @@ public class DownloadController {
     }
 
     /**
+     * Queues every source title matching the supplied browse filters.
+     *
+     * @param request The browse and queue request.
+     * @return The resulting bulk queue payload.
+     */
+    @PostMapping("/bulk-queue")
+    public ResponseEntity<BulkQueueDownloadResult> bulkQueueDownloads(
+            @RequestBody(required = false) BulkQueueDownloadRequest request
+    ) {
+        String type = request != null && request.type() != null ? request.type().trim() : "";
+        Boolean nsfw = request != null ? request.nsfw() : null;
+        String titlePrefix = request != null && request.titlePrefix() != null ? request.titlePrefix().trim() : "";
+        BulkQueueDownloadResult.Filters filters = new BulkQueueDownloadResult.Filters(
+                type,
+                Boolean.TRUE.equals(nsfw),
+                titlePrefix
+        );
+
+        if (type.isBlank() || nsfw == null || titlePrefix.isBlank()) {
+            return ResponseEntity.badRequest().body(new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_INVALID_REQUEST,
+                    "type, nsfw, and titlePrefix are required.",
+                    filters,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            ));
+        }
+
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Bulk queue request received | type=" + sanitizeForLog(type) +
+                        " | nsfw=" + nsfw +
+                        " | titlePrefix=" + sanitizeForLog(titlePrefix));
+        BulkQueueDownloadResult result = downloadService.queueBulkDownload(type, nsfw, titlePrefix);
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Bulk queue response | type=" + sanitizeForLog(type) +
+                        " | nsfw=" + nsfw +
+                        " | titlePrefix=" + sanitizeForLog(titlePrefix) +
+                        " | status=" + sanitizeForLog(result != null ? result.getStatus() : "") +
+                        " | queued=" + (result != null ? result.getQueuedCount() : 0));
+        return ResponseEntity.status(mapBulkQueueResultStatus(result)).body(result);
+    }
+
+    /**
      * Retrieves the current download queue and recently completed jobs.
      *
      * @return List of {@link DownloadProgress} entries.
@@ -299,6 +345,17 @@ public class DownloadController {
         if (QueueDownloadResult.STATUS_ALREADY_ACTIVE.equals(status)
                 || QueueDownloadResult.STATUS_MAINTENANCE_PAUSED.equals(status)
                 || QueueDownloadResult.STATUS_EMPTY_RESULTS.equals(status)) {
+            return HttpStatus.CONFLICT;
+        }
+        return HttpStatus.ACCEPTED;
+    }
+
+    private HttpStatus mapBulkQueueResultStatus(BulkQueueDownloadResult result) {
+        String status = result != null ? result.getStatus() : null;
+        if (BulkQueueDownloadResult.STATUS_INVALID_REQUEST.equals(status)) {
+            return HttpStatus.BAD_REQUEST;
+        }
+        if (BulkQueueDownloadResult.STATUS_MAINTENANCE_PAUSED.equals(status)) {
             return HttpStatus.CONFLICT;
         }
         return HttpStatus.ACCEPTED;

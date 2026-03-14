@@ -35,6 +35,7 @@ test("buildSetupProfileSnapshot emits the minimal v3 browser contract", () => {
                 DISCORD_CLIENT_ID: "client-id",
                 DISCORD_CLIENT_SECRET: "client-secret",
                 DISCORD_GUILD_ID: "guild-id",
+                DISCORD_SUPERUSER_ID: "123456789012345678",
             },
             "noona-komf": {
                 KOMF_APPLICATION_YML: "komf:\n  enabled: true\n",
@@ -50,6 +51,7 @@ test("buildSetupProfileSnapshot emits the minimal v3 browser contract", () => {
     assert.equal(snapshot.kavita.sharedLibraryPath, "/mnt/manga");
     assert.equal(snapshot.komf.applicationYml, "komf:\n  enabled: true");
     assert.equal(snapshot.discord.botToken, "bot-token");
+    assert.equal(snapshot.discord.superuserId, "123456789012345678");
 });
 
 test("deriveSetupProfileValues keeps storageRoot metadata out of per-service env state", () => {
@@ -103,6 +105,7 @@ test("hydrateSetupProfileState restores wizard fields from a persisted snapshot"
                 clientId: "client-id",
                 clientSecret: "client-secret",
                 guildId: "guild-id",
+                superuserId: "123456789012345678",
                 joinDefaultRoles: "Members",
                 joinDefaultLibraries: "Manga",
             },
@@ -122,6 +125,7 @@ test("hydrateSetupProfileState restores wizard fields from a persisted snapshot"
     assert.equal(hydrated.kavitaSharedLibraryPath, "/mnt/manga");
     assert.equal(hydrated.komfMode, "managed");
     assert.equal(hydrated.values["noona-portal"].DISCORD_BOT_TOKEN, "bot-token");
+    assert.equal(hydrated.values["noona-portal"].DISCORD_SUPERUSER_ID, "123456789012345678");
     assert.equal(hydrated.values["noona-portal"].PORTAL_JOIN_DEFAULT_LIBRARIES, "Manga");
     assert.equal(hydrated.values["noona-komf"].KOMF_APPLICATION_YML, "server:\n  port: 8085\n");
 });

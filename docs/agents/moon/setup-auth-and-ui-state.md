@@ -11,10 +11,14 @@
   `kavita`,
   `komf`,
   and `discord`.
+- The `discord` snapshot includes Portal bot settings plus the optional `superuserId` field that maps to
+  `DISCORD_SUPERUSER_ID` for Portal's DM-only `downloadall` admin command.
 - `deriveSetupProfileSelection()` is the Moon-side summary of implied managed services.
   It always includes `noona-portal` and `noona-raven`, plus `noona-kavita` or `noona-komf` when those integrations
   are managed.
 - `hydrateSetupProfileState()` is the only supported path for restoring wizard form state from a saved snapshot.
+- Moon's `Admin -> Integrations -> Discord` settings surface also exposes `DISCORD_SUPERUSER_ID`, so setup import/export
+  and the signed-in settings editor need to stay aligned on that field.
 
 ## Setup Gates
 

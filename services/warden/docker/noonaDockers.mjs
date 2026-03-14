@@ -2,10 +2,7 @@
 
 import {resolveHostServiceBase, resolveSharedHostEnvEntries} from './hostServiceUrl.mjs';
 import {resolveNoonaImage} from './imageRegistry.mjs';
-import {
-    resolveManagedMongoRootPassword,
-    resolveManagedMongoRootUsername,
-} from './mongoCredentials.mjs';
+import {resolveManagedMongoRootPassword, resolveManagedMongoRootUsername,} from './mongoCredentials.mjs';
 import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
 import {VAULT_TLS_CONTAINER_PATH} from './vaultTls.mjs';
 import {buildWardenApiTokenRegistry} from './wardenApiTokens.mjs';
@@ -377,6 +374,12 @@ const serviceDefs = rawList.map(name => {
                 key: 'DISCORD_DEFAULT_ROLE_ID',
                 label: 'Discord Default Role ID',
                 description: 'Fallback role identifier to grant onboarded members when a guild role is not specified.',
+                required: false,
+            },
+            {
+                key: 'DISCORD_SUPERUSER_ID',
+                label: 'Discord Superuser ID',
+                description: 'Optional Discord user ID allowed to run Portal\'s private DM-only downloadall admin command.',
                 required: false,
             },
             {

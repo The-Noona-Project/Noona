@@ -22,6 +22,7 @@ contracts.
   [registerPortalRoutes.mjs](../../../services/portal/routes/registerPortalRoutes.mjs).
 - Discord behavior is split across
   [discord/client.mjs](../../../services/portal/discord/client.mjs),
+  [discord/directMessageRouter.mjs](../../../services/portal/discord/directMessageRouter.mjs),
   [discord/interactionRouter.mjs](../../../services/portal/discord/interactionRouter.mjs),
   [discord/commandSynchronizer.mjs](../../../services/portal/discord/commandSynchronizer.mjs), and the slash command
   files in [commands/](../../../services/portal/commands/).
@@ -35,7 +36,7 @@ contracts.
   [config/portalConfig.mjs](../../../services/portal/config/portalConfig.mjs)
 - Route payloads, onboarding, Kavita bridge, metadata routes:
   [routes/registerPortalRoutes.mjs](../../../services/portal/routes/registerPortalRoutes.mjs)
-- Discord login, DM queueing, role checks, slash command sync:
+- Discord login, DM queueing, DM-only admin commands, role checks, slash command sync:
   [discord/](../../../services/portal/discord/)
 - Slash command behavior for `ding`, `scan`, `search`, `recommend`, and `subscribe`:
   [commands/](../../../services/portal/commands/)
@@ -59,6 +60,7 @@ contracts.
   and recommendation/user-facing links.
 - [Vault](../vault/README.md) stores Portal credentials, recommendations, subscriptions, and DM queue state.
 - [Raven](../raven/README.md) powers recommendation searches, download state, title repair work, and volume-map writes.
+- Raven also backs Portal's DM-only `downloadall` bulk queue command through `POST /v1/download/bulk-queue`.
 - [Komf](../komf/README.md) backs metadata search, identify, and series-details lookups.
 - [Warden](../warden/README.md) is only used for a narrow set of read-side install/progress lookups and Moon URL
   discovery.

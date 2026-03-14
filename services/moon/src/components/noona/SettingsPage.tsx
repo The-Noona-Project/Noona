@@ -453,6 +453,7 @@ const PORTAL_DISCORD_KEYS = new Set([
     "DISCORD_GUILD_ID",
     "DISCORD_GUILD_ROLE_ID",
     "DISCORD_DEFAULT_ROLE_ID",
+    "DISCORD_SUPERUSER_ID",
 ]);
 const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_GUILD_ID",
@@ -5044,6 +5045,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         </Row>
                         <Text onBackground="neutral-weak" variant="body-default-xs">
                             Edit the Discord bot credentials and validate them against the selected guild.
+                        </Text>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Set the optional Discord Superuser ID if you want Portal to accept the DM-only
+                            <code> downloadall </code>
+                            admin command for one trusted account.
                         </Text>
                         {renderEditorFeedback(portalEditor)}
                         {discordValidationError && <Text onBackground="danger-strong"

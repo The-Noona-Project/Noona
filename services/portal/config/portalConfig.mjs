@@ -3,7 +3,7 @@
  * Related files:
  * - app/portalRuntime.mjs
  * - tests/config.test.mjs
- * Times this file has been edited: 9
+ * Times this file has been edited: 10
  */
 
 import dotenv from 'dotenv';
@@ -148,6 +148,7 @@ export const loadPortalConfig = (overrides = {}) => {
     const discordClientId = normalizeString(env.DISCORD_CLIENT_ID);
     const discordGuildId = normalizeString(env.DISCORD_GUILD_ID);
     const discordRole = normalizeString(env.DISCORD_GUILD_ROLE_ID) || normalizeString(env.DISCORD_DEFAULT_ROLE_ID) || null;
+    const discordSuperuserId = normalizeString(env.DISCORD_SUPERUSER_ID);
     const discordEnabled = Boolean(discordToken && discordClientId && discordGuildId);
 
     const config = {
@@ -159,6 +160,7 @@ export const loadPortalConfig = (overrides = {}) => {
             clientId: discordClientId,
             guildId: discordGuildId,
             defaultRoleId: discordRole,
+            superuserId: discordSuperuserId,
         },
         kavita: {
             baseUrl: normalizeUrl(env.KAVITA_BASE_URL || DEFAULT_MANAGED_KAVITA_BASE_URL),

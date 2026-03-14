@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/library/NewChapter.java
  * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
  * - src/main/java/com/paxkun/raven/service/LibraryService.java
- * Times this file has been edited: 15
+ * Times this file has been edited: 16
  */
 package com.paxkun.raven.service;
 
@@ -256,6 +256,44 @@ class LibraryServiceTest {
         assertEquals("2", title.getLastDownloaded());
         verify(kavitaSyncService, atLeastOnce()).ensureLibraryForType("Manhwa", "manhwa");
         verify(kavitaSyncService).scanLibraryForType("Manhwa", "manhwa");
+    }
+
+    @Test
+    void checkForNewChaptersTreatsFractionalChaptersAsDistinctAndUpdatesLastDownloaded() {
+        NewTitle title = new NewTitle();
+        title.setTitleName("Solo Leveling");
+        title.setUuid("uuid-fractional");
+        title.setSourceUrl("http://solo");
+        title.setLastDownloaded("101");
+        title.setType("Manhwa");
+        title.setDownloadedChapterNumbers(new ArrayList<>(List.of("101")));
+
+        when(vaultService.findMany(eq("manga_library"), anyMap())).thenReturn(List.of(Map.of("title", title.getTitleName())));
+        when(vaultService.parseDocuments(anyList(), any(Type.class))).thenReturn(List.of(title));
+        when(downloadService.fetchChapters(title.getSourceUrl())).thenReturn(List.of(
+                Map.of("chapter_number", "101", "chapter_title", "Chapter 101", "href", "http://solo/101"),
+                Map.of("chapter_number", "101.1", "chapter_title", "Chapter 101.1", "href", "http://solo/101-1"),
+                Map.of("chapter_number", "101.5", "chapter_title", "Chapter 101.5", "href", "http://solo/101-5")
+        ));
+        when(downloadService.startTrackedTask(any(NewTitle.class), anyString(), anyList(), anyList(), anyList(), anyString(), anyInt(), anyString()))
+                .thenAnswer(invocation -> new DownloadProgress(invocation.<NewTitle>getArgument(0).getTitleName()));
+        when(downloadService.downloadSingleChapter(eq(title), eq("101.1"), any())).thenReturn(true);
+        when(downloadService.downloadSingleChapter(eq(title), eq("101.5"), any())).thenReturn(true);
+
+        LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
+
+        assertEquals(1, result.updatedTitles());
+        assertEquals(2, result.queuedChapters());
+        assertEquals(2, result.newChaptersQueued());
+        assertThat(title.getDownloadedChapterNumbers()).containsExactly("101", "101.1", "101.5");
+        assertThat(title.getLastDownloaded()).isEqualTo("101.5");
+
+        verify(vaultService, atLeastOnce()).update(eq("manga_library"), eq(Map.of("uuid", title.getUuid())), mapCaptor.capture(), eq(true));
+        List<Map<String, Object>> capturedUpdates = mapCaptor.getAllValues();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> set = (Map<String, Object>) capturedUpdates.get(capturedUpdates.size() - 1).get("$set");
+        assertThat(set).containsEntry("lastDownloaded", "101.5");
+        assertThat((List<String>) set.get("downloadedChapterNumbers")).containsExactly("101", "101.1", "101.5");
     }
 
     @Test

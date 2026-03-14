@@ -15,6 +15,20 @@
 
 The legacy `join` command is intentionally absent. Tests lock that in.
 
+## Private DM Command
+
+- Portal also supports a DM-only text command for one configured Discord superuser:
+  `downloadall type:manga nsfw:false titlegroup:a`
+- Accepted prefixes are `downloadall`, `/downloadall`, and `!downloadall`.
+- Authorization is controlled by `DISCORD_SUPERUSER_ID`.
+  If the sender does not match, Portal ignores the message without replying.
+- Parsing lives in
+  [directMessageRouter.mjs](../../../services/portal/discord/directMessageRouter.mjs).
+- The handler sends one short working reply, then a summary built from Raven's bulk queue payload with the first 10
+  queued, skipped, and failed titles.
+- The inbound DM path is intentionally separate from slash commands so normal guild users never see this command in the
+  server command list.
+
 ## Command Sync Behavior
 
 - Portal clears stale global and guild commands on boot, then registers the current guild command definitions.
@@ -36,6 +50,8 @@ The legacy `join` command is intentionally absent. Tests lock that in.
 - Fallback queue path stores a JSON array with Redis `set`/`get`/`del`.
 - Runtime normally sets the DM queue namespace to `${PORTAL_REDIS_NAMESPACE}:discord-dm`.
 - If queue writes fail, Portal can still fall back to in-memory per-user delivery for the current process lifetime.
+- The inbound `downloadall` DM command does not use that outbound DM queue.
+  It is handled directly from Discord `MessageCreate` events in DMs.
 
 ## Recommendation Store Shape
 

@@ -150,6 +150,7 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
     const optionalDiscordExpectations = [
         'DISCORD_GUILD_ROLE_ID',
         'DISCORD_DEFAULT_ROLE_ID',
+        'DISCORD_SUPERUSER_ID',
         'REQUIRED_GUILD_ID',
         'REQUIRED_ROLE_DING',
         'REQUIRED_ROLE_SCAN',

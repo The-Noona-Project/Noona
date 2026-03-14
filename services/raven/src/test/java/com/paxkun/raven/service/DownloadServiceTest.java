@@ -5,15 +5,11 @@
  * - src/main/java/com/paxkun/raven/service/download/QueueDownloadResult.java
  * - src/main/java/com/paxkun/raven/service/download/SearchTitle.java
  * - src/main/java/com/paxkun/raven/service/download/SourceFinder.java
- * Times this file has been edited: 14
+ * Times this file has been edited: 15
  */
 package com.paxkun.raven.service;
 
-import com.paxkun.raven.service.download.DownloadProgress;
-import com.paxkun.raven.service.download.QueueDownloadResult;
-import com.paxkun.raven.service.download.SearchTitle;
-import com.paxkun.raven.service.download.SourceFinder;
-import com.paxkun.raven.service.download.TitleScraper;
+import com.paxkun.raven.service.download.*;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import com.paxkun.raven.service.settings.DownloadNamingSettings;
@@ -278,6 +274,58 @@ class DownloadServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void queueBulkDownloadFiltersByPrefixAndSkipsAlreadyActiveTitles() throws InterruptedException {
+        when(titleScraper.browseTitlesAlphabetically("Manga", false)).thenReturn(new TitleScraper.BrowseResult(List.of(
+                Map.of(
+                        "title", "\"Ano and the Signal\"",
+                        "href", "http://example.com/ano",
+                        "type", "Manga"
+                ),
+                Map.of(
+                        "title", "Beta Squad",
+                        "href", "http://example.com/beta",
+                        "type", "Manga"
+                ),
+                Map.of(
+                        "title", "Another Dawn",
+                        "href", "http://example.com/another",
+                        "type", "Manga"
+                )
+        ), 2));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/ano"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/ano/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/page1.jpg"));
+
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("\"Ano and the Signal\"");
+        resolvedTitle.setUuid("ano-uuid");
+        resolvedTitle.setSourceUrl("http://example.com/ano");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("\"Ano and the Signal\"", "http://example.com/ano"))
+                .thenReturn(resolvedTitle);
+
+        Map<String, DownloadProgress> progressMap =
+                (Map<String, DownloadProgress>) ReflectionTestUtils.getField(downloadService, "downloadProgress");
+        assertThat(progressMap).isNotNull();
+        DownloadProgress active = new DownloadProgress("Another Dawn");
+        progressMap.put("Another Dawn", active);
+
+        BulkQueueDownloadResult result = downloadService.queueBulkDownload("Manga", false, "a");
+
+        assertThat(result.getStatus()).isEqualTo(BulkQueueDownloadResult.STATUS_PARTIAL);
+        assertThat(result.getPagesScanned()).isEqualTo(2);
+        assertThat(result.getMatchedCount()).isEqualTo(2);
+        assertThat(result.getQueuedCount()).isEqualTo(1);
+        assertThat(result.getSkippedActiveCount()).isEqualTo(1);
+        assertThat(result.getQueuedTitles()).containsExactly("\"Ano and the Signal\"");
+        assertThat(result.getSkippedActiveTitles()).containsExactly("Another Dawn");
+
+        waitForStatus("\"Ano and the Signal\"", "completed");
+    }
+
+    @Test
     void queueDownloadAllChaptersResultMarksPartialAllQueueWhenSomeTitlesAreActive() throws InterruptedException {
         Map<String, String> soloLeveling = new HashMap<>();
         soloLeveling.put("title", "Solo Leveling");
@@ -332,6 +380,54 @@ class DownloadServiceTest {
         releaseSource.countDown();
         waitForStatus("Solo Leveling", "completed");
         waitForStatus("Trigun", "completed");
+    }
+
+    @Test
+    void downloadFlowRetainsFractionalChapterNumbersExactly() throws Exception {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo")).thenReturn(List.of(
+                Map.of(
+                        "chapter_number", "101",
+                        "chapter_title", "Chapter 101",
+                        "href", "http://example.com/solo/101"
+                ),
+                Map.of(
+                        "chapter_number", "101.1",
+                        "chapter_title", "Chapter 101.1",
+                        "href", "http://example.com/solo/101-1"
+                ),
+                Map.of(
+                        "chapter_number", "101.5",
+                        "chapter_title", "Chapter 101.5",
+                        "href", "http://example.com/solo/101-5"
+                )
+        ));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/page1.jpg"));
+
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("solo-uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForStatus("Solo Leveling", "completed");
+
+        assertThat(resolvedTitle.getDownloadedChapterNumbers())
+                .containsExactly("101", "101.1", "101.5");
+        assertThat(resolvedTitle.getDownloadedChapterFiles().keySet())
+                .containsExactly("101", "101.1", "101.5");
+        assertThat(resolvedTitle.getLastDownloaded()).isEqualTo("101.5");
     }
 
     @Test

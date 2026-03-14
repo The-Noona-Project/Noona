@@ -5,7 +5,7 @@
  * - discord/commandSynchronizer.mjs
  * - tests/discordClient.test.mjs
  * - discord/roleManager.mjs
- * Times this file has been edited: 5
+ * Times this file has been edited: 6
  */
 
 import crypto from 'node:crypto';
@@ -19,11 +19,13 @@ import {createInteractionHandler} from './interactionRouter.mjs';
 const DEFAULT_INTENTS = [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
 ];
 
 const DEFAULT_PARTIALS = [
     Partials.GuildMember,
     Partials.User,
+    Partials.Channel,
 ];
 const DEFAULT_MESSAGE_QUEUE_NAMESPACE = 'portal:discord:dm';
 const DEFAULT_MESSAGE_QUEUE_TTL_SECONDS = 600;
@@ -75,6 +77,7 @@ export const createDiscordClient = ({
                                         vaultClient = null,
                                         messageQueueNamespace = DEFAULT_MESSAGE_QUEUE_NAMESPACE,
                                         messageQueueTtlSeconds = DEFAULT_MESSAGE_QUEUE_TTL_SECONDS,
+                                        directMessageHandler = null,
                                     } = {}) => {
     if (!token) {
         throw new Error('Discord token is required to initialise the Portal Discord client.');
@@ -135,6 +138,15 @@ export const createDiscordClient = ({
     });
 
     client.on(Events.InteractionCreate, interactionHandler);
+    if (typeof directMessageHandler === 'function') {
+        client.on(Events.MessageCreate, message => {
+            Promise.resolve()
+                .then(() => directMessageHandler(message))
+                .catch(error => {
+                    errMSG(`[Portal/Discord] Direct message handler failed: ${error?.message ?? error}`);
+                });
+        });
+    }
 
     const registerCommands = async () => {
         if (!clientId) {

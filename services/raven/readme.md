@@ -19,10 +19,12 @@ state, and keeps the managed library in sync.
 ## What Raven Does
 
 - searches titles and queues downloads
+- can crawl alphabetic source listings and bulk-queue matching titles for trusted admin tooling
 - supports special-character-safe JSON search and queue requests while keeping the legacy GET endpoints for
   compatibility
 - creates the library files Noona serves
 - tracks active and historical download state
+- preserves exact fractional chapter identifiers like `101.1` and `101.5` instead of collapsing them into `101`
 - returns structured queue outcomes so callers can distinguish accepted queues from expired, invalid, or already-active
   selections
 - supports import checks and metadata-related library repair flows
@@ -36,6 +38,8 @@ state, and keeps the managed library in sync.
 ## When An Admin Needs To Care
 
 - when downloads, imports, or sync jobs fail
+- when a source publishes fractional update chapters or extras and you need to confirm Raven kept them as separate
+  entries
 - when tuning worker, naming, or VPN-related settings
 - when checking that downloaded content actually landed on disk
 

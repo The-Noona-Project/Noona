@@ -23,6 +23,8 @@ five areas: HTTP contracts, download orchestration, library/manifests, runtime w
   [DebugController.java](../../../services/raven/src/main/java/com/paxkun/raven/controller/DebugController.java).
 - Download orchestration and persisted task recovery live in
   [DownloadService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/DownloadService.java).
+- Source search, browse scraping, title-details parsing, and chapter list extraction live in
+  [TitleScraper.java](../../../services/raven/src/main/java/com/paxkun/raven/service/download/TitleScraper.java).
 - Library metadata, `.noona` manifests, import checks, and repair flows live in
   [LibraryService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/LibraryService.java).
 - VPN rotation and PIA/OpenVPN integration live in
@@ -35,8 +37,10 @@ five areas: HTTP contracts, download orchestration, library/manifests, runtime w
 
 - Search, queue, and status payload changes:
   [DownloadController.java](../../../services/raven/src/main/java/com/paxkun/raven/controller/DownloadController.java)
-- Queue/pause/recovery behavior or task persistence:
+- Queue/pause/recovery behavior, bulk queue orchestration, or task persistence:
   [DownloadService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/DownloadService.java)
+- Search browsing, title-detail parsing, or chapter identity behavior:
+  [TitleScraper.java](../../../services/raven/src/main/java/com/paxkun/raven/service/download/TitleScraper.java)
 - Title metadata, imported manifests, file listing, delete, rename, or sync logic:
   [LibraryService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/LibraryService.java)
 - Vault packet contracts or settings reads:
@@ -64,8 +68,19 @@ five areas: HTTP contracts, download orchestration, library/manifests, runtime w
   admin-facing payload changes ripple upward quickly.
 - [Vault](../vault/README.md) enforces Raven's allowed collections and Redis keys. Collection or key changes are not
   local-only edits.
-- [Portal](../portal/README.md) can broker Kavita library ensure/scan requests for Raven.
+- [Portal](../portal/README.md) can broker Kavita library ensure/scan requests for Raven and now proxies bulk queue
+  requests for the DM-only `downloadall` command.
 - Warden/admin docs care about Raven's on-disk layout because backups, restores, and setup flows depend on it.
+
+## Current Invariants
+
+- Fractional chapters are exact chapter identities now.
+  `101`, `101.1`, and `101.5` must remain distinct through scrape, queue, persistence, sync, and missing-chapter
+  detection.
+- Only trivial numeric normalization is allowed for chapter numbers.
+  `101.0` may normalize to `101`, but `101.1` must never collapse into `101`.
+- Bulk alphabetic browse for Portal's DM admin flow currently comes from WeebCentral `search/data` with explicit
+  `included_type`, `adult`, `limit`, and `offset` parameters.
 
 ## Update Triggers
 

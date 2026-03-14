@@ -2,7 +2,7 @@
  * @fileoverview Covers Portal config loading, normalization, and validation behavior.
  * Related files:
  * - config/portalConfig.mjs
- * Times this file has been edited: 10
+ * Times this file has been edited: 11
  */
 
 import assert from 'node:assert/strict';
@@ -98,6 +98,16 @@ test('safeLoadPortalConfig parses optional Kavita external URL override', () => 
     });
 
     assert.equal(config.kavita.externalUrl, 'https://kavita.example.com/');
+});
+
+test('safeLoadPortalConfig preserves the optional Discord superuser id', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        DISCORD_SUPERUSER_ID: '123456789012345678',
+    });
+
+    assert.equal(config.discord.superuserId, '123456789012345678');
 });
 
 test('safeLoadPortalConfig defaults Komf base URL to the managed noona-komf service', () => {

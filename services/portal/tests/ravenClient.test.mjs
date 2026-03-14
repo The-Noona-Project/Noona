@@ -2,7 +2,7 @@
  * @fileoverview Covers Raven client request construction and payload handling.
  * Related files:
  * - clients/ravenClient.mjs
- * Times this file has been edited: 8
+ * Times this file has been edited: 9
  */
 
 import assert from 'node:assert/strict';
@@ -301,5 +301,59 @@ test('applyTitleVolumeMap posts Raven volume-map payloads', async () => {
         providerSeriesId: '15180124327',
         chapterVolumeMap: {'1': 1, '2': 1, '3': 2},
         autoRename: false,
+    });
+});
+
+test('bulkQueueDownload posts Raven bulk queue filters and accepts maintenance responses', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                status: 'maintenance_paused',
+                message: 'Bulk queue paused while VPN rotation completes.',
+                filters: {
+                    type: 'Manga',
+                    nsfw: false,
+                    titlePrefix: 'a',
+                },
+                pagesScanned: '2',
+                matchedCount: '4',
+                queuedCount: '0',
+                skippedActiveCount: '3',
+                failedCount: '1',
+                queuedTitles: [],
+                skippedActiveTitles: ['Another Dawn'],
+                failedTitles: ['Abyss Reset'],
+            }), {
+                status: 409,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const result = await raven.bulkQueueDownload({
+        type: 'Manga',
+        nsfw: false,
+        titlePrefix: 'a',
+    });
+
+    assert.equal(result.status, 'maintenance_paused');
+    assert.equal(result.filters.type, 'Manga');
+    assert.equal(result.filters.nsfw, false);
+    assert.equal(result.pagesScanned, 2);
+    assert.equal(result.skippedActiveTitles[0], 'Another Dawn');
+    assert.equal(result.failedTitles[0], 'Abyss Reset');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/download/bulk-queue');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        type: 'Manga',
+        nsfw: false,
+        titlePrefix: 'a',
     });
 });

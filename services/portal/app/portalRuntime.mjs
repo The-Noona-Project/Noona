@@ -5,7 +5,7 @@
  * - config/portalConfig.mjs
  * - discord/client.mjs
  * - clients/kavitaClient.mjs
- * Times this file has been edited: 11
+ * Times this file has been edited: 12
  */
 
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
@@ -18,6 +18,7 @@ import createPortalWardenClient from '../clients/wardenClient.mjs';
 import createOnboardingStore from '../storage/onboardingStore.mjs';
 import {safeLoadPortalConfig} from '../config/portalConfig.mjs';
 import {createDiscordClient} from '../discord/client.mjs';
+import {createDirectMessageHandler} from '../discord/directMessageRouter.mjs';
 import {createDiscordPresenceUpdater} from '../discord/presenceUpdater.mjs';
 import {createRecommendationNotifier} from '../discord/recommendationNotifier.mjs';
 import {createSubscriptionNotifier} from '../discord/subscriptionNotifier.mjs';
@@ -99,6 +100,10 @@ export const startPortal = async (overrides = {}) => {
             moonBaseUrl: config.moon?.baseUrl,
             kavitaExternalUrl: config.kavita?.externalUrl,
         });
+        const directMessageHandler = createDirectMessageHandler({
+            superuserId: config.discord.superuserId,
+            raven,
+        });
 
         discord = createDiscordClient({
             token: config.discord.token,
@@ -109,6 +114,7 @@ export const startPortal = async (overrides = {}) => {
             vaultClient: vault,
             messageQueueNamespace: `${config.redis.namespace}:discord-dm`,
             messageQueueTtlSeconds: config.redis.ttlSeconds,
+            directMessageHandler,
         });
         runtime.discord = discord;
 

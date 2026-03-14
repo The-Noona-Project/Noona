@@ -3,7 +3,7 @@
  * Related files:
  * - src/main/java/com/paxkun/raven/service/LoggerService.java
  * - src/main/java/com/paxkun/raven/service/download/TitleScraper.java
- * Times this file has been edited: 2
+ * Times this file has been edited: 3
  */
 package com.paxkun.raven.service.download;
 
@@ -15,8 +15,12 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -140,5 +144,130 @@ class TitleScraperTest {
 
         assertThat(details).isNotNull();
         assertThat(details.getAdultContent()).isFalse();
+    }
+
+    @Test
+    void browseTitlesAlphabeticallyForwardsFiltersAndFollowsPagination() throws Exception {
+        AtomicInteger requestCount = new AtomicInteger();
+        List<String> queries = new CopyOnWriteArrayList<>();
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/search/data", exchange -> {
+            String query = exchange.getRequestURI().getRawQuery();
+            queries.add(query == null ? "" : query);
+            int requestIndex = requestCount.incrementAndGet();
+            String payload = requestIndex == 1
+                    ? """
+                    <html>
+                    <body>
+                      <article class="bg-base-300">
+                        <a class="line-clamp-1 link link-hover" href="/series/ano">"Ano and the Signal"</a>
+                        <img src="/covers/ano.jpg"/>
+                        <div><strong>Type:</strong> <span>Manga</span></div>
+                      </article>
+                      <article class="bg-base-300">
+                        <a class="line-clamp-1 link link-hover" href="/series/beta">Beta Squad</a>
+                        <div><strong>Type:</strong> <span>Manga</span></div>
+                      </article>
+                      <button hx-get="/search/data?offset=32">View More Results...</button>
+                    </body>
+                    </html>
+                    """
+                    : """
+                    <html>
+                    <body>
+                      <article class="bg-base-300">
+                        <a class="line-clamp-1 link link-hover" href="/series/another">Another Dawn</a>
+                        <div><strong>Type:</strong> <span>Manga</span></div>
+                      </article>
+                    </body>
+                    </html>
+                    """;
+            byte[] body = payload.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(body);
+            }
+        });
+        server.start();
+
+        TitleScraper scraper = new TitleScraper();
+        ReflectionTestUtils.setField(scraper, "logger", mock(LoggerService.class));
+        ReflectionTestUtils.setField(scraper, "sourceBaseUrl", "http://127.0.0.1:" + server.getAddress().getPort());
+
+        TitleScraper.BrowseResult result = scraper.browseTitlesAlphabetically("Manga", false);
+
+        assertThat(result.pagesScanned()).isEqualTo(2);
+        assertThat(result.titles()).hasSize(3);
+        assertThat(result.titles().getFirst())
+                .containsEntry("title", "\"Ano and the Signal\"")
+                .containsEntry("type", "Manga")
+                .containsEntry("href", "http://127.0.0.1:" + server.getAddress().getPort() + "/series/ano");
+        assertThat(queryParam(queries.get(0), "sort")).isEqualTo("Alphabet");
+        assertThat(queryParam(queries.get(0), "adult")).isEqualTo("False");
+        assertThat(queryParam(queries.get(0), "included_type")).isEqualTo("Manga");
+        assertThat(queryParam(queries.get(0), "limit")).isEqualTo("32");
+        assertThat(queryParam(queries.get(0), "offset")).isEqualTo("0");
+        assertThat(queryParam(queries.get(1), "offset")).isEqualTo("32");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void dedupeExactChaptersKeepsFractionalChaptersDistinctAndNormalizesTrivialDecimals() {
+        TitleScraper scraper = new TitleScraper();
+        ReflectionTestUtils.setField(scraper, "logger", mock(LoggerService.class));
+
+        List<Map<String, String>> chapters = List.of(
+                Map.of(
+                        "chapter_number", "101",
+                        "chapter_title", "Chapter 101",
+                        "href", "https://weebcentral.com/chapters/101"
+                ),
+                Map.of(
+                        "chapter_number", "101.1",
+                        "chapter_title", "Chapter 101.1",
+                        "href", "https://weebcentral.com/chapters/101-1"
+                ),
+                Map.of(
+                        "chapter_number", "101.1",
+                        "chapter_title", "Chapter 101.1",
+                        "href", "https://weebcentral.com/chapters/101-1"
+                ),
+                Map.of(
+                        "chapter_number", "101.5",
+                        "chapter_title", "Chapter 101.5 Special"
+                ),
+                Map.of(
+                        "chapter_number", "101.5",
+                        "chapter_title", "Chapter 101.5 Special"
+                )
+        );
+
+        List<Map<String, String>> deduped = ReflectionTestUtils.invokeMethod(scraper, "dedupeExactChapters", chapters);
+        String normalizedWhole = ReflectionTestUtils.invokeMethod(scraper, "normalizeChapterNumber", "101.0");
+
+        assertThat(normalizedWhole).isEqualTo("101");
+        assertThat(deduped)
+                .extracting(entry -> entry.get("chapter_number"))
+                .containsExactly("101", "101.1", "101.5");
+    }
+
+    private String queryParam(String rawQuery, String key) {
+        if (rawQuery == null || rawQuery.isBlank()) {
+            return null;
+        }
+
+        for (String entry : rawQuery.split("&")) {
+            int separator = entry.indexOf('=');
+            String rawKey = separator >= 0 ? entry.substring(0, separator) : entry;
+            String rawValue = separator >= 0 ? entry.substring(separator + 1) : "";
+            String decodedKey = URLDecoder.decode(rawKey, StandardCharsets.UTF_8);
+            if (!key.equals(decodedKey)) {
+                continue;
+            }
+            return URLDecoder.decode(rawValue, StandardCharsets.UTF_8);
+        }
+
+        return null;
     }
 }

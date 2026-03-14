@@ -5,17 +5,14 @@
  * - src/main/java/com/paxkun/raven/service/LibraryService.java
  * - src/main/java/com/paxkun/raven/service/LoggerService.java
  * - src/main/java/com/paxkun/raven/service/download/DownloadProgress.java
- * Times this file has been edited: 6
+ * Times this file has been edited: 7
  */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
-import com.paxkun.raven.service.download.DownloadProgress;
-import com.paxkun.raven.service.download.QueueDownloadResult;
-import com.paxkun.raven.service.download.SearchTitle;
-import com.paxkun.raven.service.download.TitleDetails;
+import com.paxkun.raven.service.download.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,12 +26,8 @@ import java.util.List;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
  * Covers download controller behavior.
@@ -239,6 +232,46 @@ class DownloadControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(QueueDownloadResult.STATUS_INVALID_SELECTION))
                 .andExpect(jsonPath("$.message").value("searchId and optionIndex are required."));
+    }
+
+    @Test
+    void postBulkQueueEndpointReturnsAcceptedResultPayload() throws Exception {
+        when(downloadService.queueBulkDownload("Manga", false, "a"))
+                .thenReturn(new BulkQueueDownloadResult(
+                        BulkQueueDownloadResult.STATUS_PARTIAL,
+                        "Queued 1 title(s). Skipped 1 already-active title(s). Failed 0 title(s).",
+                        new BulkQueueDownloadResult.Filters("Manga", false, "a"),
+                        2,
+                        2,
+                        1,
+                        1,
+                        0,
+                        List.of("Ano and the Signal"),
+                        List.of("Another Dawn"),
+                        List.of()
+                ));
+
+        mockMvc.perform(post("/v1/download/bulk-queue")
+                        .contentType("application/json")
+                        .content("{\"type\":\"Manga\",\"nsfw\":false,\"titlePrefix\":\"a\"}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value(BulkQueueDownloadResult.STATUS_PARTIAL))
+                .andExpect(jsonPath("$.filters.type").value("Manga"))
+                .andExpect(jsonPath("$.filters.nsfw").value(false))
+                .andExpect(jsonPath("$.pagesScanned").value(2))
+                .andExpect(jsonPath("$.matchedCount").value(2))
+                .andExpect(jsonPath("$.queuedTitles[0]").value("Ano and the Signal"))
+                .andExpect(jsonPath("$.skippedActiveTitles[0]").value("Another Dawn"));
+    }
+
+    @Test
+    void postBulkQueueEndpointValidatesMissingFields() throws Exception {
+        mockMvc.perform(post("/v1/download/bulk-queue")
+                        .contentType("application/json")
+                        .content("{\"type\":\" \",\"nsfw\":null,\"titlePrefix\":\"\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(BulkQueueDownloadResult.STATUS_INVALID_REQUEST))
+                .andExpect(jsonPath("$.message").value("type, nsfw, and titlePrefix are required."));
     }
 
     @Test

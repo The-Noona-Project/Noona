@@ -3,13 +3,13 @@
  * Related files:
  * - discord/client.mjs
  * - commands/index.mjs
- * Times this file has been edited: 11
+ * Times this file has been edited: 12
  */
 
 import EventEmitter from 'node:events';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {Events, MessageFlags} from 'discord.js';
+import {Events, GatewayIntentBits, MessageFlags, Partials} from 'discord.js';
 
 import {createDiscordClient} from '../discord/client.mjs';
 import createPortalSlashCommands from '../commands/index.mjs';
@@ -115,6 +115,26 @@ test('createDiscordClient clears global and guild commands before registering sl
     assert.deepEqual(registerCall.definitions, [{name: 'ding', description: 'Test ding'}]);
 });
 
+test('createDiscordClient includes DM intents and channel partials by default', () => {
+    const fakeClient = new FakeClient();
+    let factoryOptions = null;
+
+    createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: options => {
+            factoryOptions = options;
+            return fakeClient;
+        },
+    });
+
+    assert.ok(factoryOptions);
+    assert.ok(factoryOptions.intents.includes(GatewayIntentBits.DirectMessages));
+    assert.ok(factoryOptions.partials.includes(Partials.Channel));
+});
+
 test('createDiscordClient syncs the current Portal slash commands without the legacy join command', async () => {
     const fakeClient = new FakeClient();
     fakeClient.user = {tag: 'TestBot#0001'};
@@ -203,6 +223,38 @@ test('interaction handler executes matching slash command', async () => {
     assert.equal(replies.length, 1);
     assert.equal(replies[0].flags, MessageFlags.Ephemeral);
     assert.match(replies[0].content, /Dong/i);
+});
+
+test('createDiscordClient routes DM messages to the optional direct message handler', async () => {
+    const fakeClient = new FakeClient();
+    fakeClient.user = {tag: 'TestBot#0001'};
+    const directMessages = [];
+
+    const discord = createDiscordClient({
+        token: 'test-token',
+        guildId: 'guild-123',
+        clientId: 'client-abc',
+        commands: new Map(),
+        clientFactory: () => fakeClient,
+        directMessageHandler: async message => {
+            directMessages.push(message);
+        },
+    });
+
+    const loginPromise = discord.login();
+    await emitAndWait(fakeClient, Events.ClientReady, fakeClient);
+    await loginPromise;
+
+    const message = {
+        content: 'downloadall type:manga nsfw:false titlegroup:a',
+        guildId: null,
+        inGuild: () => false,
+        author: {id: '1234567890', bot: false},
+    };
+
+    await emitAndWait(fakeClient, Events.MessageCreate, message);
+
+    assert.deepEqual(directMessages, [message]);
 });
 
 test('interaction handler responds when slash command has no registered handler', async () => {
