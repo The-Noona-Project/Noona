@@ -17,7 +17,8 @@ exposes the management APIs that the rest of Noona uses.
 ## What Warden Does
 
 - pulls and starts managed Noona containers
-- stores and restores the active setup profile
+- stores and restores the active setup profile, with `storageRoot` persisted separately from per-service runtime
+  overrides
 - normalizes older setup JSON uploads for Moon review without persisting them until an explicit save or install
 - tracks install progress, service health, and logs
 - coordinates updates, restarts, and factory-reset behavior

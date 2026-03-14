@@ -6,6 +6,7 @@ import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} f
 import {
     buildSetupProfileSnapshot,
     deriveSetupProfileSelection,
+    deriveSetupProfileValues,
     hydrateSetupProfileState,
     shouldShowSetupDebugDetails,
 } from "./setupProfile.mjs";
@@ -633,7 +634,6 @@ const SERVICE_PLAN_GROUP_BY_NAME = new Map<string, string>(
 
 const buildDerivedValues = ({
                                 values,
-                                storageRoot,
                                 servicesByName,
                                 kavitaMode,
                                 kavitaBaseUrl,
@@ -645,7 +645,6 @@ const buildDerivedValues = ({
                                 komfMode,
                             }: {
     values: Record<string, Record<string, string>>;
-    storageRoot: string;
     servicesByName: Map<string, ServiceCatalogEntry>;
     kavitaMode: IntegrationMode;
     kavitaBaseUrl: string;
@@ -656,42 +655,18 @@ const buildDerivedValues = ({
     kavitaSharedLibraryPath: string;
     komfMode: IntegrationMode;
 }) => {
-    const next = cloneEnvState(values);
-    const rootValue = storageRoot.trim();
-    const resolvedKavitaBaseUrl = kavitaMode === "managed" ? "http://noona-kavita:5000" : kavitaBaseUrl.trim();
-
-    const mergeEnv = (serviceName: string, patch: Record<string, string>) => {
-        if (!servicesByName.has(serviceName)) return;
-        next[serviceName] = {...(next[serviceName] ?? {}), ...patch};
-    };
-
-    if (rootValue) {
-        for (const serviceName of ["noona-vault", "noona-raven", "noona-kavita", "noona-komf"]) {
-            mergeEnv(serviceName, {NOONA_DATA_ROOT: rootValue});
-        }
-    }
-
-    mergeEnv("noona-portal", {
-        KAVITA_BASE_URL: resolvedKavitaBaseUrl,
-        KAVITA_API_KEY: kavitaApiKey.trim(),
-    });
-    mergeEnv("noona-raven", {
-        KAVITA_DATA_MOUNT: kavitaMode === "external" ? kavitaSharedLibraryPath.trim() : "",
-        KAVITA_BASE_URL: resolvedKavitaBaseUrl,
-        KAVITA_API_KEY: kavitaApiKey.trim(),
-        KAVITA_LIBRARY_ROOT: kavitaMode === "managed" ? "/manga" : normalizeString(next["noona-raven"]?.KAVITA_LIBRARY_ROOT),
-    });
-    mergeEnv("noona-kavita", {
-        KAVITA_ADMIN_USERNAME: kavitaMode === "managed" ? kavitaAdminUsername.trim() : "",
-        KAVITA_ADMIN_EMAIL: kavitaMode === "managed" ? kavitaAdminEmail.trim() : "",
-        KAVITA_ADMIN_PASSWORD: kavitaMode === "managed" ? kavitaAdminPassword.trim() : "",
-    });
-    mergeEnv("noona-komf", {
-        KOMF_KAVITA_BASE_URI: resolvedKavitaBaseUrl,
-        KOMF_KAVITA_API_KEY: komfMode === "managed" ? kavitaApiKey.trim() : normalizeString(next["noona-komf"]?.KOMF_KAVITA_API_KEY),
-    });
-
-    return applyDerivedEnvState(next);
+    return applyDerivedEnvState(deriveSetupProfileValues({
+        values,
+        serviceNames: Array.from(servicesByName.keys()),
+        kavitaMode,
+        kavitaBaseUrl,
+        kavitaApiKey,
+        kavitaAdminUsername,
+        kavitaAdminEmail,
+        kavitaAdminPassword,
+        kavitaSharedLibraryPath,
+        komfMode,
+    }));
 };
 
 const validateSelection = ({
@@ -935,7 +910,6 @@ export function SetupWizard() {
     const effectiveValues = useMemo(
         () => buildDerivedValues({
             values,
-            storageRoot,
             servicesByName,
             kavitaMode,
             kavitaBaseUrl,
@@ -948,7 +922,6 @@ export function SetupWizard() {
         }),
         [
             values,
-            storageRoot,
             servicesByName,
             kavitaMode,
             kavitaBaseUrl,
@@ -1407,7 +1380,6 @@ export function SetupWizard() {
         const resolvedKavitaBaseUrl = normalizeString(overrides.kavitaBaseUrl ?? kavitaBaseUrl);
         const persistedValues = buildDerivedValues({
             values,
-            storageRoot,
             servicesByName,
             kavitaMode,
             kavitaBaseUrl: resolvedKavitaBaseUrl,

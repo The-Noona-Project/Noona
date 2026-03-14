@@ -20,9 +20,13 @@ recommendations, and the day-to-day admin UI.
 
 - guides admins through first-run setup
 - loads uploaded Noona setup JSON files into the wizard for review before admins explicitly save or install changes
+- keeps `storageRoot` as top-level setup metadata instead of mirroring raw `NOONA_DATA_ROOT` overrides into saved setup
+  JSON
 - provides the main settings and operations UI
 - keeps post-setup navigation task-based with `Home`, `Library`, `Downloads`, `Requests`, `Admin`, and a header
   `Add download` action when permitted
+- plays the configured background track inside the signed-in app shell and keeps `Music` controls above `Display`
+  inside the slide-out menu
 - handles Discord-first login and account management
 - surfaces downloads, libraries, subscriptions, and recommendation flows
 - treats Raven download queue attempts as successful only when Raven explicitly accepts them, so expired or invalid
@@ -37,6 +41,7 @@ recommendations, and the day-to-day admin UI.
 
 - during first-run setup
 - when managing users, roles, service links, and updates
+- when adjusting local browser shell preferences like the background music mute and volume controls
 - when troubleshooting setup, login, or UI-driven service actions
 
 ## How It Fits Into Noona

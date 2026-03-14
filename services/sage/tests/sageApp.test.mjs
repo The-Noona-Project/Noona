@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {once} from 'node:events'
+import {readFile, stat} from 'node:fs/promises'
 import crypto from 'node:crypto'
 
 import {ChannelType, GatewayIntentBits} from 'discord.js'
@@ -16,6 +17,8 @@ import {
     DEFAULT_WIZARD_STEP_METADATA,
 } from '../wizard/wizardStateSchema.mjs'
 import {createDiscordSetupClient} from '../clients/discordSetupClient.mjs'
+
+const BACKGROUND_TRACK_FILE_URL = new URL('../assets/background-track.mp3', import.meta.url)
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -5222,6 +5225,74 @@ const finalizeBootstrapAdmin = async ({baseUrl, token}) => {
     const payload = await response.json()
     return {response, payload}
 }
+
+test('GET /api/media/background-track serves the full track as audio', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const fileStat = await stat(BACKGROUND_TRACK_FILE_URL)
+    const response = await fetch(`${baseUrl}/api/media/background-track`)
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(Number(response.headers.get('content-length')), fileStat.size)
+
+    const body = Buffer.from(await response.arrayBuffer())
+    assert.equal(body.length, fileStat.size)
+})
+
+test('GET /api/media/background-track honors byte range requests', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const [fileStat, fileBuffer] = await Promise.all([
+        stat(BACKGROUND_TRACK_FILE_URL),
+        readFile(BACKGROUND_TRACK_FILE_URL),
+    ])
+
+    const response = await fetch(`${baseUrl}/api/media/background-track`, {
+        headers: {
+            Range: 'bytes=0-63',
+        },
+    })
+
+    assert.equal(response.status, 206)
+    assert.equal(response.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(response.headers.get('content-range'), `bytes 0-63/${fileStat.size}`)
+    assert.equal(Number(response.headers.get('content-length')), 64)
+
+    const body = Buffer.from(await response.arrayBuffer())
+    assert.equal(body.length, 64)
+    assert.deepEqual(body, fileBuffer.subarray(0, 64))
+})
+
+test('GET /api/media/background-track requires a session after setup completes', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/media/background-track`)
+    assert.equal(response.status, 401)
+    assert.deepEqual(await response.json(), {error: 'Unauthorized.'})
+})
 
 const jsonResponse = (body, status = 200) =>
     new Response(JSON.stringify(body), {

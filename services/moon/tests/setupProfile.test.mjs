@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-    SETUP_PROFILE_VERSION,
     buildSetupProfileSnapshot,
     deriveSetupProfileSelection,
+    deriveSetupProfileValues,
     hydrateSetupProfileState,
+    SETUP_PROFILE_VERSION,
     shouldShowSetupDebugDetails,
 } from "../src/components/noona/setupProfile.mjs";
 
@@ -49,6 +50,31 @@ test("buildSetupProfileSnapshot emits the minimal v3 browser contract", () => {
     assert.equal(snapshot.kavita.sharedLibraryPath, "/mnt/manga");
     assert.equal(snapshot.komf.applicationYml, "komf:\n  enabled: true");
     assert.equal(snapshot.discord.botToken, "bot-token");
+});
+
+test("deriveSetupProfileValues keeps storageRoot metadata out of per-service env state", () => {
+    const derived = deriveSetupProfileValues({
+        values: {
+            "noona-vault": {
+                MONGO_URI: "mongodb://mongo:27017/admin",
+            },
+            "noona-portal": {},
+            "noona-raven": {},
+            "noona-kavita": {},
+            "noona-komf": {},
+        },
+        serviceNames: ["noona-vault", "noona-portal", "noona-raven", "noona-kavita", "noona-komf"],
+        kavitaMode: "external",
+        kavitaBaseUrl: "https://kavita.example",
+        kavitaApiKey: "secret-key",
+        kavitaSharedLibraryPath: "/mnt/manga",
+        komfMode: "managed",
+    });
+
+    assert.equal(derived["noona-raven"].KAVITA_BASE_URL, "https://kavita.example");
+    assert.equal(derived["noona-raven"].KAVITA_DATA_MOUNT, "/mnt/manga");
+    assert.equal(Object.prototype.hasOwnProperty.call(derived["noona-vault"], "NOONA_DATA_ROOT"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(derived["noona-raven"], "NOONA_DATA_ROOT"), false);
 });
 
 test("hydrateSetupProfileState restores wizard fields from a persisted snapshot", () => {

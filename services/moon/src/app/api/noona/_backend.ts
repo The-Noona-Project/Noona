@@ -260,6 +260,25 @@ export const sageJson = async (
     return {status: res.status, payload};
 };
 
+export const sageResponse = async (
+    path: string,
+    init: RequestInit = {},
+    options: { timeoutMs?: number; acceptServerErrorResponse?: boolean } = {},
+) =>
+    fetchFirstOk(
+        resolveSageBaseUrls(),
+        path,
+        init,
+        options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        {
+            preferredBaseUrl: preferredSageBaseUrl,
+            acceptServerErrorResponse: options.acceptServerErrorResponse === true,
+            onSuccess: (baseUrl) => {
+                preferredSageBaseUrl = baseUrl;
+            },
+        },
+    );
+
 export const ravenJson = async (
     path: string,
     init: RequestInit = {},

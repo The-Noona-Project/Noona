@@ -55,6 +55,8 @@
   `/api/settings/ecosystem/*`,
   `/api/settings/factory-reset`,
   `/api/settings/vault/*`
+- authenticated media:
+  `/api/media/background-track`
 - Raven and recommendations:
   `/api/raven/*`,
   `/api/recommendations*`,
@@ -81,6 +83,9 @@
   They rely on `resolveSetupCompleted()` instead of a separate explicit install-mode flag.
 - `registerSettingsRoutes.mjs` applies `requireAdminSessionIfSetupCompleted` to `/api/settings`.
   Before setup completion the surface stays reachable for first-run; after completion it becomes admin-only.
+- `registerMediaRoutes.mjs` applies `requireSessionIfSetupCompleted` to `/api/media`.
+  Moon should consume the track through its own `/api/noona/media/background-track` proxy instead of linking the Sage
+  route directly in the browser UI.
 - `registerRavenRoutes.mjs` applies `requireSessionIfSetupCompleted` to the Raven and recommendation path groups.
 - User-management routes require `user_management`.
   Some auth config routes become admin-only once setup is complete.
@@ -110,7 +115,9 @@
   `/v1/vault/handle` for Mongo and Redis packets,
   `/api/users*` for user CRUD and authentication.
 - Wizard-state storage may still fall back locally when Vault trust material is unavailable during first-run or partial
-  outage paths. Do not copy that fallback pattern into the general Vault packet client casually.
+  outage paths.
+  Missing pre-install CA material should short-circuit before fetch and only log once, but do not copy that fallback
+  pattern into the general Vault packet client casually.
 
 ## Raven And Portal
 

@@ -1,5 +1,22 @@
 export const SETUP_PROFILE_VERSION = 3;
 
+/**
+ * @typedef {'managed' | 'external'} SetupIntegrationMode
+ * @typedef {Record<string, Record<string, string>>} SetupProfileValues
+ *
+ * @typedef {object} DeriveSetupProfileValuesOptions
+ * @property {SetupProfileValues} [values]
+ * @property {string[]} [serviceNames]
+ * @property {SetupIntegrationMode} [kavitaMode]
+ * @property {string} [kavitaBaseUrl]
+ * @property {string} [kavitaApiKey]
+ * @property {string} [kavitaAdminUsername]
+ * @property {string} [kavitaAdminEmail]
+ * @property {string} [kavitaAdminPassword]
+ * @property {string} [kavitaSharedLibraryPath]
+ * @property {SetupIntegrationMode} [komfMode]
+ */
+
 const normalizeString = (value) => (typeof value === 'string' ? value : '');
 const trimString = (value) => normalizeString(value).trim();
 const cloneValues = (value) => {
@@ -94,6 +111,68 @@ export const buildSetupProfileSnapshot = ({
             joinDefaultLibraries: normalizeString(getEnvValue(sourceValues, 'noona-portal', 'PORTAL_JOIN_DEFAULT_LIBRARIES')),
         },
     };
+};
+
+/**
+ * @param {DeriveSetupProfileValuesOptions} [options]
+ * @returns {SetupProfileValues}
+ */
+export const deriveSetupProfileValues = ({
+                                             values = {},
+                                             serviceNames = [],
+                                             kavitaMode = 'managed',
+                                             kavitaBaseUrl = '',
+                                             kavitaApiKey = '',
+                                             kavitaAdminUsername = '',
+                                             kavitaAdminEmail = '',
+                                             kavitaAdminPassword = '',
+                                             kavitaSharedLibraryPath = '',
+                                             komfMode = 'managed',
+                                         } = {}) => {
+    const nextValues = cloneValues(values);
+    const sourceServiceNames =
+        Array.isArray(serviceNames) && serviceNames.length > 0
+            ? serviceNames
+            : Object.keys(nextValues);
+    const availableServices = new Set(
+        sourceServiceNames
+            .map((serviceName) => trimString(serviceName))
+            .filter(Boolean),
+    );
+    const resolvedKavitaBaseUrl = kavitaMode === 'managed' ? 'http://noona-kavita:5000' : trimString(kavitaBaseUrl);
+
+    const mergeEnv = (serviceName, patch) => {
+        if (!availableServices.has(serviceName)) {
+            return;
+        }
+
+        nextValues[serviceName] = {
+            ...(nextValues[serviceName] || {}),
+            ...patch,
+        };
+    };
+
+    mergeEnv('noona-portal', {
+        KAVITA_BASE_URL: resolvedKavitaBaseUrl,
+        KAVITA_API_KEY: trimString(kavitaApiKey),
+    });
+    mergeEnv('noona-raven', {
+        KAVITA_DATA_MOUNT: kavitaMode === 'external' ? trimString(kavitaSharedLibraryPath) : '',
+        KAVITA_BASE_URL: resolvedKavitaBaseUrl,
+        KAVITA_API_KEY: trimString(kavitaApiKey),
+        KAVITA_LIBRARY_ROOT: kavitaMode === 'managed' ? '/manga' : normalizeString(nextValues['noona-raven']?.KAVITA_LIBRARY_ROOT),
+    });
+    mergeEnv('noona-kavita', {
+        KAVITA_ADMIN_USERNAME: kavitaMode === 'managed' ? trimString(kavitaAdminUsername) : '',
+        KAVITA_ADMIN_EMAIL: kavitaMode === 'managed' ? trimString(kavitaAdminEmail) : '',
+        KAVITA_ADMIN_PASSWORD: kavitaMode === 'managed' ? trimString(kavitaAdminPassword) : '',
+    });
+    mergeEnv('noona-komf', {
+        KOMF_KAVITA_BASE_URI: resolvedKavitaBaseUrl,
+        KOMF_KAVITA_API_KEY: komfMode === 'managed' ? trimString(kavitaApiKey) : normalizeString(nextValues['noona-komf']?.KOMF_KAVITA_API_KEY),
+    });
+
+    return nextValues;
 };
 
 export const hydrateSetupProfileState = ({

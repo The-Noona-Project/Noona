@@ -22,7 +22,10 @@ Raven-facing browser actions.
 - preserves Warden setup-config validation errors and normalize-only import responses so Moon can show the real issue
 - owns Discord OAuth and Moon auth flows
 - brokers browser-facing Raven and settings APIs
+- streams the authenticated background music asset that Moon proxies into its signed-in shell
 - talks to Vault through the stack's trusted internal HTTPS path in managed installs
+- keeps wizard-state on a local fallback until Warden has created the managed Vault CA bundle, then resumes Vault-backed
+  persistence
 - preserves Raven's real queue status and message for Moon instead of flattening every queue response into a generic
   success
 - normalizes backend failures into UI-friendly responses
@@ -36,6 +39,7 @@ Raven-facing browser actions.
 
 - when Moon setup or Discord login fails
 - when user management or default permissions behave unexpectedly
+- when Moon's signed-in background track fails to load or respond to range requests
 - when browser-facing Raven actions fail even though Raven is online
 
 ## How It Fits Into Noona

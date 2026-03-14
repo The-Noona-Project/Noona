@@ -14,6 +14,7 @@ import {createWizardStateClient} from '../wizard/wizardStateClient.mjs'
 import {normalizeWizardMetadata, WIZARD_STEP_KEYS} from '../wizard/wizardStateSchema.mjs'
 import {createSetupClient, defaultWardenBaseUrl, normalizeServiceInstallPayload} from './createSetupClient.mjs'
 import {registerAuthRoutes} from '../routes/registerAuthRoutes.mjs'
+import {registerMediaRoutes} from '../routes/registerMediaRoutes.mjs'
 import {registerRavenRoutes} from '../routes/registerRavenRoutes.mjs'
 import {registerSettingsRoutes} from '../routes/registerSettingsRoutes.mjs'
 import {registerSetupRoutes} from '../routes/registerSetupRoutes.mjs'
@@ -3171,6 +3172,7 @@ export const createSageApp = ({
     }
 
     registerAuthRoutes(routeContext)
+    registerMediaRoutes(routeContext)
     registerSettingsRoutes(routeContext)
     registerSetupRoutes(routeContext)
     registerRavenRoutes(routeContext)

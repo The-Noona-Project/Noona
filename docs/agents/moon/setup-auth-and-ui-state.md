@@ -28,6 +28,9 @@
 - The wizard loads the service catalog, storage layout, persisted setup snapshot, and setup status together.
 - Moon keeps a derived local env state for form editing, but the real install selection still comes from the persisted
   snapshot.
+- `storageRoot` stays separate wizard metadata.
+  The local derived env helper should only mirror editable service fields, not inject `NOONA_DATA_ROOT` into service
+  env maps.
 - Uploaded setup JSON files are normalized server-side and only hydrate local wizard state.
   Persistence still happens on explicit save or install actions.
 - Debug mode changes the UI surface.
@@ -72,6 +75,9 @@
   and `/rebooting`.
 - AppShell separately loads setup status and auth status, then exposes nav entries only when the related permission is
   present.
+- The signed-in drawer now includes a `Music` card above `Display`.
+  It only renders for the post-setup main shell, persists `moon-music-enabled` and `moon-music-volume` in browser
+  `localStorage`, and plays through Moon's `/api/noona/media/background-track` proxy path.
 - Mobile navigation is intentionally a single-expansion drawer.
   Keep section headings flat inside each expanded group instead of reintroducing nested accordions or a dense mobile
   mega menu.

@@ -2976,6 +2976,55 @@ test('bootFull applies setup snapshot runtime values when persisted settings are
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=kavita-api'));
 });
 
+test('bootFull loads legacy NOONA_DATA_ROOT setup snapshots without applying unsupported noona-vault runtime overrides', async () => {
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            values: {
+                'noona-vault': {
+                    NOONA_DATA_ROOT: '/srv/noona',
+                },
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                    KAVITA_BASE_URL: 'https://kavita.example',
+                    KAVITA_API_KEY: 'kavita-api',
+                },
+            },
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        settings: {
+            client: {
+                mongo: {
+                    findMany: async () => {
+                        throw new Error('vault settings unavailable');
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    warden.startService = async (service) => {
+        starts.push(service.name);
+    };
+
+    await warden.bootFull({
+        services: ['noona-redis', 'noona-mongo', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+    });
+
+    assert.ok(starts.includes('noona-portal'));
+    assert.equal(warden.getSetupConfig().snapshot.storageRoot, '/srv/noona');
+    assert.equal(warden.getServiceConfig('noona-vault').runtimeConfig.env.NOONA_DATA_ROOT, undefined);
+    assert.equal(warden.getServiceConfig('noona-raven').runtimeConfig.env.KAVITA_API_KEY, 'kavita-api');
+    assert.equal(Object.prototype.hasOwnProperty.call(warden.getServiceConfig('noona-raven').runtimeConfig.env, 'NOONA_DATA_ROOT'), false);
+});
+
 test('bootFull prefers setup snapshot runtime values before other persisted config sources', async () => {
     const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const memoryFs = createMemoryFs({
@@ -4406,7 +4455,7 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
     assert.equal(result.restarted, true);
     assert.equal(result.rolledBack, false);
     assert.equal(result.snapshot.version, 3);
-    assert.equal(result.snapshot.storageRoot, '/srv/noona');
+    assert.equal(result.snapshot.storageRoot, path.normalize('/srv/noona'));
     assert.equal(result.snapshot.discord.botToken, 'portal-token');
     assert.equal(result.snapshot.kavita.apiKey, 'kavita-api');
     assert.equal(typeof result.snapshot.savedAt, 'string');
@@ -4509,6 +4558,40 @@ test('saveSetupConfig ignores legacy platform selections and keeps the derived s
     assert.deepEqual(result.selected, ['noona-portal', 'noona-raven']);
     assert.equal(result.snapshot.discord.botToken, 'portal-token');
     assert.equal(result.snapshot.kavita.mode, 'external');
+});
+
+test('saveSetupConfig imports legacy NOONA_DATA_ROOT into storageRoot without persisting noona-vault runtime overrides', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.saveSetupConfig({
+        version: 2,
+        selected: ['noona-moon', 'noona-sage', 'noona-portal', 'noona-kavita'],
+        values: {
+            'noona-vault': {
+                NOONA_DATA_ROOT: '/srv/noona',
+            },
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'portal-token',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'kavita-api',
+            },
+            'noona-kavita': {
+                KAVITA_ADMIN_USERNAME: 'admin',
+                KAVITA_ADMIN_EMAIL: 'admin@example.com',
+                KAVITA_ADMIN_PASSWORD: 'admin-pass',
+            },
+        },
+    }, {apply: false});
+
+    const persistedSnapshot = warden.getSetupConfig({refresh: true}).snapshot;
+
+    assert.equal(persistedSnapshot.storageRoot, path.normalize('/srv/noona'));
+    assert.deepEqual(result.selected, ['noona-kavita', 'noona-portal', 'noona-raven']);
+    assert.equal(persistedSnapshot.values['noona-vault'], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedSnapshot.values['noona-raven'] ?? {}, 'NOONA_DATA_ROOT'), false);
 });
 
 test('saveSetupConfig rejects read-only and server-managed env keys', async () => {
@@ -4732,6 +4815,66 @@ test('saveSetupConfig supports persist-only snapshots without restarting the eco
     assert.deepEqual(result.selected, ['noona-portal', 'noona-raven']);
     assert.deepEqual(stopCalls, []);
     assert.deepEqual(startCalls, []);
+});
+
+test('saveSetupConfig applies public v3 snapshots with the real service descriptors without persisting storageRoot as a runtime override', async () => {
+    const memoryFs = createMemoryFs();
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+    warden.stopEcosystem = async () => [];
+    warden.startEcosystem = async () => ({mode: 'full', setupCompleted: true});
+
+    const result = await warden.saveSetupConfig({
+        version: 3,
+        storageRoot: '/srv/noona',
+        kavita: {
+            mode: 'external',
+            baseUrl: 'https://kavita.example',
+            apiKey: 'kavita-api',
+            sharedLibraryPath: '/mnt/manga',
+            account: {
+                username: '',
+                email: '',
+                password: '',
+            },
+        },
+        komf: {
+            mode: 'managed',
+            baseUrl: '',
+            applicationYml: 'server:\n  port: 8085\n',
+        },
+        discord: {
+            botToken: 'portal-token',
+            clientId: 'client-id',
+            clientSecret: 'client-secret',
+            guildId: 'guild-id',
+        },
+    });
+
+    const persistedSnapshot = warden.getSetupConfig({refresh: true}).snapshot;
+    assert.equal(persistedSnapshot.values['noona-vault'], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedSnapshot.values['noona-raven'] ?? {}, 'NOONA_DATA_ROOT'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedSnapshot.values['noona-komf'] ?? {}, 'NOONA_DATA_ROOT'), false);
+
+    const runtimeSnapshotPath = path.join('/srv/noona', 'warden', 'service-runtime-config.json');
+    const runtimeSnapshot = JSON.parse(memoryFs.files.get(path.normalize(runtimeSnapshotPath)));
+    const runtimeServices = runtimeSnapshot?.services ?? {};
+    assert.equal(runtimeServices['noona-vault'], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(runtimeServices['noona-raven']?.env ?? {}, 'NOONA_DATA_ROOT'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(runtimeServices['noona-komf']?.env ?? {}, 'NOONA_DATA_ROOT'), false);
 });
 
 test('saveSetupConfig rolls back persisted snapshot and runtime state when restart fails', async () => {

@@ -80,6 +80,9 @@ container settings by hand.
 
 If you upload an older Noona setup JSON file during setup, Moon now loads it into the wizard for review first. Confirm
 the storage path and any secrets, then use the explicit save or install actions to persist the updated profile.
+Saved setup JSON keeps `storageRoot` as top-level setup metadata.
+Warden derives the managed service storage wiring internally instead of persisting raw `NOONA_DATA_ROOT` overrides per
+service.
 
 ## 4. First Admin And Discord Notes
 
@@ -88,6 +91,12 @@ the storage path and any secrets, then use the explicit save or install actions 
 - On the finish or summary step, use the Discord login flow to create the first Noona admin session.
 - Managed Kavita admin credentials are separate. If you provide Kavita admin defaults during setup, Warden can seed the
   managed Kavita admin and API-key flow for you.
+
+## Signed-In Shell Music
+
+- After setup is complete and you are signed into Moon, the slide-out menu includes a `Music` card above `Display`.
+- Background music is enabled by default in the signed-in app shell only.
+- Mute state and volume are saved per browser in local storage, so each browser can keep its own preference.
 
 ## Storage And Data Expectations
 
@@ -113,6 +122,10 @@ Important paths under the storage root:
 - `raven/`: download and library worker data
 - `kavita/`: managed Kavita config
 - `komf/`: managed Komf config
+
+During first-run, before Warden has created `vault/tls/ca-cert.pem`, Sage's setup wizard state may temporarily stay on
+its local fallback cache instead of writing through Vault.
+Once Vault is installed and that CA file exists, wizard-state persistence resumes over the managed internal HTTPS path.
 
 If Warden runs in a Linux container, mount `NOONA_DATA_ROOT` into that container at the same absolute path as the host
 so setup snapshots and runtime files stay visible on the host.
@@ -191,6 +204,12 @@ Downloads, Kavita, or metadata flows fail after a reboot:
 
 - confirm the storage root persisted across the reboot
 - check service health and logs from Moon or Warden before changing settings by hand
+
+Moon background music does not play:
+
+- open the Moon menu and confirm `Music` is enabled above the `Display` controls
+- confirm the browser did not mute the site and that the local volume slider is above `0`
+- if the session just expired, sign in again so Moon can re-request Sage's authenticated track stream
 
 Direct Mongo or Redis host access is unavailable:
 

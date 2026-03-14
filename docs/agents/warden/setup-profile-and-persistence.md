@@ -27,6 +27,7 @@ Important behavior:
 
 - legacy `selected`, `selectedServices`, and `services` arrays are accepted
 - legacy `values` maps are accepted
+- legacy `values.*.NOONA_DATA_ROOT` imports into top-level `storageRoot`
 - legacy `integrations.kavita` and `integrations.komf` shapes are accepted
 - service aliases like `kavita` and `komf` are normalized to `noona-kavita` and `noona-komf`
 - `POST /api/setup/config/normalize` uses the same normalization rules without writing files or restarting services
@@ -73,8 +74,9 @@ Current derived rules:
 - Portal and Raven are always selected in a normal managed setup profile
 - managed Kavita adds `noona-kavita`
 - managed Komf adds `noona-komf`
-- `storageRoot` becomes `NOONA_DATA_ROOT` for the data-owning services
+- `storageRoot` stays top-level setup metadata and is not mirrored into per-service runtime overrides
 - Kavita and Komf managed/external modes rewrite the correct downstream env fields
+- setup save and restore paths only persist derived env keys that belong to the editable runtime schema
 
 If the public profile changes, update the derivation rules too.
 
@@ -127,7 +129,7 @@ It:
 
 1. validates and normalizes the payload
 2. writes the setup snapshot and mirror files
-3. applies derived runtime config to the in-memory runtime state
+3. applies only the derived editable runtime config to the in-memory runtime state
 4. persists that runtime config
 5. stops the current ecosystem
 6. restarts into minimal or full mode based on the resolved selection state

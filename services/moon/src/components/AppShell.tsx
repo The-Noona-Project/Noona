@@ -12,6 +12,7 @@ import {
     SETTINGS_USER_MANAGEMENT_HREF
 } from "@/components/noona/settings";
 import {Footer} from "./Footer";
+import {MoonMusicCard} from "./MoonMusicCard";
 import {type MoonViewMode, MoonViewModeToggle} from "./MoonViewModeToggle";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./AppShell.module.scss";
@@ -842,6 +843,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
                             )}
                         </Column>
                     </Card>
+
+                    {showMainNav && <MoonMusicCard cardPadding={viewModeConfig.cardPadding}/>}
 
                     <Card
                         fillWidth

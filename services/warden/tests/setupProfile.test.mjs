@@ -39,6 +39,8 @@ test("normalizeSetupProfileSnapshot derives the v3 service contract from the pub
     assert.deepEqual(normalized.selected, ["noona-komf", "noona-portal", "noona-raven"]);
     assert.equal(normalized.values["noona-raven"].KAVITA_BASE_URL, "https://kavita.example");
     assert.equal(normalized.values["noona-raven"].KAVITA_DATA_MOUNT, "/mnt/manga");
+    assert.equal(Object.prototype.hasOwnProperty.call(normalized.values["noona-raven"], "NOONA_DATA_ROOT"), false);
+    assert.equal(normalized.values["noona-vault"], undefined);
     assert.equal(normalized.values["noona-komf"].KOMF_APPLICATION_YML, "server:\n  port: 8085");
     assert.equal(normalized.values["noona-portal"].DISCORD_BOT_TOKEN, "bot-token");
 });
@@ -56,6 +58,9 @@ test("normalizeSetupProfileSnapshot imports legacy snapshots into the v3 profile
                 KAVITA_BASE_URL: "http://noona-kavita:5000",
                 KAVITA_API_KEY: "kavita-key",
             },
+            "noona-vault": {
+                NOONA_DATA_ROOT: "/srv/noona",
+            },
             "noona-kavita": {
                 KAVITA_ADMIN_USERNAME: "admin",
                 KAVITA_ADMIN_EMAIL: "admin@example.com",
@@ -65,11 +70,13 @@ test("normalizeSetupProfileSnapshot imports legacy snapshots into the v3 profile
     });
 
     assert.equal(normalized.version, 3);
+    assert.equal(normalized.storageRoot, "/srv/noona");
     assert.equal(normalized.kavita.mode, "managed");
     assert.equal(normalized.kavita.apiKey, "kavita-key");
     assert.equal(normalized.kavita.account.username, "admin");
     assert.equal(normalized.discord.clientId, "client-id");
     assert.deepEqual(normalized.selected, ["noona-kavita", "noona-portal", "noona-raven"]);
+    assert.equal(normalized.values["noona-vault"], undefined);
 });
 
 test("toPublicSetupSnapshot masks secrets and masked imports restore from the current snapshot", () => {

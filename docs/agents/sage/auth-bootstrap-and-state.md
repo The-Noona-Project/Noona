@@ -60,6 +60,11 @@
 - The client also keeps a local fallback snapshot.
   `resetState()` with `null` clears that fallback, which is why a later read can drop back to default state after a
   reset.
+- If `VAULT_CA_CERT_PATH` is missing or unreadable before managed Vault TLS exists, the wizard-state client skips the
+  Vault fetch, logs the trust fallback once, and keeps using the local snapshot until
+  `<NOONA_DATA_ROOT>/vault/tls/ca-cert.pem` is ready.
+- This exception is only for wizard-state continuity.
+  Packet/settings Vault clients should still fail closed on real trust errors after install.
 - `createWizardStatePublisher()` maps service names into wizard steps so install progress can update the wizard
   without Moon knowing the raw lifecycle graph.
 - `resolveSetupCompleted()` is just a cached read of `wizardState.completed`.

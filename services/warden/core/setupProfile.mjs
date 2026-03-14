@@ -343,15 +343,6 @@ export const deriveSetupProfileInternals = (snapshot = {}) => {
     }
 
     const values = {};
-    const storageRoot = normalizeOptionalString(profile.storageRoot);
-    if (storageRoot) {
-        for (const serviceName of ['noona-vault', 'noona-raven', 'noona-kavita', 'noona-komf']) {
-            values[serviceName] = {
-                ...(values[serviceName] || {}),
-                NOONA_DATA_ROOT: storageRoot,
-            };
-        }
-    }
 
     const kavitaBaseUrl = normalizeOptionalString(profile.kavita.baseUrl) || MANAGED_KAVITA_BASE_URL;
     const kavitaApiKey = normalizeOptionalString(profile.kavita.apiKey);
