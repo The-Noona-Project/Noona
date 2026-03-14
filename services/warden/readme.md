@@ -18,6 +18,7 @@ exposes the management APIs that the rest of Noona uses.
 
 - pulls and starts managed Noona containers
 - stores and restores the active setup profile
+- normalizes older setup JSON uploads for Moon review without persisting them until an explicit save or install
 - tracks install progress, service health, and logs
 - coordinates updates, restarts, and factory-reset behavior
 - keeps Mongo and Redis on a private Docker data network

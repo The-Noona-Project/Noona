@@ -8,6 +8,7 @@ import crypto from 'node:crypto'
 import {ChannelType, GatewayIntentBits} from 'discord.js'
 
 import {createSageApp, normalizeServiceInstallPayload, SetupValidationError, startSage,} from '../app/createSageApp.mjs'
+import {WardenUpstreamHttpError} from '../app/createSetupClient.mjs'
 import {
     appendWizardStepHistoryEntries,
     applyWizardStateUpdates,
@@ -1715,6 +1716,10 @@ test('setup routes proxy setup config and storage layout through the setup clien
                 calls.push({save: payload})
                 return {exists: true, snapshot: payload}
             },
+            normalizeSetupConfig: async (payload) => {
+                calls.push({normalize: payload})
+                return {snapshot: {version: 3, discord: {botToken: 'bot-token'}}}
+            },
         },
     })
 
@@ -1745,7 +1750,75 @@ test('setup routes proxy setup config and storage layout through the setup clien
         exists: true,
         snapshot: payload,
     })
-    assert.deepEqual(calls, ['layout', 'get-config', {save: payload}])
+
+    const normalizeResponse = await fetch(`${baseUrl}/api/setup/config/normalize`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    })
+    assert.equal(normalizeResponse.status, 200)
+    assert.deepEqual(await normalizeResponse.json(), {
+        snapshot: {version: 3, discord: {botToken: 'bot-token'}},
+    })
+    assert.deepEqual(calls, ['layout', 'get-config', {save: payload}, {normalize: payload}])
+})
+
+test('setup config routes preserve upstream Warden validation errors', async (t) => {
+    const invalidStorageError = new WardenUpstreamHttpError({
+        status: 400,
+        payload: {
+            error: "storageRoot must stay within Warden's managed Noona data root (/srv/noona).",
+        },
+    })
+    const normalizeError = new WardenUpstreamHttpError({
+        status: 400,
+        payload: {
+            error: 'Older setup profiles must be reviewed before they can be saved.',
+        },
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({status: 200, results: []}),
+            getSetupConfig: async () => ({
+                exists: false,
+                path: null,
+                snapshot: null,
+                error: null,
+            }),
+            saveSetupConfig: async () => {
+                throw invalidStorageError
+            },
+            normalizeSetupConfig: async () => {
+                throw normalizeError
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const saveResponse = await fetch(`${baseUrl}/api/setup/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version: 2, selected: ['noona-portal']}),
+    })
+    assert.equal(saveResponse.status, 400)
+    assert.deepEqual(await saveResponse.json(), {
+        error: "storageRoot must stay within Warden's managed Noona data root (/srv/noona).",
+    })
+
+    const normalizeResponse = await fetch(`${baseUrl}/api/setup/config/normalize`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version: 2, selected: ['noona-portal']}),
+    })
+    assert.equal(normalizeResponse.status, 400)
+    assert.deepEqual(await normalizeResponse.json(), {
+        error: 'Older setup profiles must be reviewed before they can be saved.',
+    })
 })
 
 test('GET /api/setup/status returns completion, config, progress, and debug state', async (t) => {

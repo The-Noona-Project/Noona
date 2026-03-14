@@ -1,6 +1,6 @@
 // services/sage/routes/registerSetupRoutes.mjs
 
-import {normalizeServiceInstallPayload} from '../app/createSetupClient.mjs'
+import {normalizeServiceInstallPayload, WardenUpstreamHttpError} from '../app/createSetupClient.mjs'
 import {SetupValidationError} from '../lib/errors.mjs'
 import {createDefaultWizardState, resolveWizardStateOperation} from '../wizard/wizardStateSchema.mjs'
 
@@ -39,6 +39,20 @@ const wait = (delayMs) =>
     new Promise((resolve) => {
         setTimeout(resolve, delayMs)
     })
+
+const sendSetupClientUpstreamError = (res, error) => {
+    if (!(error instanceof WardenUpstreamHttpError)) {
+        return false
+    }
+
+    const payload =
+        error.payload && typeof error.payload === 'object' && !Array.isArray(error.payload)
+            ? error.payload
+            : {error: error.message}
+
+    res.status(Number.isInteger(error.status) ? error.status : 502).json(payload)
+    return true
+}
 
 const normalizeEnvMap = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -217,8 +231,37 @@ export function registerSetupRoutes(context = {}) {
                 error: null,
             })
         } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             logger.error(`[${serviceName}] ⚠️ Failed to load setup config snapshot: ${error.message}`)
             res.status(502).json({error: 'Unable to load setup config snapshot.'})
+        }
+    })
+
+    app.post('/api/setup/config/normalize', async (req, res) => {
+        const body = req.body ?? {}
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            res.status(400).json({error: 'Setup config payload must be a JSON object.'})
+            return
+        }
+
+        try {
+            const payload = await setupClient.normalizeSetupConfig(body)
+            res.json(payload ?? {snapshot: null})
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({error: error.message})
+                return
+            }
+
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
+            logger.error(`[${serviceName}] Failed to normalize setup config snapshot: ${error.message}`)
+            res.status(502).json({error: 'Unable to normalize setup config snapshot.'})
         }
     })
 
@@ -235,6 +278,10 @@ export function registerSetupRoutes(context = {}) {
         } catch (error) {
             if (error instanceof SetupValidationError) {
                 res.status(400).json({error: error.message})
+                return
+            }
+
+            if (sendSetupClientUpstreamError(res, error)) {
                 return
             }
 

@@ -19,6 +19,7 @@
   `/api/setup/services`,
   `/api/setup/layout`,
   `/api/setup/config`,
+  `/api/setup/config/normalize`,
   `/api/setup/status`,
   `/api/setup/install`,
   `/api/setup/services/validate`,

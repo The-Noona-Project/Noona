@@ -28,6 +28,50 @@ const normalizeToken = (candidate) => {
     return trimmed || null
 }
 
+const normalizeResponsePayload = async (response) => {
+    const text = await response.text().catch(() => '')
+    if (!text) {
+        return {}
+    }
+
+    try {
+        const parsed = JSON.parse(text)
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed
+            : {value: parsed}
+    } catch {
+        return {error: text}
+    }
+}
+
+const summarizeUpstreamMessage = (status, payload = {}) => {
+    const errorMessage = typeof payload?.error === 'string' ? payload.error.trim() : ''
+    if (errorMessage) {
+        return errorMessage
+    }
+
+    const message = typeof payload?.message === 'string' ? payload.message.trim() : ''
+    if (message) {
+        return message
+    }
+
+    return `Warden responded with status ${status}`
+}
+
+export class WardenUpstreamHttpError extends Error {
+    constructor({status, payload = {}, path = '', baseUrl = ''} = {}) {
+        super(summarizeUpstreamMessage(status, payload))
+        this.name = 'WardenUpstreamHttpError'
+        this.status = status
+        this.payload =
+            payload && typeof payload === 'object' && !Array.isArray(payload)
+                ? payload
+                : {error: this.message}
+        this.path = path
+        this.baseUrl = baseUrl
+    }
+}
+
 const resolveDefaultWardenUrls = (env = process.env) => {
     const candidates = [
         env?.WARDEN_BASE_URL,
@@ -167,11 +211,12 @@ const createSetupClient = ({
         || normalizeToken(env?.WARDEN_API_TOKEN)
         || normalizeToken(env?.WARDEN_ACCESS_TOKEN)
 
-    const fetchFromWarden = async (path, options) => {
+    const fetchFromWarden = async (path, options, requestOptions = {}) => {
         const errors = []
         const candidates = preferredBaseUrl
             ? [preferredBaseUrl, ...deduped.filter((url) => url !== preferredBaseUrl)]
             : deduped
+        const preserveHttpError = requestOptions?.preserveHttpError === true
 
         for (const candidate of candidates) {
             try {
@@ -185,12 +230,26 @@ const createSetupClient = ({
                 })
 
                 if (!response.ok) {
-                    throw new Error(`Warden responded with status ${response.status}`)
+                    const payload = await normalizeResponsePayload(response)
+                    if (preserveHttpError) {
+                        throw new WardenUpstreamHttpError({
+                            status: response.status,
+                            payload,
+                            path,
+                            baseUrl: candidate,
+                        })
+                    }
+
+                    throw new Error(summarizeUpstreamMessage(response.status, payload))
                 }
 
                 preferredBaseUrl = candidate
                 return response
             } catch (error) {
+                if (error instanceof WardenUpstreamHttpError) {
+                    throw error
+                }
+
                 const message = error instanceof Error ? error.message : String(error)
                 errors.push(`${candidate} (${message})`)
             }
@@ -253,7 +312,7 @@ const createSetupClient = ({
             return await response.json().catch(() => ({root: null, services: []}))
         },
         async getSetupConfig() {
-            const response = await fetchFromWarden('/api/setup/config')
+            const response = await fetchFromWarden('/api/setup/config', undefined, {preserveHttpError: true})
             return await response.json().catch(() => ({
                 exists: false,
                 path: null,
@@ -270,9 +329,22 @@ const createSetupClient = ({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(snapshot),
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
+        },
+        async normalizeSetupConfig(snapshot = {}) {
+            if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+                throw new SetupValidationError('Setup config payload must be a JSON object.')
+            }
+
+            const response = await fetchFromWarden('/api/setup/config/normalize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(snapshot),
+            }, {preserveHttpError: true})
+
+            return await response.json().catch(() => ({snapshot: null}))
         },
         async getInstallationLogs(options = {}) {
             const limit = options?.limit

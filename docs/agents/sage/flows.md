@@ -13,9 +13,12 @@
   It accepts either raw names or `{name, env}` entries, strips empty env keys, and rewrites `kavita` to
   `noona-kavita`.
 - Setup route groups:
-  service catalog and layout, setup snapshot GET or POST, install and install progress, service logs or health,
+  service catalog and layout, setup snapshot GET, normalize POST, save POST, install and install progress, service logs
+  or health,
   wizard metadata or state, wizard step reset or broadcast, verification, service test endpoints, Discord setup
   helpers, managed Kavita service-key provisioning, and Raven mount detection.
+- Setup-config routes preserve Warden's original HTTP status and JSON error payload when Warden responded.
+  Moon should only see Sage `502` errors when the Sage-to-Warden proxy itself failed.
 - Wizard state is written through `wizardStateClient`.
   Vault Redis is preferred, but a local in-process fallback lets setup continue before Vault is installed.
 - Verification is not advisory.

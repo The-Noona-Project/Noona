@@ -28,6 +28,8 @@
 - The wizard loads the service catalog, storage layout, persisted setup snapshot, and setup status together.
 - Moon keeps a derived local env state for form editing, but the real install selection still comes from the persisted
   snapshot.
+- Uploaded setup JSON files are normalized server-side and only hydrate local wizard state.
+  Persistence still happens on explicit save or install actions.
 - Debug mode changes the UI surface.
   Advanced and derived env keys become more visible only when setup status says debug is enabled.
 - `ALWAYS_RUNNING` currently includes `noona-moon` and `noona-sage`.

@@ -19,6 +19,7 @@ recommendations, and the day-to-day admin UI.
 ## What Moon Does
 
 - guides admins through first-run setup
+- loads uploaded Noona setup JSON files into the wizard for review before admins explicitly save or install changes
 - provides the main settings and operations UI
 - keeps post-setup navigation task-based with `Home`, `Library`, `Downloads`, `Requests`, `Admin`, and a header
   `Add download` action when permitted

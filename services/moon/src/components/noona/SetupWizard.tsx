@@ -1509,10 +1509,10 @@ export function SetupWizard() {
                 throw new Error("Setup JSON file must contain an object.");
             }
 
-            const response = await fetch("/api/noona/setup/config", {
+            const response = await fetch("/api/noona/setup/config/normalize", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({...parsed, apply: false}),
+                body: JSON.stringify(parsed),
             });
             const payload = (await response.json().catch(() => null)) as {
                 snapshot?: Record<string, unknown> | null;
@@ -1553,7 +1553,9 @@ export function SetupWizard() {
             setKomfMode(hydrated.komfMode as IntegrationMode);
             setKomfBaseUrl(hydrated.komfBaseUrl);
 
-            setConfigMessage(`Loaded setup JSON from ${file.name}.`);
+            setConfigMessage(
+                `Loaded setup JSON from ${file.name}. Review the storage path and any secrets, then save or install when you are ready.`,
+            );
         } catch (error) {
             setConfigError(error instanceof Error ? error.message : String(error));
         } finally {
@@ -2528,8 +2530,8 @@ export function SetupWizard() {
                                 <Column gap="16">
                                     <Heading as="h2" variant="heading-strong-l">Install plan</Heading>
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        Save or import the masked setup profile, then let Warden validate, persist,
-                                        and install the stack in one pass.
+                                        Upload a setup JSON file to review it in the wizard, or save the current
+                                        masked profile, then let Warden validate, persist, and install the stack.
                                     </Text>
                                     <Row gap="8" style={{flexWrap: "wrap"}}>
                                         <Button size="s" variant="secondary" onClick={() => void downloadConfigFile()}>

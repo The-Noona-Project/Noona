@@ -3,7 +3,7 @@ import http from 'node:http';
 import {URL} from 'node:url';
 
 import {isWardenHttpError} from '../core/wardenErrors.mjs';
-import {toPublicSetupSnapshot} from '../core/setupProfile.mjs';
+import {normalizeSetupProfileSnapshot, toPublicSetupSnapshot} from '../core/setupProfile.mjs';
 import {buildWardenApiTokenRegistry, stringifyServiceTokenMap} from '../docker/wardenApiTokens.mjs';
 import {errMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 
@@ -804,6 +804,44 @@ export const startWardenServer = ({
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to load setup config snapshot: ${error.message}`);
                 sendJson(res, 500, {error: 'Unable to load setup config snapshot.'});
+            }
+            return;
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/setup/config/normalize') {
+            let body = {};
+
+            try {
+                body = (await parseJsonBody(req, {maxBytes: maxBodyBytes})) || {};
+            } catch (error) {
+                sendMappedError(res, error, 400, 'Request body must be valid JSON.');
+                return;
+            }
+
+            if (!body || typeof body !== 'object' || Array.isArray(body)) {
+                sendJson(res, 400, {error: 'Setup config payload must be a JSON object.'});
+                return;
+            }
+
+            try {
+                const currentSetupConfig = typeof warden?.getSetupConfig === 'function'
+                    ? await warden.getSetupConfig({refresh: true})
+                    : null;
+                const normalized = normalizeSetupProfileSnapshot(body, {
+                    currentSnapshot: currentSetupConfig?.snapshot ?? null,
+                });
+
+                if (!normalized) {
+                    sendJson(res, 400, {error: 'Setup config payload must be a JSON object.'});
+                    return;
+                }
+
+                sendJson(res, 200, {
+                    snapshot: toPublicSetupSnapshot(normalized, {maskSecrets: false}),
+                });
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to normalize setup config snapshot: ${error.message}`);
+                sendMappedError(res, error, 500, 'Unable to normalize setup config snapshot.');
             }
             return;
         }

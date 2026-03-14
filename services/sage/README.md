@@ -19,6 +19,7 @@ Raven-facing browser actions.
 ## What Sage Does
 
 - proxies setup and service-management requests to Warden
+- preserves Warden setup-config validation errors and normalize-only import responses so Moon can show the real issue
 - owns Discord OAuth and Moon auth flows
 - brokers browser-facing Raven and settings APIs
 - talks to Vault through the stack's trusted internal HTTPS path in managed installs

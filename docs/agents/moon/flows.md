@@ -14,7 +14,8 @@
   `deriveSetupProfileSelection()` always includes Portal and Raven, and adds Kavita or Komf when those modes are
   managed.
 - Import/export is snapshot-based.
-  Moon downloads and reimports the normalized setup JSON, not a raw service-descriptor dump.
+  Moon downloads the normalized setup JSON, and uploaded files are first normalized through Sage and Warden before the
+  wizard hydrates local review state.
 - The install request is intentionally snapshot-driven.
   After validation and persistence, Moon calls `/api/noona/install` with an empty selection body and then monitors the
   async progress stream.

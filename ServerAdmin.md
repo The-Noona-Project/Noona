@@ -78,6 +78,9 @@ Use that flow to choose your storage root, configure managed services, and insta
 public path is to let Warden derive the managed service selection from the setup profile instead of editing raw
 container settings by hand.
 
+If you upload an older Noona setup JSON file during setup, Moon now loads it into the wizard for review first. Confirm
+the storage path and any secrets, then use the explicit save or install actions to persist the updated profile.
+
 ## 4. First Admin And Discord Notes
 
 - Moon sign-in is Discord-first.

@@ -29,6 +29,7 @@ Important behavior:
 - legacy `values` maps are accepted
 - legacy `integrations.kavita` and `integrations.komf` shapes are accepted
 - service aliases like `kavita` and `komf` are normalized to `noona-kavita` and `noona-komf`
+- `POST /api/setup/config/normalize` uses the same normalization rules without writing files or restarting services
 
 Do not break legacy import behavior unless the migration is explicit and tested.
 
@@ -43,6 +44,19 @@ Mask-aware behavior:
 - `startWardenServer.mjs` applies the same idea to service config responses and writes
 
 This is how Moon can save/import JSON without forcing admins to retype unchanged secrets.
+
+## Normalize-Only Import Route
+
+`startWardenServer.mjs` exposes `POST /api/setup/config/normalize` for review-only imports.
+
+It:
+
+1. parses legacy or current setup JSON
+2. restores masked secrets from the current saved snapshot when possible
+3. returns the normalized public profile back to Moon
+
+It does not validate storage-root ownership, persist files, touch runtime overrides, or restart the ecosystem. Those
+checks still belong to the real save path.
 
 ## Derived Internal Selection
 

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 
 import {startWardenServer} from '../api/startWardenServer.mjs';
-import {toPublicSetupSnapshot} from '../core/setupProfile.mjs';
+import {normalizeSetupProfileSnapshot, toPublicSetupSnapshot} from '../core/setupProfile.mjs';
 import {WardenConflictError, WardenNotFoundError, WardenValidationError,} from '../core/wardenErrors.mjs';
 
 const SAGE_TOKEN = 'sage-test-token';
@@ -229,6 +229,116 @@ test('GET /api/setup/config returns persisted setup snapshot metadata from warde
         }, {maskSecrets: true}),
         error: null,
     });
+});
+
+test('POST /api/setup/config/normalize returns a normalized public snapshot without persisting it', async (t) => {
+    const calls = [];
+    const warden = {
+        async getSetupConfig(options = {}) {
+            calls.push({getSetupConfig: options});
+            return {
+                exists: true,
+                path: '/srv/noona/wardenm/noona-settings.json',
+                snapshot: {
+                    version: 3,
+                    storageRoot: '/srv/noona',
+                    kavita: {
+                        mode: 'managed',
+                        baseUrl: 'http://noona-kavita:5000',
+                        apiKey: 'current-kavita-key',
+                        sharedLibraryPath: '',
+                        account: {
+                            username: 'admin',
+                            email: 'admin@example.com',
+                            password: 'admin-pass',
+                        },
+                    },
+                    komf: {
+                        mode: 'managed',
+                        baseUrl: '',
+                        applicationYml: '',
+                    },
+                    discord: {
+                        botToken: 'current-bot-token',
+                        clientId: 'current-client-id',
+                        clientSecret: 'current-client-secret',
+                        guildId: 'current-guild-id',
+                    },
+                },
+                error: null,
+            };
+        },
+        async saveSetupConfig() {
+            throw new Error('saveSetupConfig should not be called for normalize-only imports.');
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const payload = {
+        version: 2,
+        selected: ['noona-moon', 'noona-sage', 'noona-portal', 'noona-kavita'],
+        values: {
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'bot-token',
+                DISCORD_CLIENT_ID: 'client-id',
+                DISCORD_CLIENT_SECRET: 'client-secret',
+                DISCORD_GUILD_ID: 'guild-id',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'legacy-kavita-key',
+            },
+            'noona-kavita': {
+                KAVITA_ADMIN_USERNAME: 'reader-admin',
+                KAVITA_ADMIN_EMAIL: 'reader-admin@example.com',
+                KAVITA_ADMIN_PASSWORD: 'Password123!',
+            },
+        },
+    };
+
+    const response = await wardenFetch(baseUrl, '/api/setup/config/normalize', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        snapshot: toPublicSetupSnapshot(
+            normalizeSetupProfileSnapshot(payload, {
+                currentSnapshot: {
+                    version: 3,
+                    storageRoot: '/srv/noona',
+                    kavita: {
+                        mode: 'managed',
+                        baseUrl: 'http://noona-kavita:5000',
+                        apiKey: 'current-kavita-key',
+                        sharedLibraryPath: '',
+                        account: {
+                            username: 'admin',
+                            email: 'admin@example.com',
+                            password: 'admin-pass',
+                        },
+                    },
+                    komf: {
+                        mode: 'managed',
+                        baseUrl: '',
+                        applicationYml: '',
+                    },
+                    discord: {
+                        botToken: 'current-bot-token',
+                        clientId: 'current-client-id',
+                        clientSecret: 'current-client-secret',
+                        guildId: 'current-guild-id',
+                    },
+                },
+            }),
+            {maskSecrets: false},
+        ),
+    });
+    assert.deepEqual(calls, [{getSetupConfig: {refresh: true}}]);
 });
 
 test('POST /api/setup/config persists setup snapshot through warden', async (t) => {
