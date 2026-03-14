@@ -1,175 +1,43 @@
-# Sage (Noona Stack 2.2)
+# Sage
 
-Sage is the setup and proxy service for Noona. It fronts Warden install APIs, Discord setup helpers, and Raven
-download/library routes for Moon and other clients.
+Sage is Noona's setup, auth, and browser-facing API broker. Moon talks to Sage for setup, login, user management, and
+Raven-facing browser actions.
 
 ## Quick Navigation
 
+- [Server admin guide](../../ServerAdmin.md)
+- [Repo overview](../../README.md)
 - [Service rules](AGENTS.md)
-- [Stack overview](../../README.md)
+- [Sage AI docs](../../docs/agents/sage/README.md)
 - [Entrypoint](initSage.mjs)
-- [App builder](app/createSageApp.mjs)
-- [Setup client](app/createSetupClient.mjs)
 - [Route modules](routes/)
-- [Auth routes](routes/registerAuthRoutes.mjs)
-- [Raven routes](routes/registerRavenRoutes.mjs)
-- [Settings routes](routes/registerSettingsRoutes.mjs)
-- [Setup routes](routes/registerSetupRoutes.mjs)
-- [Managed Kavita setup client](clients/managedKavitaSetupClient.mjs)
-- [Downstream clients](clients/)
-- [Wizard state](wizard/)
+- [Clients](clients/)
 - [Tests](tests/)
-- [Root docs](../../docs/)
 
-## Core Responsibilities
+## What Sage Does
 
-- Proxy setup/install/status requests to Warden.
-- Expose Discord setup validation helpers for Portal onboarding.
-- Own Moon auth state, Discord OAuth config, Discord callback handling, Discord-linked user/session management, and
-  the default permission template used when a Discord user signs in for the first time.
-- Persist the admin-managed Discord onboarding message template used by Moon's manual copy/preview flow.
-- Proxy Raven search/download/library/status routes.
-- Serve Vault-backed recommendation and subscription records for Moon user pages.
-- Persist Vault-backed Raven naming plus per-worker speed-limit and Linux CPU-core settings for Moon.
-- Normalize downstream failures into consistent API responses.
+- proxies setup and service-management requests to Warden
+- owns Discord OAuth and Moon auth flows
+- brokers browser-facing Raven and settings APIs
+- normalizes backend failures into UI-friendly responses
 
-## Common Endpoint Groups
+## Who It Is For
 
-- Setup: `/api/setup/*`
-    - Sage is now the only browser-adjacent broker for Warden's control-plane routes. Moon's setup/service-management
-      proxies go through Sage for service listing, install requests, install progress/logs, service health, storage
-      layout, and setup snapshot read/write.
-    - `GET /api/setup/layout` proxies Warden's resolved storage layout.
-    - `GET /api/setup/config` and `POST /api/setup/config` proxy Warden's persisted setup snapshot, with Warden-side
-      redaction of sensitive values and masking-aware restore behavior for unchanged secrets.
-    - `POST /api/setup/install?async=true` now proxies Warden's accepted/background install mode and returns the
-      current install-progress snapshot immediately so Moon can keep polling instead of waiting on a long request.
-- Managed Kavita setup: `/api/setup/services/noona-kavita/service-key`
-    - waits for managed `noona-kavita`, accepts optional first-admin credentials from Moon or falls back to managed
-      `noona-kavita` `KAVITA_ADMIN_*` env overrides from Warden, retries the full first-user `login -> register`
-      acquisition flow when Kavita returns a transient first-user registration error before the account exists,
-      including startup-time 5xx responses from Kavita's account API, reuses an existing Kavita auth key when one is
-      already present, creates a named key only when needed, stores the reusable key
-      metadata in `noona_settings`, and patches selected
-      managed services
-      (`noona-portal`, `noona-raven`, `noona-komf`) with the generated key plus the managed `http://noona-kavita:5000`
-      base URL.
-- Discord setup helpers: `/api/setup/services/noona-portal/discord/*`
-    - validation now performs a real bot login, returns the detected application/client id, lists accessible guilds, and
-      loads roles/channels when a guild is selected, falling back to Discord's REST guild resources when the gateway
-      collections come back empty.
-- Moon auth and Discord OAuth: `/api/auth/*`
-    - `/api/auth/discord/config` stores the Discord OAuth client id/secret used by Moon setup and login.
-    - `/api/auth/discord/start` creates a full Discord OAuth round-trip for callback testing, setup bootstrap, or normal
-      Moon login. It now accepts Moon-relative return targets plus same-origin absolute Moon callback URLs so Kavita's
-      Noona handoff can survive external proxy/public-host setups without turning Sage into a generic open redirect.
-    - `/api/auth/discord/callback` exchanges the code with Discord, records callback tests, bootstraps the first admin,
-      auto-creates first-time Discord users from the configured default permission template, and signs in
-      Discord-linked Moon users. The stored Discord OAuth callback path is normalized to `/discord/callback` to match
-      Moon's real Next.js route exactly.
-  - `/api/auth/users/*` now verifies Vault persistence on user edits and infers legacy Discord-linked records from
-    stored Discord ids or `discord.<id>` lookup keys so Moon permission saves cannot report false success. Sage now
-    emits the canonical `library_management` and `download_management` permissions while still accepting the legacy
-    `lookup_new_title`, `download_new_title`, and `check_download_missing_titles` names on write, and it now updates
-    users by stable lookup fields instead of serialized Mongo `_id` values so permission edits persist through Vault.
-  - `/api/auth/users/default-permissions` reads and updates the default permission set used for new Discord-linked
-    Moon accounts. Sage now enforces `moon_login`, `mySubscriptions`, and `myRecommendations` as baseline defaults.
-- Discord settings: `/api/settings/discord/*`
-    - `GET /api/settings/discord/onboarding-message` returns the seeded manual onboarding template stored in
-      `noona_settings`.
-    - `PUT /api/settings/discord/onboarding-message` updates that admin-only template, preserving line breaks for
-      Moon's preview/copy flow while rejecting blank content after trim.
-- Download settings: `/api/settings/downloads/*`
-    - `/api/settings/downloads/naming` stores Raven naming templates in Vault. The default chapter filename pattern is
-      now `{title} c{chapter} (v{volume}) [Noona].cbz`, with a default chapter pad of `3`, a default volume pad of
-      `2`, and new `{volume}` / `{volume_padded}` tokens that fall back to `v01` until Raven has a trusted
-      provider-backed chapter-to-volume map.
-  - `/api/settings/downloads/workers` stores Raven worker lane settings in Vault with both
-    `threadRateLimitsKbps` and `cpuCoreIds`. It accepts plain KB/s numbers plus `mb` / `gb` suffixes on write,
-    normalizes unlimited rate-limit entries to `-1`, normalizes unpinned CPU slots to `-1`, and pads both arrays to
-    Raven's current worker-slot count before returning them to Moon.
-  - `/api/settings/downloads/vpn` stores Raven PIA VPN settings in Vault (`downloads.vpn`) while masking
-    the persisted password in responses. It now also stores `onlyDownloadWhenVpnOn`, which keeps queued Raven
-    downloads waiting until the VPN is actually connected.
-  - `/api/settings/downloads/vpn/regions` proxies Raven's discovered PIA OpenVPN region options for Moon's picker.
-  - `/api/settings/downloads/vpn/rotate` proxies Raven's immediate VPN rotation action so Moon can trigger
-    pause -> rotate -> resume from the settings page.
-      - `/api/settings/downloads/vpn/test-login` proxies Raven's credential validation endpoint so Moon can test
-        PIA login + region selection before saving or rotating; blank `piaUsername` / `piaPassword` values now fall
-        back to the saved Vault-backed VPN credentials, and the response includes Raven's reported public IP for the
-        test session.
-  - `/api/settings/factory-reset` and `/api/settings/vault/wipe` now use provider-aware confirmation for dangerous
-    actions: local-auth admins confirm with their password, while Discord-auth admins confirm with their current
-    Discord-linked username.
-- Raven proxy: `/api/raven/*`
-    - `/api/raven/library/latest` exposes the Home page latest-title feed to any authenticated Moon session after
-      setup, without opening the full library routes.
-    - Library listing/title/file routes require `library_management` after setup completes.
-  - `GET /api/raven/title-details?url=<source_url>` proxies Raven's live source-title scrape so Moon title pages can
-    surface source metadata like associated names, release status/year, translation/anime flags, and related series.
-  - `POST /api/raven/library/imports/check` requires `library_management`, asks Raven to rebuild titles from
-    on-disk `.noona` manifests, recheck the related title folders for missing/new chapters, and trigger the
-    downstream Kavita scans for the affected libraries.
-  - Search, queue, pause (`POST /api/raven/downloads/pause`), download-status/history, and library-wide sync routes
-    require `download_management` after setup completes.
-- Recommendations admin routes: `/api/recommendations*`
-    - `GET /api/recommendations` and `GET /api/recommendations/:id` require `manageRecommendations` and return
-      normalized recommendation records (including timeline events such as `created`, `approved`, `denied`,
-      `comment`, `download-started`, `download-progress`, and `download-completed`). Recommendation payloads now also
-      pass through `sourceAdultContent` when Portal stored Raven's source-site `Adult Content` tag on the record.
-    - `POST /api/recommendations/:id/approve` requires `manageRecommendations`, queues Raven download (`searchId` +
-      `selectedOptionIndex`), marks the recommendation approved, records an approval timeline event, and now accepts
-      an optional confirmed `metadataSelection` payload from Moon. When a Discord recommendation was saved without a
-      usable Raven source match, Sage now retries Raven search using the selected Komf metadata title plus aliases
-      before queueing. If no confident Raven source can be recovered yet, Sage keeps the recommendation pending,
-      stores the metadata plan plus a saved-for-later note, and returns that deferred state instead of failing the
-      entire approval request. Portal later applies the stored metadata only after Raven finishes downloading and
-      Kavita can resolve the scanned title. When the confirmed metadata selection includes an explicit provider match,
-      Sage now pre-creates/resolves the Raven title first, asks Portal to store the chapter-to-volume map with
-      `autoRename:false`, then queues Raven; if that pre-seed step fails, Sage still queues the download and relies on
-      Portal's deferred post-import rename flow later. The stored selection now also preserves `adultContent` when
-      Portal/Komf marked the picked metadata match as `Adult Content: yes`.
-    - `POST /api/recommendations/:id/deny` requires `manageRecommendations`, marks the recommendation denied, stores
-      optional denial reason, and records a denial timeline event.
-    - `POST /api/recommendations/:id/comments` requires `manageRecommendations` and appends an admin comment timeline
-      event.
-    - `DELETE /api/recommendations/:id` requires `manageRecommendations` and closes/deletes the selected recommendation,
-      retrying with a field-based fallback query when legacy/serialized `_id` values do not match Vault's stored Mongo
-      `_id` type.
-- Recommendations user routes: `/api/myrecommendations*`
-    - `GET /api/myrecommendations` and `GET /api/myrecommendations/:id` require `myRecommendations` (or
-      `manageRecommendations`) and return only recommendation records owned by the signed-in Discord user unless the
-      caller is a manager.
-    - `POST /api/myrecommendations/:id/comments` requires `myRecommendations` (or `manageRecommendations`) and appends a
-      user/admin timeline reply event.
-- Subscriptions user routes: `/api/mysubscriptions*`
-    - `GET /api/mysubscriptions` requires `mySubscriptions` and returns only subscription documents owned by the
-      signed-in Discord user.
-    - `DELETE /api/mysubscriptions/:id` requires `mySubscriptions`, verifies ownership, and marks the subscription
-      `inactive` with an `unsubscribedAt` timestamp.
+- Server admins troubleshooting setup or login
+- Contributors working on auth, setup, or browser-facing service APIs
 
-## Key Environment Variables
+## When An Admin Needs To Care
 
-| Variable                                       | Purpose                                                                                  |
-|------------------------------------------------|------------------------------------------------------------------------------------------|
-| `API_PORT`                                     | Sage listener port (defaults in runtime)                                                 |
-| `SERVICE_NAME`                                 | Service label used in logs                                                               |
-| `SERVER_IP`                                    | Optional fallback LAN host for browser redirects when no explicit base URL is configured |
-| `WARDEN_BASE_URL`                              | Preferred Warden base URL override                                                       |
-| `WARDEN_API_TOKEN`                             | Bearer token Sage uses to authenticate every proxied Warden API call                     |
-| `RAVEN_BASE_URL`                               | Preferred Raven base URL override                                                        |
-| `RAVEN_INTERNAL_BASE_URL` / `RAVEN_DOCKER_URL` | Additional Raven discovery overrides                                                     |
+- when Moon setup or Discord login fails
+- when user management or default permissions behave unexpectedly
+- when browser-facing Raven actions fail even though Raven is online
 
-## Local Commands
+## How It Fits Into Noona
 
-```bash
-cd services/sage
-npm install
-npm run start
-npm test
-```
+Sage sits between Moon and the rest of the stack. Admins usually encounter it indirectly through Moon rather than as a
+standalone service.
 
-## Documentation Rule
+## Next Steps
 
-When adding or changing Sage routes, update this README and include links to the exact route/client files touched so
-Moon and platform maintainers can trace behavior quickly.
+- Admin install and operations: [../../ServerAdmin.md](../../ServerAdmin.md)
+- Internal editing guide: [../../docs/agents/sage/README.md](../../docs/agents/sage/README.md)
