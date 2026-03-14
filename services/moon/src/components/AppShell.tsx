@@ -1,7 +1,7 @@
 "use client";
 
 import {usePathname, useRouter} from "next/navigation";
-import {type CSSProperties, useEffect, useMemo, useState} from "react";
+import {type CSSProperties, useEffect, useMemo, useRef, useState} from "react";
 import {FiMenu, FiPlus, FiX} from "react-icons/fi";
 import {Accordion, Badge, Button, Card, Column, MegaMenu, Option, Row, Spinner, Text,} from "@once-ui-system/core";
 import {moonShell} from "@/resources";
@@ -13,6 +13,8 @@ import {
 } from "@/components/noona/settings";
 import {Footer} from "./Footer";
 import {MoonMusicCard} from "./MoonMusicCard";
+import {isMoonShellSuppressedPath} from "./noona/moonShellRoutes.mjs";
+import {NOONA_OPEN_MUSIC_CONTROLS_EVENT} from "./noona/siteNotificationLive.mjs";
 import {type MoonViewMode, MoonViewModeToggle} from "./MoonViewModeToggle";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./AppShell.module.scss";
@@ -21,6 +23,7 @@ type ShellAuthUser = {
     username?: string | null;
     discordUsername?: string | null;
     discordGlobalName?: string | null;
+    discordUserId?: string | null;
     avatarUrl?: string | null;
     permissions?: string[] | null;
 };
@@ -43,7 +46,6 @@ type ViewModeConfig = {
 
 const MOON_VIEW_MODE_STORAGE_KEY = "moon-view-mode";
 const DEFAULT_MOON_VIEW_MODE: MoonViewMode = "ultrawide";
-const SHELLLESS_ROUTES = new Set(["/login", "/signup", "/discord/callback", "/rebooting"]);
 const VIEW_MODE_CONFIG: Record<MoonViewMode, ViewModeConfig> = {
     desktop: {
         shellPadding: "20",
@@ -230,8 +232,11 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const [accountUser, setAccountUser] = useState<ShellAuthUser | null>(null);
     const [viewMode, setViewMode] = useState<MoonViewMode>(DEFAULT_MOON_VIEW_MODE);
     const [menuOpen, setMenuOpen] = useState(false);
+    const menuOpenRef = useRef(false);
+    const musicControlsRef = useRef<HTMLDivElement | null>(null);
+    const pendingMusicFocusRef = useRef(false);
 
-    const shellSuppressed = SHELLLESS_ROUTES.has(pathname);
+    const shellSuppressed = isMoonShellSuppressedPath(pathname);
     const setupLoading = setupCompleted == null;
     const permissions = accountUser?.permissions ?? null;
     const canAccessLibrary = hasMoonPermission(permissions, "library_management");
@@ -329,6 +334,10 @@ export function AppShell({children}: { children: React.ReactNode }) {
     }, [pathname, setupCompleted, shellSuppressed]);
 
     useEffect(() => {
+        menuOpenRef.current = menuOpen;
+    }, [menuOpen]);
+
+    useEffect(() => {
         setViewMode(getViewModeFromDocument());
     }, []);
 
@@ -356,6 +365,66 @@ export function AppShell({children}: { children: React.ReactNode }) {
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [menuOpen]);
+
+    useEffect(() => {
+        if (showMainNav) {
+            return;
+        }
+
+        pendingMusicFocusRef.current = false;
+    }, [showMainNav]);
+
+    useEffect(() => {
+        if (!showMainNav) {
+            return;
+        }
+
+        const focusMusicControls = () => {
+            const node = musicControlsRef.current;
+            if (!node) {
+                return false;
+            }
+
+            node.scrollIntoView({behavior: "smooth", block: "nearest"});
+            node.focus({preventScroll: true});
+            return true;
+        };
+
+        const handleOpenMusicControls = () => {
+            pendingMusicFocusRef.current = true;
+            setMenuOpen(true);
+
+            if (menuOpenRef.current && focusMusicControls()) {
+                pendingMusicFocusRef.current = false;
+            }
+        };
+
+        window.addEventListener(NOONA_OPEN_MUSIC_CONTROLS_EVENT, handleOpenMusicControls);
+        return () => {
+            window.removeEventListener(NOONA_OPEN_MUSIC_CONTROLS_EVENT, handleOpenMusicControls);
+        };
+    }, [showMainNav]);
+
+    useEffect(() => {
+        if (!showMainNav || !menuOpen || !pendingMusicFocusRef.current) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            const node = musicControlsRef.current;
+            pendingMusicFocusRef.current = false;
+            if (!node) {
+                return;
+            }
+
+            node.scrollIntoView({behavior: "smooth", block: "nearest"});
+            node.focus({preventScroll: true});
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
+    }, [menuOpen, showMainNav]);
 
     const applyViewMode = (nextViewMode: MoonViewMode) => {
         setViewMode(nextViewMode);
@@ -844,7 +913,11 @@ export function AppShell({children}: { children: React.ReactNode }) {
                         </Column>
                     </Card>
 
-                    {showMainNav && <MoonMusicCard cardPadding={viewModeConfig.cardPadding}/>}
+                    {showMainNav && (
+                        <div ref={musicControlsRef} tabIndex={-1} aria-label="Music controls" style={{outline: "none"}}>
+                            <MoonMusicCard cardPadding={viewModeConfig.cardPadding}/>
+                        </div>
+                    )}
 
                     <Card
                         fillWidth

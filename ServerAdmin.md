@@ -92,11 +92,19 @@ service.
 - Managed Kavita admin credentials are separate. If you provide Kavita admin defaults during setup, Warden can seed the
   managed Kavita admin and API-key flow for you.
 
-## Signed-In Shell Music
+## Signed-In Shell Music And Live Toasts
 
 - After setup is complete and you are signed into Moon, the slide-out menu includes a `Music` card above `Display`.
 - Background music is enabled by default in the signed-in app shell only.
 - Mute state and volume are saved per browser in local storage, so each browser can keep its own preference.
+- Moon also shows in-app live toasts for three signed-in events:
+  actual `Now Playing` starts,
+  followed-title chapter DM activity,
+  and recommendation approvals or denials.
+- Music toasts open the shell drawer back to the `Music` controls.
+  Subscription and recommendation toasts open the related Moon detail page when the route is available.
+- Moon keeps last-seen recommendation and subscription toast state per signed-in user in browser storage, so users can
+  get a one-time catch-up summary after they come back without replaying the same toasts on every refresh.
 
 ## Storage And Data Expectations
 
@@ -129,6 +137,8 @@ Once Vault is installed and that CA file exists, wizard-state persistence resume
 
 If Warden runs in a Linux container, mount `NOONA_DATA_ROOT` into that container at the same absolute path as the host
 so setup snapshots and runtime files stay visible on the host.
+If that same-path bind mount is missing, Warden now blocks Vault startup with an explicit `NOONA_DATA_ROOT` bind-mount
+error instead of letting Vault fail later with missing TLS files.
 
 ## Updates, Restarts, Backups, And Factory Reset
 
@@ -189,6 +199,12 @@ Setup changes do not appear on disk:
 
 - confirm `NOONA_DATA_ROOT` is set
 - confirm the host path is mounted into containerized Warden on Linux
+
+Install fails with `Vault TLS files could not be loaded` or a `NOONA_DATA_ROOT` bind-mount error:
+
+- confirm Warden itself was started with `-v $NOONA_DATA_ROOT:$NOONA_DATA_ROOT` on Linux
+- if you launched Warden from a custom Compose, Unraid, or Docker UI config, add the same-path bind there too
+- restart the Warden container after fixing the bind mount, then re-run the install
 
 Discord login or bot setup fails:
 

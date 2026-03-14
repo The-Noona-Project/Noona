@@ -24,6 +24,8 @@ exposes the management APIs that the rest of Noona uses.
 - coordinates updates, restarts, and factory-reset behavior
 - keeps Mongo and Redis on a private Docker data network
 - generates and mounts the internal Vault HTTPS certificate bundle used by the stack
+- refuses to start managed Vault from a Linux Warden container when `NOONA_DATA_ROOT` is not bind-mounted into Warden at
+  the same absolute path as the host
 
 ## Who It Is For
 

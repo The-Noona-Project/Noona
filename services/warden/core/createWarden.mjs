@@ -24,6 +24,7 @@ import {
     buildNoonaStorageLayout,
     describeNoonaStorageLayout,
     isLikelyNamedDockerVolume,
+    isWindowsAbsolutePath,
     normalizeContainerPath,
     normalizePathValue,
     normalizeVaultFolderName,
@@ -36,11 +37,7 @@ import {
     MANAGED_KOMF_CONFIG_FILE_NAME,
     normalizeManagedKomfConfigContent,
 } from '../docker/komfConfigTemplate.mjs';
-import {
-    ensureVaultTlsAssets,
-    resolveVaultTlsPaths,
-    VAULT_TLS_CONTAINER_PATH,
-} from '../docker/vaultTls.mjs';
+import {ensureVaultTlsAssets, resolveVaultTlsPaths, VAULT_TLS_CONTAINER_PATH,} from '../docker/vaultTls.mjs';
 import {
     isDebugEnabled as isLoggerDebugEnabled,
     log,
@@ -982,6 +979,84 @@ export function createWarden(options = {}) {
         }
     };
 
+    const validatedContainerizedStorageRoots = new Map();
+
+    const isUnixAbsoluteStorageRoot = (candidate) => {
+        const raw = normalizePathValue(candidate);
+        if (!raw || isWindowsAbsolutePath(raw)) {
+            return false;
+        }
+
+        const normalized = normalizeContainerPath(raw);
+        return Boolean(normalized) && normalized.startsWith('/');
+    };
+
+    const inspectCurrentWardenContainer = async (dockerClient) => {
+        const clients = Array.from(new Set([
+            dockerClient,
+            activeDockerInstance,
+            dockerInstance,
+        ].filter(Boolean)));
+        const candidates = Array.from(new Set([
+            normalizePathValue(env.HOSTNAME),
+            normalizePathValue(process.env.HOSTNAME),
+        ].filter(Boolean)));
+
+        for (const client of clients) {
+            for (const candidate of candidates) {
+                const inspection = await inspectContainerSafe(client, candidate);
+                if (inspection) {
+                    return inspection;
+                }
+            }
+        }
+
+        return null;
+    };
+
+    const assertContainerizedWardenSharesStorageRoot = async (dockerClient, storageRoot) => {
+        const rawRoot = normalizePathValue(storageRoot);
+        const normalizedRoot = normalizeContainerPath(rawRoot);
+        if (!dockerClient || !isUnixAbsoluteStorageRoot(rawRoot)) {
+            return;
+        }
+
+        const cached = validatedContainerizedStorageRoots.get(normalizedRoot);
+        if (cached?.status === 'ok' || cached?.status === 'skip') {
+            return;
+        }
+
+        if (cached?.status === 'error') {
+            throw new WardenValidationError(cached.message);
+        }
+
+        const inspection = await inspectCurrentWardenContainer(dockerClient);
+        if (!inspection) {
+            validatedContainerizedStorageRoots.set(normalizedRoot, {status: 'skip'});
+            return;
+        }
+
+        const mounts = Array.isArray(inspection?.Mounts) ? inspection.Mounts : [];
+        const hasMatchingBind = mounts.some((mount) =>
+            normalizePathValue(mount?.Type).toLowerCase() === 'bind'
+            && normalizeContainerPath(mount?.Source) === normalizedRoot
+            && normalizeContainerPath(mount?.Destination) === normalizedRoot,
+        );
+
+        if (hasMatchingBind) {
+            validatedContainerizedStorageRoots.set(normalizedRoot, {status: 'ok'});
+            return;
+        }
+
+        const containerLabel = normalizeContainerName(inspection?.Name) || WARDEN_CONFIG_SERVICE_NAME;
+        const message =
+            `Containerized Warden must bind-mount NOONA_DATA_ROOT '${normalizedRoot}' into ${containerLabel} at the same absolute path. `
+            + `Restart Warden with '-v ${normalizedRoot}:${normalizedRoot}' (or the equivalent container config) before installing Vault `
+            + `so Warden and managed services share the same storage root.`;
+        validatedContainerizedStorageRoots.set(normalizedRoot, {status: 'error', message});
+        throw new WardenValidationError(message);
+    };
+
     const collectRavenDownloadMounts = async (dockerClient) => {
         const inspection = await inspectContainerSafe(dockerClient, 'noona-raven');
         if (!inspection) {
@@ -1433,7 +1508,14 @@ export function createWarden(options = {}) {
             return service;
         }
 
-        const storageLayout = buildStorageLayoutForSelection(installOverridesByName);
+        const sharedStorageRoot = resolveSharedStorageRoot(installOverridesByName);
+        if (service.name === 'noona-vault') {
+            await assertContainerizedWardenSharesStorageRoot(dockerClient, sharedStorageRoot);
+        }
+
+        const storageLayout = buildNoonaStorageLayout(sharedStorageRoot, {
+            vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
+        });
         ensureStorageLayoutDirectories(storageLayout);
         const currentEnv = parseEnvEntries(service.env);
         const vaultTlsPaths = syncManagedVaultTlsEnv(installOverridesByName);
@@ -1571,7 +1653,7 @@ export function createWarden(options = {}) {
         if (service.name === 'noona-vault') {
             if (!IS_NODE_TEST_PROCESS) {
                 ensureVaultTlsAssets({
-                    storageRoot: resolveSharedStorageRoot(installOverridesByName),
+                    storageRoot: sharedStorageRoot,
                     vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
                     fsModule,
                 });

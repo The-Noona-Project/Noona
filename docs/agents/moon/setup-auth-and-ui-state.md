@@ -78,6 +78,13 @@
 - The signed-in drawer now includes a `Music` card above `Display`.
   It only renders for the post-setup main shell, persists `moon-music-enabled` and `moon-music-volume` in browser
   `localStorage`, and plays through Moon's `/api/noona/media/background-track` proxy path.
+- `AppShell.tsx` and `SiteNotifications.tsx` now share the signed-in route gating helper from
+  [../../../services/moon/src/components/noona/moonShellRoutes.mjs](../../../services/moon/src/components/noona/moonShellRoutes.mjs)
+  so shell chrome and live toast polling stay aligned across login, reboot, callback, and setup flows.
+- `SiteNotifications.tsx` owns all custom in-app toast behavior.
+  It still handles service update polling, and now also runs best-effort signed-in polling for recommendation-decision
+  and subscription-update toasts, stores per-user seen state in browser storage keyed by `discordUserId` or username,
+  and dispatches the internal `noona:open-music-controls` click action for music toasts.
 - Mobile navigation is intentionally a single-expansion drawer.
   Keep section headings flat inside each expanded group instead of reintroducing nested accordions or a dense mobile
   mega menu.

@@ -42,6 +42,8 @@ This staging exists so Vault-backed config and managed Kavita access are availab
 
 ## Vault TLS During Boot
 
+- When Warden is itself running inside a Linux container, it verifies that `NOONA_DATA_ROOT` is bind-mounted into the
+  Warden container at the same absolute host path before starting managed Vault.
 - Warden resolves the shared Vault storage root, syncs managed TLS env, and reuses or generates the internal CA and
   Vault leaf certificate under `NOONA_DATA_ROOT/<vault-folder>/tls`.
 - Managed Vault clients default to `https://noona-vault:3005` and load the CA from `VAULT_CA_CERT_PATH`.

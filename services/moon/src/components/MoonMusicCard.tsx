@@ -11,6 +11,8 @@ import {
     readMoonMusicPreferences,
     toMoonMusicVolumePercent,
 } from "./moonMusicPreferences.mjs";
+import {emitNoonaSiteNotification} from "./noona/SiteNotifications";
+import {buildMoonMusicNotification} from "./noona/siteNotificationLive.mjs";
 
 const BG_SURFACE = "surface" as const;
 const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
@@ -23,6 +25,9 @@ type MoonMusicCardProps = {
 export function MoonMusicCard({cardPadding}: MoonMusicCardProps) {
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const retryCleanupRef = useRef<(() => void) | null>(null);
+    const musicEnabledRef = useRef(DEFAULT_MOON_MUSIC_ENABLED);
+    const playSessionIdRef = useRef<string | null>(null);
+    const announcedPlaySessionIdRef = useRef<string | null>(null);
     const [preferencesReady, setPreferencesReady] = useState(false);
     const [musicEnabled, setMusicEnabled] = useState(DEFAULT_MOON_MUSIC_ENABLED);
     const [musicVolume, setMusicVolume] = useState(DEFAULT_MOON_MUSIC_VOLUME);
@@ -30,6 +35,43 @@ export function MoonMusicCard({cardPadding}: MoonMusicCardProps) {
     const clearRetryListener = () => {
         retryCleanupRef.current?.();
         retryCleanupRef.current = null;
+    };
+
+    const resetPlaybackAnnouncement = () => {
+        playSessionIdRef.current = null;
+        announcedPlaySessionIdRef.current = null;
+    };
+
+    const ensurePlaySessionId = () => {
+        if (!playSessionIdRef.current) {
+            if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+                playSessionIdRef.current = crypto.randomUUID();
+            } else {
+                playSessionIdRef.current = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            }
+        }
+
+        return playSessionIdRef.current;
+    };
+
+    const announcePlaybackStart = () => {
+        const audio = audioRef.current;
+        if (!audio || audio.paused) {
+            return;
+        }
+
+        const playSessionId = ensurePlaySessionId();
+        if (announcedPlaySessionIdRef.current === playSessionId) {
+            return;
+        }
+
+        const notification = buildMoonMusicNotification(playSessionId) as Parameters<typeof emitNoonaSiteNotification>[0] | null;
+        if (!notification) {
+            return;
+        }
+
+        emitNoonaSiteNotification(notification);
+        announcedPlaySessionIdRef.current = playSessionId;
     };
 
     const scheduleRetryAfterInteraction = () => {
@@ -41,12 +83,18 @@ export function MoonMusicCard({cardPadding}: MoonMusicCardProps) {
         const retryPlayback = () => {
             clearRetryListener();
             const audio = audioRef.current;
-            if (!audio || !musicEnabled) {
+            if (!audio || !musicEnabledRef.current) {
                 return;
             }
-            void audio.play().catch(() => {
-                // If the user interaction still does not satisfy playback, keep the preference enabled and stay idle.
-            });
+
+            ensurePlaySessionId();
+            void audio.play()
+                .then(() => {
+                    announcePlaybackStart();
+                })
+                .catch(() => {
+                    // If the user interaction still does not satisfy playback, keep the preference enabled and stay idle.
+                });
         };
 
         window.addEventListener("pointerdown", retryPlayback, true);
@@ -62,18 +110,25 @@ export function MoonMusicCard({cardPadding}: MoonMusicCardProps) {
             const {enabled, volume} = readMoonMusicPreferences(window.localStorage);
             setMusicEnabled(enabled);
             setMusicVolume(volume);
+            musicEnabledRef.current = enabled;
         } catch {
             setMusicEnabled(DEFAULT_MOON_MUSIC_ENABLED);
             setMusicVolume(DEFAULT_MOON_MUSIC_VOLUME);
+            musicEnabledRef.current = DEFAULT_MOON_MUSIC_ENABLED;
         } finally {
             setPreferencesReady(true);
         }
 
         return () => {
             clearRetryListener();
+            resetPlaybackAnnouncement();
             audioRef.current?.pause();
         };
     }, []);
+
+    useEffect(() => {
+        musicEnabledRef.current = musicEnabled;
+    }, [musicEnabled]);
 
     useEffect(() => {
         if (!preferencesReady) {
@@ -86,7 +141,30 @@ export function MoonMusicCard({cardPadding}: MoonMusicCardProps) {
         }
 
         audio.volume = musicVolume;
+        if (musicVolume <= 0) {
+            resetPlaybackAnnouncement();
+        }
     }, [musicVolume, preferencesReady]);
+
+    useEffect(() => {
+        if (!preferencesReady) {
+            return;
+        }
+
+        const audio = audioRef.current;
+        if (!audio) {
+            return;
+        }
+
+        const handlePause = () => {
+            resetPlaybackAnnouncement();
+        };
+
+        audio.addEventListener("pause", handlePause);
+        return () => {
+            audio.removeEventListener("pause", handlePause);
+        };
+    }, [preferencesReady]);
 
     useEffect(() => {
         if (!preferencesReady) {
@@ -100,15 +178,18 @@ export function MoonMusicCard({cardPadding}: MoonMusicCardProps) {
 
         if (!musicEnabled) {
             clearRetryListener();
+            resetPlaybackAnnouncement();
             audio.pause();
             return;
         }
 
+        ensurePlaySessionId();
         const playPromise = audio.play();
         if (playPromise && typeof playPromise.catch === "function") {
             void playPromise
                 .then(() => {
                     clearRetryListener();
+                    announcePlaybackStart();
                 })
                 .catch(() => {
                     scheduleRetryAfterInteraction();

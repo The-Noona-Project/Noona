@@ -1239,6 +1239,141 @@ test('installServices mounts managed service log folders and injects NOONA_LOG_D
     assert.ok(vaultStart.volumes.includes(`${path.join('/srv/noona', 'vault-store', 'logs')}:/var/log/noona`));
 });
 
+test('restartService fails fast when containerized Warden is missing the same-path NOONA_DATA_ROOT bind', async () => {
+    let started = false;
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        removeContainers: async () => [],
+        runContainerWithLogs: async () => {
+            started = true;
+        },
+        waitForContainerHealthy: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            },
+        },
+        env: {
+            HOSTNAME: 'warden-self',
+            NOONA_DATA_ROOT: '/srv/noona',
+        },
+        dockerInstance: createStubDocker({
+            getContainer: (name) => ({
+                inspect: async () => {
+                    if (name === 'warden-self') {
+                        return {
+                            Name: '/noona-warden',
+                            Mounts: [
+                                {
+                                    Type: 'bind',
+                                    Source: '/var/run/docker.sock',
+                                    Destination: '/var/run/docker.sock',
+                                },
+                            ],
+                        };
+                    }
+
+                    const error = new Error('Not found');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            }),
+        }),
+        hostDockerSockets: [],
+    });
+
+    await assert.rejects(
+        () => warden.restartService('noona-vault'),
+        /Containerized Warden must bind-mount NOONA_DATA_ROOT '\/srv\/noona'.*-v \/srv\/noona:\/srv\/noona/s,
+    );
+    assert.equal(started, false);
+});
+
+test('restartService mounts Vault TLS assets when containerized Warden shares NOONA_DATA_ROOT at the same path', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        removeContainers: async () => [],
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                volumes: [...(service.volumes || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForContainerHealthy: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            },
+        },
+        env: {
+            HOSTNAME: 'warden-self',
+            NOONA_DATA_ROOT: '/srv/noona',
+        },
+        dockerInstance: createStubDocker({
+            getContainer: (name) => ({
+                inspect: async () => {
+                    if (name === 'warden-self') {
+                        return {
+                            Name: '/noona-warden',
+                            Mounts: [
+                                {
+                                    Type: 'bind',
+                                    Source: '/srv/noona',
+                                    Destination: '/srv/noona',
+                                },
+                            ],
+                        };
+                    }
+
+                    const error = new Error('Not found');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            }),
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.restartService('noona-vault');
+
+    assert.equal(started.length, 1);
+    assert.ok(
+        started[0].volumes.includes(`${path.join('/srv/noona', 'vault', 'tls')}:/var/lib/noona/vault-tls`),
+        'Vault should receive the shared TLS bind mount when Warden shares the same storage root.',
+    );
+});
+
 test('installServices respects explicit Redis and Mongo host mount folder overrides from Vault settings', async () => {
     const started = [];
     const dockerUtils = {

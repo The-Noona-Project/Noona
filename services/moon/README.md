@@ -27,6 +27,8 @@ recommendations, and the day-to-day admin UI.
   `Add download` action when permitted
 - plays the configured background track inside the signed-in app shell and keeps `Music` controls above `Display`
   inside the slide-out menu
+- shows in-app live toasts for actual music playback starts, followed-title chapter DM activity, and recommendation
+  approval or denial changes, with click-through links back into Moon
 - handles Discord-first login and account management
 - surfaces downloads, libraries, subscriptions, and recommendation flows
 - treats Raven download queue attempts as successful only when Raven explicitly accepts them, so expired or invalid
@@ -42,6 +44,8 @@ recommendations, and the day-to-day admin UI.
 - during first-run setup
 - when managing users, roles, service links, and updates
 - when adjusting local browser shell preferences like the background music mute and volume controls
+- when checking live in-app toasts that catch users up on music playback, followed-title updates, or recommendation
+  decisions after they return to Moon
 - when troubleshooting setup, login, or UI-driven service actions
 
 ## How It Fits Into Noona
