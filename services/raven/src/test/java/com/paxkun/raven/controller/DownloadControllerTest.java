@@ -1,9 +1,20 @@
+/**
+ * Covers download controller behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/download/DownloadProgress.java
+ * Times this file has been edited: 6
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
 import com.paxkun.raven.service.download.DownloadProgress;
+import com.paxkun.raven.service.download.QueueDownloadResult;
+import com.paxkun.raven.service.download.SearchTitle;
 import com.paxkun.raven.service.download.TitleDetails;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,11 +26,19 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Covers download controller behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 class DownloadControllerTest {
@@ -67,6 +86,34 @@ class DownloadControllerTest {
     }
 
     @Test
+    void postSearchEndpointAcceptsSpecialCharacters() throws Exception {
+        SearchTitle payload = new SearchTitle("search-1", List.of(java.util.Map.of(
+                "title", "D.Gray-man",
+                "href", "https://source.example/d-gray-man"
+        )));
+        String query = "D.Gray-man & JoJo's: Part 7/Steel Ball Run? #1%+()";
+
+        when(downloadService.searchTitle(eq(query))).thenReturn(payload);
+
+        mockMvc.perform(post("/v1/download/search")
+                        .contentType("application/json")
+                        .content("{\"query\":\"D.Gray-man & JoJo's: Part 7/Steel Ball Run? #1%+()\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.searchId").value("search-1"))
+                .andExpect(jsonPath("$.options[0].title").value("D.Gray-man"));
+    }
+
+    @Test
+    void legacyGetSearchEndpointRemainsCompatible() throws Exception {
+        SearchTitle payload = new SearchTitle("search-legacy", List.of());
+        when(downloadService.searchTitle("naruto")).thenReturn(payload);
+
+        mockMvc.perform(get("/v1/download/search/{titleName}", "naruto"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.searchId").value("search-legacy"));
+    }
+
+    @Test
     void titleDetailsEndpointReturnsAdultContent() throws Exception {
         TitleDetails details = new TitleDetails();
         details.setSourceUrl("https://source.example/solo-leveling");
@@ -98,6 +145,100 @@ class DownloadControllerTest {
                 .andExpect(jsonPath("$.officialTranslation").value(true))
                 .andExpect(jsonPath("$.animeAdaptation").value(true))
                 .andExpect(jsonPath("$.relatedSeries[0].title").value("Solo Leveling: Ragnarok"));
+    }
+
+    @Test
+    void legacyGetQueueEndpointRemainsCompatible() throws Exception {
+        when(downloadService.queueDownloadAllChapters("search-legacy", 1))
+                .thenReturn("Download queued for: Naruto");
+
+        mockMvc.perform(get("/v1/download/select/{searchId}/{optionIndex}", "search-legacy", 1))
+                .andExpect(status().isOk())
+                .andExpect(content().string("Download queued for: Naruto"));
+    }
+
+    @Test
+    void postQueueEndpointReturnsAcceptedForQueuedResults() throws Exception {
+        when(downloadService.queueDownloadAllChaptersResult("search-123", 2))
+                .thenReturn(new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_QUEUED,
+                        "Download queued for: Solo Leveling",
+                        1,
+                        List.of("Solo Leveling"),
+                        List.of()
+                ));
+
+        mockMvc.perform(post("/v1/download/select")
+                        .contentType("application/json")
+                        .content("{\"searchId\":\"search-123\",\"optionIndex\":2}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value(QueueDownloadResult.STATUS_QUEUED))
+                .andExpect(jsonPath("$.queuedCount").value(1));
+    }
+
+    @Test
+    void postQueueEndpointReturnsGoneForExpiredSessions() throws Exception {
+        when(downloadService.queueDownloadAllChaptersResult("search-123", 2))
+                .thenReturn(new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_SEARCH_EXPIRED,
+                        "Search session expired or not found. Please search again.",
+                        0,
+                        List.of(),
+                        List.of()
+                ));
+
+        mockMvc.perform(post("/v1/download/select")
+                        .contentType("application/json")
+                        .content("{\"searchId\":\"search-123\",\"optionIndex\":2}"))
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.status").value(QueueDownloadResult.STATUS_SEARCH_EXPIRED));
+    }
+
+    @Test
+    void postQueueEndpointReturnsConflictForAlreadyActiveTitles() throws Exception {
+        when(downloadService.queueDownloadAllChaptersResult("search-123", 2))
+                .thenReturn(new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_ALREADY_ACTIVE,
+                        "Download already in progress for: Solo Leveling",
+                        0,
+                        List.of(),
+                        List.of("Solo Leveling")
+                ));
+
+        mockMvc.perform(post("/v1/download/select")
+                        .contentType("application/json")
+                        .content("{\"searchId\":\"search-123\",\"optionIndex\":2}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(QueueDownloadResult.STATUS_ALREADY_ACTIVE))
+                .andExpect(jsonPath("$.skippedTitles[0]").value("Solo Leveling"));
+    }
+
+    @Test
+    void postQueueEndpointReturnsBadRequestForInvalidSelection() throws Exception {
+        when(downloadService.queueDownloadAllChaptersResult("search-123", 99))
+                .thenReturn(new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_INVALID_SELECTION,
+                        "Invalid selection. Please choose a valid option.",
+                        0,
+                        List.of(),
+                        List.of()
+                ));
+
+        mockMvc.perform(post("/v1/download/select")
+                        .contentType("application/json")
+                        .content("{\"searchId\":\"search-123\",\"optionIndex\":99}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(QueueDownloadResult.STATUS_INVALID_SELECTION));
+    }
+
+    @Test
+    void postQueueEndpointValidatesMissingPayloadFields() throws Exception {
+        mockMvc.perform(post("/v1/download/select")
+                        .contentType("application/json")
+                        .content("{\"searchId\":\" \",\"optionIndex\":null}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(QueueDownloadResult.STATUS_INVALID_SELECTION))
+                .andExpect(jsonPath("$.message").value("searchId and optionIndex are required."));
     }
 
     @Test

@@ -21,6 +21,8 @@ planes.
 - Install Docker Engine or Docker Desktop on the host.
 - Pick a persistent storage root for Noona data.
 - Make sure the host can expose Warden on `4001` and Moon on `3000`.
+- Mongo, Redis, and Vault do not need host port exposure for the supported install path. Mongo and Redis stay
+  internal-only, and the rest of the stack reaches shared data through Vault.
 - If you plan to use Discord login and the Discord bot, have your Discord app and bot details ready for first-run setup.
 
 ## 1. Pull And Start Warden
@@ -47,6 +49,7 @@ What this does:
 - creates the `noona-network` Docker network if it does not exist
 - starts the `noona-warden` container
 - exposes Warden on port `4001`
+- lets Warden create and manage the private `noona-data-network` during stack boot
 
 If you need a different image, port, or container name, set `WARDEN_IMAGE`, `WARDEN_PORT`, or `WARDEN_CONTAINER_NAME`
 before running the script.
@@ -55,6 +58,8 @@ before running the script.
 
 - Warden health: `http://localhost:4001/health`
 - Moon: `http://localhost:3000`
+- Mongo and Redis are intentionally not published on host ports
+- Vault is an internal service and is reached by the rest of the stack over Warden-managed HTTPS
 
 Warden brings up the bootstrap services that Moon needs for setup. If Moon does not appear after Warden starts, check
 `docker ps` and `docker logs noona-warden`.
@@ -101,6 +106,7 @@ Important paths under the storage root:
 - `wardenm/noona-settings.json`: canonical setup snapshot
 - `warden/service-runtime-config.json`: runtime service overrides
 - `vault/`: shared Vault, Mongo, and Redis state used by the stack
+- `vault/tls/`: Warden-managed internal CA plus the Vault HTTPS certificate and key
 - `raven/`: download and library worker data
 - `kavita/`: managed Kavita config
 - `komf/`: managed Komf config
@@ -112,18 +118,20 @@ so setup snapshots and runtime files stay visible on the host.
 
 Updates:
 
-- Use Moon's `Settings -> Downloads -> Noona Updater` for normal managed-image updates.
+- Use Moon's `Admin -> System -> Updates` for normal managed-image updates.
 - `AUTO_UPDATES=true` is optional if you want Warden to check startup images during boot.
 
 Restarts:
 
-- Use Moon `Settings -> General` for ecosystem start, stop, and restart actions.
+- Use Moon `Admin -> System -> Overview` for ecosystem start, stop, and restart actions.
 - Restart the Warden container itself when you update Warden or need to recover the control plane.
 
 Backups:
 
 - Back up the full `NOONA_DATA_ROOT`.
-- Make sure your backup includes the Warden snapshot files plus the `vault/`, `raven/`, `kavita/`, and `komf/` folders.
+- Make sure your backup includes the Warden snapshot files plus the `vault/`, `raven/`, `kavita/`, and `komf/`
+  folders.
+- Treat `vault/tls/` as part of the backup set because the stack reuses that internal CA and server certificate bundle.
 
 Factory reset:
 
@@ -133,7 +141,7 @@ Factory reset:
 
 ## Users, Roles, And Permissions
 
-Manage Noona users in Moon at `Settings -> Users`.
+Manage Noona users in Moon at `Admin -> People -> Users & roles`.
 
 The current Moon permission set is:
 
@@ -148,8 +156,8 @@ The current Moon permission set is:
 
 Also in Moon:
 
-- `Settings -> External -> Discord` manages Discord bot validation, onboarding defaults, and per-command role gates.
-- `Settings -> External -> Kavita` manages Kavita-related defaults and external link settings.
+- `Admin -> Integrations -> Discord` manages Discord bot validation, onboarding defaults, and per-command role gates.
+- `Admin -> Integrations -> Kavita` manages Kavita-related defaults and external link settings.
 
 Use Moon's default-permissions controls if you want new Discord-linked users to start with a standard role set.
 
@@ -173,10 +181,15 @@ Discord login or bot setup fails:
 
 Users or permissions look wrong:
 
-- review `Settings -> Users`
+- review `Admin -> People -> Users & roles`
 - confirm the correct default permissions are saved for new Discord-linked users
 
 Downloads, Kavita, or metadata flows fail after a reboot:
 
 - confirm the storage root persisted across the reboot
 - check service health and logs from Moon or Warden before changing settings by hand
+
+Direct Mongo or Redis host access is unavailable:
+
+- this is expected in supported installs because those services are private to Docker
+- use Moon, Sage, Warden, or other Vault-backed flows instead of opening direct DB ports

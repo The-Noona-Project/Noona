@@ -1,4 +1,10 @@
-// services/portal/clients/kavitaClient.mjs
+/**
+ * @fileoverview Wraps Portal's Kavita HTTP calls for users, libraries, metadata, and login handoff flows.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/kavitaClient.test.mjs
+ * Times this file has been edited: 10
+ */
 
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
@@ -295,6 +301,12 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT) => {
     return {controller, cleanup};
 };
 
+/**
+ * Creates kavita client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createKavitaClient = ({
                                        baseUrl,
                                        apiKey,

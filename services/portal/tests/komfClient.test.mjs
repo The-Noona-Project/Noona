@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Komf client search and series-detail handling.
+ * Related files:
+ * - clients/komfClient.mjs
+ * Times this file has been edited: 3
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

@@ -1,3 +1,9 @@
+/**
+ * Covers vault service behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/VaultService.java
+ * Times this file has been edited: 5
+ */
 package com.paxkun.raven.service;
 
 import com.google.gson.Gson;
@@ -20,6 +26,10 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Covers vault service behavior.
+ */
 
 class VaultServiceTest {
 
@@ -151,5 +161,18 @@ class VaultServiceTest {
 
         assertThat(error.getMessage()).containsIgnoringCase("Service unavailable");
         assertEquals(1, attempts.get());
+    }
+
+    @Test
+    void httpsVaultRequestsFailClosedWithoutConfiguredCaPath() {
+        VaultService vaultService = new VaultService();
+        ReflectionTestUtils.setField(vaultService, "vaultUrl", "https://noona-vault:3005");
+        ReflectionTestUtils.setField(vaultService, "vaultApiToken", "test-token");
+        ReflectionTestUtils.setField(vaultService, "vaultCaCertPath", "");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> vaultService.findAll("manga_library"));
+
+        assertThat(error.getMessage()).containsIgnoringCase("VAULT_CA_CERT_PATH");
     }
 }

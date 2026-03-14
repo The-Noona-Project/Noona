@@ -1,3 +1,12 @@
+/**
+ * @fileoverview Defines the `/recommend` Discord flow for title search, selection, and submission.
+ * Related files:
+ * - commands/index.mjs
+ * - commands/utils.mjs
+ * - tests/discordCommands.test.mjs
+ * Times this file has been edited: 9
+ */
+
 import crypto from 'node:crypto';
 import {ActionRowBuilder, ApplicationCommandOptionType, ButtonBuilder, ButtonStyle, MessageFlags,} from 'discord.js';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
@@ -371,6 +380,12 @@ const resolveKavitaTitleUrl = async ({
     }
 };
 
+/**
+ * Creates recommend command.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createRecommendCommand = ({
                                            discord,
                                            getDiscord,

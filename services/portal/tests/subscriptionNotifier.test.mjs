@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers subscription chapter notification matching, dedupe, and persistence.
+ * Related files:
+ * - discord/subscriptionNotifier.mjs
+ * Times this file has been edited: 2
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

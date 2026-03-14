@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Kavita client request handling and payload normalization.
+ * Related files:
+ * - clients/kavitaClient.mjs
+ * Times this file has been edited: 11
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

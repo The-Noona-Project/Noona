@@ -106,6 +106,13 @@ const parseResponsePayload = async (response) => {
     }
 }
 
+const extractQueueMessage = (payload, fallback) => {
+    if (payload && typeof payload === 'object' && typeof payload.message === 'string' && payload.message.trim()) {
+        return payload.message.trim()
+    }
+    return fallback
+}
+
 export const createRavenClient = ({
     serviceName = process.env.SERVICE_NAME || 'noona-sage',
     logger = {},
@@ -368,8 +375,11 @@ export const createRavenClient = ({
                 throw new Error('Search query must be a non-empty string.')
             }
 
-            const encodedQuery = encodeURIComponent(query)
-            const response = await fetchFromRaven(`/v1/download/search/${encodedQuery}`)
+            const response = await fetchFromRaven('/v1/download/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({query}),
+            })
             return await parseResponsePayload(response)
         },
 
@@ -384,7 +394,7 @@ export const createRavenClient = ({
             return await parseResponsePayload(response)
         },
 
-        async queueDownload({ searchId, optionIndex } = {}) {
+        async queueDownloadDetailed({searchId, optionIndex} = {}) {
             if (!searchId || typeof searchId !== 'string') {
                 throw new Error('searchId must be provided.')
             }
@@ -394,11 +404,28 @@ export const createRavenClient = ({
                 throw new Error('optionIndex must be a number.')
             }
 
-            const encodedSearchId = encodeURIComponent(searchId)
             const response = await fetchFromRaven(
-                `/v1/download/select/${encodedSearchId}/${normalizedIndex}`,
+                '/v1/download/select',
+                {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                    body: JSON.stringify({searchId, optionIndex: normalizedIndex}),
+                },
+                {acceptStatuses: [400, 409, 410]},
             )
-            return await parseResponsePayload(response)
+            return {
+                status: response.status,
+                payload: await parseResponsePayload(response),
+            }
+        },
+
+        async queueDownload({searchId, optionIndex} = {}) {
+            const result = await this.queueDownloadDetailed({searchId, optionIndex})
+            if (result.status === 202) {
+                return result.payload
+            }
+
+            throw new Error(extractQueueMessage(result.payload, `Queue failed (HTTP ${result.status}).`))
         },
 
         async getDownloadStatus() {

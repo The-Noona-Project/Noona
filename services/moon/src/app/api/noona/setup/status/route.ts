@@ -5,14 +5,16 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
     try {
-        const {payload} = await sageJson("/api/setup/wizard/state");
-        const completed = payload && typeof payload === "object" && (payload as {
-            completed?: unknown
-        }).completed === true;
-        return NextResponse.json({completed});
+        const {status, payload} = await sageJson("/api/setup/status");
+        return NextResponse.json(payload, {status});
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return NextResponse.json({completed: false, error: message});
+        return NextResponse.json({
+            completed: false,
+            configured: false,
+            installing: false,
+            debugEnabled: false,
+            error: message
+        });
     }
 }
-

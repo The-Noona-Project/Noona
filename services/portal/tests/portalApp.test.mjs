@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Portal HTTP route contracts and upstream error handling.
+ * Related files:
+ * - app/createPortalApp.mjs
+ * Times this file has been edited: 14
+ */
+
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 

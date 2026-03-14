@@ -2258,8 +2258,8 @@ export function registerRavenRoutes(context = {}) {
         }
 
         try {
-            const result = await ravenClient.queueDownload({searchId, optionIndex})
-            res.status(202).json({result})
+            const queueResponse = await ravenClient.queueDownloadDetailed({searchId, optionIndex})
+            res.status(queueResponse?.status ?? 202).json(queueResponse?.payload ?? {})
         } catch (error) {
             logger.error(
                 `[${serviceName}] ❌ Failed to queue Raven download for ${searchId}: ${error.message}`,

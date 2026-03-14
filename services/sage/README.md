@@ -12,6 +12,8 @@ Raven-facing browser actions.
 - [Entrypoint](initSage.mjs)
 - [Route modules](routes/)
 - [Clients](clients/)
+- [Raven routes](routes/registerRavenRoutes.mjs)
+- [Raven client](clients/ravenClient.mjs)
 - [Tests](tests/)
 
 ## What Sage Does
@@ -19,6 +21,9 @@ Raven-facing browser actions.
 - proxies setup and service-management requests to Warden
 - owns Discord OAuth and Moon auth flows
 - brokers browser-facing Raven and settings APIs
+- talks to Vault through the stack's trusted internal HTTPS path in managed installs
+- preserves Raven's real queue status and message for Moon instead of flattening every queue response into a generic
+  success
 - normalizes backend failures into UI-friendly responses
 
 ## Who It Is For

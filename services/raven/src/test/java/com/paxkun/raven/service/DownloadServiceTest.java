@@ -1,6 +1,16 @@
+/**
+ * Covers download service behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/download/DownloadProgress.java
+ * - src/main/java/com/paxkun/raven/service/download/QueueDownloadResult.java
+ * - src/main/java/com/paxkun/raven/service/download/SearchTitle.java
+ * - src/main/java/com/paxkun/raven/service/download/SourceFinder.java
+ * Times this file has been edited: 14
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.download.DownloadProgress;
+import com.paxkun.raven.service.download.QueueDownloadResult;
 import com.paxkun.raven.service.download.SearchTitle;
 import com.paxkun.raven.service.download.SourceFinder;
 import com.paxkun.raven.service.download.TitleScraper;
@@ -35,6 +45,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
+
+/**
+ * Covers download service behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -116,7 +130,7 @@ class DownloadServiceTest {
     void queueDownloadAllChaptersReturnsErrorWhenSessionMissing() {
         String response = downloadService.queueDownloadAllChapters("missing", 1);
 
-        assertThat(response).isEqualTo("⚠️ Search session expired or not found. Please search again.");
+        assertThat(response).isEqualTo("Search session expired or not found. Please search again.");
     }
 
     @Test
@@ -158,10 +172,10 @@ class DownloadServiceTest {
         String searchId = searchTitle.getSearchId();
 
         String firstResponse = downloadService.queueDownloadAllChapters(searchId, 1);
-        assertThat(firstResponse).isEqualTo("✅ Download queued for: Solo Leveling");
+        assertThat(firstResponse).isEqualTo("Download queued for: Solo Leveling");
 
         String secondResponse = downloadService.queueDownloadAllChapters(searchId, 2);
-        assertThat(secondResponse).isEqualTo("✅ Download queued for: Trigun");
+        assertThat(secondResponse).isEqualTo("Download queued for: Trigun");
 
         // Ensure async downloads complete before @TempDir cleanup runs.
         waitForStatus("Solo Leveling", "completed");
@@ -190,7 +204,134 @@ class DownloadServiceTest {
 
         String response = downloadService.queueDownloadAllChapters(searchId, 1);
 
-        assertThat(response).isEqualTo("⚠️ Search session expired or not found. Please search again.");
+        assertThat(response).isEqualTo("Search session expired or not found. Please search again.");
+    }
+
+    @Test
+    void queueDownloadAllChaptersResultMarksInvalidSelection() {
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Bleach");
+        title.put("href", "http://example.com/bleach");
+
+        when(titleScraper.searchManga("bleach"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+
+        SearchTitle searchTitle = downloadService.searchTitle("bleach");
+
+        QueueDownloadResult result = downloadService.queueDownloadAllChaptersResult(searchTitle.getSearchId(), 99);
+
+        assertThat(result.getStatus()).isEqualTo(QueueDownloadResult.STATUS_INVALID_SELECTION);
+        assertThat(result.getMessage()).isEqualTo("Invalid selection. Please choose a valid option.");
+        assertThat(result.getQueuedCount()).isZero();
+    }
+
+    @Test
+    void queueDownloadAllChaptersResultMarksAlreadyActiveTitle() throws InterruptedException {
+        Map<String, String> soloLeveling = new HashMap<>();
+        soloLeveling.put("title", "Solo Leveling");
+        soloLeveling.put("href", "http://example.com/solo");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(soloLeveling)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        CountDownLatch sourceStarted = new CountDownLatch(1);
+        CountDownLatch releaseSource = new CountDownLatch(1);
+        when(sourceFinder.findSource(anyString())).thenAnswer(invocation -> {
+            sourceStarted.countDown();
+            releaseSource.await(2, TimeUnit.SECONDS);
+            return List.of("http://example.com/page1.jpg");
+        });
+
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("solo-uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        QueueDownloadResult firstResult = downloadService.queueDownloadAllChaptersResult(searchTitle.getSearchId(), 1);
+        assertThat(sourceStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        QueueDownloadResult secondResult = downloadService.queueDownloadAllChaptersResult(searchTitle.getSearchId(), 1);
+
+        assertThat(firstResult.getStatus()).isEqualTo(QueueDownloadResult.STATUS_QUEUED);
+        assertThat(secondResult.getStatus()).isEqualTo(QueueDownloadResult.STATUS_ALREADY_ACTIVE);
+        assertThat(secondResult.getSkippedTitles()).containsExactly("Solo Leveling");
+
+        releaseSource.countDown();
+        waitForStatus("Solo Leveling", "completed");
+    }
+
+    @Test
+    void queueDownloadAllChaptersResultMarksMaintenancePause() {
+        AtomicBoolean maintenancePauseActive = (AtomicBoolean) ReflectionTestUtils.getField(downloadService, "maintenancePauseActive");
+        assertThat(maintenancePauseActive).isNotNull();
+        maintenancePauseActive.set(true);
+
+        QueueDownloadResult result = downloadService.queueDownloadAllChaptersResult("missing", 1);
+
+        assertThat(result.getStatus()).isEqualTo(QueueDownloadResult.STATUS_MAINTENANCE_PAUSED);
+        assertThat(result.getMessage()).contains("temporarily pausing new downloads");
+    }
+
+    @Test
+    void queueDownloadAllChaptersResultMarksPartialAllQueueWhenSomeTitlesAreActive() throws InterruptedException {
+        Map<String, String> soloLeveling = new HashMap<>();
+        soloLeveling.put("title", "Solo Leveling");
+        soloLeveling.put("href", "http://example.com/solo");
+
+        Map<String, String> trigun = new HashMap<>();
+        trigun.put("title", "Trigun");
+        trigun.put("href", "http://example.com/trigun");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(soloLeveling, trigun)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(titleScraper.getChapters("http://example.com/trigun"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/trigun/1")));
+        CountDownLatch sourceStarted = new CountDownLatch(1);
+        CountDownLatch releaseSource = new CountDownLatch(1);
+        when(sourceFinder.findSource(anyString())).thenAnswer(invocation -> {
+            sourceStarted.countDown();
+            releaseSource.await(2, TimeUnit.SECONDS);
+            return List.of("http://example.com/page1.jpg");
+        });
+
+        NewTitle soloStubTitle = new NewTitle();
+        soloStubTitle.setTitleName("Solo Leveling");
+        soloStubTitle.setUuid("solo-uuid");
+        soloStubTitle.setSourceUrl("http://example.com/solo");
+        soloStubTitle.setLastDownloaded("0");
+        lenient().when(libraryService.resolveOrCreateTitle(eq("Solo Leveling"), eq("http://example.com/solo")))
+                .thenReturn(soloStubTitle);
+
+        NewTitle trigunStubTitle = new NewTitle();
+        trigunStubTitle.setTitleName("Trigun");
+        trigunStubTitle.setUuid("trigun-uuid");
+        trigunStubTitle.setSourceUrl("http://example.com/trigun");
+        trigunStubTitle.setLastDownloaded("0");
+        lenient().when(libraryService.resolveOrCreateTitle(eq("Trigun"), eq("http://example.com/trigun")))
+                .thenReturn(trigunStubTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        QueueDownloadResult firstResult = downloadService.queueDownloadAllChaptersResult(searchTitle.getSearchId(), 1);
+        assertThat(sourceStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        QueueDownloadResult allResult = downloadService.queueDownloadAllChaptersResult(searchTitle.getSearchId(), 0);
+
+        assertThat(firstResult.getStatus()).isEqualTo(QueueDownloadResult.STATUS_QUEUED);
+        assertThat(allResult.getStatus()).isEqualTo(QueueDownloadResult.STATUS_PARTIAL);
+        assertThat(allResult.getQueuedCount()).isEqualTo(1);
+        assertThat(allResult.getQueuedTitles()).containsExactly("Trigun");
+        assertThat(allResult.getSkippedTitles()).containsExactly("Solo Leveling");
+
+        releaseSource.countDown();
+        waitForStatus("Solo Leveling", "completed");
+        waitForStatus("Trigun", "completed");
     }
 
     @Test

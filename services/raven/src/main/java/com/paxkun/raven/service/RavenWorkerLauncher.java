@@ -1,3 +1,10 @@
+/**
+ * Launches Raven process-mode download workers.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/RavenApplication.java
+ * - src/test/java/com/paxkun/raven/service/RavenWorkerLauncherTest.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.RavenApplication;
@@ -14,6 +21,13 @@ import java.util.List;
  */
 @Component
 public class RavenWorkerLauncher {
+
+    /**
+     * Handles launch.
+     *
+     * @param request The request payload.
+     * @return The resulting Process.
+     */
 
     public Process launch(WorkerLaunchRequest request) throws Exception {
         List<String> command = buildCommand(request, resolveEnvironment());
@@ -70,8 +84,26 @@ public class RavenWorkerLauncher {
         return new JavaLaunchEnvironment(javaExecutable, classPath, codeSourcePath, mainClassName);
     }
 
+    /**
+     * Launches Raven process-mode download workers.
+     *
+     * @param taskId The Raven task id.
+     * @param workerIndex The worker index.
+     * @param cpuCoreId The CPU core id.
+     * @param executionMode The worker execution mode.
+     */
+
     public record WorkerLaunchRequest(String taskId, int workerIndex, int cpuCoreId, String executionMode) {
     }
+
+    /**
+     * Launches Raven process-mode download workers.
+     *
+     * @param javaExecutable The java executable.
+     * @param classPath The class path.
+     * @param codeSourcePath The code source path.
+     * @param mainClassName The main class name.
+     */
 
     record JavaLaunchEnvironment(
             String javaExecutable,

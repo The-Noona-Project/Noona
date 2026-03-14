@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 
 import {startWardenServer} from '../api/startWardenServer.mjs';
+import {toPublicSetupSnapshot} from '../core/setupProfile.mjs';
 import {WardenConflictError, WardenNotFoundError, WardenValidationError,} from '../core/wardenErrors.mjs';
 
 const SAGE_TOKEN = 'sage-test-token';
@@ -216,16 +217,16 @@ test('GET /api/setup/config returns persisted setup snapshot metadata from warde
     assert.deepEqual(await response.json(), {
         exists: true,
         path: '/srv/noona/wardenm/noona-settings.json',
-        snapshot: {
+        snapshot: toPublicSetupSnapshot({
             version: 2,
             selected: ['noona-portal'],
             values: {
                 'noona-portal': {
-                    DISCORD_BOT_TOKEN: '********',
-                    KAVITA_API_KEY: '********',
+                    DISCORD_BOT_TOKEN: 'token',
+                    KAVITA_API_KEY: 'k-api',
                 },
             },
-        },
+        }, {maskSecrets: true}),
         error: null,
     });
 });
@@ -307,16 +308,7 @@ test('POST /api/setup/config persists setup snapshot through warden', async (t) 
         path: '/srv/noona/wardenm/noona-settings.json',
         selected: ['noona-portal'],
         selectionMode: 'selected',
-        snapshot: {
-            version: 2,
-            selected: ['noona-portal'],
-            values: {
-                'noona-portal': {
-                    DISCORD_BOT_TOKEN: '********',
-                    KAVITA_API_KEY: '********',
-                },
-            },
-        },
+        snapshot: toPublicSetupSnapshot(payload, {maskSecrets: true}),
         runtime: [
             {
                 service: 'noona-portal',
@@ -544,11 +536,13 @@ test('POST /api/services/install accepts async installs and reports an active se
     assert.deepEqual(installCalls, [[{name: 'noona-kavita'}]]);
 });
 
-test('POST /api/services/install validates payload', async (t) => {
+test('POST /api/services/install accepts persisted-profile installs with an empty services array', async (t) => {
+    const calls = [];
     const warden = {
         listServices: async () => [],
-        installServices: async () => {
-            throw new Error('installServices should not be called');
+        installServices: async (services) => {
+            calls.push(services);
+            return [];
         },
     };
 
@@ -561,9 +555,9 @@ test('POST /api/services/install validates payload', async (t) => {
         body: JSON.stringify({ services: [] }),
     });
 
-    assert.equal(response.status, 400);
-    const payload = await response.json();
-    assert.ok(payload.error.includes('non-empty'));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {results: []});
+    assert.deepEqual(calls, [[]]);
 });
 
 test('GET /api/services/install/progress forwards to warden summary', async (t) => {

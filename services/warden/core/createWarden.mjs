@@ -17,6 +17,7 @@ import {
     pullImageIfNeeded,
     removeContainers,
     runContainerWithLogs,
+    waitForContainerHealthy,
     waitForHealthyStatus,
 } from '../docker/dockerUtilties.mjs';
 import {
@@ -36,6 +37,11 @@ import {
     normalizeManagedKomfConfigContent,
 } from '../docker/komfConfigTemplate.mjs';
 import {
+    ensureVaultTlsAssets,
+    resolveVaultTlsPaths,
+    VAULT_TLS_CONTAINER_PATH,
+} from '../docker/vaultTls.mjs';
+import {
     isDebugEnabled as isLoggerDebugEnabled,
     log,
     setDebug as setLoggerDebug,
@@ -48,12 +54,14 @@ import {
     normalizeDockerSocket as normalizeSocketPath,
     parseTcpDockerSocket,
 } from '../../../utilities/etc/dockerSockets.mjs';
+import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs';
 import {createVaultPacketClient} from '../../sage/clients/vaultPacketClient.mjs';
 import {createWizardStateClient, createWizardStatePublisher,} from '../../sage/wizard/wizardStateClient.mjs';
 import {WardenApplyError, WardenConflictError, WardenNotFoundError, WardenValidationError,} from './wardenErrors.mjs';
 import {registerBootApi} from './registerBootApi.mjs';
 import {registerDiagnosticsApi} from './registerDiagnosticsApi.mjs';
 import {registerServiceManagementApi} from './registerServiceManagementApi.mjs';
+import {normalizeSetupProfileSnapshot,} from './setupProfile.mjs';
 
 const describeSocketReference = (value) => {
     if (!value) {
@@ -68,7 +76,17 @@ const DEFAULT_VAULT_DATA_FOLDER_NAME = 'vault';
 const RAVEN_CONTAINER_PATHS = new Set(['/kavita-data', '/data', '/app/downloads', '/downloads']);
 const VAULT_REDIS_HOST_MOUNT_PATH_KEY = 'VAULT_REDIS_HOST_MOUNT_PATH';
 const VAULT_MONGO_HOST_MOUNT_PATH_KEY = 'VAULT_MONGO_HOST_MOUNT_PATH';
+const VAULT_CA_CERT_PATH_ENV_KEY = 'VAULT_CA_CERT_PATH';
+const VAULT_TLS_CERT_PATH_ENV_KEY = 'VAULT_TLS_CERT_PATH';
+const VAULT_TLS_KEY_PATH_ENV_KEY = 'VAULT_TLS_KEY_PATH';
 const LOG_DIR_ENV_KEY = 'NOONA_LOG_DIR';
+const DEFAULT_DATA_NETWORK_NAME = 'noona-data-network';
+const VAULT_TLS_CONSUMER_SERVICE_NAMES = new Set([
+    'noona-vault',
+    'noona-sage',
+    'noona-portal',
+    'noona-raven',
+]);
 const DEFAULT_SERVICE_LOG_MOUNT_PATHS = Object.freeze({
     'noona-moon': '/var/log/noona',
     'noona-portal': '/var/log/noona',
@@ -146,6 +164,7 @@ function normalizeDockerUtils(utilsOption = {}) {
         pullImageIfNeeded,
         removeContainers,
         runContainerWithLogs,
+        waitForContainerHealthy,
         waitForHealthyStatus,
         ...utilsOption,
     };
@@ -359,6 +378,11 @@ function cloneServiceDescriptor(descriptor) {
         ...descriptor,
         env: Array.isArray(descriptor?.env) ? [...descriptor.env] : [],
         volumes: Array.isArray(descriptor?.volumes) ? [...descriptor.volumes] : undefined,
+        networks: Array.isArray(descriptor?.networks) ? [...descriptor.networks] : undefined,
+        healthCheck:
+            descriptor?.healthCheck && typeof descriptor.healthCheck === 'object'
+                ? {...descriptor.healthCheck}
+                : descriptor?.healthCheck,
         envConfig: cloneEnvConfig(descriptor?.envConfig),
     };
 }
@@ -512,6 +536,9 @@ const NOONA_CONTAINER_NAME_PATTERN = /(^|[._-])noona-[a-z0-9-]+([._-]\d+)?$/i;
 const NOONA_WARDEN_CONTAINER_PATTERN = /(^|[._-])noona-warden([._-]\d+)?$/i;
 const NOONA_IMAGE_PATTERN = /(^|\/)noona-[a-z0-9-]+(?=[:@]|$)/i;
 const NOONA_WARDEN_IMAGE_PATTERN = /(^|\/)noona-warden(?=[:@]|$)/i;
+const IS_NODE_TEST_PROCESS =
+    process.env.NODE_ENV === 'test'
+    || process.execArgv.some((entry) => typeof entry === 'string' && entry.includes('--test'));
 
 const isDebugFlagEnabled = (value) => {
     if (typeof value === 'boolean') {
@@ -569,6 +596,7 @@ export function createWarden(options = {}) {
         env = process.env,
         processExit = (code) => process.exit(code),
         networkName: networkNameOption,
+        dataNetworkName: dataNetworkNameOption,
         trackedContainers: trackedContainersOption,
         superBootOrder: superBootOrderOption,
         hostDockerSockets: hostDockerSocketsOption,
@@ -633,6 +661,7 @@ export function createWarden(options = {}) {
 
     const trackedContainers = trackedContainersOption || new Set();
     const networkName = networkNameOption || 'noona-network';
+    const dataNetworkName = dataNetworkNameOption || env.NOONA_DATA_NETWORK || DEFAULT_DATA_NETWORK_NAME;
     const rawBootMode = typeof env.BOOT_MODE === 'string' ? env.BOOT_MODE.trim().toLowerCase() : null;
     const rawDebug = typeof env.DEBUG === 'string' ? env.DEBUG.trim().toLowerCase() : 'false';
     const BOOT_MODE = rawBootMode === 'super' ? 'super' : 'minimal';
@@ -1079,6 +1108,29 @@ export function createWarden(options = {}) {
         return normalizeVaultFolderName(fromProcessEnv || DEFAULT_VAULT_DATA_FOLDER_NAME);
     };
 
+    const resolveVaultTlsAssetPaths = (installOverridesByName = null) =>
+        resolveVaultTlsPaths({
+            storageRoot: resolveSharedStorageRoot(installOverridesByName),
+            vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
+        });
+
+    const syncManagedVaultTlsEnv = (installOverridesByName = null) => {
+        const paths = resolveVaultTlsAssetPaths(installOverridesByName);
+        const envTargets = [
+            env,
+            settingsOption?.env,
+            wizardStateOption?.env,
+        ].filter((target) => target && typeof target === 'object');
+
+        for (const targetEnv of envTargets) {
+            targetEnv[VAULT_CA_CERT_PATH_ENV_KEY] = paths.caCertPath;
+            targetEnv[VAULT_TLS_CERT_PATH_ENV_KEY] = paths.serverCertPath;
+            targetEnv[VAULT_TLS_KEY_PATH_ENV_KEY] = paths.serverKeyPath;
+        }
+
+        return paths;
+    };
+
     const buildStorageLayoutForSelection = (installOverridesByName) =>
         buildNoonaStorageLayout(resolveSharedStorageRoot(installOverridesByName), {
             vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
@@ -1129,6 +1181,22 @@ export function createWarden(options = {}) {
             env: upsertEnvEntry(service.env, LOG_DIR_ENV_KEY, containerPath),
             volumes: upsertBindMount(service.volumes, containerPath, `${logFolder.hostPath}:${containerPath}`),
         };
+    };
+
+    const resolveManagedServiceNetworks = (service) => {
+        if (!service?.name) {
+            return [networkName];
+        }
+
+        if (service.name === 'noona-vault') {
+            return [networkName, dataNetworkName];
+        }
+
+        if (service.name === 'noona-mongo' || service.name === 'noona-redis') {
+            return [dataNetworkName];
+        }
+
+        return [networkName];
     };
 
     const resolveExplicitServiceHostMountPath = ({serviceName, envKey, installOverridesByName} = {}) => {
@@ -1368,6 +1436,26 @@ export function createWarden(options = {}) {
         const storageLayout = buildStorageLayoutForSelection(installOverridesByName);
         ensureStorageLayoutDirectories(storageLayout);
         const currentEnv = parseEnvEntries(service.env);
+        const vaultTlsPaths = syncManagedVaultTlsEnv(installOverridesByName);
+        const applyVaultTlsMount = (serviceDescriptor) => {
+            if (!VAULT_TLS_CONSUMER_SERVICE_NAMES.has(serviceDescriptor?.name)) {
+                return serviceDescriptor;
+            }
+
+            const tlsFolder = storageLayout.services['noona-vault']?.tls;
+            if (!tlsFolder?.hostPath) {
+                return serviceDescriptor;
+            }
+
+            return {
+                ...serviceDescriptor,
+                volumes: upsertBindMount(
+                    serviceDescriptor.volumes,
+                    VAULT_TLS_CONTAINER_PATH,
+                    `${tlsFolder.hostPath}:${VAULT_TLS_CONTAINER_PATH}`,
+                ),
+            };
+        };
 
         if (service.name === 'noona-redis' || service.name === 'noona-mongo') {
             const destination = service.name === 'noona-redis' ? '/data' : '/data/db';
@@ -1405,15 +1493,17 @@ export function createWarden(options = {}) {
             const containerPath = resolveRavenContainerMountPath(currentEnv, fallbackMount.containerPath);
             const bind = `${hostMount}:${containerPath}`;
 
-            return applyServiceLogMount({
-                ...service,
-                env: upsertEnvEntry(
-                    upsertEnvEntry(service.env, 'APPDATA', containerPath),
-                    'KAVITA_DATA_MOUNT',
-                    containerPath,
-                ),
-                volumes: upsertBindMount(service.volumes, containerPath, bind),
-            }, storageLayout);
+            return applyVaultTlsMount(
+                applyServiceLogMount({
+                    ...service,
+                    env: upsertEnvEntry(
+                        upsertEnvEntry(service.env, 'APPDATA', containerPath),
+                        'KAVITA_DATA_MOUNT',
+                        containerPath,
+                    ),
+                    volumes: upsertBindMount(service.volumes, containerPath, bind),
+                }, storageLayout),
+            );
         }
 
         if (service.name === 'noona-kavita') {
@@ -1479,10 +1569,23 @@ export function createWarden(options = {}) {
         }
 
         if (service.name === 'noona-vault') {
-            return applyServiceLogMount(service, storageLayout);
+            if (!IS_NODE_TEST_PROCESS) {
+                ensureVaultTlsAssets({
+                    storageRoot: resolveSharedStorageRoot(installOverridesByName),
+                    vaultFolderName: resolveVaultDataFolderName(installOverridesByName),
+                    fsModule,
+                });
+                ensureTrustedCaForUrl('https://noona-vault:3005', {
+                    env,
+                    caPath: vaultTlsPaths.caCertPath,
+                    fsModule,
+                });
+            }
+
+            return applyVaultTlsMount(applyServiceLogMount(service, storageLayout));
         }
 
-        return applyServiceLogMount(service, storageLayout);
+        return applyVaultTlsMount(applyServiceLogMount(service, storageLayout));
     };
 
     const wipePathWithFs = async (targetPath) => {
@@ -1705,6 +1808,7 @@ export function createWarden(options = {}) {
     const serviceHistories = new Map();
     const installationOrder = [];
     const installationStatuses = new Map();
+    syncManagedVaultTlsEnv();
     let wizardStateClient = wizardStateOption.client || null;
     let wizardStatePublisher = wizardStateOption.publisher || null;
     let settingsClient = settingsOption.client || null;
@@ -2591,34 +2695,11 @@ export function createWarden(options = {}) {
         return normalized;
     };
 
-    const normalizeSetupConfigSnapshotValues = (candidate) => {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
-            return {};
-        }
-
-        const values = {};
-        for (const [rawServiceName, rawEnv] of Object.entries(candidate)) {
-            const service = normalizeManagedServiceName(rawServiceName);
-            if (!service || !supportsRuntimeConfigTarget(service)) {
-                continue;
-            }
-
-            const env = normalizeSetupConfigSnapshotEnvMap(rawEnv);
-            if (Object.keys(env).length === 0) {
-                continue;
-            }
-
-            values[service] = env;
-        }
-
-        return values;
-    };
-
     const hasSetupSelectionField = (snapshot) =>
         Boolean(snapshot)
         && typeof snapshot === 'object'
         && !Array.isArray(snapshot)
-        && ['selected', 'selectedServices', 'services'].some((key) => Object.prototype.hasOwnProperty.call(snapshot, key));
+        && ['selected', 'selectedServices', 'services', 'kavita', 'komf', 'discord'].some((key) => Object.prototype.hasOwnProperty.call(snapshot, key));
 
     const extractPersistedSetupSelectionFromSetupSnapshot = (snapshot) => {
         const candidates = [
@@ -2640,39 +2721,31 @@ export function createWarden(options = {}) {
         return [];
     };
 
-    const normalizeSetupConfigSnapshot = (candidate) => {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    const normalizeSetupConfigSnapshot = (candidate, {currentSnapshot = null} = {}) => {
+        const normalized = normalizeSetupProfileSnapshot(candidate, {currentSnapshot});
+        if (!normalized) {
             return null;
         }
 
-        const selected = extractPersistedSetupSelectionFromSetupSnapshot(candidate);
-        const selectionMode =
-            normalizePathValue(candidate?.selectionMode).toLowerCase() === 'minimal'
-                ? 'minimal'
-                : selected.length > 0
-                    ? 'selected'
-                    : hasSetupSelectionField(candidate)
-                        ? 'minimal'
-                        : null;
+        const sanitizedValues = {};
+        for (const [rawServiceName, rawEnv] of Object.entries(normalized.values ?? {})) {
+            const service = normalizeManagedServiceName(rawServiceName);
+            if (!service || !supportsRuntimeConfigTarget(service)) {
+                continue;
+            }
 
-        const normalized = {
-            version: Number.isFinite(Number(candidate.version))
-                ? Math.max(1, Math.floor(Number(candidate.version)))
-                : 2,
-            selected,
-            selectionMode,
-            values: normalizeSetupConfigSnapshotValues(candidate?.values),
-            storageRoot: normalizePathValue(candidate?.storageRoot) || null,
-            integrations:
-                candidate?.integrations && typeof candidate.integrations === 'object' && !Array.isArray(candidate.integrations)
-                    ? cloneMeta(candidate.integrations)
-                    : null,
-            savedAt: typeof candidate?.savedAt === 'string' && candidate.savedAt.trim()
-                ? candidate.savedAt.trim()
-                : null,
+            const env = normalizeSetupConfigSnapshotEnvMap(rawEnv);
+            if (Object.keys(env).length === 0) {
+                continue;
+            }
+
+            sanitizedValues[service] = env;
+        }
+
+        return {
+            ...normalized,
+            values: sanitizedValues,
         };
-
-        return normalized;
     };
 
     const buildSetupConfigSnapshotForDisk = (snapshot = {}) => {
@@ -2682,12 +2755,11 @@ export function createWarden(options = {}) {
         }
 
         return {
-            version: normalized.version,
-            ...(normalized.selectionMode || normalized.selected.length > 0 ? {selected: normalized.selected} : {}),
-            ...(normalized.selectionMode ? {selectionMode: normalized.selectionMode} : {}),
-            values: normalized.values,
+            version: 3,
             storageRoot: normalized.storageRoot,
-            integrations: normalized.integrations,
+            kavita: cloneMeta(normalized.kavita),
+            komf: cloneMeta(normalized.komf),
+            discord: cloneMeta(normalized.discord),
             savedAt: normalized.savedAt || timestamp(),
         };
     };
@@ -3099,19 +3171,7 @@ export function createWarden(options = {}) {
                 return selectionState;
             }
         } catch {
-            // Fall through to wizard-state selection.
-        }
-
-        if (wizardStateClient && typeof wizardStateClient.loadState === 'function') {
-            try {
-                const state = await wizardStateClient.loadState({fallbackToDefault: true});
-                const selection = extractPersistedSetupServiceSelection(state);
-                if (selection.length > 0) {
-                    return {mode: 'selected', selected: selection, explicit: false};
-                }
-            } catch {
-                // Fall through to empty selection.
-            }
+            // Fall through to an empty persisted selection.
         }
 
         return {mode: 'unspecified', selected: [], explicit: false};
@@ -3365,7 +3425,7 @@ export function createWarden(options = {}) {
         return Array.from(loadedByService.values());
     };
 
-    const resolveRuntimeConfig = (name) => {
+    function resolveRuntimeConfig(name) {
         const normalizedName = normalizeManagedServiceName(name);
         const current = serviceRuntimeConfig.get(normalizedName);
         if (!current || typeof current !== 'object') {
@@ -3376,7 +3436,7 @@ export function createWarden(options = {}) {
             env: normalizeEnvOverrideMap(current.env),
             hostPort: normalizeHostPort(current.hostPort),
         };
-    };
+    }
 
     const resolveWardenRuntimeEnv = () => ({
         ...env,
@@ -3467,7 +3527,7 @@ export function createWarden(options = {}) {
     };
 
     const applyHostServiceBase = (descriptor) => {
-        if (!descriptor) {
+        if (!descriptor || descriptor.advertiseHostServiceUrl === false) {
             return descriptor;
         }
 
@@ -3589,6 +3649,13 @@ export function createWarden(options = {}) {
         descriptor = applyMoonWebGuiPort(descriptor);
         descriptor = applyHostServiceBase(descriptor);
         descriptor = applyManagedKavitaNoonaDefaults(descriptor);
+        descriptor = {
+            ...descriptor,
+            networks: resolveManagedServiceNetworks(descriptor),
+            hostServiceUrl: descriptor.advertiseHostServiceUrl === false
+                ? null
+                : descriptor.hostServiceUrl ?? null,
+        };
         const internalPort = descriptor.internalPort || descriptor.port || null;
         const hostPort = normalizeHostPort(runtime.hostPort);
 
@@ -3596,7 +3663,9 @@ export function createWarden(options = {}) {
             descriptor = {
                 ...descriptor,
                 port: hostPort,
-                hostServiceUrl: buildHostServiceUrl(descriptor, hostPort),
+                hostServiceUrl: descriptor.advertiseHostServiceUrl === false
+                    ? null
+                    : buildHostServiceUrl(descriptor, hostPort),
                 exposed: internalPort ? {[`${internalPort}/tcp`]: {}} : {},
                 ports:
                     internalPort && hostPort
@@ -4101,13 +4170,26 @@ export function createWarden(options = {}) {
         }
 
         const currentSetupConfig = readSetupConfigSnapshot({refresh: true});
+        const normalizedSnapshot = normalizeSetupConfigSnapshot(snapshot, {
+            currentSnapshot: currentSetupConfig?.snapshot ?? null,
+        });
+        if (!normalizedSnapshot) {
+            throw new WardenValidationError('Setup config snapshot must be a JSON object.');
+        }
+
         const currentSnapshotValues =
             currentSetupConfig?.snapshot?.values && typeof currentSetupConfig.snapshot.values === 'object'
                 ? currentSetupConfig.snapshot.values
                 : {};
-        const selectionState = await resolveRequestedSetupSelectionState(snapshot);
-        const canonicalRoot = validateSetupSnapshotStoragePaths(snapshot);
-        const values = validateSetupSnapshotValues(snapshot?.values, {currentSnapshotValues});
+        const selected = validatePersistedServiceSelectionEntries(
+            normalizedSnapshot.selected,
+            'selected',
+        );
+        const selectionState = selected.length > 0
+            ? {mode: 'selected', selected, explicit: true}
+            : {mode: 'minimal', selected: [], explicit: true};
+        const canonicalRoot = validateSetupSnapshotStoragePaths(normalizedSnapshot);
+        const values = validateSetupSnapshotValues(normalizedSnapshot.values, {currentSnapshotValues});
         const runtimeOverridesByService = new Map();
 
         for (const [serviceName, envOverrides] of Object.entries(values)) {
@@ -4129,20 +4211,17 @@ export function createWarden(options = {}) {
         return {
             selectionState,
             snapshot: {
-                version: Number.isFinite(Number(snapshot.version))
-                    ? Math.max(1, Math.floor(Number(snapshot.version)))
-                    : 2,
+                version: 3,
+                kavita: cloneMeta(normalizedSnapshot.kavita),
+                komf: cloneMeta(normalizedSnapshot.komf),
+                discord: cloneMeta(normalizedSnapshot.discord),
                 selected: selectionState.mode === 'selected' ? selectionState.selected : [],
                 selectionMode: selectionState.mode === 'minimal' ? 'minimal' : selectionState.mode === 'selected' ? 'selected' : null,
                 values,
                 storageRoot: canonicalRoot,
-                integrations:
-                    snapshot?.integrations && typeof snapshot.integrations === 'object' && !Array.isArray(snapshot.integrations)
-                        ? cloneMeta(snapshot.integrations)
-                        : null,
                 savedAt:
-                    typeof snapshot?.savedAt === 'string' && snapshot.savedAt.trim()
-                        ? snapshot.savedAt.trim()
+                    typeof normalizedSnapshot?.savedAt === 'string' && normalizedSnapshot.savedAt.trim()
+                        ? normalizedSnapshot.savedAt.trim()
                         : null,
             },
         };
@@ -4394,6 +4473,7 @@ export function createWarden(options = {}) {
     const api = {
         trackedContainers,
         networkName,
+        dataNetworkName,
         SUPER_MODE,
         BOOT_MODE,
     };
@@ -4422,14 +4502,14 @@ export function createWarden(options = {}) {
     };
 
     api.saveSetupConfig = async function saveSetupConfig(snapshot = {}, options = {}) {
-        return withLifecycleOperation('apply setup config snapshot', async () => {
+        const applyRequested = options?.apply !== false;
+        const runSave = async () => {
             const previousSetupState = readSetupConfigSnapshot({refresh: true});
             const previousRuntimeConfig = cloneRuntimeConfigState();
             const {
                 snapshot: validatedSnapshot,
                 selectionState,
             } = await validateAndNormalizeSetupConfigPayload(snapshot);
-            const applyRequested = options?.apply !== false;
             let persistedSnapshot = null;
             let persistedPath = null;
             let mirroredPaths = [];
@@ -4442,13 +4522,14 @@ export function createWarden(options = {}) {
                     path: persistedPath,
                     mirroredPaths = [],
                 } = writeSetupConfigSnapshot(validatedSnapshot));
-                loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
-                    preferExisting: false,
-                    persist: true,
-                });
-                writeRuntimeConfigSnapshot();
 
                 if (applyRequested) {
+                    loadedRuntimeConfig = await applySetupConfigSnapshotRuntimeConfig(persistedSnapshot, {
+                        preferExisting: false,
+                        persist: true,
+                    });
+                    writeRuntimeConfigSnapshot();
+
                     const stopped = await api.stopEcosystem({
                         trackedOnly: false,
                         remove: false,
@@ -4485,6 +4566,7 @@ export function createWarden(options = {}) {
                     runtime: loadedRuntimeConfig,
                     saved: true,
                     restarted: applyRequested,
+                    persistOnly: applyRequested !== true,
                     rolledBack: false,
                     ...(restart ? {restart} : {}),
                 };
@@ -4508,8 +4590,10 @@ export function createWarden(options = {}) {
                 }
 
                 try {
-                    await restoreRuntimeConfigState(previousRuntimeConfig);
-                    rollback.runtimeRestored = true;
+                    if (applyRequested) {
+                        await restoreRuntimeConfigState(previousRuntimeConfig);
+                        rollback.runtimeRestored = true;
+                    }
                 } catch (rollbackError) {
                     rollback.runtimeError =
                         rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
@@ -4539,7 +4623,11 @@ export function createWarden(options = {}) {
                     },
                 });
             }
-        });
+        };
+
+        return applyRequested
+            ? withLifecycleOperation('apply setup config snapshot', runSave)
+            : runSave();
     };
 
     Object.defineProperty(api, 'DEBUG', {
@@ -4651,6 +4739,7 @@ export function createWarden(options = {}) {
         api,
         bootOrder,
         buildEffectiveServiceDescriptor,
+        dataNetworkName,
         dockerUtils,
         ensureDockerConnection,
         isPersistedServiceRuntimeConfigLoaded: () => persistedServiceRuntimeConfigLoadedState.value,

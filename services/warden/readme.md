@@ -20,6 +20,8 @@ exposes the management APIs that the rest of Noona uses.
 - stores and restores the active setup profile
 - tracks install progress, service health, and logs
 - coordinates updates, restarts, and factory-reset behavior
+- keeps Mongo and Redis on a private Docker data network
+- generates and mounts the internal Vault HTTPS certificate bundle used by the stack
 
 ## Who It Is For
 
@@ -35,7 +37,8 @@ exposes the management APIs that the rest of Noona uses.
 ## How It Fits Into Noona
 
 Warden is the first service you start. Moon, Sage, Portal, and the rest of the managed stack rely on Warden for service
-lifecycle and setup state.
+lifecycle and setup state. In managed installs it also owns the internal Vault trust bundle and keeps Vault as the only
+runtime broker to Mongo and Redis.
 
 For the supported install path, use [ServerAdmin.md](../../ServerAdmin.md) instead of treating Warden as a standalone
 app.

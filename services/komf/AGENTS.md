@@ -19,3 +19,6 @@ This is a Noona-managed Komf checkout used for metadata matching and enrichment 
 - [Public README](README.md)
 - [AI overview](../../docs/agents/komf/README.md)
 - [Files and rules](../../docs/agents/komf/files-and-rules.md)
+- [API and config](../../docs/agents/komf/api-and-config.md)
+- [Portal and Moon contracts](../../docs/agents/komf/portal-and-moon-contracts.md)
+- [Key flows](../../docs/agents/komf/flows.md)

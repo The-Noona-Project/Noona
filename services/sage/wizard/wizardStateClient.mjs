@@ -10,6 +10,7 @@ import {
     resolveWizardStateOperation,
     WIZARD_STEP_KEYS,
 } from './wizardStateSchema.mjs'
+import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs'
 
 const normalizeUrl = (candidate) => {
     if (!candidate || typeof candidate !== 'string') {
@@ -25,7 +26,7 @@ const normalizeUrl = (candidate) => {
         return trimmed
     }
 
-    return `http://${trimmed}`
+    return `https://${trimmed}`
 }
 
 const resolveDefaultVaultUrls = (env = process.env) => {
@@ -45,11 +46,11 @@ const resolveDefaultVaultUrls = (env = process.env) => {
     }
 
     candidates.push(
-        'http://noona-vault:3005',
-        'http://vault:3005',
-        'http://host.docker.internal:3005',
-        'http://127.0.0.1:3005',
-        'http://localhost:3005',
+        'https://noona-vault:3005',
+        'https://vault:3005',
+        'https://host.docker.internal:3005',
+        'https://127.0.0.1:3005',
+        'https://localhost:3005',
     )
 
     return Array.from(
@@ -103,6 +104,7 @@ export const createWizardStateClient = ({
     logger = {},
     serviceName = env?.SERVICE_NAME || 'noona-sage',
     timeoutMs = 10000,
+                                            trustVaultUrl = ensureTrustedCaForUrl,
 } = {}) => {
     if (!token || typeof token !== 'string' || !token.trim()) {
         throw new Error('Vault API token is required to manage wizard state.')
@@ -139,7 +141,9 @@ export const createWizardStateClient = ({
             const controller = new AbortController()
             const timer = setTimeout(() => controller.abort(), timeoutMs)
             try {
-                const response = await fetchImpl(new URL('/v1/vault/handle', candidate).toString(), {
+                const requestUrl = new URL('/v1/vault/handle', candidate).toString()
+                trustVaultUrl(requestUrl, {env})
+                const response = await fetchImpl(requestUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

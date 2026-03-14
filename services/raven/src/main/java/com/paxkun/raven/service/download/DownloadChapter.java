@@ -1,3 +1,9 @@
+/**
+ * Encapsulates Raven download chapter behavior.
+ * Related files:
+ * - None yet.
+ * Times this file has been edited: 4
+ */
 package com.paxkun.raven.service.download;
 
 import lombok.AllArgsConstructor;
@@ -24,6 +30,13 @@ public class DownloadChapter {
      * Each entry can be "Chapter X: ✅ Success" or "Chapter X: ❌ Failed".
      */
     private List<String> chapterStatuses;
+
+    /**
+     * Creates a new download chapter instance.
+     *
+     * @param chapterName The chapter name.
+     * @param status      The status.
+     */
 
     public DownloadChapter(String chapterName, String status) {
         this.chapterName = chapterName;

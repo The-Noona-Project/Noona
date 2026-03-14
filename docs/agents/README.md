@@ -1,6 +1,6 @@
 # Noona AI Docs
 
-This tree is the internal knowledge base for future AI contributors.
+This tree is the internal knowledge base for AI contributors.
 
 Audience split:
 

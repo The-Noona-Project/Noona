@@ -2,7 +2,12 @@
 
 import {resolveHostServiceBase, resolveSharedHostEnvEntries} from './hostServiceUrl.mjs';
 import {resolveNoonaImage} from './imageRegistry.mjs';
+import {
+    resolveManagedMongoRootPassword,
+    resolveManagedMongoRootUsername,
+} from './mongoCredentials.mjs';
 import {buildVaultTokenRegistry, stringifyTokenMap} from './vaultTokens.mjs';
+import {VAULT_TLS_CONTAINER_PATH} from './vaultTls.mjs';
 import {buildWardenApiTokenRegistry} from './wardenApiTokens.mjs';
 
 const DEBUG = process.env.DEBUG || 'false';
@@ -12,13 +17,23 @@ const DOCKER_WARDEN_URL =
     process.env.WARDEN_DOCKER_URL
     || process.env.INTERNAL_WARDEN_BASE_URL
     || 'http://noona-warden:4001';
+const DEFAULT_MANAGED_VAULT_BASE_URL =
+    process.env.VAULT_BASE_URL
+    || 'https://noona-vault:3005';
+const DEFAULT_VAULT_CA_CERT_PATH =
+    process.env.VAULT_CA_CERT_PATH
+    || `${VAULT_TLS_CONTAINER_PATH}/ca-cert.pem`;
+const DEFAULT_VAULT_TLS_CERT_PATH =
+    process.env.VAULT_TLS_CERT_PATH
+    || `${VAULT_TLS_CONTAINER_PATH}/vault-cert.pem`;
+const DEFAULT_VAULT_TLS_KEY_PATH =
+    process.env.VAULT_TLS_KEY_PATH
+    || `${VAULT_TLS_CONTAINER_PATH}/vault-key.pem`;
 
 const DEFAULT_MONGO_ROOT_USERNAME =
-    process.env.MONGO_INITDB_ROOT_USERNAME
-    || 'root';
+    resolveManagedMongoRootUsername(process.env);
 const DEFAULT_MONGO_ROOT_PASSWORD =
-    process.env.MONGO_INITDB_ROOT_PASSWORD
-    || 'example';
+    resolveManagedMongoRootPassword({env: process.env});
 const DEFAULT_VAULT_MONGO_URI =
     process.env.MONGO_URI ||
     `mongodb://${encodeURIComponent(DEFAULT_MONGO_ROOT_USERNAME)}:${encodeURIComponent(DEFAULT_MONGO_ROOT_PASSWORD)}@noona-mongo:27017/admin?authSource=admin`;
@@ -37,7 +52,7 @@ const DEFAULT_VAULT_MONGO_HOST_MOUNT_PATH =
     process.env.VAULT_MONGO_HOST_MOUNT_PATH || '';
 const DEFAULT_PORTAL_VAULT_BASE_URL =
     process.env.PORTAL_VAULT_BASE_URL
-    || 'http://noona-vault:3005';
+    || DEFAULT_MANAGED_VAULT_BASE_URL;
 const DEFAULT_PORTAL_RAVEN_BASE_URL =
     process.env.RAVEN_BASE_URL
     || process.env.PORTAL_RAVEN_BASE_URL
@@ -51,7 +66,7 @@ const DEFAULT_PORTAL_ACTIVITY_POLL_MS =
     || '15000';
 const DEFAULT_RAVEN_VAULT_URL =
     process.env.RAVEN_VAULT_URL
-    || 'http://noona-vault:3005';
+    || DEFAULT_MANAGED_VAULT_BASE_URL;
 const DEFAULT_RAVEN_PORTAL_BASE_URL =
     process.env.PORTAL_BASE_URL
     || process.env.RAVEN_PORTAL_BASE_URL
@@ -191,6 +206,8 @@ const serviceDefs = rawList.map(name => {
 
     if (name === 'noona-sage') {
         env.push(`WARDEN_BASE_URL=${DOCKER_WARDEN_URL}`);
+        env.push(`VAULT_BASE_URL=${DEFAULT_MANAGED_VAULT_BASE_URL}`);
+        env.push(`VAULT_CA_CERT_PATH=${DEFAULT_VAULT_CA_CERT_PATH}`);
         if (wardenApiToken) {
             env.push(`WARDEN_API_TOKEN=${wardenApiToken}`);
         }
@@ -198,6 +215,17 @@ const serviceDefs = rawList.map(name => {
             createEnvField('WARDEN_BASE_URL', DOCKER_WARDEN_URL, {
                 label: 'Warden Base URL',
                 warning: 'Adjust only if Warden is reachable at a custom URL within the Docker network.',
+            }),
+            createEnvField('VAULT_BASE_URL', DEFAULT_MANAGED_VAULT_BASE_URL, {
+                label: 'Vault Base URL',
+                description: 'Trusted internal HTTPS endpoint Sage should use for Vault-backed setup state and shared settings.',
+                warning: 'Change only if Vault is reachable from Sage at a different trusted internal HTTPS address.',
+            }),
+            createEnvField('VAULT_CA_CERT_PATH', DEFAULT_VAULT_CA_CERT_PATH, {
+                label: 'Vault CA Certificate Path',
+                readOnly: true,
+                description: 'Mounted CA certificate Sage uses to trust the managed Vault TLS certificate.',
+                serverManaged: true,
             }),
             createEnvField('WARDEN_API_TOKEN', wardenApiToken || '', {
                 label: 'Warden API Token',
@@ -212,6 +240,7 @@ const serviceDefs = rawList.map(name => {
 
     if (name === 'noona-raven') {
         env.push(`VAULT_URL=${DEFAULT_RAVEN_VAULT_URL}`);
+        env.push(`VAULT_CA_CERT_PATH=${DEFAULT_VAULT_CA_CERT_PATH}`);
         env.push(`PORTAL_BASE_URL=${DEFAULT_RAVEN_PORTAL_BASE_URL}`);
         env.push(`RAVEN_DOWNLOAD_THREADS=${DEFAULT_RAVEN_DOWNLOAD_THREADS}`);
         env.push(`KAVITA_BASE_URL=${DEFAULT_KAVITA_BASE_URL}`);
@@ -261,7 +290,13 @@ const serviceDefs = rawList.map(name => {
             createEnvField('VAULT_URL', DEFAULT_RAVEN_VAULT_URL, {
                 label: 'Vault Service URL',
                 warning:
-                    'Change only if Vault is reachable for Raven at a non-default address inside the Docker network.',
+                    'Change only if Vault is reachable for Raven at a different trusted internal HTTPS address inside the Docker network.',
+            }),
+            createEnvField('VAULT_CA_CERT_PATH', DEFAULT_VAULT_CA_CERT_PATH, {
+                label: 'Vault CA Certificate Path',
+                readOnly: true,
+                description: 'Mounted CA certificate Raven uses to trust Vault HTTPS.',
+                serverManaged: true,
             }),
             createEnvField('RAVEN_DOWNLOAD_THREADS', DEFAULT_RAVEN_DOWNLOAD_THREADS, {
                 label: 'Raven Download Threads',
@@ -382,7 +417,7 @@ const serviceDefs = rawList.map(name => {
             {
                 key: 'VAULT_BASE_URL',
                 label: 'Vault Base URL',
-                description: 'URL where the Vault service is exposed for the portal.',
+                description: 'Trusted internal HTTPS URL where the Vault service is exposed for Portal.',
                 defaultValue: DEFAULT_PORTAL_VAULT_BASE_URL,
             },
             {
@@ -478,6 +513,16 @@ const serviceDefs = rawList.map(name => {
             );
         });
 
+        env.push(`VAULT_CA_CERT_PATH=${DEFAULT_VAULT_CA_CERT_PATH}`);
+        envConfig.push(
+            createEnvField('VAULT_CA_CERT_PATH', DEFAULT_VAULT_CA_CERT_PATH, {
+                label: 'Vault CA Certificate Path',
+                readOnly: true,
+                description: 'Mounted CA certificate Portal uses to trust Vault HTTPS.',
+                serverManaged: true,
+            }),
+        );
+
         if (wardenApiToken) {
             env.push(`WARDEN_API_TOKEN=${wardenApiToken}`);
             envConfig.push(
@@ -504,6 +549,10 @@ const serviceDefs = rawList.map(name => {
             `MONGO_URI=${DEFAULT_VAULT_MONGO_URI}`,
             `REDIS_HOST=${DEFAULT_VAULT_REDIS_HOST}`,
             `REDIS_PORT=${DEFAULT_VAULT_REDIS_PORT}`,
+            'VAULT_TLS_ENABLED=true',
+            `VAULT_CA_CERT_PATH=${DEFAULT_VAULT_CA_CERT_PATH}`,
+            `VAULT_TLS_CERT_PATH=${DEFAULT_VAULT_TLS_CERT_PATH}`,
+            `VAULT_TLS_KEY_PATH=${DEFAULT_VAULT_TLS_KEY_PATH}`,
         );
         envConfig.push(
             createEnvField('PORT', '3005', {
@@ -556,6 +605,30 @@ const serviceDefs = rawList.map(name => {
                 description: 'Port number used to connect to the configured Redis host.',
                 warning: 'Match the port exposed by your Redis container (defaults to 6379).',
             }),
+            createEnvField('VAULT_TLS_ENABLED', 'true', {
+                label: 'Vault TLS Enabled',
+                readOnly: true,
+                description: 'Warden-managed Vault instances always serve HTTPS with the generated internal certificate.',
+                serverManaged: true,
+            }),
+            createEnvField('VAULT_CA_CERT_PATH', DEFAULT_VAULT_CA_CERT_PATH, {
+                label: 'Vault CA Certificate Path',
+                readOnly: true,
+                description: 'Mounted CA certificate used for internal Vault trust validation.',
+                serverManaged: true,
+            }),
+            createEnvField('VAULT_TLS_CERT_PATH', DEFAULT_VAULT_TLS_CERT_PATH, {
+                label: 'Vault TLS Certificate Path',
+                readOnly: true,
+                description: 'Mounted TLS certificate path for the Vault HTTPS server.',
+                serverManaged: true,
+            }),
+            createEnvField('VAULT_TLS_KEY_PATH', DEFAULT_VAULT_TLS_KEY_PATH, {
+                label: 'Vault TLS Key Path',
+                readOnly: true,
+                description: 'Mounted TLS private key path for the Vault HTTPS server.',
+                serverManaged: true,
+            }),
         );
     }
 
@@ -569,7 +642,7 @@ const serviceDefs = rawList.map(name => {
         }
 
         if (name === 'noona-vault') {
-            return 'http://noona-vault:3005/v1/vault/health';
+            return 'https://noona-vault:3005/v1/vault/health';
         }
 
         if (name === 'noona-raven') {
@@ -609,6 +682,7 @@ const serviceDefs = rawList.map(name => {
         healthDelayMs,
         capAdd,
         devices,
+        advertiseHostServiceUrl: name !== 'noona-vault',
     };
 });
 

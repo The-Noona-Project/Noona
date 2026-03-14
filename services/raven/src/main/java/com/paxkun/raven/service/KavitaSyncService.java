@@ -1,3 +1,9 @@
+/**
+ * Ensures and scans Kavita libraries for Raven-managed content.
+ * Related files:
+ * - src/test/java/com/paxkun/raven/service/KavitaSyncServiceTest.java
+ * Times this file has been edited: 3
+ */
 package com.paxkun.raven.service;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,6 +15,10 @@ import org.springframework.web.client.RestClient;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Ensures and scans Kavita libraries for Raven-managed content.
+ */
 
 @Service
 public class KavitaSyncService {
@@ -22,6 +32,12 @@ public class KavitaSyncService {
     private final Set<String> knownLibraries = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean missingConfigLogged = new AtomicBoolean(false);
 
+    /**
+     * Creates a new kavita sync service instance.
+     *
+     * @param logger The logger.
+     */
+
     @Autowired
     public KavitaSyncService(LoggerService logger) {
         this(logger, RestClient.create());
@@ -31,6 +47,13 @@ public class KavitaSyncService {
         this.logger = logger;
         this.restClient = restClient;
     }
+
+    /**
+     * Ensures library for type.
+     *
+     * @param libraryName The library name.
+     * @param folderSegment The folder segment.
+     */
 
     public void ensureLibraryForType(String libraryName, String folderSegment) {
         String normalizedLibraryName = normalizeLabel(libraryName);
@@ -107,6 +130,13 @@ public class KavitaSyncService {
             logger.warn("KAVITA", "Failed to sync Kavita library [" + normalizedLibraryName + "]: " + exception.getMessage());
         }
     }
+
+    /**
+     * Scans library for type.
+     *
+     * @param libraryName The library name.
+     * @param folderSegment The folder segment.
+     */
 
     public void scanLibraryForType(String libraryName, String folderSegment) {
         String normalizedLibraryName = normalizeLabel(libraryName);

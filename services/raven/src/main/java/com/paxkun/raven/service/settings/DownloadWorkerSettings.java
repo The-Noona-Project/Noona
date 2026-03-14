@@ -1,3 +1,9 @@
+/**
+ * Represents Raven download worker settings.
+ * Related files:
+ * - None yet.
+ * Times this file has been edited: 3
+ */
 package com.paxkun.raven.service.settings;
 
 import lombok.AllArgsConstructor;

@@ -1,3 +1,11 @@
+/**
+ * Covers library controller behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
+ * - src/main/java/com/paxkun/raven/controller/LibraryController.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,6 +27,10 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Covers library controller behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 class LibraryControllerTest {

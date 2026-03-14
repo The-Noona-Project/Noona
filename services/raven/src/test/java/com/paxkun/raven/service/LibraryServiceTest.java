@@ -1,3 +1,12 @@
+/**
+ * Covers library service behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/download/DownloadProgress.java
+ * - src/main/java/com/paxkun/raven/service/library/NewChapter.java
+ * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * Times this file has been edited: 15
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.download.DownloadProgress;
@@ -24,6 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+
+/**
+ * Covers library service behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 class LibraryServiceTest {

@@ -1,3 +1,12 @@
+/**
+ * @fileoverview Defines the `/scan` Discord flow for triggering Kavita library scans.
+ * Related files:
+ * - commands/index.mjs
+ * - commands/utils.mjs
+ * - tests/discordCommands.test.mjs
+ * Times this file has been edited: 3
+ */
+
 import {ApplicationCommandOptionType, MessageFlags} from 'discord.js';
 import {respondWithError} from './utils.mjs';
 
@@ -37,6 +46,12 @@ const findLibraryMatch = (libraries, rawValue) => {
     return libraries.find(library => resolveLibraryName(library).toLowerCase() === normalizedValue) ?? null;
 };
 
+/**
+ * Creates scan command.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createScanCommand = ({
                                       kavita,
                                   } = {}) => ({

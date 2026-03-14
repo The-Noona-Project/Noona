@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Raven client request construction and payload handling.
+ * Related files:
+ * - clients/ravenClient.mjs
+ * Times this file has been edited: 8
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

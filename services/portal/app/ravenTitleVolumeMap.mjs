@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Derives and applies Raven chapter-to-volume mappings from Komf series metadata.
+ * Related files:
+ * - routes/registerPortalRoutes.mjs
+ * - clients/ravenClient.mjs
+ * - clients/komfClient.mjs
+ * - discord/recommendationNotifier.mjs
+ * Times this file has been edited: 2
+ */
+
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
 
 const normalizePositiveInteger = (value) => {
@@ -80,6 +90,12 @@ const buildAppliedMessage = (renameSummary = {}) => {
     return 'Stored the Raven volume map. Existing files already matched the current naming settings.';
 };
 
+/**
+ * Derives Raven chapter-to-volume mappings from Komf series details.
+ *
+ * @param {*} seriesDetails - Input passed to the function.
+ * @returns {*} The function result.
+ */
 export const deriveChapterVolumeMapFromSeriesDetails = (seriesDetails = {}) => {
     const chapterVolumes = new Map();
     const ambiguousChapters = new Set();
@@ -114,6 +130,12 @@ export const deriveChapterVolumeMapFromSeriesDetails = (seriesDetails = {}) => {
     return Object.fromEntries(sortChapterVolumeEntries(Array.from(chapterVolumes.entries())));
 };
 
+/**
+ * Applies a derived chapter-to-volume map to Raven.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {Promise<*>} The asynchronous result.
+ */
 export const applyRavenTitleVolumeMap = async ({
                                                    titleUuid,
                                                    provider,

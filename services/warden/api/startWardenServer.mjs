@@ -3,6 +3,7 @@ import http from 'node:http';
 import {URL} from 'node:url';
 
 import {isWardenHttpError} from '../core/wardenErrors.mjs';
+import {toPublicSetupSnapshot} from '../core/setupProfile.mjs';
 import {buildWardenApiTokenRegistry, stringifyServiceTokenMap} from '../docker/wardenApiTokens.mjs';
 import {errMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 
@@ -323,6 +324,11 @@ const resolveServiceConfigForSecurity = (warden, serviceName, cache = new Map())
 const redactSetupSnapshot = (snapshot, warden, cache = new Map()) => {
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
         return snapshot ?? null;
+    }
+
+    const publicSnapshot = toPublicSetupSnapshot(snapshot, {maskSecrets: true});
+    if (publicSnapshot) {
+        return publicSnapshot;
     }
 
     const values = {};
@@ -818,7 +824,21 @@ export const startWardenServer = ({
             }
 
             try {
-                const config = await warden.saveSetupConfig?.(body);
+                const applyFromQuery = parseDebugValue(url.searchParams.get('apply'));
+                const applyFromBody = parseDebugValue(body?.apply);
+                const persistOnly = parseDebugValue(body?.persistOnly) === true;
+                const apply = persistOnly
+                    ? false
+                    : applyFromBody != null
+                        ? applyFromBody
+                        : applyFromQuery != null
+                            ? applyFromQuery
+                            : true;
+                const payload = {...body};
+                delete payload.apply;
+                delete payload.persistOnly;
+
+                const config = await warden.saveSetupConfig?.(payload, {apply});
                 sendJson(res, 200, redactSetupConfigResponse(config, warden) ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to persist setup config snapshot: ${error.message}`);
@@ -843,11 +863,6 @@ export const startWardenServer = ({
                 || parseTruthyQueryValue(url.searchParams.get('background'))
                 || body?.async === true;
 
-            if (!Array.isArray(services) || services.length === 0) {
-                sendJson(res, 400, {error: 'Body must include a non-empty "services" array.'});
-                return;
-            }
-
             if (asyncRequested) {
                 if (activeInstallPromise) {
                     const progress = await warden.getInstallationProgress?.();
@@ -860,7 +875,7 @@ export const startWardenServer = ({
                     return;
                 }
 
-                const installPromise = Promise.resolve(warden.installServices(services));
+                const installPromise = Promise.resolve(warden.installServices(Array.isArray(services) ? services : []));
                 activeInstallPromise = installPromise
                     .catch((error) => {
                         logger.error?.(`[Warden API] Background install failed: ${error.message}`);
@@ -880,7 +895,7 @@ export const startWardenServer = ({
             }
 
             try {
-                const results = await warden.installServices(services);
+                const results = await warden.installServices(Array.isArray(services) ? services : []);
                 const hasErrors = results.some((entry) => entry.status === 'error');
                 const statusCode = hasErrors ? 207 : 200;
                 sendJson(res, statusCode, {results});

@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Discord command inspection, filtering, and inventory formatting.
+ * Related files:
+ * - discord/commandInspector.mjs
+ * Times this file has been edited: 4
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {Routes} from 'discord.js';

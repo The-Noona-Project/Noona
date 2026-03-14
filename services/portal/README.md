@@ -19,6 +19,7 @@ and Kavita account handoff features.
 - connects Noona to Discord
 - handles onboarding and recommendation-related messaging
 - bridges Moon and Kavita for account and metadata flows
+- stores its shared state through Vault's internal service API instead of direct database access
 - exposes the public-facing Portal HTTP endpoints used by the stack
 
 ## Who It Is For

@@ -64,3 +64,29 @@ test('noona-komf addon descriptor only exposes Kavita-specific configuration fie
     assert.ok(!configKeys.has('KOMF_KOMGA_USER'))
     assert.ok(!configKeys.has('KOMF_KOMGA_PASSWORD'))
 })
+
+test('managed redis and mongo descriptors are internal-only and use Docker health checks', () => {
+    const redis = addonDockers['noona-redis']
+    const mongo = addonDockers['noona-mongo']
+
+    assert.ok(redis)
+    assert.ok(mongo)
+
+    assert.equal(redis.port, null)
+    assert.deepEqual(redis.ports, {})
+    assert.equal(redis.hostServiceUrl, null)
+    assert.equal(redis.health, null)
+    assert.equal(redis.healthCheck?.type, 'docker')
+
+    assert.equal(mongo.port, null)
+    assert.deepEqual(mongo.ports, {})
+    assert.equal(mongo.hostServiceUrl, null)
+    assert.equal(mongo.health, null)
+    assert.equal(mongo.healthCheck?.type, 'docker')
+
+    const mongoPasswordField = mongo.envConfig.find((entry) => entry?.key === 'MONGO_INITDB_ROOT_PASSWORD')
+    assert.ok(mongoPasswordField)
+    assert.equal(mongoPasswordField.readOnly, true)
+    assert.equal(mongoPasswordField.serverManaged, true)
+    assert.equal(mongoPasswordField.sensitive, true)
+})

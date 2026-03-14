@@ -1,3 +1,9 @@
+/**
+ * Encapsulates Raven linux cpu affinity behavior.
+ * Related files:
+ * - None yet.
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.service;
 
 import com.sun.jna.Library;
@@ -18,6 +24,13 @@ public class LinuxCpuAffinity {
 
     private static final int CPU_SET_WORDS = 16;
 
+    /**
+     * Applies current process affinity.
+     *
+     * @param cpuCoreId The CPU core id.
+     * @return The resulting AffinityResult.
+     */
+
     public AffinityResult applyCurrentProcessAffinity(int cpuCoreId) {
         if (cpuCoreId < 0 || !isSupported()) {
             return AffinityResult.unsupported();
@@ -35,6 +48,12 @@ public class LinuxCpuAffinity {
 
         return AffinityResult.success();
     }
+
+    /**
+     * Returns available cpu ids.
+     *
+     * @return The resulting list.
+     */
 
     public List<Integer> getAvailableCpuIds() {
         if (!isSupported()) {
@@ -54,10 +73,20 @@ public class LinuxCpuAffinity {
         return cpuSet.toCpuIds();
     }
 
+    /**
+     * Indicates whether supported.
+     *
+     * @return True when the condition is satisfied.
+     */
+
     public boolean isSupported() {
         String osName = System.getProperty("os.name", "");
         return osName != null && osName.toLowerCase(java.util.Locale.ROOT).contains("linux");
     }
+
+    /**
+     * Encapsulates Raven linux cpu affinity behavior.
+     */
 
     interface LinuxCLib extends Library {
         LinuxCLib INSTANCE = Native.load("c", LinuxCLib.class);
@@ -66,6 +95,14 @@ public class LinuxCpuAffinity {
 
         int sched_getaffinity(int pid, int cpuSetSize, CpuSet mask);
     }
+
+    /**
+     * Encapsulates Raven linux cpu affinity behavior.
+     *
+     * @param applied The applied.
+     * @param supported The supported.
+     * @param errorCode The error code.
+     */
 
     public record AffinityResult(boolean applied, boolean supported, Integer errorCode) {
         static AffinityResult success() {
@@ -80,6 +117,10 @@ public class LinuxCpuAffinity {
             return new AffinityResult(false, true, errorCode);
         }
     }
+
+    /**
+     * Encapsulates Raven linux cpu affinity behavior.
+     */
 
     @Structure.FieldOrder({"bits"})
     public static class CpuSet extends Structure {

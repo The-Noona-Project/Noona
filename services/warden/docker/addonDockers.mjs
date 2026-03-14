@@ -1,11 +1,14 @@
 ﻿// services/warden/docker/addonDockers.mjs
 
-import {resolveHostServiceBase, resolveHostServiceHost, resolveSharedHostEnvEntries,} from './hostServiceUrl.mjs';
+import {resolveHostServiceBase, resolveSharedHostEnvEntries,} from './hostServiceUrl.mjs';
 import {resolveNoonaImage} from './imageRegistry.mjs';
 import {DEFAULT_MANAGED_KOMF_APPLICATION_YML} from './komfConfigTemplate.mjs';
+import {
+    resolveManagedMongoRootPassword,
+    resolveManagedMongoRootUsername,
+} from './mongoCredentials.mjs';
 
 const HOST_SERVICE_URL = resolveHostServiceBase();
-const HOST_SERVICE_HOST = resolveHostServiceHost();
 const SHARED_HOST_ENV = resolveSharedHostEnvEntries();
 const DEFAULT_TIMEZONE = process.env.TZ || 'UTC';
 const DEFAULT_KAVITA_ADMIN_USERNAME = process.env.KAVITA_ADMIN_USERNAME || '';
@@ -22,6 +25,8 @@ const DEFAULT_MOON_WEBGUI_PORT = (() => {
 const DEFAULT_NOONA_MOON_BASE_URL = process.env.NOONA_MOON_BASE_URL || `${HOST_SERVICE_URL}:${DEFAULT_MOON_WEBGUI_PORT}`;
 const DEFAULT_NOONA_PORTAL_BASE_URL = process.env.NOONA_PORTAL_BASE_URL || 'http://noona-portal:3003';
 const DEFAULT_NOONA_SOCIAL_LOGIN_ONLY = process.env.NOONA_SOCIAL_LOGIN_ONLY || 'true';
+const DEFAULT_MONGO_ROOT_USERNAME = resolveManagedMongoRootUsername(process.env);
+const DEFAULT_MONGO_ROOT_PASSWORD = resolveManagedMongoRootPassword({env: process.env});
 
 const createEnvField = (key, defaultValue, {
     label = key,
@@ -29,6 +34,8 @@ const createEnvField = (key, defaultValue, {
     warning = null,
     required = true,
     readOnly = false,
+    sensitive = false,
+    serverManaged = false,
 } = {}) => ({
     key,
     label,
@@ -37,6 +44,8 @@ const createEnvField = (key, defaultValue, {
     warning,
     required,
     readOnly,
+    sensitive,
+    serverManaged,
 });
 
 const rawList = [
@@ -44,12 +53,9 @@ const rawList = [
         name: 'noona-redis',
         description: 'Redis Stack used for caching, wizard state, and ephemeral service coordination.',
         image: 'redis/redis-stack:7.2.0-v19',
-        port: 8001,
-        internalPort: 8001,
-        ports: {
-            '6379/tcp': [{ HostPort: '6379' }],
-            '8001/tcp': [{ HostPort: '8001' }],
-        },
+        port: null,
+        internalPort: 6379,
+        ports: {},
         exposed: {
             '6379/tcp': {},
             '8001/tcp': {},
@@ -63,35 +69,49 @@ const rawList = [
             }),
         ],
         volumes: ['/noona-redis-data:/data'],
-        health: 'http://noona-redis:8001/',
-        hostServiceUrl: `${HOST_SERVICE_URL}:8001`,
+        health: null,
+        healthCheck: {
+            type: 'docker',
+            test: ['CMD-SHELL', 'redis-cli -h 127.0.0.1 -p 6379 ping | grep PONG > /dev/null'],
+            intervalMs: 5000,
+            timeoutMs: 3000,
+            startPeriodMs: 5000,
+            retries: 20,
+            tries: 30,
+            delayMs: 1000,
+        },
+        hostServiceUrl: null,
+        advertiseHostServiceUrl: false,
     },
     {
         name: 'noona-mongo',
         description: 'MongoDB backing store used by Vault for persistent data.',
         image: 'mongo:8',
-        port: 27017,
+        port: null,
         internalPort: 27017,
-        ports: {
-            '27017/tcp': [{ HostPort: '27017' }],
-        },
+        ports: {},
         exposed: {
             '27017/tcp': {},
         },
         env: [
             ...SHARED_HOST_ENV,
-            'MONGO_INITDB_ROOT_USERNAME=root',
-            'MONGO_INITDB_ROOT_PASSWORD=example',
+            `MONGO_INITDB_ROOT_USERNAME=${DEFAULT_MONGO_ROOT_USERNAME}`,
+            `MONGO_INITDB_ROOT_PASSWORD=${DEFAULT_MONGO_ROOT_PASSWORD}`,
             'SERVICE_NAME=noona-mongo',
         ],
         envConfig: [
-            createEnvField('MONGO_INITDB_ROOT_USERNAME', 'root', {
+            createEnvField('MONGO_INITDB_ROOT_USERNAME', DEFAULT_MONGO_ROOT_USERNAME, {
                 label: 'Mongo Root Username',
-                warning: 'Changing the username requires updating every consumer that connects to Mongo.',
+                warning: 'Managed Mongo credentials are generated and owned by Warden.',
+                readOnly: true,
+                serverManaged: true,
             }),
-            createEnvField('MONGO_INITDB_ROOT_PASSWORD', 'example', {
+            createEnvField('MONGO_INITDB_ROOT_PASSWORD', DEFAULT_MONGO_ROOT_PASSWORD, {
                 label: 'Mongo Root Password',
-                warning: 'Use a strong password and store it securely. Changing it requires updating dependent services.',
+                warning: 'Managed Mongo credentials are generated and owned by Warden.',
+                readOnly: true,
+                sensitive: true,
+                serverManaged: true,
             }),
             createEnvField('SERVICE_NAME', 'noona-mongo', {
                 label: 'Service Name',
@@ -100,8 +120,22 @@ const rawList = [
             }),
         ],
         volumes: ['/noona-mongo-data:/data/db'],
-        health: null, // Mongo doesn't expose an HTTP endpoint
-        hostServiceUrl: `mongodb://${HOST_SERVICE_HOST}:27017`,
+        health: null,
+        healthCheck: {
+            type: 'docker',
+            test: [
+                'CMD-SHELL',
+                'mongosh --quiet --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.adminCommand({ ping: 1 }).ok ? 0 : 2)"',
+            ],
+            intervalMs: 5000,
+            timeoutMs: 5000,
+            startPeriodMs: 10000,
+            retries: 20,
+            tries: 30,
+            delayMs: 1000,
+        },
+        hostServiceUrl: null,
+        advertiseHostServiceUrl: false,
     },
     {
         name: 'noona-kavita',

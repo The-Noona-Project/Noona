@@ -1,3 +1,12 @@
+/**
+ * Covers v p n services behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
+ * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnRotationResult.java
+ * - src/main/java/com/paxkun/raven/service/VPNServices.java
+ * Times this file has been edited: 3
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.settings.DownloadVpnSettings;
@@ -16,6 +25,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+
+/**
+ * Covers v p n services behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 class VPNServicesTest {

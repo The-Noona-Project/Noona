@@ -1,0 +1,72 @@
+# Raven Flows
+
+## Boot And Runtime Mode
+
+- [RavenApplication.java](../../../services/raven/src/main/java/com/paxkun/raven/RavenApplication.java) starts the
+  Spring Boot app for both the main server and one-shot worker processes.
+- [RavenRuntimeProperties.java](../../../services/raven/src/main/java/com/paxkun/raven/service/RavenRuntimeProperties.java)
+  decides whether Raven is the main server or a child worker.
+- Main-process Raven uses thread workers by default on non-Linux hosts and process workers on Linux hosts.
+- Child workers are launched by
+  [RavenWorkerLauncher.java](../../../services/raven/src/main/java/com/paxkun/raven/service/RavenWorkerLauncher.java)
+  and execute a single persisted task through
+  [RavenWorkerRunner.java](../../../services/raven/src/main/java/com/paxkun/raven/service/RavenWorkerRunner.java).
+
+## Search To Queue To Download
+
+- Search starts in `GET /v1/download/search/{titleName}` or `POST /v1/download/search`.
+- Raven stores search results in an in-memory search session with a 10-minute TTL.
+- Queueing happens through the legacy `GET /v1/download/select/{searchId}/{optionIndex}` route or the newer
+  `POST /v1/download/select` JSON route.
+- The JSON queue route returns structured status values instead of only a message. The controller maps:
+  invalid selection to `400`, expired search to `410`, already-active or maintenance-pause states to `409`, and
+  accepted queues to `202`.
+- Download execution and status persistence live in
+  [DownloadService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/DownloadService.java).
+
+## Task Persistence And Recovery
+
+- Raven persists task snapshots in the Vault Mongo collection `raven_download_tasks`.
+- Raven also writes the current task snapshot to Redis key `raven:download:current-task`.
+- On boot, Raven restores queued, downloading, recovering, and interrupted tasks from Vault.
+- Pause requests are persisted so Raven can cleanly stop after the current chapter and later resume the task.
+- Thread mode and process mode use different executors/supervisors, but both depend on the same persisted
+  `DownloadProgress` contract.
+
+## Library, Sync, And Import Flow
+
+- Raven stores title metadata in Vault collection `manga_library`.
+- [LibraryService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/LibraryService.java) updates
+  title metadata, chapter indexes, file maps, and `downloadPath` whenever new work lands.
+- Raven writes a `.noona` manifest beside managed title content so imports and restores can reconstruct the title.
+- `POST /v1/library/checkForNew` checks the full library for new or missing chapters.
+- `POST /v1/library/title/{uuid}/checkForNew` checks one title.
+- `POST /v1/library/imports/check` scans managed folders for `.noona` manifests, imports missing titles, and can queue
+  missing or new chapters afterward.
+- `POST /v1/library/title/{uuid}/volume-map` stores provider metadata and can auto-rename existing files to match the
+  configured volume map.
+
+## Kavita Sync Flow
+
+- Library updates call
+  [KavitaSyncService.java](../../../services/raven/src/main/java/com/paxkun/raven/service/KavitaSyncService.java) to
+  ensure the right Kavita library exists for the title type.
+- Raven prefers Portal-backed Kavita helpers when `PORTAL_BASE_URL` is configured.
+- If Portal is unavailable, Raven can talk to Kavita directly using `KAVITA_BASE_URL` and `KAVITA_API_KEY`.
+- Import checks and title syncs request Kavita scans after Raven writes or repairs content.
+
+## VPN Rotation Flow
+
+- `VPNServices` manages PIA region lists, login tests, active OpenVPN state, and scheduled rotation.
+- `POST /v1/vpn/rotate` triggers the manual path.
+- Rotation enables Raven maintenance pause, requests pause for active downloads, waits for in-flight work to drain,
+  reconnects OpenVPN, restores preserved local routes, then resumes paused downloads.
+- `POST /v1/vpn/test-login` is a lighter probe path that validates credentials and region connectivity without taking
+  over Raven's long-running VPN session.
+
+## Debug And Status Flow
+
+- `GET /v1/debug` and `POST /v1/debug` toggle the `LoggerService` debug flag.
+- `GET /v1/download/status/summary` blends download progress with library-check activity so Moon can show a task-based
+  current state instead of raw worker internals.
+- If the summary shape changes, update controller tests and any Moon/Sage code that renders Raven state.

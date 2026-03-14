@@ -201,7 +201,7 @@ const createSetupClient = ({
 
     return {
         async listServices(options = {}) {
-            const includeInstalled = options.includeInstalled ?? false
+            const includeInstalled = options.includeInstalled ?? true
             const response = await fetchFromWarden(
                 `/api/services?includeInstalled=${includeInstalled ? 'true' : 'false'}`,
             )
@@ -216,12 +216,14 @@ const createSetupClient = ({
         },
 
         async installServices(services, options = {}) {
-            const normalized = normalizeServiceInstallPayload(services)
             const suffix = options?.async === true ? '?async=true' : ''
+            const normalized = Array.isArray(services) && services.length > 0
+                ? normalizeServiceInstallPayload(services)
+                : null
             const response = await fetchFromWarden(`/api/services/install${suffix}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({services: normalized}),
+                body: JSON.stringify(normalized ? {services: normalized} : {}),
             })
 
             const payload = await response.json().catch(() => ({}))
@@ -229,7 +231,9 @@ const createSetupClient = ({
             const status = response.status || 200
 
             logger.info?.(
-                `[${serviceName}] 🚀 Installation request forwarded for ${normalized.length} services (status: ${status}) via ${preferredBaseUrl}`,
+                `[${serviceName}] 🚀 Installation request forwarded for ${
+                    normalized ? normalized.length : 'persisted setup'
+                } services (status: ${status}) via ${preferredBaseUrl}`,
             )
             return {
                 status,

@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Polls Raven and Vault state to deliver recommendation DMs and timeline updates.
+ * Related files:
+ * - clients/ravenClient.mjs
+ * - clients/vaultClient.mjs
+ * - tests/recommendationNotifier.test.mjs
+ * - app/ravenTitleVolumeMap.mjs
+ * Times this file has been edited: 8
+ */
+
 import {applyRavenTitleVolumeMap} from '../app/ravenTitleVolumeMap.mjs';
 
 const DEFAULT_RECOMMENDATION_COLLECTION = 'portal_recommendations';
@@ -733,6 +743,12 @@ const resolveKavitaTitleUrl = async ({
     }
 };
 
+/**
+ * Creates recommendation notifier.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createRecommendationNotifier = ({
                                                  discordClient,
                                                  vaultClient,

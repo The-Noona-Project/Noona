@@ -19,3 +19,5 @@ Vault is Noona's shared auth, user, secret, and packet-storage service.
 - [Public README](readme.md)
 - [AI overview](../../docs/agents/vault/README.md)
 - [Files and rules](../../docs/agents/vault/files-and-rules.md)
+- [Flows](../../docs/agents/vault/flows.md)
+- [Auth and data models](../../docs/agents/vault/auth-and-data-models.md)

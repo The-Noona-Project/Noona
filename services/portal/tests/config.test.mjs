@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Portal config loading, normalization, and validation behavior.
+ * Related files:
+ * - config/portalConfig.mjs
+ * Times this file has been edited: 10
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

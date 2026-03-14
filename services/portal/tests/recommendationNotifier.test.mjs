@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers recommendation DM delivery, timeline sync, and polling behavior.
+ * Related files:
+ * - discord/recommendationNotifier.mjs
+ * Times this file has been edited: 7
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

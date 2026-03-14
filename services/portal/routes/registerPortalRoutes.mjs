@@ -1,4 +1,11 @@
-// services/portal/routes/registerPortalRoutes.mjs
+/**
+ * @fileoverview Registers Portal's HTTP routes for onboarding, Kavita handoff, and metadata bridge flows.
+ * Related files:
+ * - app/createPortalApp.mjs
+ * - app/ravenTitleVolumeMap.mjs
+ * - tests/portalApp.test.mjs
+ * Times this file has been edited: 13
+ */
 
 import crypto from 'node:crypto';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
@@ -737,6 +744,12 @@ const syncKavitaTitleCover = async ({
     );
 };
 
+/**
+ * Registers portal routes.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const registerPortalRoutes = ({
                                          app,
                                          config,

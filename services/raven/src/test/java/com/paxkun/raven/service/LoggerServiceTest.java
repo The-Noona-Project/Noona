@@ -1,3 +1,9 @@
+/**
+ * Covers logger service behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * Times this file has been edited: 6
+ */
 package com.paxkun.raven.service;
 
 import org.junit.jupiter.api.Test;
@@ -12,6 +18,10 @@ import java.nio.file.Path;
 import java.util.Comparator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Covers logger service behavior.
+ */
 
 @ExtendWith(OutputCaptureExtension.class)
 class LoggerServiceTest {

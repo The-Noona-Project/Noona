@@ -18,3 +18,5 @@ This is a Noona-managed Kavita checkout with Noona-specific container, bootstrap
 - [Public README](README.md)
 - [AI overview](../../docs/agents/kavita/README.md)
 - [Files and rules](../../docs/agents/kavita/files-and-rules.md)
+- [Flows](../../docs/agents/kavita/flows.md)
+- [Runtime and login handoff](../../docs/agents/kavita/runtime-and-login-handoff.md)

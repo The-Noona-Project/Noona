@@ -1,4 +1,10 @@
-// services/portal/tests/discordCommands.test.mjs
+/**
+ * @fileoverview Covers Portal slash-command, autocomplete, and recommendation selection flows.
+ * Related files:
+ * - commands/index.mjs
+ * - commands/recommendCommand.mjs
+ * Times this file has been edited: 12
+ */
 
 import assert from 'node:assert/strict';
 import {test} from 'node:test';

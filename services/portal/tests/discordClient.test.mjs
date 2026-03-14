@@ -1,4 +1,10 @@
-// services/portal/tests/discordClient.test.mjs
+/**
+ * @fileoverview Covers Discord client lifecycle, routing, and DM queue behavior.
+ * Related files:
+ * - discord/client.mjs
+ * - commands/index.mjs
+ * Times this file has been edited: 11
+ */
 
 import EventEmitter from 'node:events';
 import assert from 'node:assert/strict';

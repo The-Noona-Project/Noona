@@ -1,3 +1,10 @@
+/**
+ * Represents Raven download naming settings.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/test/java/com/paxkun/raven/service/DownloadServiceTest.java
+ * Times this file has been edited: 4
+ */
 package com.paxkun.raven.service.settings;
 
 import lombok.AllArgsConstructor;

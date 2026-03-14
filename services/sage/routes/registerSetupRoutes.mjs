@@ -164,7 +164,9 @@ export function registerSetupRoutes(context = {}) {
         logger,
         managedKavitaSetupClient,
         normalizeHistoryLimit,
+        readDebugSetting,
         readVerificationSummary,
+        resolveSetupCompleted,
         resolveWizardStepKey,
         serviceName,
         settingsCollection,
@@ -238,6 +240,33 @@ export function registerSetupRoutes(context = {}) {
 
             logger.error(`[${serviceName}] ⚠️ Failed to persist setup config snapshot: ${error.message}`)
             res.status(502).json({error: 'Unable to persist setup config snapshot.'})
+        }
+    })
+
+    app.get('/api/setup/status', async (_req, res) => {
+        const progressFallback = {items: [], status: 'idle', percent: null}
+
+        try {
+            const [completed, config, progress, debugSetting] = await Promise.all([
+                resolveSetupCompleted ? resolveSetupCompleted() : Promise.resolve(false),
+                setupClient.getSetupConfig().catch(() => null),
+                setupClient.getInstallProgress().catch(() => progressFallback),
+                readDebugSetting ? readDebugSetting().catch(() => null) : Promise.resolve(null),
+            ])
+
+            const progressStatus = normalizeString(progress?.status).toLowerCase()
+            const installing = ['pending', 'downloading', 'installing'].includes(progressStatus)
+            const configured = Boolean(config?.exists === true && config?.snapshot)
+
+            res.json({
+                completed: completed === true,
+                configured,
+                installing,
+                debugEnabled: debugSetting?.enabled === true,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to resolve setup status: ${error.message}`)
+            res.status(502).json({error: 'Unable to resolve setup status.'})
         }
     })
 

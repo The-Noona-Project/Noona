@@ -6,6 +6,9 @@ managed reading services behind a single Docker-first control plane.
 The supported release install path is Docker + Warden. If you are setting up a server, start
 with [ServerAdmin.md](ServerAdmin.md).
 
+Noona also builds on great upstream projects. Show some love to [Kavita](https://github.com/Kareadita/Kavita) and
+[Komf](https://github.com/Snd-R/komf).
+
 ## Quick Navigation
 
 - [Server admin guide](ServerAdmin.md)
@@ -25,11 +28,12 @@ with [ServerAdmin.md](ServerAdmin.md).
 ## What Noona Does
 
 - Warden starts, updates, and restores the managed Docker stack.
+- Warden keeps Mongo and Redis private to the stack and routes shared data access through Vault.
 - Moon is the main web UI for setup, settings, users, downloads, and daily admin work.
 - Portal handles Discord onboarding, recommendations, and Kavita bridge features.
 - Sage brokers setup, auth, and browser-facing API traffic for Moon.
 - Raven downloads content, builds library files, and keeps the library in sync.
-- Vault stores users, secrets, and shared service state.
+- Vault stores users, secrets, and shared service state over internal service-to-service HTTPS.
 - Managed Kavita and Komf round out the reading and metadata experience.
 
 ## Who Noona Is For

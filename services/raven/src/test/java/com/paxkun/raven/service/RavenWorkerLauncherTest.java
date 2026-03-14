@@ -1,3 +1,9 @@
+/**
+ * Covers raven worker launcher behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/RavenWorkerLauncher.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.service;
 
 import org.junit.jupiter.api.Test;
@@ -5,6 +11,10 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Covers raven worker launcher behavior.
+ */
 
 class RavenWorkerLauncherTest {
 

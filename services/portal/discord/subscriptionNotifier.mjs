@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Polls Raven and Vault state to deliver subscription chapter notifications.
+ * Related files:
+ * - clients/ravenClient.mjs
+ * - clients/vaultClient.mjs
+ * - tests/subscriptionNotifier.test.mjs
+ * - app/portalRuntime.mjs
+ * Times this file has been edited: 2
+ */
+
 const DEFAULT_SUBSCRIPTIONS_COLLECTION = 'portal_subscriptions';
 const DEFAULT_POLL_MS = 30000;
 const MAX_STORED_CHAPTER_KEYS = 2000;
@@ -282,6 +292,12 @@ const sendDirectMessage = async ({discordClient, userId, content}) => {
     return await user.send({content});
 };
 
+/**
+ * Creates subscription notifier.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createSubscriptionNotifier = ({
                                                discordClient,
                                                vaultClient,

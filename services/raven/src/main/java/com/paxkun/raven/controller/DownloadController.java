@@ -1,12 +1,25 @@
+/**
+ * Exposes Raven download search, queue, status, and pause endpoints.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/download/DownloadSearchRequest.java
+ * Times this file has been edited: 14
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
+import com.paxkun.raven.service.download.DownloadSearchRequest;
 import com.paxkun.raven.service.download.DownloadProgress;
+import com.paxkun.raven.service.download.QueueDownloadRequest;
+import com.paxkun.raven.service.download.QueueDownloadResult;
 import com.paxkun.raven.service.download.SearchTitle;
 import com.paxkun.raven.service.download.TitleDetails;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -45,6 +58,19 @@ public class DownloadController {
      */
     @GetMapping("/search/{titleName}")
     public ResponseEntity<SearchTitle> searchTitle(@PathVariable String titleName) {
+        return ResponseEntity.ok(runSearch(titleName));
+    }
+
+    @PostMapping("/search")
+    public ResponseEntity<SearchTitle> searchTitle(@RequestBody(required = false) DownloadSearchRequest request) {
+        String query = request != null && request.query() != null ? request.query().trim() : "";
+        if (query.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return ResponseEntity.ok(runSearch(query));
+    }
+
+    private SearchTitle runSearch(String titleName) {
         String sanitizedTitle = sanitizeForLog(titleName);
         logger.debug("DOWNLOAD_CONTROLLER", "Request received to search title: " + sanitizedTitle);
         SearchTitle result = downloadService.searchTitle(titleName);
@@ -55,8 +81,15 @@ public class DownloadController {
                 "Search completed for query: " + sanitizedTitle +
                         " | searchId=" + sanitizedSearchId +
                         " | options=" + optionCount);
-        return ResponseEntity.ok(result);
+        return result;
     }
+
+    /**
+     * Returns title details.
+     *
+     * @param url The source URL.
+     * @return The HTTP response.
+     */
 
     @GetMapping("/title-details")
     public ResponseEntity<TitleDetails> getTitleDetails(@RequestParam("url") String url) {
@@ -99,6 +132,35 @@ public class DownloadController {
         return ResponseEntity.ok(result);
     }
 
+    @PostMapping("/select")
+    public ResponseEntity<QueueDownloadResult> queueDownload(@RequestBody(required = false) QueueDownloadRequest request) {
+        String searchId = request != null && request.searchId() != null ? request.searchId().trim() : "";
+        Integer optionIndex = request != null ? request.optionIndex() : null;
+        if (searchId.isBlank() || optionIndex == null) {
+            QueueDownloadResult invalid = new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_INVALID_SELECTION,
+                    "searchId and optionIndex are required.",
+                    0,
+                    List.of(),
+                    List.of()
+            );
+            return ResponseEntity.badRequest().body(invalid);
+        }
+
+        String sanitizedSearchId = sanitizeForLog(searchId);
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Queue request received | searchId=" + sanitizedSearchId + " | optionIndex=" + optionIndex);
+        QueueDownloadResult result = downloadService.queueDownloadAllChaptersResult(searchId, optionIndex);
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Queue response | searchId=" + sanitizedSearchId +
+                        " | optionIndex=" + optionIndex +
+                        " | status=" + sanitizeForLog(result != null ? result.getStatus() : "") +
+                        " | message=" + sanitizeForLog(result != null ? result.getMessage() : ""));
+        return ResponseEntity.status(mapQueueResultStatus(result)).body(result);
+    }
+
     /**
      * Retrieves the current download queue and recently completed jobs.
      *
@@ -114,12 +176,24 @@ public class DownloadController {
         return ResponseEntity.ok(status);
     }
 
+    /**
+     * Returns history.
+     *
+     * @return The HTTP response.
+     */
+
     @GetMapping("/status/history")
     public ResponseEntity<List<DownloadProgress>> getHistory() {
         logger.debug("DOWNLOAD_CONTROLLER", "History request received");
         List<DownloadProgress> history = downloadService.getDownloadHistory();
         return ResponseEntity.ok(history);
     }
+
+    /**
+     * Returns status summary.
+     *
+     * @return The resulting Object>>.
+     */
 
     @GetMapping("/status/summary")
     public ResponseEntity<Map<String, Object>> getStatusSummary() {
@@ -167,6 +241,12 @@ public class DownloadController {
         return ResponseEntity.ok(payload);
     }
 
+    /**
+     * Pauses downloads.
+     *
+     * @return The resulting Object>>.
+     */
+
     @PostMapping("/pause")
     public ResponseEntity<Map<String, Object>> pauseDownloads() {
         logger.debug("DOWNLOAD_CONTROLLER", "Pause request received");
@@ -206,6 +286,22 @@ public class DownloadController {
             return "";
         }
         return value.replaceAll("[\\r\\n]", "").replaceAll("[^\\p{Alnum}\\s_-]", "").trim();
+    }
+
+    private HttpStatus mapQueueResultStatus(QueueDownloadResult result) {
+        String status = result != null ? result.getStatus() : null;
+        if (QueueDownloadResult.STATUS_INVALID_SELECTION.equals(status)) {
+            return HttpStatus.BAD_REQUEST;
+        }
+        if (QueueDownloadResult.STATUS_SEARCH_EXPIRED.equals(status)) {
+            return HttpStatus.GONE;
+        }
+        if (QueueDownloadResult.STATUS_ALREADY_ACTIVE.equals(status)
+                || QueueDownloadResult.STATUS_MAINTENANCE_PAUSED.equals(status)
+                || QueueDownloadResult.STATUS_EMPTY_RESULTS.equals(status)) {
+            return HttpStatus.CONFLICT;
+        }
+        return HttpStatus.ACCEPTED;
     }
 
     private Map<String, Object> toTaskPayload(DownloadProgress progress) {

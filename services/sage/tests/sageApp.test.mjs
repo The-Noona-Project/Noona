@@ -81,6 +81,9 @@ const createRavenStub = (overrides = {}) => ({
     async queueDownload() {
         throw new Error('queueDownload should not be called')
     },
+    async queueDownloadDetailed() {
+        throw new Error('queueDownloadDetailed should not be called')
+    },
     async getDownloadStatus() {
         throw new Error('getDownloadStatus should not be called')
     },
@@ -1312,7 +1315,7 @@ test('createDiscordSetupClient maps invalid Discord tokens to validation errors'
     assert.equal(destroyCalls.length, 1)
 })
 
-test('GET /api/setup/services requests installable set from Warden by default', async (t) => {
+test('GET /api/setup/services requests the full catalog from Warden by default', async (t) => {
     const fetchCalls = []
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -1337,7 +1340,7 @@ test('GET /api/setup/services requests installable set from Warden by default', 
     assert.equal(response.status, 200)
     await response.json()
 
-    assert.deepEqual(fetchCalls, ['http://warden.local/api/services?includeInstalled=false'])
+    assert.deepEqual(fetchCalls, ['http://warden.local/api/services?includeInstalled=true'])
 })
 
 test('GET /api/setup/services falls back across Warden base URLs', async (t) => {
@@ -1373,8 +1376,8 @@ test('GET /api/setup/services falls back across Warden base URLs', async (t) => 
     assert.deepEqual(payload.services, [{ name: 'noona-moon' }])
 
     assert.deepEqual(fetchCalls, [
-        'http://unreachable.local:4001/api/services?includeInstalled=false',
-        'http://warden-ok.local:4001/api/services?includeInstalled=false',
+        'http://unreachable.local:4001/api/services?includeInstalled=true',
+        'http://warden-ok.local:4001/api/services?includeInstalled=true',
     ])
 })
 
@@ -1478,7 +1481,42 @@ test('POST /api/setup/install forwards async install mode to setup client', asyn
     }])
 })
 
-test('POST /api/setup/install validates payload', async (t) => {
+test('POST /api/setup/install allows persisted setup installs with no explicit services', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices(services) {
+                calls.push(services)
+                return {status: 202, results: [], accepted: true, started: true, alreadyRunning: false, progress: null}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: []}),
+    })
+
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {
+        results: [],
+        accepted: true,
+        started: true,
+        alreadyRunning: false,
+        progress: null,
+    })
+    assert.deepEqual(calls, [[]])
+})
+
+test('POST /api/setup/install validates explicit service payloads', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         setupClient: {
@@ -1498,7 +1536,7 @@ test('POST /api/setup/install validates payload', async (t) => {
     const response = await fetch(`${baseUrl}/api/setup/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ services: [] }),
+        body: JSON.stringify({services: ['   ']}),
     })
 
     assert.equal(response.status, 400)
@@ -1583,6 +1621,42 @@ test('setupClient.installServices can request async forwarding to Warden', async
     assert.deepEqual(parsedBody.services, [{name: 'noona-sage'}])
 })
 
+test('setupClient.installServices can forward the persisted setup profile without an explicit services array', async (t) => {
+    const bodies = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            fetchImpl: async (url, options = {}) => {
+                bodies.push({url, body: options.body})
+                return {
+                    ok: true,
+                    status: 202,
+                    async json() {
+                        return {accepted: true, started: true, alreadyRunning: false, progress: null}
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({}),
+    })
+
+    assert.equal(response.status, 202)
+    await response.json()
+
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].url, 'http://warden.local/api/services/install?async=true')
+    assert.deepEqual(JSON.parse(bodies[0].body), {})
+})
+
 test('setupClient forwards Warden bearer auth when a WARDEN_API_TOKEN is configured', async (t) => {
     const requests = []
     const app = createSageApp({
@@ -1613,7 +1687,7 @@ test('setupClient forwards Warden bearer auth when a WARDEN_API_TOKEN is configu
     await response.json()
 
     assert.equal(requests.length, 1)
-    assert.equal(requests[0].url, 'http://warden.local/api/services?includeInstalled=false')
+    assert.equal(requests[0].url, 'http://warden.local/api/services?includeInstalled=true')
     assert.equal(requests[0].headers.Authorization, 'Bearer warden-secret')
 })
 
@@ -1672,6 +1746,49 @@ test('setup routes proxy setup config and storage layout through the setup clien
         snapshot: payload,
     })
     assert.deepEqual(calls, ['layout', 'get-config', {save: payload}])
+})
+
+test('GET /api/setup/status returns completion, config, progress, and debug state', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({status: 200, results: []}),
+            getSetupConfig: async () => ({
+                exists: true,
+                path: '/srv/noona/wardenm/noona-settings.json',
+                snapshot: {version: 3},
+                error: null,
+            }),
+            getInstallProgress: async () => ({
+                items: [{name: 'noona-kavita', status: 'installing'}],
+                status: 'installing',
+                percent: 30,
+            }),
+        },
+        vaultClient: {
+            mongo: {
+                findOne: async (_collection, query = {}) => query?.key === 'noona.debug'
+                    ? {enabled: true}
+                    : null,
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        completed: true,
+        configured: true,
+        installing: true,
+        debugEnabled: true,
+    })
 })
 
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
@@ -4060,7 +4177,7 @@ test('GET /api/raven/title/:uuid/files proxies Raven file listings', async (t) =
     assert.deepEqual(calls, [['title-files', {limit: '50'}]])
 })
 
-test('POST /api/raven/search forwards trimmed query to Raven client', async (t) => {
+test('POST /api/raven/search forwards trimmed special-character queries to Raven client', async (t) => {
     const queries = []
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -4078,12 +4195,12 @@ test('POST /api/raven/search forwards trimmed query to Raven client', async (t) 
     const response = await fetch(`${baseUrl}/api/raven/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: '  naruto  ' }),
+        body: JSON.stringify({query: "  D.Gray-man & JoJo's: Part 7/Steel Ball Run? #1%+()  "}),
     })
 
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { results: [{ title: 'Naruto' }] })
-    assert.deepEqual(queries, ['naruto'])
+    assert.deepEqual(queries, ["D.Gray-man & JoJo's: Part 7/Steel Ball Run? #1%+()"])
 })
 
 test('POST /api/raven/search validates missing query payloads', async (t) => {
@@ -4139,9 +4256,12 @@ test('POST /api/raven/download queues downloads via Raven client', async (t) => 
     const app = createSageApp({
         serviceName: 'test-sage',
         ravenClient: createRavenStub({
-            async queueDownload(payload) {
+            async queueDownloadDetailed(payload) {
                 payloads.push(payload)
-                return { status: 'queued' }
+                return {
+                    status: 202,
+                    payload: {status: 'queued', message: 'Download queued for: Naruto'},
+                }
             },
         }),
     })
@@ -4156,7 +4276,7 @@ test('POST /api/raven/download queues downloads via Raven client', async (t) => 
     })
 
     assert.equal(response.status, 202)
-    assert.deepEqual(await response.json(), { result: { status: 'queued' } })
+    assert.deepEqual(await response.json(), {status: 'queued', message: 'Download queued for: Naruto'})
     assert.deepEqual(payloads, [{ searchId: 'search-123', optionIndex: 2 }])
 })
 
@@ -4164,8 +4284,8 @@ test('POST /api/raven/download rejects invalid payloads', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         ravenClient: createRavenStub({
-            async queueDownload() {
-                throw new Error('queueDownload should not run')
+            async queueDownloadDetailed() {
+                throw new Error('queueDownloadDetailed should not run')
             },
         }),
     })
@@ -4196,7 +4316,7 @@ test('POST /api/raven/download surfaces Raven failures', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         ravenClient: createRavenStub({
-            async queueDownload() {
+            async queueDownloadDetailed() {
                 throw new Error('boom')
             },
         }),
@@ -4214,6 +4334,47 @@ test('POST /api/raven/download surfaces Raven failures', async (t) => {
     assert.equal(response.status, 502)
     const payload = await response.json()
     assert.ok(payload.error.includes('Unable to queue Raven download'))
+})
+
+test('POST /api/raven/download preserves Raven semantic failure statuses', async (t) => {
+    const payloads = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async queueDownloadDetailed(payload) {
+                payloads.push(payload)
+                return {
+                    status: 410,
+                    payload: {
+                        status: 'search_expired',
+                        message: 'Search session expired or not found. Please search again.',
+                        queuedCount: 0,
+                        queuedTitles: [],
+                        skippedTitles: [],
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/download`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({searchId: 'stale-search', optionIndex: 1}),
+    })
+
+    assert.equal(response.status, 410)
+    assert.deepEqual(await response.json(), {
+        status: 'search_expired',
+        message: 'Search session expired or not found. Please search again.',
+        queuedCount: 0,
+        queuedTitles: [],
+        skippedTitles: [],
+    })
+    assert.deepEqual(payloads, [{searchId: 'stale-search', optionIndex: 1}])
 })
 
 test('POST /api/raven/downloads/pause proxies Raven pause requests', async (t) => {

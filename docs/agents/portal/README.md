@@ -1,25 +1,73 @@
 # Portal AI Notes
 
-Portal handles Discord bot behavior, onboarding, recommendation notifications, and Kavita bridge features.
+Portal is Noona's Discord, onboarding, and Kavita bridge service. Most edits land in one of five areas: HTTP routes,
+Discord boot and commands, onboarding/login tokens, recommendation or subscription polling, or upstream client
+contracts.
 
 ## Read In This Order
 
 - [files-and-rules.md](files-and-rules.md)
 - [flows.md](flows.md)
+- [runtime-and-integrations.md](runtime-and-integrations.md)
+- [discord-commands-and-stores.md](discord-commands-and-stores.md)
 
-## Key Files
+## Service Shape
 
-- [app/portalRuntime.mjs](../../../services/portal/app/portalRuntime.mjs)
-- [routes/registerPortalRoutes.mjs](../../../services/portal/routes/registerPortalRoutes.mjs)
-- [discord/](../../../services/portal/discord/)
-- [commands/](../../../services/portal/commands/)
-- [storage/onboardingStore.mjs](../../../services/portal/storage/onboardingStore.mjs)
+- Boot starts in [initPortal.mjs](../../../services/portal/initPortal.mjs) and hands off to
+  [portalRuntime.mjs](../../../services/portal/app/portalRuntime.mjs).
+- [portalRuntime.mjs](../../../services/portal/app/portalRuntime.mjs) loads config, creates clients, optionally boots
+  Discord, starts notifiers, and then starts the HTTP server through
+  [createPortalApp.mjs](../../../services/portal/app/createPortalApp.mjs).
+- The browser-facing API lives almost entirely in
+  [registerPortalRoutes.mjs](../../../services/portal/routes/registerPortalRoutes.mjs).
+- Discord behavior is split across
+  [discord/client.mjs](../../../services/portal/discord/client.mjs),
+  [discord/interactionRouter.mjs](../../../services/portal/discord/interactionRouter.mjs),
+  [discord/commandSynchronizer.mjs](../../../services/portal/discord/commandSynchronizer.mjs), and the slash command
+  files in [commands/](../../../services/portal/commands/).
+- Recommendation and subscription background work lives in
+  [recommendationNotifier.mjs](../../../services/portal/discord/recommendationNotifier.mjs) and
+  [subscriptionNotifier.mjs](../../../services/portal/discord/subscriptionNotifier.mjs).
 
-## Change Map
+## Common Task Map
 
-- HTTP onboarding or Kavita bridge changes: routes
-- Discord login, sync, or permissions: `discord/`
-- slash commands: `commands/`
-- onboarding token behavior: `storage/onboardingStore.mjs`
+- Config, required env, service defaults:
+  [config/portalConfig.mjs](../../../services/portal/config/portalConfig.mjs)
+- Route payloads, onboarding, Kavita bridge, metadata routes:
+  [routes/registerPortalRoutes.mjs](../../../services/portal/routes/registerPortalRoutes.mjs)
+- Discord login, DM queueing, role checks, slash command sync:
+  [discord/](../../../services/portal/discord/)
+- Slash command behavior for `ding`, `scan`, `search`, `recommend`, and `subscribe`:
+  [commands/](../../../services/portal/commands/)
+- Onboarding token persistence and TTL behavior:
+  [storage/onboardingStore.mjs](../../../services/portal/storage/onboardingStore.mjs)
+- Upstream client contracts for Kavita, Komf, Raven, Vault, and Warden:
+  [clients/](../../../services/portal/clients/)
+- Raven chapter-to-volume mapping bridge:
+  [app/ravenTitleVolumeMap.mjs](../../../services/portal/app/ravenTitleVolumeMap.mjs)
 
-If Moon settings or admin setup steps need to change with the Portal change, update those docs too.
+## Editing Convention
+
+- First-party Portal `.mjs` files carry a top JSDoc header with a short file purpose, a few related Portal files, and a
+  `Times this file has been edited: N` counter.
+- Refresh that counter from git history when you materially edit the file, then add `1` for the current change.
+- Add or update JSDoc for exported functions and any non-trivial helpers touched in the same edit.
+
+## Cross-Service Impact
+
+- [Moon](../moon/README.md) depends on Portal for onboarding options, Kavita user management, metadata bridge routes,
+  and recommendation/user-facing links.
+- [Vault](../vault/README.md) stores Portal credentials, recommendations, subscriptions, and DM queue state.
+- [Raven](../raven/README.md) powers recommendation searches, download state, title repair work, and volume-map writes.
+- [Komf](../komf/README.md) backs metadata search, identify, and series-details lookups.
+- [Warden](../warden/README.md) is only used for a narrow set of read-side install/progress lookups and Moon URL
+  discovery.
+
+## Update Triggers
+
+- If Discord onboarding, command access, recommendation behavior, or Kavita handoff changes, update Moon/admin docs in
+  the same change.
+- If route payloads change, update
+  [portalApp.test.mjs](../../../services/portal/tests/portalApp.test.mjs) and any related command/notifier tests.
+- If a change expands Portal's Warden usage beyond read-only status/progress lookups, document that explicitly because
+  the current boundary is intentional.

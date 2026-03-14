@@ -11,6 +11,8 @@ recommendations, and the day-to-day admin UI.
 - [Moon AI docs](../../docs/agents/moon/README.md)
 - [App routes](src/app/)
 - [Noona UI components](src/components/noona/)
+- [Downloads add page](src/components/noona/DownloadsAddPage.tsx)
+- [Download queue result helper](src/components/noona/downloadQueueResults.mjs)
 - [Noona API proxies](src/app/api/noona/)
 - [Tests](tests/)
 
@@ -18,8 +20,12 @@ recommendations, and the day-to-day admin UI.
 
 - guides admins through first-run setup
 - provides the main settings and operations UI
+- keeps post-setup navigation task-based with `Home`, `Library`, `Downloads`, `Requests`, `Admin`, and a header
+  `Add download` action when permitted
 - handles Discord-first login and account management
 - surfaces downloads, libraries, subscriptions, and recommendation flows
+- treats Raven download queue attempts as successful only when Raven explicitly accepts them, so expired or invalid
+  search selections stay visible as real errors
 
 ## Who It Is For
 

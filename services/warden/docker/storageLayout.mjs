@@ -132,6 +132,7 @@ export function buildNoonaStorageLayout(rootPath, {vaultFolderName = 'vault'} = 
                 logs: buildFolderEntry(path.join(root, normalizedVaultFolder, 'logs'), '/var/log/noona'),
                 redis: buildFolderEntry(path.join(root, normalizedVaultFolder, 'redis'), '/data'),
                 mongo: buildFolderEntry(path.join(root, normalizedVaultFolder, 'mongo'), '/data/db'),
+                tls: buildFolderEntry(path.join(root, normalizedVaultFolder, 'tls'), '/var/lib/noona/vault-tls'),
             },
             'noona-redis': {
                 data: buildFolderEntry(path.join(root, normalizedVaultFolder, 'redis'), '/data'),

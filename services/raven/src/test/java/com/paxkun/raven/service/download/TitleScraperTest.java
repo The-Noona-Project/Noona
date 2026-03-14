@@ -1,3 +1,10 @@
+/**
+ * Covers title scraper behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/download/TitleScraper.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.service.download;
 
 import com.paxkun.raven.service.LoggerService;
@@ -13,6 +20,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+
+/**
+ * Covers title scraper behavior.
+ */
 
 class TitleScraperTest {
 

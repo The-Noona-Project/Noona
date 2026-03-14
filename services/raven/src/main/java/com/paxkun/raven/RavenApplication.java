@@ -1,3 +1,10 @@
+/**
+ * Bootstraps the Raven Spring application and worker-mode exit path.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/RavenWorkerLauncher.java
+ * - src/test/java/com/paxkun/raven/RavenApplicationTests.java
+ * Times this file has been edited: 3
+ */
 package com.paxkun.raven;
 
 import org.springframework.boot.SpringApplication;
@@ -11,6 +18,12 @@ import org.springframework.context.ConfigurableApplicationContext;
  */
 @SpringBootApplication
 public class RavenApplication {
+    /**
+     * Handles main.
+     *
+     * @param args The application arguments.
+     */
+
     public static void main(String[] args) {
         ConfigurableApplicationContext context = SpringApplication.run(RavenApplication.class, args);
         boolean workerMode = context.getEnvironment().getProperty("raven.worker.mode", Boolean.class, false);

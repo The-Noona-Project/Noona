@@ -1,3 +1,12 @@
+/**
+ * Exposes Raven VPN status, region, rotation, and login-test endpoints.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/VPNServices.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.LoggerService;
@@ -14,6 +23,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Exposes Raven VPN status, region, rotation, and login-test endpoints.
+ */
+
 @RestController
 @RequestMapping("/v1/vpn")
 @RequiredArgsConstructor
@@ -22,11 +35,23 @@ public class VpnController {
     private final VPNServices vpnServices;
     private final LoggerService logger;
 
+    /**
+     * Returns status.
+     *
+     * @return The HTTP response.
+     */
+
     @GetMapping("/status")
     public ResponseEntity<VpnRuntimeStatus> getStatus() {
         logger.debug("VPN_CONTROLLER", "Status request received");
         return ResponseEntity.ok(vpnServices.getStatus());
     }
+
+    /**
+     * Returns regions.
+     *
+     * @return The resulting Object>>.
+     */
 
     @GetMapping("/regions")
     public ResponseEntity<Map<String, Object>> getRegions() {

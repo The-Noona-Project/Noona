@@ -501,20 +501,6 @@ const STORAGE_LABELS: Record<string, string> = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-const normalizeSetupSelection = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return [];
-
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const entry of value) {
-        const normalized = normalizeString(entry).trim();
-        if (!normalized || seen.has(normalized)) continue;
-        seen.add(normalized);
-        out.push(normalized);
-    }
-
-    return out;
-};
 const parseBooleanEnvFlag = (value: unknown): boolean => {
     const normalized = normalizeString(value).trim().toLowerCase();
     if (!normalized) return false;
@@ -1676,26 +1662,22 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             const version = Number(parsed.version);
-            if (version !== 1 && version !== 2) {
+            if (version !== 1 && version !== 2 && version !== 3) {
                 throw new Error("Unsupported settings JSON version.");
             }
 
             const saveResponse = await fetch("/api/noona/setup/config", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(parsed),
+                body: JSON.stringify({...parsed, apply: false}),
             });
             const savePayload = (await saveResponse.json().catch(() => null)) as SetupConfigSnapshotResponse | null;
             if (!saveResponse.ok) {
                 throw new Error(parseError(savePayload, `Failed to load settings JSON (HTTP ${saveResponse.status}).`));
             }
 
-            const selectedServices = normalizeSetupSelection(savePayload?.selected ?? parsed.selected);
             const restarted = await updateEcosystemState("restart", {
-                body: {
-                    forceFull: true,
-                    ...(selectedServices.length > 0 ? {services: selectedServices} : {}),
-                },
+                body: {},
                 successMessage: "Loaded settings JSON and sent ecosystem restart.",
             });
             if (!restarted) {

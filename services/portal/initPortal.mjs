@@ -1,4 +1,11 @@
-// services/portal/initPortal.mjs
+/**
+ * @fileoverview Runs Portal as a standalone entrypoint and re-exports the runtime controls.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - config/portalConfig.mjs
+ * - app/createPortalApp.mjs
+ * Times this file has been edited: 5
+ */
 
 import {errMSG} from '../../utilities/etc/logger.mjs';
 import {createSignalHandler, startPortal, stopPortal} from './app/portalRuntime.mjs';

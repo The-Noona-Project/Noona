@@ -1,3 +1,11 @@
+/**
+ * Encapsulates Raven title scraper behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/test/java/com/paxkun/raven/service/DownloadServiceTest.java
+ * - src/test/java/com/paxkun/raven/service/download/TitleScraperTest.java
+ * Times this file has been edited: 16
+ */
 package com.paxkun.raven.service.download;
 
 import com.paxkun.raven.service.LoggerService;
@@ -34,6 +42,13 @@ public class TitleScraper {
 
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+    /**
+     * Searches manga.
+     *
+     * @param titleName The title name to search or resolve.
+     * @return The resulting String>>.
+     */
 
     public List<Map<String, String>> searchManga(String titleName) {
         List<Map<String, String>> results = new ArrayList<>();
@@ -150,6 +165,13 @@ public class TitleScraper {
         return results;
     }
 
+    /**
+     * Returns result by index.
+     *
+     * @param index The index.
+     * @return The resulting String>.
+     */
+
     public Map<String, String> getResultByIndex(int index) {
         int adjustedIndex = index - 1;
         if (lastSearchResults != null && adjustedIndex >= 0 && adjustedIndex < lastSearchResults.size()) {
@@ -159,9 +181,22 @@ public class TitleScraper {
         }
     }
 
+    /**
+     * Returns last search results.
+     *
+     * @return The resulting String>>.
+     */
+
     public List<Map<String, String>> getLastSearchResults() {
         return Collections.unmodifiableList(lastSearchResults);
     }
+
+    /**
+     * Returns chapters.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting String>>.
+     */
 
     public List<Map<String, String>> getChapters(String titleUrl) {
         List<Map<String, String>> rawChapters = new ArrayList<>();
@@ -204,10 +239,24 @@ public class TitleScraper {
         return chapters;
     }
 
+    /**
+     * Returns summary.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting message or value.
+     */
+
     public String getSummary(String titleUrl) {
         TitleDetails details = getTitleDetails(titleUrl);
         return details != null ? details.getSummary() : null;
     }
+
+    /**
+     * Returns title details.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting TitleDetails.
+     */
 
     public TitleDetails getTitleDetails(String titleUrl) {
         if (titleUrl == null || titleUrl.isBlank()) {

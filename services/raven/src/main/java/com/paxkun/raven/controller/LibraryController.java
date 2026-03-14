@@ -1,3 +1,12 @@
+/**
+ * Exposes Raven library, file-management, sync, and volume-map endpoints.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/main/java/com/paxkun/raven/service/library/DownloadedFile.java
+ * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
+ * - src/main/java/com/paxkun/raven/service/library/TitleFilesResponse.java
+ * Times this file has been edited: 12
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.LibraryService;
@@ -27,12 +36,26 @@ public class LibraryController {
     // ─────────────────────────────
 
     // Used by Docker/Warden for health check
+
+    /**
+     * Handles api health check.
+     *
+     * @return The HTTP response.
+     */
+
     @GetMapping("/api/health")
     public ResponseEntity<String> apiHealthCheck() {
         return ResponseEntity.ok("Raven is alive!");
     }
 
     // Optional: Used for internal status checks
+
+    /**
+     * Handles library health check.
+     *
+     * @return The HTTP response.
+     */
+
     @GetMapping("/v1/library/health")
     public ResponseEntity<String> libraryHealthCheck() {
         return ResponseEntity.ok("Raven Library API is up and running!");
@@ -42,11 +65,24 @@ public class LibraryController {
     // 📚 Library API
     // ─────────────────────────────
 
+    /**
+     * Returns all titles.
+     *
+     * @return The HTTP response.
+     */
+
     @GetMapping("/v1/library/getall")
     public ResponseEntity<List<NewTitle>> getAllTitles() {
         List<NewTitle> titles = libraryService.getAllTitleObjects();
         return ResponseEntity.ok(titles);
     }
+
+    /**
+     * Returns title.
+     *
+     * @param titleName The title name to search or resolve.
+     * @return The HTTP response.
+     */
 
     @GetMapping("/v1/library/get/{titleName}")
     public ResponseEntity<NewTitle> getTitle(@PathVariable String titleName) {
@@ -58,6 +94,13 @@ public class LibraryController {
         }
     }
 
+    /**
+     * Returns title by uuid.
+     *
+     * @param uuid The Raven title UUID.
+     * @return The HTTP response.
+     */
+
     @GetMapping("/v1/library/title/{uuid}")
     public ResponseEntity<NewTitle> getTitleByUuid(@PathVariable String uuid) {
         NewTitle title = libraryService.getTitleByUuid(uuid);
@@ -66,6 +109,13 @@ public class LibraryController {
         }
         return ResponseEntity.notFound().build();
     }
+
+    /**
+     * Creates title.
+     *
+     * @param request The request payload.
+     * @return The HTTP response.
+     */
 
     @PostMapping("/v1/library/title")
     public ResponseEntity<?> createTitle(@RequestBody LibraryTitleRequest request) {
@@ -76,6 +126,14 @@ public class LibraryController {
         NewTitle title = libraryService.resolveOrCreateTitle(request.title().trim(), request.sourceUrl());
         return ResponseEntity.ok(title);
     }
+
+    /**
+     * Updates title.
+     *
+     * @param uuid The Raven title UUID.
+     * @param request The request payload.
+     * @return The HTTP response.
+     */
 
     @PatchMapping("/v1/library/title/{uuid}")
     public ResponseEntity<?> updateTitle(@PathVariable String uuid, @RequestBody LibraryTitleUpdateRequest request) {
@@ -101,6 +159,13 @@ public class LibraryController {
         return ResponseEntity.ok(updated);
     }
 
+    /**
+     * Deletes title.
+     *
+     * @param uuid The Raven title UUID.
+     * @return The HTTP response.
+     */
+
     @DeleteMapping("/v1/library/title/{uuid}")
     public ResponseEntity<?> deleteTitle(@PathVariable String uuid) {
         if (uuid == null || uuid.isBlank()) {
@@ -114,6 +179,14 @@ public class LibraryController {
 
         return ResponseEntity.ok(java.util.Map.of("deleted", true));
     }
+
+    /**
+     * Returns title files.
+     *
+     * @param uuid The Raven title UUID.
+     * @param limit The limit.
+     * @return The HTTP response.
+     */
 
     @GetMapping("/v1/library/title/{uuid}/files")
     public ResponseEntity<?> listTitleFiles(
@@ -134,6 +207,14 @@ public class LibraryController {
         TitleFilesResponse response = new TitleFilesResponse(title.getUuid(), title.getTitleName(), files);
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * Deletes title files.
+     *
+     * @param uuid The Raven title UUID.
+     * @param request The request payload.
+     * @return The HTTP response.
+     */
 
     @DeleteMapping("/v1/library/title/{uuid}/files")
     public ResponseEntity<?> deleteTitleFiles(
@@ -161,14 +242,13 @@ public class LibraryController {
         ));
     }
 
-    public record LibraryTitleRequest(String title, String sourceUrl) {
-    }
-
-    public record LibraryTitleUpdateRequest(String title, String sourceUrl, String coverUrl) {
-    }
-
-    public record DeleteTitleFilesRequest(List<String> names) {
-    }
+    /**
+     * Applies title volume map.
+     *
+     * @param uuid The Raven title UUID.
+     * @param request The request payload.
+     * @return The HTTP response.
+     */
 
     @PostMapping("/v1/library/title/{uuid}/volume-map")
     public ResponseEntity<?> applyTitleVolumeMap(
@@ -206,13 +286,12 @@ public class LibraryController {
         ));
     }
 
-    public record TitleVolumeMapRequest(
-            String provider,
-            String providerSeriesId,
-            java.util.Map<String, Integer> chapterVolumeMap,
-            Boolean autoRename
-    ) {
-    }
+    /**
+     * Checks title for new chapters.
+     *
+     * @param uuid The Raven title UUID.
+     * @return The HTTP response.
+     */
 
     @PostMapping("/v1/library/title/{uuid}/checkForNew")
     public ResponseEntity<?> checkTitleForNewChapters(@PathVariable String uuid) {
@@ -228,15 +307,74 @@ public class LibraryController {
         return ResponseEntity.ok(result);
     }
 
+    /**
+     * Checks for new chapters.
+     *
+     * @return The HTTP response.
+     */
+
     @PostMapping("/v1/library/checkForNew")
     public ResponseEntity<LibraryService.LibrarySyncSummary> checkForNewChapters() {
         LibraryService.LibrarySyncSummary result = libraryService.checkForNewChapters();
         return ResponseEntity.ok(result);
     }
 
+    /**
+     * Checks available imports.
+     *
+     * @return The HTTP response.
+     */
+
     @PostMapping("/v1/library/imports/check")
     public ResponseEntity<LibraryService.LibraryImportSummary> checkAvailableImports() {
         LibraryService.LibraryImportSummary result = libraryService.checkAvailableImports();
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Represents Raven library, file-management, sync, and volume-map endpoints.
+     *
+     * @param title The Raven title.
+     * @param sourceUrl The source url.
+     */
+
+    public record LibraryTitleRequest(String title, String sourceUrl) {
+    }
+
+    /**
+     * Represents Raven library, file-management, sync, and volume-map endpoints.
+     *
+     * @param title The Raven title.
+     * @param sourceUrl The source url.
+     * @param coverUrl The cover url.
+     */
+
+    public record LibraryTitleUpdateRequest(String title, String sourceUrl, String coverUrl) {
+    }
+
+    /**
+     * Represents Raven library, file-management, sync, and volume-map endpoints.
+     *
+     * @param names The names.
+     */
+
+    public record DeleteTitleFilesRequest(List<String> names) {
+    }
+
+    /**
+     * Represents Raven library, file-management, sync, and volume-map endpoints.
+     *
+     * @param provider The provider.
+     * @param providerSeriesId The provider series id.
+     * @param chapterVolumeMap The chapter volume map.
+     * @param autoRename The auto rename.
+     */
+
+    public record TitleVolumeMapRequest(
+            String provider,
+            String providerSeriesId,
+            java.util.Map<String, Integer> chapterVolumeMap,
+            Boolean autoRename
+    ) {
     }
 }

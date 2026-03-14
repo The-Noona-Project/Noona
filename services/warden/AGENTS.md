@@ -20,5 +20,7 @@ behavior.
 - [Public README](readme.md)
 - [AI overview](../../docs/agents/warden/README.md)
 - [Files and rules](../../docs/agents/warden/files-and-rules.md)
+- [API surface and auth](../../docs/agents/warden/api-surface-and-auth.md)
+- [Setup profile and persistence](../../docs/agents/warden/setup-profile-and-persistence.md)
 - [Boot and restore flows](../../docs/agents/warden/boot-and-restore-flows.md)
 - [How Warden pulls Docker images](../../docs/agents/warden/howWardenPullsDockers.md)

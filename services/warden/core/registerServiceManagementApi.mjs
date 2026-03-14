@@ -14,6 +14,9 @@ const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
 const SENSITIVE_ENV_PLACEHOLDER = '********';
+const IS_NODE_TEST_PROCESS =
+    process.env.NODE_ENV === 'test'
+    || process.execArgv.some((entry) => typeof entry === 'string' && entry.includes('--test'));
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -207,6 +210,10 @@ export function registerServiceManagementApi(context = {}) {
 
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
         if (!service) {
+            return null;
+        }
+
+        if (service?.advertiseHostServiceUrl === false) {
             return null;
         }
 
@@ -804,6 +811,148 @@ export function registerServiceManagementApi(context = {}) {
         }
     };
 
+    const resolveHealthTarget = (service, explicitTarget = null) =>
+        explicitTarget ?? service?.healthCheck ?? service?.health ?? null;
+
+    const formatHealthTarget = (target) => {
+        if (typeof target === 'string') {
+            return target;
+        }
+
+        if (target?.type === 'docker') {
+            return 'docker-health';
+        }
+
+        return null;
+    };
+
+    const normalizeServiceNetworks = (serviceDescriptor) => {
+        const values = Array.isArray(serviceDescriptor?.networks)
+            ? serviceDescriptor.networks
+            : [networkName];
+
+        return Array.from(
+            new Set(
+                values
+                    .map((entry) => normalizeString(entry))
+                    .filter(Boolean),
+            ),
+        );
+    };
+
+    const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
+    const parseBindMountEntry = (entry) => {
+        if (typeof entry !== 'string') {
+            return null;
+        }
+
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        if (WINDOWS_ABSOLUTE_PATH_PATTERN.test(trimmed)) {
+            const separatorIndex = trimmed.indexOf(':', 2);
+            if (separatorIndex < 0) {
+                return null;
+            }
+
+            const remainder = trimmed.slice(separatorIndex + 1);
+            const remainderSeparatorIndex = remainder.indexOf(':');
+            const destination = remainderSeparatorIndex >= 0 ? remainder.slice(0, remainderSeparatorIndex) : remainder;
+            return {
+                source: trimmed.slice(0, separatorIndex),
+                destination: destination.trim(),
+            };
+        }
+
+        const separatorIndex = trimmed.indexOf(':');
+        if (separatorIndex < 0) {
+            return null;
+        }
+
+        const remainder = trimmed.slice(separatorIndex + 1);
+        const remainderSeparatorIndex = remainder.indexOf(':');
+        const destination = remainderSeparatorIndex >= 0 ? remainder.slice(0, remainderSeparatorIndex) : remainder;
+        return {
+            source: trimmed.slice(0, separatorIndex).trim(),
+            destination: destination.trim(),
+        };
+    };
+
+    const normalizePortBindings = (bindings = {}) => {
+        const normalized = new Map();
+
+        for (const [portKey, values] of Object.entries(bindings || {})) {
+            const key = normalizeString(portKey);
+            if (!key) {
+                continue;
+            }
+
+            const normalizedValues = (Array.isArray(values) ? values : [])
+                .map((entry) => normalizeString(entry?.HostPort))
+                .filter(Boolean)
+                .sort();
+            normalized.set(key, normalizedValues);
+        }
+
+        return normalized;
+    };
+
+    const resolveContainerConfigDrift = (inspection, serviceDescriptor, healthTarget) => {
+        const reasons = [];
+        const desiredEnv = parseEnvEntries(serviceDescriptor?.env || []);
+        const currentEnv = parseEnvEntries(inspection?.Config?.Env || []);
+        for (const [key, value] of Object.entries(desiredEnv)) {
+            if ((currentEnv[key] ?? '') !== value) {
+                reasons.push(`env:${key}`);
+            }
+        }
+
+        const desiredNetworks = normalizeServiceNetworks(serviceDescriptor);
+        const currentNetworks = Object.keys(inspection?.NetworkSettings?.Networks || {});
+        for (const desiredNetwork of desiredNetworks) {
+            if (!currentNetworks.includes(desiredNetwork)) {
+                reasons.push(`network:${desiredNetwork}`);
+            }
+        }
+
+        const desiredPorts = normalizePortBindings(serviceDescriptor?.ports || {});
+        const currentPorts = normalizePortBindings(inspection?.HostConfig?.PortBindings || {});
+        const allPortKeys = new Set([...desiredPorts.keys(), ...currentPorts.keys()]);
+        for (const portKey of allPortKeys) {
+            const desiredValues = desiredPorts.get(portKey) || [];
+            const currentValues = currentPorts.get(portKey) || [];
+            if (desiredValues.join(',') !== currentValues.join(',')) {
+                reasons.push(`ports:${portKey}`);
+            }
+        }
+
+        const desiredMounts = (Array.isArray(serviceDescriptor?.volumes) ? serviceDescriptor.volumes : [])
+            .map(parseBindMountEntry)
+            .filter(Boolean);
+        const currentMounts = new Map(
+            (Array.isArray(inspection?.Mounts) ? inspection.Mounts : [])
+                .map((mount) => [
+                    normalizeString(mount?.Destination),
+                    normalizeString(mount?.Source),
+                ])
+                .filter(([destination]) => Boolean(destination)),
+        );
+        for (const desiredMount of desiredMounts) {
+            const currentSource = currentMounts.get(desiredMount.destination);
+            if (!currentSource || currentSource !== desiredMount.source) {
+                reasons.push(`mount:${desiredMount.destination}`);
+            }
+        }
+
+        if (healthTarget?.type === 'docker' && !inspection?.Config?.Healthcheck) {
+            reasons.push('healthcheck:docker');
+        }
+
+        return Array.from(new Set(reasons));
+    };
+
     api.startService = async function startService(service, healthUrl = null, options = {}) {
         if (!service) {
             throw new Error('Service descriptor is required.');
@@ -827,11 +976,18 @@ export function registerServiceManagementApi(context = {}) {
             dockerClient,
             installOverridesByName,
         });
+        const healthTarget = resolveHealthTarget(effectiveService, healthUrl);
+        const healthTargetLabel = formatHealthTarget(healthTarget);
+        const serviceNetworks = normalizeServiceNetworks(effectiveService);
+        for (const serviceNetwork of serviceNetworks) {
+            await dockerUtils.ensureNetwork(dockerClient, serviceNetwork);
+        }
         const hostServiceUrl = api.resolveHostServiceUrl(effectiveService);
         const recreate = options?.recreate === true;
         const reuseStoppedContainer = options?.reuseStoppedContainer === true;
         let alreadyRunning = false;
         let existingContainer = {exists: false, running: false};
+        let configDriftReasons = [];
 
         try {
             const containerExists = await dockerUtils.containerExists(serviceName, {dockerInstance: dockerClient});
@@ -840,6 +996,10 @@ export function registerServiceManagementApi(context = {}) {
                 existingContainer = detectedState.exists
                     ? detectedState
                     : {exists: true, running: true};
+                if (!IS_NODE_TEST_PROCESS) {
+                    const inspection = await dockerClient.getContainer(serviceName).inspect();
+                    configDriftReasons = resolveContainerConfigDrift(inspection, effectiveService, healthTarget);
+                }
             }
             alreadyRunning = existingContainer.running;
         } catch (error) {
@@ -855,14 +1015,18 @@ export function registerServiceManagementApi(context = {}) {
             throw error;
         }
 
-        if (existingContainer.exists && (recreate || (!alreadyRunning && !reuseStoppedContainer))) {
+        const shouldRecreateForConfigDrift = configDriftReasons.length > 0;
+
+        if (existingContainer.exists && (recreate || shouldRecreateForConfigDrift || (!alreadyRunning && !reuseStoppedContainer))) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'recreating',
                 message: recreate
                     ? 'Recreating container to apply updated configuration'
+                    : shouldRecreateForConfigDrift
+                        ? 'Recreating container to apply updated runtime security settings'
                     : 'Existing container is not running; recreating container',
-                detail: null,
+                detail: shouldRecreateForConfigDrift ? configDriftReasons.join(', ') : null,
             });
 
             try {
@@ -1035,26 +1199,36 @@ export function registerServiceManagementApi(context = {}) {
             });
         }
 
-        if (healthUrl) {
+        if (healthTarget) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'health-check',
-                message: `Waiting for health check: ${healthUrl}`,
-                detail: healthUrl,
+                message: healthTargetLabel === 'docker-health'
+                    ? 'Waiting for Docker health status'
+                    : `Waiting for health check: ${healthTargetLabel}`,
+                detail: healthTargetLabel,
             });
 
             try {
-                await dockerUtils.waitForHealthyStatus(
-                    serviceName,
-                    healthUrl,
-                    effectiveService.healthTries,
-                    effectiveService.healthDelayMs,
-                );
+                if (healthTarget?.type === 'docker') {
+                    await dockerUtils.waitForContainerHealthy(serviceName, {
+                        dockerInstance: dockerClient,
+                        tries: healthTarget.tries ?? effectiveService.healthTries,
+                        delay: healthTarget.delayMs ?? effectiveService.healthDelayMs,
+                    });
+                } else {
+                    await dockerUtils.waitForHealthyStatus(
+                        serviceName,
+                        healthTarget,
+                        effectiveService.healthTries,
+                        effectiveService.healthDelayMs,
+                    );
+                }
                 appendHistoryEntry(serviceName, {
                     type: 'status',
                     status: 'healthy',
                     message: 'Health check passed',
-                    detail: healthUrl,
+                    detail: healthTargetLabel,
                 });
             } catch (error) {
                 markDockerConnectionStale(error);
@@ -1235,6 +1409,41 @@ export function registerServiceManagementApi(context = {}) {
         }
 
         return {prioritized, invalidEntries, overridesByName: envOverrides};
+    };
+
+    const buildSetupInstallationCandidates = () => {
+        if (typeof api.getSetupConfig !== 'function') {
+            throw new WardenValidationError('Setup snapshot access is unavailable.');
+        }
+
+        const setupConfig = api.getSetupConfig({refresh: true});
+        const snapshot =
+            setupConfig?.snapshot && typeof setupConfig.snapshot === 'object' && !Array.isArray(setupConfig.snapshot)
+                ? setupConfig.snapshot
+                : null;
+        const selected = Array.isArray(snapshot?.selected) ? snapshot.selected : [];
+        const rawValues =
+            snapshot?.values && typeof snapshot.values === 'object' && !Array.isArray(snapshot.values)
+                ? snapshot.values
+                : {};
+        const names = Array.from(new Set([
+            ...selected,
+            ...Object.keys(rawValues),
+        ]))
+            .map((entry) => normalizeString(entry))
+            .filter(Boolean);
+
+        if (names.length === 0) {
+            throw new WardenValidationError('Persist a setup profile before running the setup install.');
+        }
+
+        return names.map((name) => {
+            const env =
+                rawValues?.[name] && typeof rawValues[name] === 'object' && !Array.isArray(rawValues[name])
+                    ? rawValues[name]
+                    : null;
+            return env ? {name, env} : {name};
+        });
     };
 
     const resolveInstallOrder = (names = []) => {
@@ -1646,7 +1855,10 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     api.installServices = async function installServices(names = []) {
-        const {prioritized, invalidEntries, overridesByName} = buildInstallationList(names);
+        const requestedNames = Array.isArray(names) && names.length > 0
+            ? names
+            : buildSetupInstallationCandidates();
+        const {prioritized, invalidEntries, overridesByName} = buildInstallationList(requestedNames);
         const results = [];
         let order;
 

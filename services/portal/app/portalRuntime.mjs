@@ -1,4 +1,12 @@
-// services/portal/app/portalRuntime.mjs
+/**
+ * @fileoverview Coordinates Portal startup, dependency wiring, optional Discord boot, and shutdown.
+ * Related files:
+ * - app/createPortalApp.mjs
+ * - config/portalConfig.mjs
+ * - discord/client.mjs
+ * - clients/kavitaClient.mjs
+ * Times this file has been edited: 11
+ */
 
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 import {startPortalServer} from './createPortalApp.mjs';
@@ -31,6 +39,12 @@ const runtime = {
     warden: null,
 };
 
+/**
+ * Starts portal.
+ *
+ * @param {*} overrides - Input passed to the function.
+ * @returns {Promise<*>} The asynchronous result.
+ */
 export const startPortal = async (overrides = {}) => {
     const config = safeLoadPortalConfig(overrides.env ?? {});
     runtime.config = config;
@@ -163,6 +177,11 @@ export const startPortal = async (overrides = {}) => {
     return runtime;
 };
 
+/**
+ * Stops portal.
+ *
+ * @returns {Promise<*>} The asynchronous result.
+ */
 export const stopPortal = async () => {
     if (runtime.closeServer) {
         await runtime.closeServer();
@@ -200,6 +219,12 @@ export const stopPortal = async () => {
     log('[Portal] Shutdown complete.');
 };
 
+/**
+ * Creates a process-signal handler that stops Portal gracefully.
+ *
+ * @param {*} signal - Input passed to the function.
+ * @returns {*} The function result.
+ */
 export const createSignalHandler = (signal) => {
     log(`[Portal] Received ${signal}, shutting down.`);
     stopPortal()

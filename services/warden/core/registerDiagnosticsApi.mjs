@@ -335,6 +335,34 @@ export function registerDiagnosticsApi(context = {}) {
         }
     };
 
+    const inspectDockerHealthStatus = async (serviceNameToInspect) => {
+        const dockerClient = await ensureDockerConnection();
+        const inspection = await dockerClient.getContainer(serviceNameToInspect).inspect();
+        const state = inspection?.State || {};
+        const running = state.Running === true;
+        const containerStatus = typeof state.Status === 'string' ? state.Status.trim().toLowerCase() : 'unknown';
+        const healthStatus = typeof state?.Health?.Status === 'string'
+            ? state.Health.Status.trim().toLowerCase()
+            : '';
+        const lastLog = Array.isArray(state?.Health?.Log) && state.Health.Log.length > 0
+            ? state.Health.Log[state.Health.Log.length - 1]
+            : null;
+        const detail = normalizeString(lastLog?.Output)
+            || (running
+                ? `Container is ${containerStatus}${healthStatus ? ` (health: ${healthStatus})` : ''}.`
+                : `Container is not running (status: ${containerStatus}).`);
+        const normalizedStatus = healthStatus || (running ? 'running' : containerStatus || 'stopped');
+
+        return {
+            success: running && (!healthStatus || healthStatus === 'healthy'),
+            status: normalizedStatus,
+            detail,
+            body: {
+                state,
+            },
+        };
+    };
+
     api.getServiceHealth = async function getServiceHealth(name) {
         if (!name || typeof name !== 'string') {
             throw new Error('Service name must be a non-empty string.');
@@ -351,6 +379,20 @@ export function registerDiagnosticsApi(context = {}) {
         }
 
         const descriptor = entry.descriptor;
+        if (descriptor?.healthCheck?.type === 'docker') {
+            try {
+                const result = await inspectDockerHealthStatus(trimmedName);
+                return {
+                    status: result.status,
+                    detail: result.detail,
+                    body: result.body,
+                };
+            } catch (error) {
+                markDockerConnectionStale(error);
+                throw error;
+            }
+        }
+
         const candidateUrls = [];
         const seen = new Set();
         const addCandidate = (candidate) => {
@@ -584,7 +626,7 @@ export function registerDiagnosticsApi(context = {}) {
             }
         };
 
-        if (httpTestConfig) {
+        if (httpTestConfig && descriptor?.healthCheck?.type !== 'docker') {
             const {
                 path: pathOverride,
                 url: urlOverride,
@@ -750,44 +792,36 @@ export function registerDiagnosticsApi(context = {}) {
             };
         }
 
-        if (trimmedName === 'noona-mongo') {
+        if (descriptor?.healthCheck?.type === 'docker' || trimmedName === 'noona-mongo') {
             appendHistoryEntry(trimmedName, {
                 type: 'status',
                 status: 'testing',
-                message: 'Inspecting Mongo container status',
+                message: 'Inspecting container health status',
                 detail: null,
             });
 
             try {
-                const dockerClient = await ensureDockerConnection();
-                const container = dockerClient.getContainer(trimmedName);
-                const inspection = await container.inspect();
-                const state = inspection?.State || {};
-                const running = state.Running === true;
-                const status = state.Status || (running ? 'running' : 'stopped');
-                const healthStatus = state.Health?.Status || null;
-                const detailMessage = running
-                    ? `Mongo container is ${status}${healthStatus ? ` (health: ${healthStatus})` : ''}.`
-                    : `Mongo container is not running (status: ${status}).`;
+                const inspection = await inspectDockerHealthStatus(trimmedName);
+                const detailMessage = inspection.detail;
 
                 appendHistoryEntry(trimmedName, {
-                    type: running ? 'status' : 'error',
-                    status: running ? 'tested' : 'error',
-                    message: running ? 'Mongo container inspection succeeded' : 'Mongo container reported inactive',
+                    type: inspection.success ? 'status' : 'error',
+                    status: inspection.success ? 'tested' : 'error',
+                    message: inspection.success
+                        ? 'Container health inspection succeeded'
+                        : 'Container reported inactive or unhealthy',
                     detail: detailMessage,
-                    error: running ? null : detailMessage,
+                    error: inspection.success ? null : detailMessage,
                 });
 
                 return {
                     service: trimmedName,
-                    success: running,
+                    success: inspection.success,
                     supported: true,
-                    status,
+                    status: inspection.status,
                     detail: detailMessage,
-                    body: {
-                        state,
-                    },
-                    error: running ? undefined : detailMessage,
+                    body: inspection.body,
+                    error: inspection.success ? undefined : detailMessage,
                 };
             } catch (error) {
                 markDockerConnectionStale(error);
@@ -795,7 +829,7 @@ export function registerDiagnosticsApi(context = {}) {
                 appendHistoryEntry(trimmedName, {
                     type: 'error',
                     status: 'error',
-                    message: 'Mongo inspection failed',
+                    message: 'Container inspection failed',
                     detail: message,
                     error: message,
                 });

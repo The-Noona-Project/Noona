@@ -1,3 +1,12 @@
+/**
+ * Manages Raven VPN startup, status, rotation, and login testing.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
+ * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
+ * Times this file has been edited: 4
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.settings.DownloadVpnSettings;
@@ -92,6 +101,10 @@ public class VPNServices {
     private volatile List<VpnRegionOption> cachedRegions = List.of();
     private volatile long cachedRegionsAtMs = 0L;
 
+    /**
+     * Handles start.
+     */
+
     @PostConstruct
     public void start() {
         if (runtimeProperties != null && runtimeProperties.isWorkerMode()) {
@@ -100,6 +113,10 @@ public class VPNServices {
 
         scheduleTickLoop();
     }
+
+    /**
+     * Handles stop.
+     */
 
     @PreDestroy
     public void stop() {
@@ -110,6 +127,12 @@ public class VPNServices {
     protected void scheduleTickLoop() {
         scheduler.scheduleWithFixedDelay(this::runScheduleTick, 10, 30, TimeUnit.SECONDS);
     }
+
+    /**
+     * Returns status.
+     *
+     * @return The resulting VpnRuntimeStatus.
+     */
 
     public VpnRuntimeStatus getStatus() {
         DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
@@ -129,6 +152,12 @@ public class VPNServices {
         );
     }
 
+    /**
+     * Returns regions.
+     *
+     * @return The resulting list.
+     */
+
     public List<VpnRegionOption> listRegions() {
         try {
             return loadRegions();
@@ -138,9 +167,26 @@ public class VPNServices {
         }
     }
 
+    /**
+     * Handles rotate now.
+     *
+     * @param triggeredBy The triggered by.
+     * @return The resulting VpnRotationResult.
+     */
+
     public VpnRotationResult rotateNow(String triggeredBy) {
         return rotateNowInternal(Optional.ofNullable(triggeredBy).filter(s -> !s.isBlank()).orElse("manual"));
     }
+
+    /**
+     * Tests login.
+     *
+     * @param triggeredBy The triggered by.
+     * @param requestedRegion The requested region.
+     * @param requestedUsername The requested username.
+     * @param requestedPassword The requested password.
+     * @return The resulting VpnLoginTestResult.
+     */
 
     public VpnLoginTestResult testLogin(
             String triggeredBy,

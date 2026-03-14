@@ -1,3 +1,11 @@
+/**
+ * @fileoverview Wraps Portal's Raven recommendation, queue, and metadata bridge requests.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/ravenClient.test.mjs
+ * Times this file has been edited: 9
+ */
+
 const DEFAULT_TIMEOUT_MS = 10000;
 
 const normalizeUrl = (candidate) => {
@@ -117,6 +125,12 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT_MS) => {
     };
 };
 
+/**
+ * Creates portal raven client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createPortalRavenClient = ({
                                             baseUrl,
                                             baseUrls = [],

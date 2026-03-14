@@ -1,3 +1,9 @@
+/**
+ * Runs a single persisted Raven task in worker mode.
+ * Related files:
+ * - None yet.
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.service;
 
 import org.springframework.boot.ApplicationArguments;
@@ -15,6 +21,15 @@ public class RavenWorkerRunner implements ApplicationRunner {
     private final LoggerService logger;
     private final LinuxCpuAffinity cpuAffinity;
 
+    /**
+     * Creates a new raven worker runner instance.
+     *
+     * @param runtimeProperties The runtime properties.
+     * @param downloadService   The download service.
+     * @param logger            The logger.
+     * @param cpuAffinity       The cpu affinity.
+     */
+
     public RavenWorkerRunner(
             RavenRuntimeProperties runtimeProperties,
             DownloadService downloadService,
@@ -26,6 +41,12 @@ public class RavenWorkerRunner implements ApplicationRunner {
         this.logger = logger;
         this.cpuAffinity = cpuAffinity;
     }
+
+    /**
+     * Handles run.
+     *
+     * @param args The application arguments.
+    */
 
     @Override
     public void run(ApplicationArguments args) {

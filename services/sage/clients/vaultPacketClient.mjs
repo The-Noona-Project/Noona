@@ -1,6 +1,7 @@
 // services/sage/clients/vaultPacketClient.mjs
 
 import {resolveDefaultVaultUrls} from '../wizard/wizardStateClient.mjs'
+import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs'
 
 const normalizeUrl = (candidate) => {
     if (!candidate || typeof candidate !== 'string') {
@@ -16,7 +17,7 @@ const normalizeUrl = (candidate) => {
         return trimmed
     }
 
-    return `http://${trimmed}`
+    return `https://${trimmed}`
 }
 
 const parseJson = async (response) => {
@@ -65,6 +66,7 @@ export const createVaultPacketClient = ({
                                             logger = {},
                                             serviceName = env?.SERVICE_NAME || 'noona-sage',
                                             timeoutMs = 10000,
+                                            trustVaultUrl = ensureTrustedCaForUrl,
                                         } = {}) => {
     if (!token || typeof token !== 'string' || !token.trim()) {
         throw new Error('Vault API token is required to use the packet client.')
@@ -101,7 +103,9 @@ export const createVaultPacketClient = ({
 
             for (const candidate of candidates) {
                 try {
-                    const response = await fetchImpl(new URL(endpointPath, candidate).toString(), {
+                    const requestUrl = new URL(endpointPath, candidate).toString()
+                    trustVaultUrl(requestUrl, {env})
+                    const response = await fetchImpl(requestUrl, {
                         method,
                         headers: {
                             Accept: 'application/json',

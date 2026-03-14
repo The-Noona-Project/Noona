@@ -1,3 +1,12 @@
+/**
+ * Coordinates Raven search sessions, queueing, worker execution, persistence, and chapter downloads.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/library/NewChapter.java
+ * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
+ * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
+ * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
+ * Times this file has been edited: 32
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.download.*;
@@ -34,6 +43,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
+/**
+ * Coordinates Raven search sessions, queueing, worker execution, persistence, and chapter downloads.
+ */
 
 @Service
 public class DownloadService {
@@ -127,6 +140,10 @@ public class DownloadService {
         return executor;
     }
 
+    /**
+     * Handles init executor.
+     */
+
     @PostConstruct
     public void initExecutor() {
         if (isWorkerMode()) {
@@ -143,6 +160,10 @@ public class DownloadService {
         ensureExecutor();
         restorePersistedDownloadsForThreadMode();
     }
+
+    /**
+     * Handles shutdown executor.
+     */
 
     @PreDestroy
     public void shutdownExecutor() {
@@ -234,6 +255,13 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Searches title.
+     *
+     * @param titleName The title name to search or resolve.
+     * @return The resulting SearchTitle.
+     */
+
     public SearchTitle searchTitle(String titleName) {
         cleanupExpiredSearches();
 
@@ -263,6 +291,13 @@ public class DownloadService {
 
         return new SearchTitle(searchId, searchResults);
     }
+
+    /**
+     * Returns title details.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting TitleDetails.
+     */
 
     public TitleDetails getTitleDetails(String titleUrl) {
         return titleScraper.getTitleDetails(titleUrl);
@@ -320,6 +355,12 @@ public class DownloadService {
 
         return ACTIVE_TASK_STATUSES.contains(normalizeStatus(progress.getStatus()));
     }
+
+    /**
+     * Requests pause active downloads.
+     *
+     * @return The resulting PauseRequestResult.
+     */
 
     public PauseRequestResult requestPauseActiveDownloads() {
         if (isProcessWorkerMain()) {
@@ -403,10 +444,22 @@ public class DownloadService {
         return new PauseRequestResult(pausedImmediately, pausingAfterChapter);
     }
 
+    /**
+     * Begins maintenance pause.
+     *
+     * @param reason The reason for the operation.
+     */
+
     public void beginMaintenancePause(String reason) {
         maintenancePauseActive.set(true);
         logger.info("DOWNLOAD_SERVICE", "⏸️ Raven maintenance pause enabled. " + sanitizeForLog(reason));
     }
+
+    /**
+     * Ends maintenance pause.
+     *
+     * @param reason The reason for the operation.
+     */
 
     public void endMaintenancePause(String reason) {
         maintenancePauseActive.set(false);
@@ -416,9 +469,22 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Indicates whether maintenance pause active.
+     *
+     * @return True when the condition is satisfied.
+     */
+
     public boolean isMaintenancePauseActive() {
         return maintenancePauseActive.get();
     }
+
+    /**
+     * Handles wait for no active downloads.
+     *
+     * @param timeout The timeout.
+     * @return True when the condition is satisfied.
+     */
 
     public boolean waitForNoActiveDownloads(Duration timeout) {
         long timeoutMs = timeout == null ? TimeUnit.MINUTES.toMillis(20) : Math.max(1L, timeout.toMillis());
@@ -439,6 +505,12 @@ public class DownloadService {
 
         return !hasInFlightDownloads();
     }
+
+    /**
+     * Resumes paused downloads.
+     *
+     * @return The resulting count or numeric value.
+     */
 
     public int resumePausedDownloads() {
         List<DownloadProgress> pausedTasks = loadPersistedTasks(List.of("paused"));
@@ -527,9 +599,35 @@ public class DownloadService {
         finalizeProgress(titleName, progress);
     }
 
+    /**
+     * Queues download all chapters.
+     *
+     * @param searchId The Raven search session id.
+     * @param userIndex The user index.
+     * @return The resulting message or value.
+     */
+
     public String queueDownloadAllChapters(String searchId, int userIndex) {
+        return queueDownloadAllChaptersResult(searchId, userIndex).getMessage();
+    }
+
+    /**
+     * Queues download all chapters result.
+     *
+     * @param searchId  The Raven search session id.
+     * @param userIndex The user index.
+     * @return The resulting QueueDownloadResult.
+     */
+
+    public QueueDownloadResult queueDownloadAllChaptersResult(String searchId, int userIndex) {
         if (maintenancePauseActive.get()) {
-            return "⚠️ Raven is temporarily pausing new downloads while VPN rotation completes.";
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_MAINTENANCE_PAUSED,
+                    "Raven is temporarily pausing new downloads while VPN rotation completes.",
+                    0,
+                    List.of(),
+                    List.of()
+            );
         }
 
         List<Map<String, String>> results = getSearchResults(searchId);
@@ -543,7 +641,13 @@ public class DownloadService {
             logger.debug(
                     "DOWNLOAD_SERVICE",
                     "Search session missing or expired | searchId=" + sanitizedSearchId);
-            return "⚠️ Search session expired or not found. Please search again.";
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_SEARCH_EXPIRED,
+                    "Search session expired or not found. Please search again.",
+                    0,
+                    List.of(),
+                    List.of()
+            );
         }
         if (userIndex == 0) {
             logger.debug(
@@ -554,14 +658,21 @@ public class DownloadService {
                         "DOWNLOAD_SERVICE",
                         "No titles available to queue | searchId=" + sanitizedSearchId);
                 searchSessions.remove(searchId);
-                return "⚠️ No search results to download.";
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_EMPTY_RESULTS,
+                        "No search results to download.",
+                        0,
+                        List.of(),
+                        List.of()
+                );
             }
 
-            StringBuilder queued = new StringBuilder("✅ Queued downloads for: ");
             List<String> queuedTitles = new ArrayList<>();
+            List<String> skippedTitles = new ArrayList<>();
             for (Map<String, String> title : results) {
                 String titleName = title.get("title");
-                String sanitizedTitle = sanitizeForLog(titleName);
+                String safeTitleName = normalizeQueueTitle(titleName);
+                String sanitizedTitle = sanitizeForLog(safeTitleName);
                 logger.debug(
                         "DOWNLOAD_SERVICE",
                         "Evaluating title for queue | searchId=" + sanitizedSearchId +
@@ -570,14 +681,14 @@ public class DownloadService {
                     logger.debug(
                             "DOWNLOAD_SERVICE",
                             "Title already downloading | title=" + sanitizedTitle);
-                    logger.info("DOWNLOAD", "🔁 Skipping already active download: " + titleName);
+                    logger.info("DOWNLOAD", "Skipping already active download: " + titleName);
+                    skippedTitles.add(safeTitleName);
                     continue;
                 }
 
                 DownloadProgress progress = createQueuedProgress(titleName, title, "library-download");
                 queueProgressForExecution(titleName, title, progress);
-                queued.append(titleName).append(", ");
-                queuedTitles.add(sanitizedTitle);
+                queuedTitles.add(safeTitleName);
                 logger.debug(
                         "DOWNLOAD_SERVICE",
                         "Queued title for download | title=" + sanitizedTitle);
@@ -587,7 +698,32 @@ public class DownloadService {
                     "DOWNLOAD_SERVICE",
                     "Queued titles summary | searchId=" + sanitizedSearchId +
                             " | titles=" + String.join(";", queuedTitles));
-            return queued.toString();
+            if (queuedTitles.isEmpty()) {
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_ALREADY_ACTIVE,
+                        buildAlreadyActiveMessage(skippedTitles),
+                        0,
+                        List.of(),
+                        skippedTitles
+                );
+            }
+            if (!skippedTitles.isEmpty()) {
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_PARTIAL,
+                        "Queued " + queuedTitles.size() + " download(s). Skipped " + skippedTitles.size()
+                                + " already-active title(s).",
+                        queuedTitles.size(),
+                        queuedTitles,
+                        skippedTitles
+                );
+            }
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_QUEUED,
+                    "Queued downloads for: " + String.join(", ", queuedTitles),
+                    queuedTitles.size(),
+                    queuedTitles,
+                    List.of()
+            );
 
         } else {
             Map<String, String> selectedTitle;
@@ -598,10 +734,17 @@ public class DownloadService {
                         "DOWNLOAD_SERVICE",
                         "Invalid selection index | searchId=" + sanitizedSearchId +
                                 " | userIndex=" + userIndex);
-                return "⚠️ Invalid selection. Please choose a valid option.";
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_INVALID_SELECTION,
+                        "Invalid selection. Please choose a valid option.",
+                        0,
+                        List.of(),
+                        List.of()
+                );
             }
             String titleName = selectedTitle.get("title");
-            String sanitizedTitle = sanitizeForLog(titleName);
+            String safeTitleName = normalizeQueueTitle(titleName);
+            String sanitizedTitle = sanitizeForLog(safeTitleName);
 
             logger.debug(
                     "DOWNLOAD_SERVICE",
@@ -612,7 +755,13 @@ public class DownloadService {
                 logger.debug(
                         "DOWNLOAD_SERVICE",
                         "Active download already in progress | title=" + sanitizedTitle);
-                return "⚠️ Download already in progress for: " + titleName;
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_ALREADY_ACTIVE,
+                        "Download already in progress for: " + safeTitleName,
+                        0,
+                        List.of(),
+                        List.of(safeTitleName)
+                );
             }
 
             DownloadProgress progress = createQueuedProgress(titleName, selectedTitle, "library-download");
@@ -622,7 +771,13 @@ public class DownloadService {
                     "DOWNLOAD_SERVICE",
                     "Queued single title | title=" + sanitizedTitle +
                             " | searchId=" + sanitizedSearchId);
-            return "✅ Download queued for: " + titleName;
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_QUEUED,
+                    "Download queued for: " + safeTitleName,
+                    1,
+                    List.of(safeTitleName),
+                    List.of()
+            );
         }
     }
 
@@ -1244,6 +1399,16 @@ public class DownloadService {
         return sanitized;
     }
 
+    /**
+     * Builds chapter archive name.
+     *
+     * @param title The Raven title.
+     * @param chapterNumber The chapter number.
+     * @param pageCount The page count.
+     * @param domain The domain.
+     * @return The resulting message or value.
+    */
+
     public String buildChapterArchiveName(NewTitle title, String chapterNumber, int pageCount, String domain) {
         return formatChapterCbzName(settingsService.getDownloadNamingSettings(), title, chapterNumber, pageCount, domain);
     }
@@ -1565,9 +1730,22 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Fetches chapters.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting String>>.
+    */
+
     public List<Map<String, String>> fetchChapters(String titleUrl) {
         return fetchAllChaptersWithRetry(titleUrl);
     }
+
+    /**
+     * Returns download statuses.
+     *
+     * @return The resulting list.
+    */
 
     public List<DownloadProgress> getDownloadStatuses() {
         List<DownloadProgress> persisted = loadPersistedTasks(null);
@@ -1604,6 +1782,12 @@ public class DownloadService {
         return statuses;
     }
 
+    /**
+     * Returns download history.
+     *
+     * @return The resulting list.
+    */
+
     public List<DownloadProgress> getDownloadHistory() {
         List<DownloadProgress> persisted = loadPersistedTasks(null);
         if (!persisted.isEmpty()) {
@@ -1625,9 +1809,21 @@ public class DownloadService {
         return history;
     }
 
+    /**
+     * Returns configured download threads.
+     *
+     * @return The resulting count or numeric value.
+    */
+
     public int getConfiguredDownloadThreads() {
         return Math.max(1, configuredDownloadThreads);
     }
+
+    /**
+     * Returns active download count.
+     *
+     * @return The resulting count or numeric value.
+    */
 
     public int getActiveDownloadCount() {
         List<DownloadProgress> persisted = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
@@ -1644,6 +1840,12 @@ public class DownloadService {
         return activeCount;
     }
 
+    /**
+     * Returns primary active download status.
+     *
+     * @return The resulting DownloadProgress.
+    */
+
     public DownloadProgress getPrimaryActiveDownloadStatus() {
         List<DownloadProgress> persisted = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
         if (!persisted.isEmpty()) {
@@ -1657,6 +1859,12 @@ public class DownloadService {
                 .findFirst()
                 .orElse(null);
     }
+
+    /**
+     * Returns current task snapshot.
+     *
+     * @return The resulting DownloadProgress.
+    */
 
     public DownloadProgress getCurrentTaskSnapshot() {
         DownloadProgress active = getPrimaryActiveDownloadStatus();
@@ -1700,21 +1908,51 @@ public class DownloadService {
         logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to load cached Raven task snapshot: " + error.getMessage());
     }
 
+    /**
+     * Returns thread rate limits kbps.
+     *
+     * @return The resulting list.
+    */
+
     public List<Integer> getThreadRateLimitsKbps() {
         return new ArrayList<>(settingsService.getDownloadWorkerSettings(getConfiguredDownloadThreads()).getThreadRateLimitsKbps());
     }
+
+    /**
+     * Returns worker cpu core ids.
+     *
+     * @return The resulting list.
+    */
 
     public List<Integer> getWorkerCpuCoreIds() {
         return new ArrayList<>(settingsService.getDownloadWorkerSettings(getConfiguredDownloadThreads()).getCpuCoreIds());
     }
 
+    /**
+     * Returns available cpu ids.
+     *
+     * @return The resulting list.
+    */
+
     public List<Integer> getAvailableCpuIds() {
         return cpuAffinity == null ? List.of() : cpuAffinity.getAvailableCpuIds();
     }
 
+    /**
+     * Returns worker execution mode.
+     *
+     * @return The resulting message or value.
+    */
+
     public String getWorkerExecutionMode() {
         return resolveWorkerExecutionMode();
     }
+
+    /**
+     * Returns active workers.
+     *
+     * @return The resulting Object>>.
+    */
 
     public List<Map<String, Object>> getActiveWorkers() {
         List<Map<String, Object>> workers = new ArrayList<>();
@@ -1763,6 +2001,12 @@ public class DownloadService {
         return workers;
     }
 
+    /**
+     * Clears download status.
+     *
+     * @param titleName The title name to search or resolve.
+    */
+
     public void clearDownloadStatus(String titleName) {
         downloadProgress.remove(titleName);
         progressHistory.removeIf(progress -> progress.getTitle().equals(titleName));
@@ -1785,6 +2029,15 @@ public class DownloadService {
 
         logger.debug("DOWNLOAD_SERVICE", "Cleared progress entry for title=" + sanitizeForLog(titleName));
     }
+
+    /**
+     * Runs persisted task in worker.
+     *
+     * @param taskId The Raven task id.
+     * @param workerIndex The worker index.
+     * @param cpuCoreId The CPU core id.
+     * @param executionMode The worker execution mode.
+    */
 
     public void runPersistedTaskInWorker(String taskId, int workerIndex, int cpuCoreId, String executionMode) {
         String normalizedTaskId = taskId == null ? "" : taskId.trim();
@@ -2147,9 +2400,26 @@ public class DownloadService {
         return status == null ? "" : status.trim().toLowerCase(Locale.ROOT);
     }
 
+    /**
+     * Downloads single chapter.
+     *
+     * @param title The Raven title.
+     * @param chapterNumber The chapter number.
+     * @return True when the condition is satisfied.
+    */
+
     public boolean downloadSingleChapter(NewTitle title, String chapterNumber) {
         return downloadSingleChapter(title, chapterNumber, null);
     }
+
+    /**
+     * Downloads single chapter.
+     *
+     * @param title The Raven title.
+     * @param chapterNumber The chapter number.
+     * @param progress The progress.
+     * @return True when the condition is satisfied.
+    */
 
     public boolean downloadSingleChapter(NewTitle title, String chapterNumber, DownloadProgress progress) {
 
@@ -2686,6 +2956,24 @@ public class DownloadService {
         return value.replaceAll("[\\r\\n]", "").replaceAll("[^-\\p{Alnum}\\s_:]", "").trim();
     }
 
+    private String normalizeQueueTitle(String value) {
+        if (value == null) {
+            return "Unknown title";
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? "Unknown title" : trimmed;
+    }
+
+    private String buildAlreadyActiveMessage(List<String> skippedTitles) {
+        if (skippedTitles == null || skippedTitles.isEmpty()) {
+            return "Download already in progress.";
+        }
+        if (skippedTitles.size() == 1) {
+            return "Download already in progress for: " + skippedTitles.get(0);
+        }
+        return "Downloads already in progress for: " + String.join(", ", skippedTitles);
+    }
+
     private record ActiveWorkerProcess(
             String taskId,
             String title,
@@ -2719,6 +3007,13 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Represents Raven search sessions, queueing, worker execution, persistence, and chapter downloads.
+     *
+     * @param pausedImmediately The paused immediately.
+     * @param pausingAfterCurrentChapter The pausing after current chapter.
+    */
+
     public record PauseRequestResult(
             List<String> pausedImmediately,
             List<String> pausingAfterCurrentChapter
@@ -2729,6 +3024,12 @@ public class DownloadService {
                     ? List.of()
                     : List.copyOf(pausingAfterCurrentChapter);
         }
+
+        /**
+         * Returns affected tasks.
+         *
+         * @return The resulting count or numeric value.
+         */
 
         public int getAffectedTasks() {
             return pausedImmediately.size() + pausingAfterCurrentChapter.size();

@@ -1,3 +1,12 @@
+/**
+ * @fileoverview Routes Discord interactions to slash-command, autocomplete, and button handlers.
+ * Related files:
+ * - commands/index.mjs
+ * - discord/client.mjs
+ * - tests/discordCommands.test.mjs
+ * Times this file has been edited: 5
+ */
+
 import {MessageFlags} from 'discord.js';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
@@ -31,6 +40,12 @@ const resolveActor = interaction =>
     ?? interaction?.member?.user?.id
     ?? 'unknown user';
 
+/**
+ * Creates interaction handler.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createInteractionHandler = ({
                                              commandMap,
                                              roleManager,

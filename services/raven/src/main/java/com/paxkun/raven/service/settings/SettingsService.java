@@ -1,3 +1,12 @@
+/**
+ * Coordinates Raven settings behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/VaultService.java
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/VPNServices.java
+ * Times this file has been edited: 7
+ */
 package com.paxkun.raven.service.settings;
 
 import com.paxkun.raven.service.LoggerService;
@@ -33,6 +42,12 @@ public class SettingsService {
     private volatile long lastWorkerWarningAtMs;
     private volatile long lastVpnWarningAtMs;
 
+    /**
+     * Returns download naming settings.
+     *
+     * @return The resulting DownloadNamingSettings.
+     */
+
     public synchronized DownloadNamingSettings getDownloadNamingSettings() {
         long now = System.currentTimeMillis();
         DownloadNamingSettings current = cachedNaming;
@@ -46,6 +61,13 @@ public class SettingsService {
         return loaded;
     }
 
+    /**
+     * Returns download worker settings.
+     *
+     * @param threadCount The thread count.
+     * @return The resulting DownloadWorkerSettings.
+     */
+
     public synchronized DownloadWorkerSettings getDownloadWorkerSettings(int threadCount) {
         long now = System.currentTimeMillis();
         DownloadWorkerSettings current = cachedWorkerSettings;
@@ -58,6 +80,12 @@ public class SettingsService {
         cachedWorkerSettingsAtMs = now;
         return loaded;
     }
+
+    /**
+     * Returns download vpn settings.
+     *
+     * @return The resulting DownloadVpnSettings.
+     */
 
     public synchronized DownloadVpnSettings getDownloadVpnSettings() {
         long now = System.currentTimeMillis();

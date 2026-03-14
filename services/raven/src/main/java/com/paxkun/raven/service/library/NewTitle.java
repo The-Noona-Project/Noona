@@ -1,3 +1,12 @@
+/**
+ * Encapsulates Raven new title behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/controller/LibraryController.java
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/test/java/com/paxkun/raven/controller/LibraryControllerTest.java
+ * Times this file has been edited: 13
+ */
 package com.paxkun.raven.service.library;
 
 import com.fasterxml.jackson.annotation.JsonAlias;

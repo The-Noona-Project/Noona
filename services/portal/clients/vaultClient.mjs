@@ -1,6 +1,13 @@
-// services/portal/clients/vaultClient.mjs
+/**
+ * @fileoverview Wraps Vault secret and collection operations used by Portal.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/vaultClient.test.mjs
+ * Times this file has been edited: 6
+ */
 
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
+import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs';
 
 const DEFAULT_TIMEOUT = 10000;
 const DEFAULT_RECOMMENDATIONS_COLLECTION = 'portal_recommendations';
@@ -64,11 +71,19 @@ const isRedisNotFoundError = error => {
     return /key not found/i.test(bodyError);
 };
 
+/**
+ * Creates vault client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createVaultClient = ({
                                       baseUrl,
                                       token,
                                       timeoutMs = DEFAULT_TIMEOUT,
                                       fetchImpl = fetch,
+                                      env = process.env,
+                                      trustVaultUrl = ensureTrustedCaForUrl,
                                   } = {}) => {
     if (!baseUrl) {
         throw new Error('Vault base URL is required.');
@@ -86,6 +101,7 @@ export const createVaultClient = ({
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const {controller, cleanup} = createAbortController(timeoutMs);
             try {
+                trustVaultUrl(url, {env});
                 const response = await fetchImpl(url, {
                     method,
                     headers: {

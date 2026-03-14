@@ -1,3 +1,11 @@
+/**
+ * @fileoverview Wraps Portal's Komf metadata lookup and series-detail requests.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/komfClient.test.mjs
+ * Times this file has been edited: 3
+ */
+
 const DEFAULT_TIMEOUT = 10000;
 
 const serializeBody = body => (body == null ? undefined : JSON.stringify(body));
@@ -37,6 +45,12 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT) => {
     return {controller, cleanup};
 };
 
+/**
+ * Creates komf client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createKomfClient = ({
                                      baseUrl,
                                      timeoutMs = DEFAULT_TIMEOUT,

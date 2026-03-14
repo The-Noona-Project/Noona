@@ -8,6 +8,7 @@
 import dotenv from 'dotenv';
 import {debugMSG, isDebugEnabled, log, setDebug, warn} from '../../utilities/etc/logger.mjs';
 import {createVaultApp} from './app/createVaultApp.mjs';
+import {createVaultServer} from './app/createVaultServer.mjs';
 
 dotenv.config();
 
@@ -17,4 +18,9 @@ const {app, port} = createVaultApp({
     setDebug,
 });
 
-app.listen(port, () => log(`Vault listening on port ${port}`));
+const {server, protocol} = createVaultServer({
+    app,
+    env: process.env,
+});
+
+server.listen(port, () => log(`Vault listening on ${protocol.toUpperCase()} port ${port}`));

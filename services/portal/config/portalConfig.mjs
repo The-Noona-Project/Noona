@@ -1,4 +1,10 @@
-// services/portal/config/portalConfig.mjs
+/**
+ * @fileoverview Loads, normalizes, and validates Portal's runtime configuration.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/config.test.mjs
+ * Times this file has been edited: 9
+ */
 
 import dotenv from 'dotenv';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
@@ -117,6 +123,12 @@ const collectMissing = (env) => {
     return missing;
 };
 
+/**
+ * Loads, validates, and freezes Portal configuration.
+ *
+ * @param {*} overrides - Input passed to the function.
+ * @returns {*} The function result.
+ */
 export const loadPortalConfig = (overrides = {}) => {
     if (!envLoaded) {
         dotenv.config({path: DEFAULT_ENV_PATH});
@@ -224,6 +236,12 @@ export const loadPortalConfig = (overrides = {}) => {
     return Object.freeze(config);
 };
 
+/**
+ * Loads Portal configuration and logs failures before rethrowing them.
+ *
+ * @param {*} overrides - Input passed to the function.
+ * @returns {*} The function result.
+ */
 export const safeLoadPortalConfig = (overrides = {}) => {
     try {
         return loadPortalConfig(overrides);

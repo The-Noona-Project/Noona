@@ -19,6 +19,7 @@ stack depends on.
 - authenticates service-to-service requests
 - stores Noona users and shared secrets
 - brokers Mongo and Redis-backed packet operations for the stack
+- serves the stack over internal HTTPS when managed by Warden
 
 ## Who It Is For
 
@@ -34,7 +35,8 @@ stack depends on.
 ## How It Fits Into Noona
 
 Vault sits behind Moon, Sage, Portal, Raven, and Warden. It is an internal service, but its health matters to almost
-every admin-facing flow.
+every admin-facing flow. The supported stack keeps Mongo and Redis private and expects other services to reach shared
+data through Vault instead of direct database ports.
 
 ## Next Steps
 

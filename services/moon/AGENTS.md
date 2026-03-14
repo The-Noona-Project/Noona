@@ -19,4 +19,6 @@ Moon is Noona's web UI for setup, login, settings, users, downloads, and recomme
 - [Public README](README.md)
 - [AI overview](../../docs/agents/moon/README.md)
 - [Files and rules](../../docs/agents/moon/files-and-rules.md)
+- [API and proxy boundaries](../../docs/agents/moon/api-and-proxy-boundaries.md)
+- [Setup, auth, and UI state](../../docs/agents/moon/setup-auth-and-ui-state.md)
 - [Key flows](../../docs/agents/moon/flows.md)

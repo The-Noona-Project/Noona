@@ -1,3 +1,12 @@
+/**
+ * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/download/DownloadProgress.java
+ * - src/main/java/com/paxkun/raven/service/library/NewChapter.java
+ * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
+ * - src/main/java/com/paxkun/raven/controller/DownloadController.java
+ * Times this file has been edited: 18
+ */
 package com.paxkun.raven.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -43,6 +52,13 @@ public class LibraryService {
     private static final String COLLECTION = "manga_library";
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_INSTANT;
     private volatile CheckActivity currentCheckActivity;
+
+    /**
+     * Handles add or update title.
+     *
+     * @param title   The Raven title.
+     * @param chapter The chapter.
+     */
 
     public void addOrUpdateTitle(NewTitle title, NewChapter chapter) {
         Map<String, Object> query = Map.of("uuid", title.getUuid());
@@ -161,6 +177,12 @@ public class LibraryService {
         writeTitleImportManifest(title);
     }
 
+    /**
+     * Returns all title objects.
+     *
+     * @return The resulting list.
+    */
+
     public List<NewTitle> getAllTitleObjects() {
         Map<String, Object> activeQuery = Map.of("deletedAt", Map.of("$exists", false));
         List<Map<String, Object>> raw = vaultService.findMany(COLLECTION, activeQuery);
@@ -168,6 +190,13 @@ public class LibraryService {
         }.getType();
         return vaultService.parseDocuments(raw, listType);
     }
+
+    /**
+     * Returns title.
+     *
+     * @param titleName The title name to search or resolve.
+     * @return The resulting NewTitle.
+    */
 
     public NewTitle getTitle(String titleName) {
         Map<String, Object> query = Map.of(
@@ -179,6 +208,13 @@ public class LibraryService {
 
         return vaultService.parseJson(doc, NewTitle.class);
     }
+
+    /**
+     * Returns title by uuid.
+     *
+     * @param uuid The Raven title UUID.
+     * @return The resulting NewTitle.
+    */
 
     public NewTitle getTitleByUuid(String uuid) {
         if (uuid == null || uuid.isBlank()) {
@@ -194,6 +230,16 @@ public class LibraryService {
 
         return vaultService.parseJson(doc, NewTitle.class);
     }
+
+    /**
+     * Updates title.
+     *
+     * @param uuid The Raven title UUID.
+     * @param titleName The title name to search or resolve.
+     * @param sourceUrl The source url.
+     * @param coverUrl The cover url.
+     * @return The resulting NewTitle.
+    */
 
     public NewTitle updateTitle(String uuid, String titleName, String sourceUrl, String coverUrl) {
         NewTitle existing = getTitleByUuid(uuid);
@@ -218,6 +264,13 @@ public class LibraryService {
         return existing;
     }
 
+    /**
+     * Deletes title.
+     *
+     * @param uuid The Raven title UUID.
+     * @return True when the condition is satisfied.
+    */
+
     public boolean deleteTitle(String uuid) {
         NewTitle existing = getTitleByUuid(uuid);
         if (existing == null) {
@@ -235,6 +288,14 @@ public class LibraryService {
         logger.warn("LIBRARY", "Archived title [" + existing.getTitleName() + "] (" + uuid + ")");
         return true;
     }
+
+    /**
+     * Returns downloaded files.
+     *
+     * @param title The Raven title.
+     * @param limit The limit.
+     * @return The resulting list.
+    */
 
     public List<com.paxkun.raven.service.library.DownloadedFile> listDownloadedFiles(NewTitle title, int limit) {
         if (title == null) {
@@ -287,6 +348,14 @@ public class LibraryService {
             return List.of();
         }
     }
+
+    /**
+     * Deletes downloaded files.
+     *
+     * @param title The Raven title.
+     * @param names The names.
+     * @return The resulting count or numeric value.
+    */
 
     public int deleteDownloadedFiles(NewTitle title, List<String> names) {
         if (title == null || names == null || names.isEmpty()) {
@@ -372,6 +441,17 @@ public class LibraryService {
 
         return deleted;
     }
+
+    /**
+     * Applies title volume map.
+     *
+     * @param uuid The Raven title UUID.
+     * @param provider The provider.
+     * @param providerSeriesId The provider series id.
+     * @param chapterVolumeMap The chapter volume map.
+     * @param autoRename The auto rename.
+     * @return The resulting VolumeMapApplyResult.
+    */
 
     public VolumeMapApplyResult applyTitleVolumeMap(
             String uuid,
@@ -558,6 +638,14 @@ public class LibraryService {
         return message.toString();
     }
 
+    /**
+     * Resolves or create title.
+     *
+     * @param titleName The title name to search or resolve.
+     * @param sourceUrl The source url.
+     * @return The resulting NewTitle.
+    */
+
     public NewTitle resolveOrCreateTitle(String titleName, String sourceUrl) {
         NewTitle existing = getTitle(titleName);
         if (existing != null) {
@@ -683,6 +771,12 @@ public class LibraryService {
             kavitaSyncService.ensureLibraryForType(normalizedType, normalizedFolder);
         }
     }
+
+    /**
+     * Scans kavita library for type.
+     *
+     * @param rawType The raw type.
+    */
 
     public void scanKavitaLibraryForType(String rawType) {
         String normalizedType = normalizeMediaType(rawType);
@@ -1561,6 +1655,13 @@ public class LibraryService {
         }
     }
 
+    /**
+     * Checks for new chapters by uuid.
+     *
+     * @param uuid The Raven title UUID.
+     * @return The resulting TitleSyncResult.
+    */
+
     public TitleSyncResult checkForNewChaptersByUuid(String uuid) {
         if (uuid == null || uuid.isBlank()) {
             return null;
@@ -1578,6 +1679,12 @@ public class LibraryService {
             clearCurrentCheckActivity();
         }
     }
+
+    /**
+     * Checks for new chapters.
+     *
+     * @return The resulting LibrarySyncSummary.
+    */
 
     public LibrarySyncSummary checkForNewChapters() {
         List<NewTitle> titles = getAllTitleObjects();
@@ -1626,6 +1733,12 @@ public class LibraryService {
                 message
         );
     }
+
+    /**
+     * Checks available imports.
+     *
+     * @return The resulting LibraryImportSummary.
+    */
 
     public LibraryImportSummary checkAvailableImports() {
         Path downloadedRoot = resolveDownloadedRoot();
@@ -1751,6 +1864,12 @@ public class LibraryService {
         return compareChapterNumbers(latest, current) > 0;
     }
 
+    /**
+     * Returns current check activity.
+     *
+     * @return The resulting CheckActivity.
+    */
+
     public CheckActivity getCurrentCheckActivity() {
         return currentCheckActivity;
     }
@@ -1797,6 +1916,26 @@ public class LibraryService {
     ) {
     }
 
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param uuid The Raven title UUID.
+     * @param title The Raven title.
+     * @param status The status.
+     * @param latestChapter The latest chapter.
+     * @param previousLastDownloaded The previous last downloaded.
+     * @param currentLastDownloaded The current last downloaded.
+     * @param sourceChapterCount The source chapter count.
+     * @param totalQueued The total queued.
+     * @param newChaptersQueued The new chapters queued.
+     * @param missingChaptersQueued The missing chapters queued.
+     * @param queuedChapters The queued chapters.
+     * @param newChapterNumbers The new chapter numbers.
+     * @param missingChapterNumbers The missing chapter numbers.
+     * @param downloadedChapterNumbers The downloaded chapter numbers.
+     * @param message The message to store.
+    */
+
     public record TitleSyncResult(
             String uuid,
             String title,
@@ -1816,6 +1955,18 @@ public class LibraryService {
     ) {
     }
 
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param checkedTitles The checked titles.
+     * @param updatedTitles The updated titles.
+     * @param queuedChapters The queued chapters.
+     * @param newChaptersQueued The new chapters queued.
+     * @param missingChaptersQueued The missing chapters queued.
+     * @param results The results.
+     * @param message The message to store.
+    */
+
     public record LibrarySyncSummary(
             int checkedTitles,
             int updatedTitles,
@@ -1826,6 +1977,19 @@ public class LibraryService {
             String message
     ) {
     }
+
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param uuid The Raven title UUID.
+     * @param title The Raven title.
+     * @param manifestPath The manifest path.
+     * @param status The status.
+     * @param totalQueued The total queued.
+     * @param newChaptersQueued The new chapters queued.
+     * @param missingChaptersQueued The missing chapters queued.
+     * @param message The message to store.
+    */
 
     public record LibraryImportResult(
             String uuid,
@@ -1838,6 +2002,20 @@ public class LibraryService {
             String message
     ) {
     }
+
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param manifestsFound The manifests found.
+     * @param importedTitles The imported titles.
+     * @param failedImports The failed imports.
+     * @param queuedChapters The queued chapters.
+     * @param newChaptersQueued The new chapters queued.
+     * @param missingChaptersQueued The missing chapters queued.
+     * @param scannedLibraries The scanned libraries.
+     * @param results The results.
+     * @param message The message to store.
+    */
 
     public record LibraryImportSummary(
             int manifestsFound,
@@ -1852,6 +2030,18 @@ public class LibraryService {
     ) {
     }
 
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param attempted The attempted.
+     * @param indexedFiles The indexed files.
+     * @param renamed The renamed.
+     * @param unchanged The unchanged.
+     * @param missingFiles The missing files.
+     * @param collisions The collisions.
+     * @param message The message to store.
+    */
+
     public record RenameSummary(
             boolean attempted,
             int indexedFiles,
@@ -1863,11 +2053,28 @@ public class LibraryService {
     ) {
     }
 
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param title The Raven title.
+     * @param renameSummary The rename summary.
+    */
+
     public record VolumeMapApplyResult(
             NewTitle title,
             RenameSummary renameSummary
     ) {
     }
+
+    /**
+     * Manages Raven library titles, file indexes, imports, sync, and volume-map renames.
+     *
+     * @param mode The mode.
+     * @param title The Raven title.
+     * @param checkedTitles The checked titles.
+     * @param totalTitles The total titles.
+     * @param updatedAt The updated at.
+    */
 
     public record CheckActivity(
             String mode,

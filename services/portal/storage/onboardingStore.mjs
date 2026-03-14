@@ -1,4 +1,11 @@
-// services/portal/storage/onboardingStore.mjs
+/**
+ * @fileoverview Persists onboarding tokens in Redis with TTL support.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - routes/registerPortalRoutes.mjs
+ * - tests/portalApp.test.mjs
+ * Times this file has been edited: 2
+ */
 
 import crypto from 'node:crypto';
 import redis from '../../../utilities/database/redis/redisClient.mjs';
@@ -6,6 +13,12 @@ import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const buildKey = (namespace, id) => `${namespace}:${id}`;
 
+/**
+ * Creates onboarding store.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createOnboardingStore = ({
                                           namespace = 'portal:onboarding',
                                           ttlSeconds = 900,

@@ -129,3 +129,20 @@ test('createWizardStateClient resetState clears the local fallback snapshot', as
     const afterReset = await client.loadState({fallbackToDefault: true})
     assert.equal(afterReset.completed, false)
 })
+
+test('createWizardStateClient falls back locally when HTTPS trust material is missing', async () => {
+    const client = createWizardStateClient({
+        token: 'test-token',
+        baseUrl: 'https://noona-vault:3005',
+        env: {},
+        trustVaultUrl: () => {
+            throw new Error('missing CA bundle')
+        },
+        fetchImpl: async () => {
+            throw new Error('fetch should not run when trust fails')
+        },
+    })
+
+    const state = await client.loadState({fallbackToDefault: true})
+    assert.equal(state.foundation.status, 'pending')
+})

@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Creates the Discord client wrapper, DM queue logic, and lifecycle hooks.
+ * Related files:
+ * - discord/interactionRouter.mjs
+ * - discord/commandSynchronizer.mjs
+ * - tests/discordClient.test.mjs
+ * - discord/roleManager.mjs
+ * Times this file has been edited: 5
+ */
+
 import crypto from 'node:crypto';
 import {Client, Events, GatewayIntentBits, Partials,} from 'discord.js';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
@@ -45,6 +55,12 @@ const isUnsupportedRedisListOperationError = error => {
     return /unsupported operation "(rpush|lpop)" for redis/i.test(bodyError || message);
 };
 
+/**
+ * Creates discord client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createDiscordClient = ({
                                         token,
                                         guildId,

@@ -1,7 +1,22 @@
+/**
+ * @fileoverview Synchronizes Portal's slash command definitions to the configured guild.
+ * Related files:
+ * - commands/index.mjs
+ * - discord/commandCatalog.mjs
+ * - discord/client.mjs
+ * Times this file has been edited: 2
+ */
+
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const ensureArray = (value) => (Array.isArray(value) ? value.filter(Boolean) : []);
 
+/**
+ * Synchronizes the current Portal command definitions to the configured Discord guild.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {Promise<*>} The asynchronous result.
+ */
 export const syncGuildCommands = async ({
                                             commandManager,
                                             guildId,
