@@ -978,6 +978,55 @@ test('installServices publishes wizard state transitions', async () => {
     assert.deepEqual(completion, { type: 'complete', hasErrors: false });
 });
 
+test('installServices gives Portal both managed networks while Mongo, Redis, and Vault keep their current wiring', async () => {
+    const started = [];
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis', image: 'redis'},
+                'noona-mongo': {name: 'noona-mongo', image: 'mongo'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', image: 'vault'},
+                'noona-portal': {name: 'noona-portal', image: 'portal'},
+            },
+        },
+        networkName: 'noona-control-test',
+        dataNetworkName: 'noona-data-test',
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async (service) => {
+        started.push({
+            name: service.name,
+            networks: [...(service.networks || [])],
+        });
+    };
+
+    await warden.installServices([{name: 'noona-portal'}]);
+
+    assert.deepEqual(
+        started.map((entry) => entry.name),
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-portal'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-mongo')?.networks,
+        ['noona-data-test'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-redis')?.networks,
+        ['noona-data-test'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-vault')?.networks,
+        ['noona-control-test', 'noona-data-test'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-portal')?.networks,
+        ['noona-control-test', 'noona-data-test'],
+    );
+});
+
 test('installServices publishes wizard errors when installs fail', async () => {
     const events = [];
     const warden = buildWarden({
@@ -1237,6 +1286,75 @@ test('installServices mounts managed service log folders and injects NOONA_LOG_D
 
     assert.ok(vaultStart.env.includes('NOONA_LOG_DIR=/var/log/noona'));
     assert.ok(vaultStart.volumes.includes(`${path.join('/srv/noona', 'vault-store', 'logs')}:/var/log/noona`));
+});
+
+test('startService bootstraps managed log folders through helper container during storage bootstrap', async () => {
+    const helperCreateCalls = [];
+    const lifecycleEvents = [];
+    let startedService = null;
+    const dockerInstance = createStubDocker({
+        createContainer: async (config) => {
+            helperCreateCalls.push(config);
+            return {
+                start: async () => {
+                    lifecycleEvents.push('helper:start');
+                },
+                wait: async () => {
+                    lifecycleEvents.push('helper:wait');
+                    return {StatusCode: 0};
+                },
+            };
+        },
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service) => {
+            lifecycleEvents.push('service:start');
+            startedService = service;
+            return {Id: 'noona-moon-container'};
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        dockerInstance,
+        dockerUtils,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    user: '1000:1001',
+                },
+            },
+        },
+        storageLayoutBootstrap: true,
+    });
+
+    await warden.startService({
+        name: 'noona-moon',
+        image: 'moon',
+        port: 3000,
+        user: '1000:1001',
+    });
+
+    assert.deepEqual(lifecycleEvents, ['helper:start', 'helper:wait', 'service:start']);
+    assert.equal(helperCreateCalls.length, 1);
+    assert.equal(helperCreateCalls[0]?.Image, 'busybox:1.36');
+    assert.match(helperCreateCalls[0]?.HostConfig?.Binds?.[0] ?? '', /moon[\\/]logs:\/target$/);
+    assert.match(helperCreateCalls[0]?.Cmd?.[2] ?? '', /mkdir -p \/target/);
+    assert.match(helperCreateCalls[0]?.Cmd?.[2] ?? '', /chown -R 1000:1001 \/target; chmod 775 \/target/);
+    assert.ok(startedService?.env?.includes('NOONA_LOG_DIR=/var/log/noona'));
+    assert.ok(startedService?.volumes?.includes(`${path.join('/srv/noona', 'moon', 'logs')}:/var/log/noona`));
 });
 
 test('restartService fails fast when containerized Warden is missing the same-path NOONA_DATA_ROOT bind', async () => {
@@ -4129,6 +4247,44 @@ test('Moon MOON_EXTERNAL_URL override publishes external hostServiceUrl metadata
     const services = await warden.listServices({includeInstalled: true});
     const moonService = services.find((entry) => entry.name === 'noona-moon');
     assert.equal(moonService?.hostServiceUrl, 'https://moon.example.com/');
+});
+
+test('Moon SAGE_BASE_URL override persists runtime config and returns it in service config', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}, {key: 'SAGE_BASE_URL'}],
+                },
+                'noona-sage': {name: 'noona-sage', image: 'sage'},
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        env: {HOST_SERVICE_URL: 'http://localhost'},
+        hostDockerSockets: [],
+    });
+
+    await warden.updateServiceConfig('noona-moon', {
+        env: {SAGE_BASE_URL: 'https://sage.example.com'},
+    });
+
+    const moonConfig = warden.getServiceConfig('noona-moon');
+    assert.equal(moonConfig.env.SAGE_BASE_URL, 'https://sage.example.com');
+    assert.deepEqual(moonConfig.runtimeConfig.env, {SAGE_BASE_URL: 'https://sage.example.com'});
 });
 
 test('managed noona-kavita inherits the current Moon URL for Noona login defaults', async () => {

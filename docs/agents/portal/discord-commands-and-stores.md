@@ -47,8 +47,8 @@ The legacy `join` command is intentionally absent. Tests lock that in.
 
 - Portal serializes direct messages per user.
 - Preferred queue path uses Vault Redis `rpush`/`lpop`.
-- Fallback queue path stores a JSON array with Redis `set`/`get`/`del`.
-- Runtime normally sets the DM queue namespace to `${PORTAL_REDIS_NAMESPACE}:discord-dm`.
+- Fallback queue path stores a JSON array with Vault Redis `set`/`get`/`del`.
+- Runtime normally sets the DM queue namespace to `PORTAL_DM_QUEUE_NAMESPACE`.
 - If queue writes fail, Portal can still fall back to in-memory per-user delivery for the current process lifetime.
 - The inbound `downloadall` DM command does not use that outbound DM queue.
   It is handled directly from Discord `MessageCreate` events in DMs.

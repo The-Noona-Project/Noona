@@ -4,7 +4,7 @@
  * - app/createPortalApp.mjs
  * - app/ravenTitleVolumeMap.mjs
  * - tests/portalApp.test.mjs
- * Times this file has been edited: 13
+ * Times this file has been edited: 16
  */
 
 import crypto from 'node:crypto';
@@ -765,6 +765,7 @@ export const registerPortalRoutes = ({
     const externalKavitaBaseUrl = normalizeAbsoluteHttpUrl(config?.kavita?.externalUrl);
     const kavitaLinkBaseUrl = externalKavitaBaseUrl || normalizeAbsoluteHttpUrl(kavitaBaseUrl);
     const requestTimeoutMs = normalizePositiveInteger(config?.http?.timeoutMs, DEFAULT_PROXY_TIMEOUT_MS);
+    const discordHealth = discord ? 'ok' : (config?.discord?.enabled ? 'degraded' : 'disabled');
 
     app.get('/health', (_req, res) => {
         res.json({
@@ -772,6 +773,7 @@ export const registerPortalRoutes = ({
             service: config.serviceName,
             guildId: config.discord.guildId,
             version: config.version ?? '2.0.0',
+            discord: discordHealth,
         });
     });
 

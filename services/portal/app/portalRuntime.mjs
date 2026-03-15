@@ -5,7 +5,7 @@
  * - config/portalConfig.mjs
  * - discord/client.mjs
  * - clients/kavitaClient.mjs
- * Times this file has been edited: 12
+ * Times this file has been edited: 20
  */
 
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
@@ -15,7 +15,6 @@ import createKomfClient from '../clients/komfClient.mjs';
 import createPortalRavenClient from '../clients/ravenClient.mjs';
 import createVaultClient from '../clients/vaultClient.mjs';
 import createPortalWardenClient from '../clients/wardenClient.mjs';
-import createOnboardingStore from '../storage/onboardingStore.mjs';
 import {safeLoadPortalConfig} from '../config/portalConfig.mjs';
 import {createDiscordClient} from '../discord/client.mjs';
 import {createDirectMessageHandler} from '../discord/directMessageRouter.mjs';
@@ -28,6 +27,7 @@ const runtime = {
     closeServer: null,
     config: null,
     discord: null,
+    discordStatus: null,
     kavita: null,
     komf: null,
     onboardingStore: null,
@@ -41,29 +41,65 @@ const runtime = {
 };
 
 /**
- * Starts portal.
+ * Resolves the onboarding-store factory without importing Redis-backed code during tests unless needed.
  *
- * @param {*} overrides - Input passed to the function.
- * @returns {Promise<*>} The asynchronous result.
+ * @param {Function|null|undefined} override - Optional onboarding-store factory override.
+ * @returns {Promise<Function>} The onboarding-store factory.
+ */
+const resolveOnboardingStoreFactory = async (override) => {
+    if (typeof override === 'function') {
+        return override;
+    }
+
+    const module = await import('../storage/onboardingStore.mjs');
+    return module.createOnboardingStore ?? module.default;
+};
+
+/**
+ * Normalizes the logger hooks used during Portal startup.
+ *
+ * @param {object} overrides - Optional logger overrides.
+ * @returns {{error: Function, log: Function}} The logger interface.
+ */
+const resolveRuntimeLogger = (overrides = {}) => ({
+    log: typeof overrides.log === 'function' ? overrides.log : log,
+    error: typeof overrides.error === 'function' ? overrides.error : errMSG,
+});
+
+/**
+ * Starts Portal with optional env, dependency, and logger overrides.
+ *
+ * @param {object} overrides - Optional startup overrides.
+ * @returns {Promise<object>} The shared Portal runtime state.
  */
 export const startPortal = async (overrides = {}) => {
+    const dependencies = overrides.dependencies ?? {};
+    const logger = resolveRuntimeLogger(overrides.logger);
     const config = safeLoadPortalConfig(overrides.env ?? {});
+    const createOnboardingStore = await resolveOnboardingStoreFactory(dependencies.createOnboardingStore);
     runtime.config = config;
+    runtime.closeServer = null;
+    runtime.discord = null;
+    runtime.discordStatus = config.discord.enabled ? 'ok' : 'disabled';
+    runtime.presenceUpdater = null;
+    runtime.recommendationNotifier = null;
+    runtime.subscriptionNotifier = null;
+    runtime.server = null;
 
-    const kavita = createKavitaClient({
+    const kavita = (dependencies.createKavitaClient ?? createKavitaClient)({
         baseUrl: config.kavita.baseUrl,
         apiKey: config.kavita.apiKey,
         timeoutMs: config.http.timeoutMs,
     });
     runtime.kavita = kavita;
 
-    const komf = createKomfClient({
+    const komf = (dependencies.createKomfClient ?? createKomfClient)({
         baseUrl: config.komf.baseUrl,
         timeoutMs: config.http.timeoutMs,
     });
     runtime.komf = komf;
 
-    const vault = createVaultClient({
+    const vault = (dependencies.createVaultClient ?? createVaultClient)({
         baseUrl: config.vault.baseUrl,
         token: config.vault.token,
         timeoutMs: config.http.timeoutMs,
@@ -71,18 +107,19 @@ export const startPortal = async (overrides = {}) => {
     runtime.vault = vault;
 
     const onboardingStore = createOnboardingStore({
-        namespace: config.redis.namespace,
+        namespace: config.redis.onboardingNamespace,
         ttlSeconds: config.redis.ttlSeconds,
+        vaultClient: vault,
     });
     runtime.onboardingStore = onboardingStore;
 
-    const raven = createPortalRavenClient({
+    const raven = (dependencies.createPortalRavenClient ?? createPortalRavenClient)({
         baseUrl: config.raven.baseUrl,
         timeoutMs: config.http.timeoutMs,
     });
     runtime.raven = raven;
 
-    const warden = createPortalWardenClient({
+    const warden = (dependencies.createPortalWardenClient ?? createPortalWardenClient)({
         baseUrl: config.warden.baseUrl,
         token: config.warden.token,
         timeoutMs: config.http.timeoutMs,
@@ -91,7 +128,7 @@ export const startPortal = async (overrides = {}) => {
 
     let discord = null;
     if (config.discord.enabled) {
-        const slashCommands = createPortalSlashCommands({
+        const slashCommands = (dependencies.createPortalSlashCommands ?? createPortalSlashCommands)({
             getDiscord: () => discord,
             kavita,
             raven,
@@ -100,72 +137,92 @@ export const startPortal = async (overrides = {}) => {
             moonBaseUrl: config.moon?.baseUrl,
             kavitaExternalUrl: config.kavita?.externalUrl,
         });
-        const directMessageHandler = createDirectMessageHandler({
+        const directMessageHandler = (dependencies.createDirectMessageHandler ?? createDirectMessageHandler)({
             superuserId: config.discord.superuserId,
             raven,
         });
 
-        discord = createDiscordClient({
+        discord = (dependencies.createDiscordClient ?? createDiscordClient)({
             token: config.discord.token,
             guildId: config.discord.guildId,
             clientId: config.discord.clientId,
             defaultRoleId: config.discord.defaultRoleId,
             commands: slashCommands,
             vaultClient: vault,
-            messageQueueNamespace: `${config.redis.namespace}:discord-dm`,
+            messageQueueNamespace: config.redis.directMessageNamespace,
             messageQueueTtlSeconds: config.redis.ttlSeconds,
             directMessageHandler,
         });
         runtime.discord = discord;
 
-        await discord.login();
+        try {
+            await discord.login();
+        } catch (error) {
+            const normalizedMessage = error?.message ?? String(error);
+            logger.error(`[Portal] Discord integration disabled due to auth failure; continuing in API-only mode: ${normalizedMessage}`);
 
-        const presenceUpdater = createDiscordPresenceUpdater({
-            client: discord.client,
-            ravenClient: raven,
-            wardenClient: warden,
-            pollMs: config.activity.pollMs,
-            logger: {
-                warn: errMSG,
-            },
-        });
-        presenceUpdater.start();
-        runtime.presenceUpdater = presenceUpdater;
+            try {
+                discord.destroy?.();
+            } catch (destroyError) {
+                logger.error(
+                    `[Portal] Failed to clean up Discord client after auth failure: ${destroyError?.message ?? destroyError}`,
+                );
+            }
 
-        const recommendationNotifier = createRecommendationNotifier({
-            discordClient: discord,
-            vaultClient: vault,
-            ravenClient: raven,
-            kavitaClient: kavita,
-            komfClient: komf,
-            wardenClient: warden,
-            moonBaseUrl: config.moon?.baseUrl,
-            kavitaBaseUrl: config.kavita?.externalUrl,
-            pollMs: config.recommendations?.pollMs,
-            logger: {
-                warn: errMSG,
-            },
-        });
-        recommendationNotifier.start();
-        runtime.recommendationNotifier = recommendationNotifier;
+            discord = null;
+            runtime.discord = null;
+            runtime.discordStatus = 'degraded';
+        }
 
-        const subscriptionNotifier = createSubscriptionNotifier({
-            discordClient: discord,
-            vaultClient: vault,
-            ravenClient: raven,
-            pollMs: config.recommendations?.pollMs,
-            logger: {
-                warn: errMSG,
-            },
-        });
-        subscriptionNotifier.start();
-        runtime.subscriptionNotifier = subscriptionNotifier;
+        if (discord) {
+            const presenceUpdater = (dependencies.createDiscordPresenceUpdater ?? createDiscordPresenceUpdater)({
+                client: discord.client,
+                ravenClient: raven,
+                wardenClient: warden,
+                pollMs: config.activity.pollMs,
+                logger: {
+                    warn: errMSG,
+                },
+            });
+            presenceUpdater.start();
+            runtime.presenceUpdater = presenceUpdater;
+
+            const recommendationNotifier = (dependencies.createRecommendationNotifier ?? createRecommendationNotifier)({
+                discordClient: discord,
+                vaultClient: vault,
+                ravenClient: raven,
+                kavitaClient: kavita,
+                komfClient: komf,
+                wardenClient: warden,
+                moonBaseUrl: config.moon?.baseUrl,
+                kavitaBaseUrl: config.kavita?.externalUrl,
+                pollMs: config.recommendations?.pollMs,
+                logger: {
+                    warn: errMSG,
+                },
+            });
+            recommendationNotifier.start();
+            runtime.recommendationNotifier = recommendationNotifier;
+
+            const subscriptionNotifier = (dependencies.createSubscriptionNotifier ?? createSubscriptionNotifier)({
+                discordClient: discord,
+                vaultClient: vault,
+                ravenClient: raven,
+                pollMs: config.recommendations?.pollMs,
+                logger: {
+                    warn: errMSG,
+                },
+            });
+            subscriptionNotifier.start();
+            runtime.subscriptionNotifier = subscriptionNotifier;
+        }
     } else {
         runtime.discord = null;
-        log('[Portal] Discord integration is disabled; starting HTTP API routes only.');
+        runtime.discordStatus = 'disabled';
+        logger.log('[Portal] Discord integration is disabled; starting HTTP API routes only.');
     }
 
-    const {server, close} = await startPortalServer({
+    const {server, close} = await (dependencies.startPortalServer ?? startPortalServer)({
         config,
         discord,
         kavita,
@@ -178,7 +235,7 @@ export const startPortal = async (overrides = {}) => {
     runtime.server = server;
     runtime.closeServer = close;
 
-    log('[Portal] Service started successfully.');
+    logger.log('[Portal] Service started successfully.');
 
     return runtime;
 };
@@ -211,6 +268,7 @@ export const stopPortal = async () => {
     runtime.server = null;
     runtime.closeServer = null;
     runtime.discord = null;
+    runtime.discordStatus = null;
     runtime.kavita = null;
     runtime.komf = null;
     runtime.vault = null;

@@ -19,7 +19,9 @@
 - Join defaults come from `PORTAL_JOIN_DEFAULT_ROLES` and `PORTAL_JOIN_DEFAULT_LIBRARIES`.
 - Default roles are `*,-admin`.
 - Default libraries are `*`.
-- Onboarding token storage defaults to Redis namespace `portal:onboarding` with a 900-second TTL.
+- Onboarding token storage defaults to Vault-backed Redis namespace `portal:onboarding`.
+- Discord DM queue storage defaults to Vault-backed Redis namespace `portal:discord:dm`.
+- Portal validates both namespaces as `portal:`-scoped and uses a 900-second TTL by default.
 
 ## Client Boundaries
 
@@ -27,8 +29,11 @@
     - Reads/writes `portal/<discordId>` secrets.
     - Stores recommendations in `portal_recommendations`.
     - Stores subscriptions in `portal_subscriptions`.
-    - Provides Redis helpers used by the DM queue and onboarding flows.
+  - Provides Redis helpers used by the onboarding and Discord DM queue flows.
     - Loads the managed Vault CA before HTTPS requests instead of disabling TLS verification globally.
+- [onboardingStore.mjs](../../../services/portal/storage/onboardingStore.mjs)
+    - Persists onboarding tokens through Vault-backed Redis helpers with a TTL.
+    - Requires Portal's Vault client to provide `redisSet`, `redisGet`, and `redisDel`.
 - [ravenClient.mjs](../../../services/portal/clients/ravenClient.mjs)
     - Searches Raven titles.
     - Reads library, title, and download status/history/summary.
@@ -57,15 +62,19 @@
 
 - [portalRuntime.mjs](../../../services/portal/app/portalRuntime.mjs) creates all upstream clients before deciding
   whether to start Discord.
-- If Discord is enabled, Portal also starts:
+- If Discord logs in successfully, Portal also starts:
   `presenceUpdater`
   `recommendationNotifier`
   `subscriptionNotifier`
-- The HTTP server still starts after Discord boot. Discord is not a separate process.
+- If Discord login fails, Portal logs that Discord was disabled due to auth failure, skips those Discord-only workers,
+  and still starts the HTTP server in API-only mode.
+- `/health` stays `ok` in that degraded startup path and reports Discord as `degraded`.
+- Discord is not a separate process; degraded mode lasts until the service is restarted with working Discord creds.
 
 ## Helpful Environment Flags
 
 - `PORTAL_REDIS_NAMESPACE`
+- `PORTAL_DM_QUEUE_NAMESPACE`
 - `PORTAL_TOKEN_TTL`
 - `PORTAL_ACTIVITY_POLL_MS`
 - `PORTAL_RECOMMENDATION_POLL_MS`

@@ -24,6 +24,8 @@ control-plane HTTP API for the stack.
 - Effective runtime behavior is descriptor-driven.
   Start from the descriptor, then layer persisted runtime overrides, then let Warden derive host URLs and
   managed-service defaults.
+- Managed Moon config should keep `SAGE_BASE_URL` blank for supported installs.
+  Use it only when `noona-moon` cannot reach `noona-sage` on `noona-network` and a custom Sage URL is required.
 - Managed network placement is part of the security model.
   `noona-mongo` and `noona-redis` stay on `noona-data-network` only, while `noona-vault` is the only managed service
   attached to both `noona-network` and `noona-data-network`.

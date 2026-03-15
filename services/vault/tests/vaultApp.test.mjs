@@ -542,6 +542,129 @@ test('POST /v1/vault/handle rejects packets outside the service policy scope', a
     );
 });
 
+test('POST /v1/vault/handle allows Portal Redis packets inside the portal namespace family', async () => {
+    const packets = [];
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async (packet) => {
+            packets.push(packet);
+            return {status: 'ok'};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const onboardingResponse = await fetch(`http://127.0.0.1:${port}/v1/vault/handle`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret',
+        },
+        body: JSON.stringify({
+            storageType: 'redis',
+            operation: 'set',
+            payload: {
+                key: 'portal:onboarding:token-1',
+                value: {discordId: 'user-1'},
+            },
+        }),
+    });
+    const dmResponse = await fetch(`http://127.0.0.1:${port}/v1/vault/handle`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret',
+        },
+        body: JSON.stringify({
+            storageType: 'redis',
+            operation: 'rpush',
+            payload: {
+                key: 'portal:discord:dm:user-1',
+                value: {content: 'queued'},
+            },
+        }),
+    });
+
+    assert.equal(onboardingResponse.status, 200);
+    assert.equal(dmResponse.status, 200);
+    assert.deepEqual(packets, [
+        {
+            storageType: 'redis',
+            operation: 'set',
+            payload: {
+                key: 'portal:onboarding:token-1',
+                value: {discordId: 'user-1'},
+            },
+        },
+        {
+            storageType: 'redis',
+            operation: 'rpush',
+            payload: {
+                key: 'portal:discord:dm:user-1',
+                value: {content: 'queued'},
+            },
+        },
+    ]);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
+test('POST /v1/vault/handle rejects Portal Redis packets outside the portal namespace family', async () => {
+    let called = false;
+    const {app} = createVaultApp({
+        env: {VAULT_TOKEN_MAP: 'noona-portal:secret'},
+        warn: () => {
+        },
+        log: () => {
+        },
+        debug: () => {
+        },
+        handlePacket: async () => {
+            called = true;
+            return {ok: true};
+        },
+    });
+
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const {port} = server.address();
+
+    const response = await fetch(`http://127.0.0.1:${port}/v1/vault/handle`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret',
+        },
+        body: JSON.stringify({
+            storageType: 'redis',
+            operation: 'set',
+            payload: {
+                key: 'discord:dm:user-1',
+                value: {content: 'blocked'},
+            },
+        }),
+    });
+
+    assert.equal(response.status, 403);
+    assert.equal(called, false);
+    const body = await response.json();
+    assert.match(body.error, /not allowed/i);
+
+    await new Promise((resolve, reject) =>
+        server.close(err => (err ? reject(err) : resolve()))
+    );
+});
+
 test('GET /api/secrets/:path returns stored secret payload', async () => {
     const packets = [];
     const {app} = createVaultApp({

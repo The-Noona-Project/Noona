@@ -15,13 +15,15 @@
 - On login, Portal clears stale global and guild commands, then registers the current guild command set.
 - The role manager can deny commands by guild or command-specific role through `REQUIRED_GUILD_ID` and
   `REQUIRED_ROLE_<COMMAND>`.
-- DM delivery is serialized per user and prefers Redis list packets, with a legacy Redis set/get/del fallback.
+- DM delivery is serialized per user and prefers Vault-backed Redis list packets, with a legacy Vault-backed Redis
+  set/get/del fallback.
 
 ## Onboarding And Kavita Login
 
 - Generic onboarding uses `/api/portal/onboard` and `/api/portal/tokens/consume`.
 - Noona Kavita handoff uses `/api/portal/kavita/noona-login` and `/api/portal/kavita/login-tokens/consume`.
-- The onboarding store persists one-time tokens in Redis with the configured namespace and TTL.
+- The onboarding store persists one-time tokens through Vault-backed Redis with `PORTAL_REDIS_NAMESPACE` and the
+  configured TTL.
 - Portal also persists per-user Kavita credentials in Vault secret path `portal/<discordId>` when possible.
 - The `noona-kavita-login` token type is special: it carries the one-time Kavita username/email/password handoff data.
 

@@ -20,8 +20,10 @@ and Kavita account handoff features.
 - handles onboarding and recommendation-related messaging
 - optionally accepts a DM-only `downloadall` admin command for one configured Discord superuser
 - bridges Moon and Kavita for account and metadata flows
-- stores its shared state through Vault's internal service API instead of direct database access
+- uses Vault's internal service API for shared secrets plus short-lived onboarding and Discord DM queue state
 - exposes the public-facing Portal HTTP endpoints used by the stack
+- keeps the HTTP API available if Discord bot auth fails, while Discord-only features stay disabled until creds are
+  fixed
 
 ## Who It Is For
 
@@ -38,7 +40,9 @@ and Kavita account handoff features.
 ## How It Fits Into Noona
 
 Portal is not the first thing admins install directly. Warden manages it as part of the stack, Moon exposes its
-settings, and Discord users see its behavior through the bot and onboarding links.
+settings, and Discord users see its behavior through the bot and onboarding links. Portal reaches shared storage
+through Vault instead of resolving managed Redis directly. If Discord auth breaks, Portal now degrades to API-only mode
+so website and bridge routes can stay healthy while the bot, presence, and notification loops remain off.
 
 ## Next Steps
 

@@ -2,7 +2,7 @@
  * @fileoverview Covers Portal config loading, normalization, and validation behavior.
  * Related files:
  * - config/portalConfig.mjs
- * Times this file has been edited: 11
+ * Times this file has been edited: 12
  */
 
 import assert from 'node:assert/strict';
@@ -78,6 +78,50 @@ test('safeLoadPortalConfig parses recommendation notifier poll interval', () => 
     });
 
     assert.equal(config.recommendations.pollMs, 45000);
+});
+
+test('safeLoadPortalConfig defaults Portal Redis namespaces for onboarding and DM queues', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+    });
+
+    assert.equal(config.redis.onboardingNamespace, 'portal:onboarding');
+    assert.equal(config.redis.directMessageNamespace, 'portal:discord:dm');
+});
+
+test('safeLoadPortalConfig parses Portal Redis namespace overrides', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        PORTAL_REDIS_NAMESPACE: 'portal:custom:onboarding',
+        PORTAL_DM_QUEUE_NAMESPACE: 'portal:custom:dm',
+    });
+
+    assert.equal(config.redis.onboardingNamespace, 'portal:custom:onboarding');
+    assert.equal(config.redis.directMessageNamespace, 'portal:custom:dm');
+});
+
+test('safeLoadPortalConfig rejects non-portal Redis namespace overrides', () => {
+    assert.throws(
+        () =>
+            safeLoadPortalConfig({
+                ...REQUIRED_ENV,
+                VAULT_ACCESS_TOKEN: 'vault-token',
+                PORTAL_REDIS_NAMESPACE: 'redis:onboarding',
+            }),
+        /PORTAL_REDIS_NAMESPACE must start with "portal:"/i,
+    );
+
+    assert.throws(
+        () =>
+            safeLoadPortalConfig({
+                ...REQUIRED_ENV,
+                VAULT_ACCESS_TOKEN: 'vault-token',
+                PORTAL_DM_QUEUE_NAMESPACE: 'discord:dm',
+            }),
+        /PORTAL_DM_QUEUE_NAMESPACE must start with "portal:"/i,
+    );
 });
 
 test('safeLoadPortalConfig parses optional Moon base URL override', () => {

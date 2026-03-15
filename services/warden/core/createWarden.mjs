@@ -1240,7 +1240,7 @@ export function createWarden(options = {}) {
         }
     };
 
-    const applyServiceLogMount = (service, storageLayout) => {
+    const applyServiceLogMount = async (service, storageLayout, {dockerClient = null} = {}) => {
         if (!service?.name || !storageLayout?.services) {
             return service;
         }
@@ -1250,6 +1250,12 @@ export function createWarden(options = {}) {
         if (!logFolder?.hostPath || !containerPath) {
             return service;
         }
+
+        await bootstrapServiceLogDirectoryViaHelperContainer({
+            dockerClient,
+            service,
+            directory: logFolder.hostPath,
+        });
 
         return {
             ...service,
@@ -1263,7 +1269,7 @@ export function createWarden(options = {}) {
             return [networkName];
         }
 
-        if (service.name === 'noona-vault') {
+        if (service.name === 'noona-vault' || service.name === 'noona-portal') {
             return [networkName, dataNetworkName];
         }
 
@@ -1373,6 +1379,102 @@ export function createWarden(options = {}) {
         return {uid, gid};
     };
 
+    const buildWritableDirectoryHelperCommands = (serviceUser, targetPath = '/target') => {
+        const ownership = parseContainerUserOwnership(serviceUser);
+
+        return {
+            prepareDirectory: ownership
+                ? `chown -R ${ownership.uid}:${ownership.gid} ${targetPath}; chmod 775 ${targetPath}`
+                : `chmod 777 ${targetPath}`,
+            prepareFile(filePath, fileMode = '664') {
+                return ownership
+                    ? `chown ${ownership.uid}:${ownership.gid} ${filePath}; chmod ${fileMode} ${filePath}`
+                    : `chmod ${fileMode} ${filePath}`;
+            },
+        };
+    };
+
+    const runDirectoryHelperContainer = async ({
+                                                   dockerClient,
+                                                   directory,
+                                                   helperNamePrefix,
+                                                   helperCommand,
+                                                   envEntries = [],
+                                                   errorLabel = 'Directory bootstrap',
+                                               } = {}) => {
+        if (
+            storageLayoutBootstrap !== true
+            || !dockerClient
+            || typeof dockerClient.createContainer !== 'function'
+            || !directory
+            || typeof helperCommand !== 'string'
+            || !helperCommand.trim()
+        ) {
+            return null;
+        }
+
+        const helperImage = 'busybox:1.36';
+        const helperName = `${helperNamePrefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+
+        try {
+            await dockerUtils.pullImageIfNeeded?.(helperImage, {dockerInstance: dockerClient});
+        } catch {
+            // Keep going when busybox is already available and pull checks fail.
+        }
+
+        const helperContainer = await dockerClient.createContainer({
+            name: helperName,
+            Image: helperImage,
+            Cmd: ['sh', '-lc', helperCommand],
+            ...(envEntries.length > 0 ? {Env: envEntries} : {}),
+            HostConfig: {
+                AutoRemove: true,
+                Binds: [`${directory}:/target`],
+            },
+        });
+
+        await helperContainer.start();
+        const result = await helperContainer.wait();
+        if (result?.StatusCode != null && Number(result.StatusCode) !== 0) {
+            throw new Error(`${errorLabel} helper exited with status ${result.StatusCode}.`);
+        }
+
+        return {
+            path: directory,
+            via: 'docker-helper',
+        };
+    };
+
+    const bootstrapServiceLogDirectoryViaHelperContainer = async ({
+                                                                      dockerClient,
+                                                                      service,
+                                                                      directory,
+                                                                  } = {}) => {
+        if (!service?.name || !directory) {
+            return null;
+        }
+
+        const helperCommands = buildWritableDirectoryHelperCommands(service.user);
+        const helperCommand = [
+            'set -eu',
+            'mkdir -p /target',
+            helperCommands.prepareDirectory,
+        ].join('; ');
+
+        try {
+            return await runDirectoryHelperContainer({
+                dockerClient,
+                directory,
+                helperNamePrefix: 'noona-log-bootstrap',
+                helperCommand,
+                errorLabel: `${service.name} log bootstrap`,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to prepare ${service.name} log directory on host mount: ${message}`);
+        }
+    };
+
     const readManagedKomfConfigFile = (installOverridesByName = null) => {
         const filePath = resolveManagedKomfConfigFilePath(installOverridesByName);
         if (!filePath || typeof fsModule?.readFileSync !== 'function') {
@@ -1405,45 +1507,24 @@ export function createWarden(options = {}) {
             return null;
         }
 
-        const helperImage = 'busybox:1.36';
-        const helperName = `noona-komf-config-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-        const ownership = parseContainerUserOwnership(serviceUser);
+        const helperCommands = buildWritableDirectoryHelperCommands(serviceUser);
         const encodedContent = Buffer.from(normalizedContent, 'utf8').toString('base64');
-        const applyOwnershipCommand = ownership
-            ? `chown -R ${ownership.uid}:${ownership.gid} /target; chmod 775 /target`
-            : 'chmod 777 /target';
         const helperCommand = [
             'set -eu',
             'mkdir -p /target',
-            applyOwnershipCommand,
+            helperCommands.prepareDirectory,
             'echo "$NOONA_KOMF_CONFIG_B64" | base64 -d > /target/application.yml',
-            ownership
-                ? `chown ${ownership.uid}:${ownership.gid} /target/application.yml; chmod 664 /target/application.yml`
-                : 'chmod 664 /target/application.yml',
+            helperCommands.prepareFile('/target/application.yml', '664'),
         ].join('; ');
 
-        try {
-            await dockerUtils.pullImageIfNeeded?.(helperImage, {dockerInstance: dockerClient});
-        } catch {
-            // Keep going when busybox is already available and pull checks fail.
-        }
-
-        const helperContainer = await dockerClient.createContainer({
-            name: helperName,
-            Image: helperImage,
-            Cmd: ['sh', '-lc', helperCommand],
-            Env: [`NOONA_KOMF_CONFIG_B64=${encodedContent}`],
-            HostConfig: {
-                AutoRemove: true,
-                Binds: [`${directory}:/target`],
-            },
+        await runDirectoryHelperContainer({
+            dockerClient,
+            directory,
+            helperNamePrefix: 'noona-komf-config',
+            helperCommand,
+            envEntries: [`NOONA_KOMF_CONFIG_B64=${encodedContent}`],
+            errorLabel: 'Komf config',
         });
-
-        await helperContainer.start();
-        const result = await helperContainer.wait();
-        if (result?.StatusCode != null && Number(result.StatusCode) !== 0) {
-            throw new Error(`Komf config helper exited with status ${result.StatusCode}.`);
-        }
 
         return {
             path: path.join(directory, MANAGED_KOMF_CONFIG_FILE_NAME),
@@ -1576,7 +1657,7 @@ export function createWarden(options = {}) {
             const bind = `${hostMount}:${containerPath}`;
 
             return applyVaultTlsMount(
-                applyServiceLogMount({
+                await applyServiceLogMount({
                     ...service,
                     env: upsertEnvEntry(
                         upsertEnvEntry(service.env, 'APPDATA', containerPath),
@@ -1584,7 +1665,7 @@ export function createWarden(options = {}) {
                         containerPath,
                     ),
                     volumes: upsertBindMount(service.volumes, containerPath, bind),
-                }, storageLayout),
+                }, storageLayout, {dockerClient}),
             );
         }
 
@@ -1664,10 +1745,10 @@ export function createWarden(options = {}) {
                 });
             }
 
-            return applyVaultTlsMount(applyServiceLogMount(service, storageLayout));
+            return applyVaultTlsMount(await applyServiceLogMount(service, storageLayout, {dockerClient}));
         }
 
-        return applyVaultTlsMount(applyServiceLogMount(service, storageLayout));
+        return applyVaultTlsMount(await applyServiceLogMount(service, storageLayout, {dockerClient}));
     };
 
     const wipePathWithFs = async (targetPath) => {

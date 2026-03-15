@@ -44,9 +44,10 @@
 - Discord command changes should stay aligned with Moon's admin settings and command-role surfaces.
 - Portal's Warden usage is intentionally narrow. Treat control-plane expansion carefully.
 - Keep onboarding and recommendation flows durable across restarts by respecting the Vault-backed stores.
+- Keep Portal Redis namespaces under the `portal:` family because Vault policy authorizes Portal keys by prefix.
 - Preserve the current data contracts unless the change explicitly coordinates callers and docs:
-  secret path `portal/<discordId>`, collections `portal_recommendations` and `portal_subscriptions`, and onboarding
-  token storage under the configured Redis namespace.
+  secret path `portal/<discordId>`, collections `portal_recommendations` and `portal_subscriptions`, onboarding token
+  storage under `PORTAL_REDIS_NAMESPACE`, and Discord DM queue storage under `PORTAL_DM_QUEUE_NAMESPACE`.
 - Preserve the current slash command set unless a coordinated product change says otherwise: `ding`, `scan`, `search`,
   `recommend`, and `subscribe`.
 - Portal's DM delivery path supports both Redis list packets (`rpush`/`lpop`) and a legacy `set`/`get`/`del` fallback.

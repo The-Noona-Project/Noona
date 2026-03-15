@@ -11,7 +11,7 @@ const DEFAULT_SERVICE_POLICIES = Object.freeze({
             operations: ['insert', 'find', 'findMany', 'update', 'delete'],
         },
         redis: {
-            prefixes: ['portal:discord:dm:'],
+            prefixes: ['portal:'],
             operations: ['set', 'get', 'del', 'rpush', 'lpop'],
         },
     },

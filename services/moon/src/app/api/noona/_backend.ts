@@ -1,4 +1,13 @@
 import {NextResponse} from "next/server";
+import {
+    buildBackendFailureMessage,
+    resolvePortalBaseUrls,
+    resolveRavenBaseUrls,
+    resolveSageBaseUrls,
+    resolveWardenBaseUrls,
+    SAGE_BACKEND_FAILURE_GUIDANCE,
+    summarizeFailedResponseBody,
+} from "./backendDiscovery.mjs";
 
 type LogFn = (message: string) => void;
 
@@ -47,72 +56,6 @@ let preferredSageBaseUrl: string | null = null;
 let preferredRavenBaseUrl: string | null = null;
 let preferredPortalBaseUrl: string | null = null;
 
-const normalizeUrl = (candidate: unknown): string | null => {
-    if (typeof candidate !== "string") return null;
-    const trimmed = candidate.trim();
-    if (!trimmed) return null;
-    if (/^https?:\/\//i.test(trimmed)) return trimmed;
-    return `http://${trimmed}`;
-};
-
-const uniqueStrings = (values: Array<string | null | undefined>): string[] => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const value of values) {
-        if (!value) continue;
-        if (seen.has(value)) continue;
-        seen.add(value);
-        out.push(value);
-    }
-    return out;
-};
-
-const resolveWardenBaseUrls = (env: NodeJS.ProcessEnv = process.env): string[] =>
-    uniqueStrings([
-        normalizeUrl(env.WARDEN_BASE_URL),
-        normalizeUrl(env.WARDEN_INTERNAL_BASE_URL),
-        normalizeUrl(env.WARDEN_DOCKER_URL),
-        "http://noona-warden:4001",
-        "http://host.docker.internal:4001",
-        "http://127.0.0.1:4001",
-        "http://localhost:4001",
-    ]);
-
-const resolveSageBaseUrls = (env: NodeJS.ProcessEnv = process.env): string[] =>
-    uniqueStrings([
-        normalizeUrl(env.SAGE_BASE_URL),
-        normalizeUrl(env.SAGE_INTERNAL_BASE_URL),
-        "http://noona-sage:3004",
-        "http://host.docker.internal:3004",
-        "http://127.0.0.1:3004",
-        "http://localhost:3004",
-    ]);
-
-const resolveRavenBaseUrls = (env: NodeJS.ProcessEnv = process.env): string[] =>
-    uniqueStrings([
-        normalizeUrl(env.RAVEN_BASE_URL),
-        normalizeUrl(env.RAVEN_INTERNAL_BASE_URL),
-        normalizeUrl(env.RAVEN_DOCKER_URL),
-        "http://noona-raven:8080",
-        "http://host.docker.internal:3002",
-        "http://127.0.0.1:3002",
-        "http://localhost:3002",
-        "http://host.docker.internal:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:8080",
-    ]);
-
-const resolvePortalBaseUrls = (env: NodeJS.ProcessEnv = process.env): string[] =>
-    uniqueStrings([
-        normalizeUrl(env.PORTAL_BASE_URL),
-        normalizeUrl(env.PORTAL_INTERNAL_BASE_URL),
-        normalizeUrl(env.PORTAL_DOCKER_URL),
-        "http://noona-portal:3003",
-        "http://host.docker.internal:3003",
-        "http://127.0.0.1:3003",
-        "http://localhost:3003",
-    ]);
-
 const fetchWithTimeout = async (
     url: string,
     init: RequestInit,
@@ -137,28 +80,6 @@ const prioritizeBaseUrls = (baseUrls: string[], preferredBaseUrl: string | null)
     return [preferredBaseUrl, ...baseUrls.filter((url) => url !== preferredBaseUrl)];
 };
 
-const summarizeFailedResponseBody = (body: string): string => {
-    const trimmed = body.trim();
-    if (!trimmed) return "";
-
-    try {
-        const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown } | null;
-        const structuredMessage = typeof parsed?.error === "string"
-            ? parsed.error.trim()
-            : typeof parsed?.message === "string"
-                ? parsed.message.trim()
-                : "";
-        if (structuredMessage) {
-            return structuredMessage;
-        }
-    } catch {
-        // Fall back to a trimmed plain-text summary.
-    }
-
-    const condensed = trimmed.replace(/\s+/g, " ");
-    return condensed.length > 180 ? `${condensed.slice(0, 177)}...` : condensed;
-};
-
 const fetchFirstOk = async (
     baseUrls: string[],
     path: string,
@@ -168,6 +89,7 @@ const fetchFirstOk = async (
         preferredBaseUrl?: string | null;
         onSuccess?: (baseUrl: string) => void;
         acceptServerErrorResponse?: boolean;
+        failureHint?: string;
     } = {},
 ): Promise<Response> => {
     const orderedBaseUrls = prioritizeBaseUrls(baseUrls, options.preferredBaseUrl ?? null);
@@ -211,7 +133,9 @@ const fetchFirstOk = async (
         return firstClientError;
     }
 
-    const message = `All backends failed for ${path}: ${errors.join(" | ")}`;
+    const message = buildBackendFailureMessage(path, errors, {
+        guidance: options.failureHint,
+    });
     logError(`[Moon API] ${message}`);
     throw new Error(message);
 };
@@ -250,6 +174,7 @@ export const sageJson = async (
         options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         {
             preferredBaseUrl: preferredSageBaseUrl,
+            failureHint: SAGE_BACKEND_FAILURE_GUIDANCE,
             onSuccess: (baseUrl) => {
                 preferredSageBaseUrl = baseUrl;
             },
@@ -273,6 +198,7 @@ export const sageResponse = async (
         {
             preferredBaseUrl: preferredSageBaseUrl,
             acceptServerErrorResponse: options.acceptServerErrorResponse === true,
+            failureHint: SAGE_BACKEND_FAILURE_GUIDANCE,
             onSuccess: (baseUrl) => {
                 preferredSageBaseUrl = baseUrl;
             },

@@ -22,7 +22,8 @@ planes.
 - Pick a persistent storage root for Noona data.
 - Make sure the host can expose Warden on `4001` and Moon on `3000`.
 - Mongo, Redis, and Vault do not need host port exposure for the supported install path. Mongo and Redis stay
-  internal-only, and the rest of the stack reaches shared data through Vault.
+  internal-only. The stack reaches shared data through Vault, including Portal's short-lived onboarding and Discord
+  queue state.
 - If you plan to use Discord login and the Discord bot, have your Discord app and bot details ready for first-run setup.
 
 ## 1. Pull And Start Warden
@@ -60,6 +61,8 @@ before running the script.
 - Moon: `http://localhost:3000`
 - Mongo and Redis are intentionally not published on host ports
 - Vault is an internal service and is reached by the rest of the stack over Warden-managed HTTPS
+- If you override Portal service config, keep `PORTAL_REDIS_NAMESPACE` and `PORTAL_DM_QUEUE_NAMESPACE` under `portal:`
+  so Vault will authorize those Redis-backed Portal keys
 
 Warden brings up the bootstrap services that Moon needs for setup. If Moon does not appear after Warden starts, check
 `docker ps` and `docker logs noona-warden`.
@@ -81,6 +84,8 @@ container settings by hand.
 If you upload an older Noona setup JSON file during setup, Moon now loads it into the wizard for review first. Confirm
 the storage path and any secrets, then use the explicit save or install actions to persist the updated profile.
 Saved setup JSON keeps `storageRoot` as top-level setup metadata.
+Masked secrets are still safe for setup save and download round-trips, but managed Kavita provisioning may ask you to
+re-enter the Kavita admin password before continuing when only the masked placeholder is available.
 Warden derives the managed service storage wiring internally instead of persisting raw `NOONA_DATA_ROOT` overrides per
 service.
 
@@ -202,6 +207,13 @@ Moon does not load:
 - confirm Warden health at `http://localhost:4001/health`
 - inspect `docker logs noona-warden`
 
+Moon settings or service links fail with a Sage backend error:
+
+- confirm `noona-sage` is running and healthy
+- confirm `noona-moon` and `noona-sage` are both attached to `noona-network`
+- if Moon is running in a custom or split topology, open `Admin -> System -> Overview`, set Moon `SAGE_BASE_URL` to a
+  reachable Sage URL, then save and restart Moon
+
 Setup changes do not appear on disk:
 
 - confirm `NOONA_DATA_ROOT` is set
@@ -217,6 +229,8 @@ Discord login or bot setup fails:
 
 - verify the Discord client id, client secret, bot token, and callback settings entered during setup
 - confirm Moon is reachable on the same public URL you configured for Discord callbacks
+- if the bot token is bad or Discord auth fails during Portal startup, Portal stays healthy in API-only mode and
+  `/health` reports Discord as `degraded`; fix the Discord settings in Moon and restart Portal or the stack
 
 Users or permissions look wrong:
 
@@ -229,6 +243,18 @@ Downloads, Kavita, or metadata flows fail after a reboot:
 - check service health and logs from Moon or Warden before changing settings by hand
 - Raven now keeps fractional chapters such as `101.1` and `101.5` as separate chapters during queueing and sync, so
   seeing those alongside `101` is expected behavior rather than a duplicate-collapse bug
+
+Managed service logging fails or host log folders stay empty:
+
+- confirm the expected host log folder exists under `NOONA_DATA_ROOT` such as `moon/logs`, `portal/logs`,
+  `raven/logs`, `sage/logs`, or `<vault-folder>/logs`
+- Warden bootstraps managed log folders before service start; when a service declares a numeric container user, expect
+  the host log folder to be owned by that `uid:gid` and set to group-writable `775`
+- services without an explicit numeric container user still get a helper-container bootstrap so Warden does not have to
+  assume a host-specific owner or group mapping
+- if your host or NAS resets permissions after boot, restore writable access on the affected log folder and restart the
+  service from Moon or Warden
+- inspect `docker logs noona-warden` for log-directory bootstrap errors before changing container settings by hand
 
 Moon background music does not play:
 

@@ -9,7 +9,7 @@
   `noona-mongo`, `noona-redis`, `noona-vault`
 - Managed network placement is fixed to:
   `noona-mongo` and `noona-redis` on `noona-data-network` only,
-  `noona-vault` on both `noona-network` and `noona-data-network`
+  `noona-vault` and `noona-portal` on both `noona-network` and `noona-data-network`
 - Default full boot order is:
   `noona-mongo -> noona-redis -> noona-vault -> noona-sage -> noona-moon -> noona-kavita -> noona-raven -> noona-komf -> noona-portal -> noona-oracle`
 
@@ -57,6 +57,15 @@ This staging exists so Vault-backed config and managed Kavita access are availab
   as Portal and Komf.
 - During restore boot, Warden prefers login-only recovery and existing container env values before attempting more
   invasive provisioning.
+
+## Managed Log Folders During Boot
+
+- For services with dedicated log binds, Warden creates the host log folder under `NOONA_DATA_ROOT` during storage
+  bootstrap and then runs a busybox helper container against that bind before service start.
+- When the descriptor declares a numeric container user, the helper aligns the log folder to that `uid:gid` and applies
+  group-writable `775` permissions.
+- When no numeric container user is declared, the helper still relaxes the directory enough for logging rather than
+  assuming a host-specific owner or group mapping.
 
 ## Persisted Selection Resolution
 

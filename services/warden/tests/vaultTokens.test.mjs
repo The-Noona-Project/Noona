@@ -136,6 +136,7 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         ['PORTAL_JOIN_DEFAULT_LIBRARIES', '*'],
         ['KAVITA_EXTERNAL_URL', ''],
         ['PORTAL_REDIS_NAMESPACE', 'portal:onboarding'],
+        ['PORTAL_DM_QUEUE_NAMESPACE', 'portal:discord:dm'],
         ['PORTAL_TOKEN_TTL', '900'],
         ['PORTAL_HTTP_TIMEOUT', '10000'],
     ];
@@ -235,7 +236,7 @@ test('noona-portal health check points to /health endpoint', async () => {
     );
 });
 
-test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health defaults', async () => {
+test('noona-moon descriptor exposes WEBGUI_PORT, MOON_EXTERNAL_URL, and SAGE_BASE_URL runtime fields', async () => {
     const previousWebGuiPort = process.env.WEBGUI_PORT;
     process.env.WEBGUI_PORT = '3010';
 
@@ -257,6 +258,10 @@ test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health 
             moon.env.includes('MOON_EXTERNAL_URL='),
             'Moon env array should include MOON_EXTERNAL_URL for external link overrides.',
         );
+        assert.ok(
+            moon.env.includes('SAGE_BASE_URL='),
+            'Moon env array should include SAGE_BASE_URL for custom Sage routing overrides.',
+        );
 
         const field = moon.envConfig.find((entry) => entry.key === 'WEBGUI_PORT');
         assert.ok(field, 'Moon envConfig should include WEBGUI_PORT.');
@@ -266,6 +271,10 @@ test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health 
         assert.ok(externalField, 'Moon envConfig should include MOON_EXTERNAL_URL.');
         assert.equal(externalField.defaultValue, '');
         assert.equal(externalField.required, false);
+        const sageField = moon.envConfig.find((entry) => entry.key === 'SAGE_BASE_URL');
+        assert.ok(sageField, 'Moon envConfig should include SAGE_BASE_URL.');
+        assert.equal(sageField.defaultValue, '');
+        assert.equal(sageField.required, false);
     } finally {
         if (previousWebGuiPort === undefined) {
             delete process.env.WEBGUI_PORT;

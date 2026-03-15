@@ -3,7 +3,7 @@
  * Related files:
  * - app/portalRuntime.mjs
  * - tests/config.test.mjs
- * Times this file has been edited: 10
+ * Times this file has been edited: 15
  */
 
 import dotenv from 'dotenv';
@@ -15,6 +15,8 @@ const DEFAULT_MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000';
 const DEFAULT_MANAGED_KOMF_BASE_URL = 'http://noona-komf:8085';
 const DEFAULT_RAVEN_BASE_URL = 'http://noona-raven:8080';
 const DEFAULT_WARDEN_BASE_URL = 'http://noona-warden:4001';
+const DEFAULT_PORTAL_ONBOARDING_NAMESPACE = 'portal:onboarding';
+const DEFAULT_PORTAL_DM_QUEUE_NAMESPACE = 'portal:discord:dm';
 
 const REQUIRED_STRINGS = [
     'KAVITA_API_KEY',
@@ -84,6 +86,27 @@ const normalizeUrl = (value) => {
     } catch (error) {
         return null;
     }
+};
+
+/**
+ * Normalizes Portal Redis namespaces and keeps them inside the `portal:` key family.
+ *
+ * @param {*} value - Candidate namespace value.
+ * @param {string} fallback - Namespace used when no override is provided.
+ * @param {string} envKey - Environment variable name used for error messages.
+ * @returns {string} A validated Portal Redis namespace.
+ */
+const normalizePortalRedisNamespace = (value, fallback, envKey) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return fallback;
+    }
+
+    if (!normalized.startsWith('portal:')) {
+        throw new Error(`${envKey} must start with "portal:".`);
+    }
+
+    return normalized;
 };
 
 const resolveEnv = (overrides = {}) => ({
@@ -201,7 +224,16 @@ export const loadPortalConfig = (overrides = {}) => {
             pollMs: numberOrDefault(env.PORTAL_RECOMMENDATION_POLL_MS, 30000),
         },
         redis: {
-            namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',
+            onboardingNamespace: normalizePortalRedisNamespace(
+                env.PORTAL_REDIS_NAMESPACE,
+                DEFAULT_PORTAL_ONBOARDING_NAMESPACE,
+                'PORTAL_REDIS_NAMESPACE',
+            ),
+            directMessageNamespace: normalizePortalRedisNamespace(
+                env.PORTAL_DM_QUEUE_NAMESPACE,
+                DEFAULT_PORTAL_DM_QUEUE_NAMESPACE,
+                'PORTAL_DM_QUEUE_NAMESPACE',
+            ),
             ttlSeconds: numberOrDefault(env.PORTAL_TOKEN_TTL, 900),
         },
         http: {

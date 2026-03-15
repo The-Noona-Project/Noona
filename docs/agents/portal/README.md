@@ -58,7 +58,8 @@ contracts.
 
 - [Moon](../moon/README.md) depends on Portal for onboarding options, Kavita user management, metadata bridge routes,
   and recommendation/user-facing links.
-- [Vault](../vault/README.md) stores Portal credentials, recommendations, subscriptions, and DM queue state.
+- [Vault](../vault/README.md) stores Portal credentials, recommendations, subscriptions, onboarding tokens, and DM
+  queue state.
 - [Raven](../raven/README.md) powers recommendation searches, download state, title repair work, and volume-map writes.
 - Raven also backs Portal's DM-only `downloadall` bulk queue command through `POST /v1/download/bulk-queue`.
 - [Komf](../komf/README.md) backs metadata search, identify, and series-details lookups.

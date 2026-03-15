@@ -322,6 +322,7 @@ const serviceDefs = rawList.map(name => {
     if (name === 'noona-moon') {
         env.push(`WEBGUI_PORT=${DEFAULT_MOON_WEBGUI_PORT}`);
         env.push('MOON_EXTERNAL_URL=');
+        env.push('SAGE_BASE_URL=');
         envConfig.push(
             createEnvField('WEBGUI_PORT', DEFAULT_MOON_WEBGUI_PORT, {
                 label: 'Moon Web GUI Port',
@@ -335,6 +336,14 @@ const serviceDefs = rawList.map(name => {
                     'Optional public Moon URL used in external links (for example Discord recommendation DMs) instead of local host links.',
                 warning:
                     'Set a full URL such as https://moon.example.com when users cannot reach the local host_service_url.',
+                required: false,
+            }),
+            createEnvField('SAGE_BASE_URL', '', {
+                label: 'Sage Base URL',
+                description:
+                    'Optional Sage URL Moon should use for server-side admin requests when Docker-network discovery is unavailable.',
+                warning:
+                    'Leave this blank for supported Warden-managed installs. Set a full URL only when noona-moon cannot reach noona-sage on noona-network.',
                 required: false,
             }),
         );
@@ -447,8 +456,15 @@ const serviceDefs = rawList.map(name => {
             {
                 key: 'PORTAL_REDIS_NAMESPACE',
                 label: 'Portal Redis Namespace',
-                description: 'Namespace prefix used for onboarding state stored in Redis.',
+                description: 'Namespace prefix used for Portal onboarding state stored through Vault-backed Redis.',
                 defaultValue: 'portal:onboarding',
+                required: false,
+            },
+            {
+                key: 'PORTAL_DM_QUEUE_NAMESPACE',
+                label: 'Portal DM Queue Namespace',
+                description: 'Namespace prefix used for Portal Discord DM queue state stored through Vault-backed Redis.',
+                defaultValue: 'portal:discord:dm',
                 required: false,
             },
             {

@@ -20,9 +20,13 @@ recommendations, and the day-to-day admin UI.
 
 - guides admins through first-run setup
 - loads uploaded Noona setup JSON files into the wizard for review before admins explicitly save or install changes
+- keeps masked setup secrets safe for save or download round-trips, while live setup actions can still ask admins to
+  re-enter the managed Kavita password when only the masked placeholder is available
 - keeps `storageRoot` as top-level setup metadata instead of mirroring raw `NOONA_DATA_ROOT` overrides into saved setup
   JSON
 - provides the main settings and operations UI
+- lets admins keep Moon's published URL and optional Sage backend URL in sync from the service-links view when custom
+  networking requires it
 - keeps post-setup navigation task-based with `Home`, `Library`, `Downloads`, `Requests`, `Admin`, and a header
   `Add download` action when permitted
 - plays the configured background track inside the signed-in app shell and keeps `Music` controls above `Display`
@@ -43,6 +47,7 @@ recommendations, and the day-to-day admin UI.
 
 - during first-run setup
 - when managing users, roles, service links, and updates
+- when Moon reports that it cannot reach Sage for service-management actions
 - when adjusting local browser shell preferences like the background music mute and volume controls
 - when checking live in-app toasts that catch users up on music playback, followed-title updates, or recommendation
   decisions after they return to Moon

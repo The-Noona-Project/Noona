@@ -21,8 +21,13 @@ exposes the management APIs that the rest of Noona uses.
   overrides
 - normalizes older setup JSON uploads for Moon review without persisting them until an explicit save or install
 - tracks install progress, service health, and logs
+- publishes managed Moon runtime fields such as `WEBGUI_PORT`, `MOON_EXTERNAL_URL`, and optional `SAGE_BASE_URL`
+  overrides so admins can repair Moon-facing routing without hand-editing containers
 - coordinates updates, restarts, and factory-reset behavior
-- keeps Mongo and Redis on a private Docker data network
+- bootstraps managed host log folders so supported services can write logs to `NOONA_DATA_ROOT` without manual host-side
+  permission prep
+- keeps Mongo and Redis on a private Docker data network, with Vault and Portal attached when internal data access is
+  required
 - generates and mounts the internal Vault HTTPS certificate bundle used by the stack
 - refuses to start managed Vault from a Linux Warden container when `NOONA_DATA_ROOT` is not bind-mounted into Warden at
   the same absolute path as the host
@@ -41,8 +46,8 @@ exposes the management APIs that the rest of Noona uses.
 ## How It Fits Into Noona
 
 Warden is the first service you start. Moon, Sage, Portal, and the rest of the managed stack rely on Warden for service
-lifecycle and setup state. In managed installs it also owns the internal Vault trust bundle and keeps Vault as the only
-runtime broker to Mongo and Redis.
+lifecycle and setup state. In managed installs it also owns the internal Vault trust bundle, routes most shared data
+through Vault, and gives Portal internal Redis access for short-lived onboarding state.
 
 For the supported install path, use [ServerAdmin.md](../../ServerAdmin.md) instead of treating Warden as a standalone
 app.

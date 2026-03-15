@@ -31,6 +31,12 @@
   load current `noona-kavita` plus target service configs from Warden, inspect existing target env keys, try stored
   Sage-side service-account settings, optionally provision or log into Kavita, then patch target service env and ask
   Warden to restart those services.
+- Those Warden updates must stay narrow.
+  Only send the consumer-specific Kavita env keys back to Warden, not the full service env map, or Warden will reject
+  server-managed fields such as `SERVICE_NAME`.
+- Masked setup placeholders are not usable Kavita credentials.
+  Sage can still reuse an existing managed API key, but if live provisioning still needs the admin password it now
+  returns a validation error that asks the admin to re-enter it.
 - Target services are intentionally limited to `noona-portal`, `noona-raven`, and `noona-komf`.
 - If multiple target services already contain different Kavita API keys, Sage returns `409` instead of picking one.
 - Provisioned account and API-key details are mirrored into the Sage settings collection under
@@ -44,6 +50,8 @@
   session alive by rewriting the session token.
 - Discord OAuth has three modes:
   `test`, `bootstrap`, and `login`.
+- Saving Discord OAuth config treats the masked secret placeholder as "reuse the current stored client secret" when one
+  already exists.
 - `test` validates the Discord auth config and stores `lastTestedAt` plus `lastTestedUser`.
 - `bootstrap` is only allowed before setup completes.
   It writes the Discord identity directly as the admin account and creates a session immediately.

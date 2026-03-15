@@ -37,6 +37,9 @@
   env maps.
 - Uploaded setup JSON files are normalized server-side and only hydrate local wizard state.
   Persistence still happens on explicit save or install actions.
+- Wizard snapshots can carry masked secret placeholders.
+  Those placeholders are safe for save and download round-trips, but live setup actions should not treat them as real
+  credentials.
 - Debug mode changes the UI surface.
   Advanced and derived env keys become more visible only when setup status says debug is enabled.
 - `ALWAYS_RUNNING` currently includes `noona-moon` and `noona-sage`.

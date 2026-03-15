@@ -1882,7 +1882,11 @@ export const createSageApp = ({
         }
 
         const nextClientId = normalizeString(clientId)
-        const nextClientSecret = normalizeString(clientSecret)
+        let nextClientSecret = normalizeString(clientSecret)
+        if (!nextClientSecret || nextClientSecret === '********') {
+            const current = await readDiscordAuthConfig()
+            nextClientSecret = normalizeString(current?.clientSecret)
+        }
         if (!nextClientId || !nextClientSecret) {
             throw new Error('Discord client ID and client secret are required.')
         }

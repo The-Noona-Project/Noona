@@ -50,6 +50,8 @@ service-token auth, service policy rules, user management, or the Mongo/Redis pa
 - [Sage](../sage/README.md) is the default admin service for Vault user and debug routes.
 - [Portal](../portal/README.md), [Raven](../raven/README.md), and [Warden](../warden/README.md) depend on Vault's
   policy allow-lists staying aligned with their collection names and Redis keys.
+- Portal's current Redis policy covers the `portal:` key family so onboarding and DM queue namespaces can stay inside
+  one bounded prefix.
 - Warden owns the internal CA and Vault leaf certificate.
   Sage, Portal, Raven, and Warden clients are expected to trust Vault through explicit CA-path wiring instead of
   process-wide TLS disables.

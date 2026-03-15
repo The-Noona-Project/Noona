@@ -68,6 +68,9 @@ Current fallback sources:
 
 Important behavior:
 
+- Supported Warden-managed installs should normally leave Moon `SAGE_BASE_URL` blank and rely on
+  `http://noona-sage:3004` over `noona-network`.
+  The managed Moon service config now exposes `SAGE_BASE_URL` only as a custom-topology escape hatch.
 - `fetchFirstOk()` tries alternate backends when no preferred target exists yet and one candidate returns `4xx`.
   This avoids pinning Moon to a stale endpoint too early.
 - Once a request succeeds, that backend becomes the preferred candidate for later calls.
@@ -85,6 +88,8 @@ Important behavior:
 ## Error And Timeout Notes
 
 - `jsonError(message, status)` defaults to `502`.
+- When Sage candidates are exhausted, Moon now tells operators to check `noona-sage` health and `noona-network`, and
+  points custom deployments at `SAGE_BASE_URL` instead of only listing raw fallback URLs.
 - Some routes intentionally raise timeouts:
   factory reset currently uses a five-minute Sage timeout window.
 - Portal metadata routes can opt into returning `5xx` payloads directly so the UI can show the backend's structured

@@ -87,6 +87,8 @@
 - Managed Mongo and Redis are internal-only services.
   Do not re-add host port publishing or attach non-Vault services to `noona-data-network` without an explicit design
   change.
+- Portal's managed runtime namespaces `PORTAL_REDIS_NAMESPACE` and `PORTAL_DM_QUEUE_NAMESPACE` should stay under
+  `portal:` so Vault policy continues to authorize them.
 - Managed Vault TLS is fail-closed.
   Clients should trust the CA through explicit `VAULT_CA_CERT_PATH` wiring instead of global TLS disables or silent HTTP
   fallback.

@@ -9,6 +9,7 @@ const MANAGED_KAVITA_SERVICE_ACCOUNT_KEY = 'setup.managedKavitaServiceAccount'
 const MANAGED_KAVITA_TARGET_SERVICES = Object.freeze(['noona-portal', 'noona-raven', 'noona-komf'])
 const MANAGED_KAVITA_READY_RETRIES = 20
 const MANAGED_KAVITA_READY_DELAY_MS = 1500
+const SETUP_SECRET_PLACEHOLDER = '********'
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -101,25 +102,22 @@ const buildManagedKavitaEnvPatch = (serviceName, env, apiKey, baseUrl) => {
     switch (serviceName) {
         case 'noona-portal':
             return {
-                ...env,
                 KAVITA_BASE_URL: baseUrl,
                 KAVITA_API_KEY: apiKey,
             }
         case 'noona-raven':
             return {
-                ...env,
                 KAVITA_BASE_URL: baseUrl,
                 KAVITA_API_KEY: apiKey,
                 KAVITA_LIBRARY_ROOT: normalizeString(env.KAVITA_LIBRARY_ROOT) || '/manga',
             }
         case 'noona-komf':
             return {
-                ...env,
                 KOMF_KAVITA_BASE_URI: baseUrl,
                 KOMF_KAVITA_API_KEY: apiKey,
             }
         default:
-            return env
+            return {}
     }
 }
 
@@ -138,9 +136,12 @@ const readManagedKavitaSettings = (doc) => {
     }
 }
 
-const normalizeManagedKavitaAccount = (value) => {
+const parseManagedKavitaAccount = (value, {allowMaskedPassword = false} = {}) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return null
+        return {
+            account: null,
+            hasMaskedPassword: false,
+        }
     }
 
     const username = normalizeString(value.username)
@@ -149,22 +150,43 @@ const normalizeManagedKavitaAccount = (value) => {
     const hasAnyValue = Boolean(username || email || password)
 
     if (!hasAnyValue) {
-        return null
+        return {
+            account: null,
+            hasMaskedPassword: false,
+        }
+    }
+
+    if (password === SETUP_SECRET_PLACEHOLDER) {
+        if (allowMaskedPassword) {
+            return {
+                account: null,
+                hasMaskedPassword: true,
+            }
+        }
+
+        throw new SetupValidationError(
+            'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
+        )
     }
 
     if (!username || !email || !password) {
         throw new SetupValidationError('Managed Kavita account requires a username, email, and password.')
     }
 
-    return {username, email, password}
+    return {
+        account: {username, email, password},
+        hasMaskedPassword: false,
+    }
 }
 
 const readManagedKavitaConfiguredAccount = (config) => {
     const env = normalizeEnvMap(config?.env)
-    return normalizeManagedKavitaAccount({
+    return parseManagedKavitaAccount({
         username: env.KAVITA_ADMIN_USERNAME,
         email: env.KAVITA_ADMIN_EMAIL,
         password: env.KAVITA_ADMIN_PASSWORD,
+    }, {
+        allowMaskedPassword: true,
     })
 }
 
@@ -941,14 +963,14 @@ export function registerSetupRoutes(context = {}) {
         }
 
         try {
-            const requestedAccount = normalizeManagedKavitaAccount(req.body?.account)
+            const requestedAccountState = parseManagedKavitaAccount(req.body?.account)
             const [managedKavitaConfig, targetConfigs] = await Promise.all([
                 setupClient.getServiceConfig('noona-kavita'),
                 Promise.all(
                     targetServices.map(async (name) => [name, await setupClient.getServiceConfig(name)]),
                 ),
             ])
-            const configuredAccount = readManagedKavitaConfiguredAccount(managedKavitaConfig)
+            const configuredAccountState = readManagedKavitaConfiguredAccount(managedKavitaConfig)
             const configs = new Map(targetConfigs)
 
             const existingKeys = new Set()
@@ -970,7 +992,7 @@ export function registerSetupRoutes(context = {}) {
 
             const {apiKey: storedApiKey, account: storedAccount} = readManagedKavitaSettings(storedSettings)
 
-            const effectiveAccount = requestedAccount || configuredAccount || null
+            const effectiveAccount = requestedAccountState.account || configuredAccountState.account || null
 
             let apiKey = ''
             let account =
@@ -993,6 +1015,12 @@ export function registerSetupRoutes(context = {}) {
                 res.status(409).json({error: 'Managed Kavita setup found conflicting API keys across selected services.'})
                 return
             } else {
+                if (!effectiveAccount && (requestedAccountState.hasMaskedPassword || configuredAccountState.hasMaskedPassword)) {
+                    throw new SetupValidationError(
+                        'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
+                    )
+                }
+
                 let provisioning = null
                 let lastError = null
 

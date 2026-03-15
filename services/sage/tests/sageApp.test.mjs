@@ -4788,9 +4788,9 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
 test('POST /api/setup/services/noona-kavita/service-key provisions a managed key and updates selected services', async (t) => {
     const vault = createVaultAuthStub()
     const serviceConfigs = new Map([
-        ['noona-portal', {env: {DISCORD_BOT_TOKEN: 'bot-token'}}],
-        ['noona-raven', {env: {KAVITA_LIBRARY_ROOT: ''}}],
-        ['noona-komf', {env: {KOMF_LOG_LEVEL: 'INFO'}}],
+        ['noona-portal', {env: {SERVICE_NAME: 'noona-portal', DISCORD_BOT_TOKEN: 'bot-token'}}],
+        ['noona-raven', {env: {SERVICE_NAME: 'noona-raven', KAVITA_LIBRARY_ROOT: ''}}],
+        ['noona-komf', {env: {SERVICE_NAME: 'noona-komf', KOMF_LOG_LEVEL: 'INFO'}}],
     ])
     const updateCalls = []
     const managedCalls = []
@@ -4876,7 +4876,6 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
         'noona-portal',
         {
             env: {
-                DISCORD_BOT_TOKEN: 'bot-token',
                 KAVITA_BASE_URL: 'http://noona-kavita:5000',
                 KAVITA_API_KEY: 'managed-kavita-key',
             },
@@ -4898,13 +4897,15 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
         'noona-komf',
         {
             env: {
-                KOMF_LOG_LEVEL: 'INFO',
                 KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',
                 KOMF_KAVITA_API_KEY: 'managed-kavita-key',
             },
             restart: true,
         },
     ])
+    assert.equal(Object.prototype.hasOwnProperty.call(updateCalls[0][1].env, 'SERVICE_NAME'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(updateCalls[1][1].env, 'SERVICE_NAME'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(updateCalls[2][1].env, 'SERVICE_NAME'), false)
 
     const stored = vault.settingDocs.find((entry) => entry.key === 'setup.managedKavitaServiceAccount')
     assert.ok(stored)
@@ -4961,6 +4962,60 @@ test('POST /api/setup/services/noona-kavita/service-key validates partial manage
     assert.equal(response.status, 400)
     assert.deepEqual(await response.json(), {
         error: 'Managed Kavita account requires a username, email, and password.',
+    })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key asks for the real password when setup only has a masked placeholder', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {
+                        env: {
+                            KAVITA_ADMIN_USERNAME: 'reader-admin',
+                            KAVITA_ADMIN_EMAIL: 'reader@example.com',
+                            KAVITA_ADMIN_PASSWORD: '********',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig() {
+                throw new Error('updateServiceConfig should not be called')
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                throw new Error('ensureServiceApiKey should not be called')
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            services: ['noona-portal'],
+        }),
+    })
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {
+        error: 'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
     })
 })
 
@@ -5695,6 +5750,47 @@ test('Discord OAuth config, callback test, and bootstrap create the first admin 
     const statusPayload = await statusResponse.json()
     assert.equal(statusPayload.user.discordUserId, '123456789012345678')
     assert.equal(statusPayload.user.role, 'admin')
+})
+
+test('POST /api/auth/discord/config reuses the stored client secret when setup sends the masked placeholder', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const firstResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(firstResponse.status, 200)
+
+    const secondResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id-2',
+            clientSecret: '********',
+        }),
+    })
+    assert.equal(secondResponse.status, 200)
+
+    const storedDiscordConfig = vault.settingDocs.find((entry) => entry.key === 'auth.discord')
+    assert.ok(storedDiscordConfig)
+    assert.equal(storedDiscordConfig.clientId, 'discord-client-id-2')
+    assert.equal(storedDiscordConfig.clientSecret, 'discord-client-secret')
 })
 
 test('auth user management creates Discord-linked users and Discord login uses OAuth callback', async (t) => {

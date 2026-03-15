@@ -17,7 +17,7 @@
 - `noona-portal`
     - Secret prefixes: `portal/`
     - Mongo collections: `portal_recommendations`, `portal_subscriptions`
-    - Redis prefixes: `portal:discord:dm:`
+  - Redis prefixes: `portal:`
 - `noona-raven`
     - Mongo collections: `manga_library`, `raven_download_tasks`, `noona_settings`
     - Redis prefixes: `raven:download:current-task`
@@ -67,6 +67,7 @@
 
 - Policy changes are high-impact because the enforcement is runtime-only. Breakage usually shows up as `403` from Vault,
   not as a build error.
+- Portal Redis namespace overrides should stay under `portal:` so they continue to fit the bounded Vault policy.
 - User and permission changes affect Moon and admin workflows, even when the Vault route contract stays the same.
 - If you touch auth, policies, or packet shapes, read
   [vaultApp.test.mjs](../../../services/vault/tests/vaultApp.test.mjs) before editing so you preserve the expected
