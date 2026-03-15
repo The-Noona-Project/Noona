@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Vault client secrets, collections, and retry behavior.
+ * Related files:
+ * - clients/vaultClient.mjs
+ * Times this file has been edited: 5
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -438,4 +445,26 @@ test('storeRecommendation includes Vault error text in thrown request errors', a
             }),
         /Unsupported operation "insert" for mongo/i,
     );
+});
+
+test('HTTPS Vault requests require trusted CA material before fetch runs', async () => {
+    let trusted = false;
+    const vault = createVaultClient({
+        baseUrl: 'https://noona-vault:3005',
+        token: 'vault-token',
+        env: {VAULT_CA_CERT_PATH: '/srv/noona/vault/tls/ca-cert.pem'},
+        trustVaultUrl: () => {
+            trusted = true;
+        },
+        fetchImpl: async () =>
+            new Response(JSON.stringify({status: 'ok', data: []}), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            }),
+    });
+
+    await vault.findRecommendations();
+    assert.equal(trusted, true);
 });

@@ -6,6 +6,7 @@ export function registerSettingsRoutes(context = {}) {
     const {
         app,
         applyDebugSetting,
+        DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS,
         DEFAULT_DOWNLOAD_VPN_SETTINGS,
         DEFAULT_DOWNLOAD_WORKER_SETTINGS,
         DEFAULT_NAMING_SETTINGS,
@@ -14,6 +15,7 @@ export function registerSettingsRoutes(context = {}) {
         parseBooleanInput,
         queueEcosystemRestart,
         ravenClient,
+        readDiscordOnboardingMessageSetting,
         readDownloadWorkerSettings,
         readDownloadVpnSettings,
         readDebugSetting,
@@ -25,12 +27,14 @@ export function registerSettingsRoutes(context = {}) {
         serviceName,
         settingsCollection,
         setupClient,
+        validateCpuCoreIdsInput,
         validateThreadRateLimitsInput,
         vaultClient,
         vaultErrorMessage,
         vaultErrorStatus,
         verifyDangerousActionConfirmation,
         verifyFactoryResetSelections,
+        writeDiscordOnboardingMessageSetting,
         writeDownloadWorkerSettings,
         writeDownloadVpnSettings,
     } = context
@@ -72,6 +76,57 @@ export function registerSettingsRoutes(context = {}) {
         }
     })
 
+    app.get('/api/settings/discord/onboarding-message', async (_req, res) => {
+        if (!vaultClient?.mongo?.findOne) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        try {
+            const setting = await readDiscordOnboardingMessageSetting()
+            res.json({
+                key: setting?.key || DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+                template:
+                    typeof setting?.template === 'string' && setting.template.trim()
+                        ? setting.template
+                        : DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.template,
+                updatedAt: setting?.updatedAt || null,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] Failed to load Discord onboarding message: ${error.message}`)
+            res.status(502).json({error: 'Unable to load Discord onboarding message.'})
+        }
+    })
+
+    app.put('/api/settings/discord/onboarding-message', async (req, res) => {
+        if (!vaultClient?.mongo?.update) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
+        if (typeof req.body?.template !== 'string' || !req.body.template.trim()) {
+            res.status(400).json({error: 'template must not be empty.'})
+            return
+        }
+
+        try {
+            const setting = await writeDiscordOnboardingMessageSetting(req.body.template)
+            res.json({
+                key: setting?.key || DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+                template:
+                    typeof setting?.template === 'string' && setting.template.trim()
+                        ? setting.template
+                        : DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.template,
+                updatedAt: setting?.updatedAt || null,
+            })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unable to update Discord onboarding message.'
+            const status = message === 'template must not be empty.' ? 400 : 502
+            logger.error(`[${serviceName}] Failed to update Discord onboarding message: ${message}`)
+            res.status(status).json({error: message})
+        }
+    })
+
     app.get('/api/settings/downloads/naming', async (_req, res) => {
         if (!vaultClient) {
             res.status(503).json({error: 'Vault storage is not configured.'})
@@ -105,6 +160,10 @@ export function registerSettingsRoutes(context = {}) {
                     Number.isFinite(Number(doc?.chapterPad)) && Number(doc.chapterPad) > 0
                         ? Math.floor(Number(doc.chapterPad))
                         : DEFAULT_NAMING_SETTINGS.chapterPad,
+                volumePad:
+                    Number.isFinite(Number(doc?.volumePad)) && Number(doc.volumePad) > 0
+                        ? Math.floor(Number(doc.volumePad))
+                        : DEFAULT_NAMING_SETTINGS.volumePad,
             })
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load naming settings: ${error.message}`)
@@ -153,6 +212,11 @@ export function registerSettingsRoutes(context = {}) {
                     : Number.isFinite(Number(current?.chapterPad))
                         ? Math.max(1, Math.min(12, Math.floor(Number(current.chapterPad))))
                         : DEFAULT_NAMING_SETTINGS.chapterPad,
+                volumePad: Number.isFinite(Number(req.body?.volumePad))
+                    ? Math.max(1, Math.min(12, Math.floor(Number(req.body.volumePad))))
+                    : Number.isFinite(Number(current?.volumePad))
+                        ? Math.max(1, Math.min(12, Math.floor(Number(current.volumePad))))
+                        : DEFAULT_NAMING_SETTINGS.volumePad,
             }
 
             if (!next.titleTemplate) {
@@ -194,6 +258,7 @@ export function registerSettingsRoutes(context = {}) {
             res.json({
                 key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                 threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],
+                cpuCoreIds: Array.isArray(settings?.cpuCoreIds) ? settings.cpuCoreIds : [],
                 updatedAt: settings?.updatedAt || null,
             })
         } catch (error) {
@@ -213,12 +278,21 @@ export function registerSettingsRoutes(context = {}) {
             res.status(400).json({error: parsedThreadRateLimits.error})
             return
         }
+        const parsedCpuCoreIds = validateCpuCoreIdsInput(req.body?.cpuCoreIds)
+        if (!parsedCpuCoreIds.ok) {
+            res.status(400).json({error: parsedCpuCoreIds.error})
+            return
+        }
 
         try {
-            const settings = await writeDownloadWorkerSettings(parsedThreadRateLimits.threadRateLimitsKbps)
+            const settings = await writeDownloadWorkerSettings(
+                parsedThreadRateLimits.threadRateLimitsKbps,
+                parsedCpuCoreIds.cpuCoreIds,
+            )
             res.json({
                 key: settings?.key || DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                 threadRateLimitsKbps: Array.isArray(settings?.threadRateLimitsKbps) ? settings.threadRateLimitsKbps : [],
+                cpuCoreIds: Array.isArray(settings?.cpuCoreIds) ? settings.cpuCoreIds : [],
                 updatedAt: settings?.updatedAt || null,
             })
         } catch (error) {
@@ -316,14 +390,32 @@ export function registerSettingsRoutes(context = {}) {
                 return
             }
 
+            const currentSettings = await readDownloadVpnSettings()
+            const requestRegion = normalizeString(req.body?.region)
+            const requestPiaUsername = normalizeString(req.body?.piaUsername)
+            const requestPiaPassword = normalizeString(req.body?.piaPassword)
+            const savedRegion = normalizeString(currentSettings?.region)
+            const savedPiaUsername = normalizeString(currentSettings?.piaUsername)
+            const savedPiaPassword = normalizeString(currentSettings?.piaPassword)
+            const resolvedPiaUsername = requestPiaUsername || savedPiaUsername
+            const resolvedPiaPassword =
+                !requestPiaPassword || requestPiaPassword === '********'
+                    ? savedPiaPassword
+                    : requestPiaPassword
+
+            if (!resolvedPiaUsername || !resolvedPiaPassword) {
+                res.status(400).json({error: 'PIA username and password are required to test VPN login.'})
+                return
+            }
+
             const result = await ravenClient.testVpnLogin({
                 triggeredBy:
                     typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
                         ? req.body.triggeredBy.trim()
                         : 'manual',
-                region: normalizeString(req.body?.region),
-                piaUsername: normalizeString(req.body?.piaUsername),
-                piaPassword: normalizeString(req.body?.piaPassword),
+                region: requestRegion || savedRegion,
+                piaUsername: resolvedPiaUsername,
+                piaPassword: resolvedPiaPassword,
             })
 
             res.status(200).json(result ?? {ok: false, message: 'Raven VPN login test did not return a payload.'})

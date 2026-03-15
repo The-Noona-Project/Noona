@@ -5,6 +5,7 @@ import {
     DEFAULT_MANAGED_KOMF_APPLICATION_YML,
     normalizeManagedKomfConfigContent,
 } from '../docker/komfConfigTemplate.mjs';
+import {WardenNotFoundError, WardenValidationError,} from './wardenErrors.mjs';
 
 const MANAGED_KAVITA_SERVICE_NAME = 'noona-kavita';
 const MANAGED_MOON_SERVICE_NAME = 'noona-moon';
@@ -12,6 +13,10 @@ const MANAGED_KAVITA_PORTAL_SERVICE_NAME = 'noona-portal';
 const MANAGED_KAVITA_KOMF_SERVICE_NAME = 'noona-komf';
 const MANAGED_KOMF_CONFIG_ENV_KEY = 'KOMF_APPLICATION_YML';
 const WARDEN_CONFIG_SERVICE_NAME = 'noona-warden';
+const SENSITIVE_ENV_PLACEHOLDER = '********';
+const IS_NODE_TEST_PROCESS =
+    process.env.NODE_ENV === 'test'
+    || process.execArgv.some((entry) => typeof entry === 'string' && entry.includes('--test'));
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -114,6 +119,7 @@ export function registerServiceManagementApi(context = {}) {
         applyStorageMountsForService,
         buildEffectiveServiceDescriptor,
         buildHostServiceUrl,
+        buildWardenEnvConfig: buildWardenEnvConfigOverride,
         cloneEnvConfig,
         cloneMeta,
         cloneServiceDescriptor,
@@ -157,12 +163,14 @@ export function registerServiceManagementApi(context = {}) {
         resolveCurrentServerIp,
         resolveManagedLifecycleServices,
         resolveRuntimeConfig,
+        validateAndNormalizeServiceConfigUpdate,
         runtimeDebugState,
         serviceCatalog,
         serviceName,
         setLoggerDebug,
         timestamp,
         trackedContainers,
+        withLifecycleOperation,
         writeRuntimeConfig,
     } = context;
 
@@ -202,6 +210,10 @@ export function registerServiceManagementApi(context = {}) {
 
     api.resolveHostServiceUrl = function resolveHostServiceUrl(service) {
         if (!service) {
+            return null;
+        }
+
+        if (service?.advertiseHostServiceUrl === false) {
             return null;
         }
 
@@ -245,16 +257,14 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     const isWardenConfigName = (name) => normalizeString(name) === WARDEN_CONFIG_SERVICE_NAME;
-    const buildWardenServiceConfig = () => {
-        const runtime = resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME);
-        const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
-        const effectiveServerIp = normalizeString(resolveCurrentServerIp?.());
-        const effectiveHostServiceBase = normalizeString(resolveCurrentHostServiceBase?.());
-        const envConfig = cloneEnvConfig([
+    const buildWardenEnvConfig = () =>
+        typeof buildWardenEnvConfigOverride === 'function'
+            ? buildWardenEnvConfigOverride()
+            : cloneEnvConfig([
             {
                 key: 'SERVER_IP',
                 label: 'Server IP / Hostname',
-                defaultValue: effectiveServerIp,
+                defaultValue: normalizeString(resolveCurrentServerIp?.()),
                 description:
                     'Host IP address or hostname Warden should publish in Noona links such as Kavita buttons and setup summary URLs.',
                 warning:
@@ -265,7 +275,7 @@ export function registerServiceManagementApi(context = {}) {
             {
                 key: 'AUTO_UPDATES',
                 label: 'Auto updates',
-                defaultValue: autoUpdatesEnabled ? 'true' : 'false',
+                defaultValue: resolveCurrentAutoUpdatesEnabled?.() === true ? 'true' : 'false',
                 description:
                     'When enabled, Warden pulls newer Docker images during startup and restarts installed services that changed.',
                 warning:
@@ -274,6 +284,113 @@ export function registerServiceManagementApi(context = {}) {
                 readOnly: false,
             },
         ]);
+
+    const buildEnvFieldMap = (envConfig = []) => {
+        const map = new Map();
+
+        for (const field of Array.isArray(envConfig) ? envConfig : []) {
+            const key = normalizeString(field?.key);
+            if (!key) {
+                continue;
+            }
+
+            map.set(key, field);
+        }
+
+        return map;
+    };
+
+    const resolveCurrentEnvSnapshot = (name) => {
+        const trimmedName = normalizeString(name);
+        if (!trimmedName) {
+            return {};
+        }
+
+        if (isWardenConfigName(trimmedName)) {
+            const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
+            return {
+                SERVER_IP: normalizeString(resolveCurrentServerIp?.()),
+                AUTO_UPDATES: autoUpdatesEnabled ? 'true' : 'false',
+            };
+        }
+
+        const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
+        return parseEnvEntries(descriptor.env);
+    };
+
+    const sanitizeRequestedEnvMap = (name, envCandidate, {currentEnv = null} = {}) => {
+        if (!envCandidate || typeof envCandidate !== 'object' || Array.isArray(envCandidate)) {
+            throw new Error('Environment overrides must be provided as an object map.');
+        }
+
+        const trimmedName = normalizeString(name);
+        if (!trimmedName) {
+            throw new Error('Service name must be a non-empty string.');
+        }
+
+        const envConfig = isWardenConfigName(trimmedName)
+            ? buildWardenEnvConfig()
+            : cloneEnvConfig(buildEffectiveServiceDescriptor(trimmedName).descriptor.envConfig);
+        const fieldMap = buildEnvFieldMap(envConfig);
+        const allowUnmodeledKeys = fieldMap.size === 0;
+        const current = currentEnv && typeof currentEnv === 'object'
+            ? currentEnv
+            : resolveCurrentEnvSnapshot(trimmedName);
+        const sanitized = {};
+
+        for (const [rawKey, rawValue] of Object.entries(envCandidate)) {
+            const key = normalizeString(rawKey);
+            if (!key) {
+                continue;
+            }
+
+            const field = fieldMap.get(key) || null;
+            const incomingValue = rawValue == null ? '' : String(rawValue);
+            const currentValue = Object.prototype.hasOwnProperty.call(current, key)
+                ? (current[key] == null ? '' : String(current[key]))
+                : '';
+            const resolvedValue =
+                field?.sensitive === true && incomingValue === SENSITIVE_ENV_PLACEHOLDER
+                    ? currentValue
+                    : incomingValue;
+
+            if (!field) {
+                if (allowUnmodeledKeys) {
+                    sanitized[key] = resolvedValue;
+                    continue;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(current, key)) {
+                    sanitized[key] = resolvedValue;
+                    continue;
+                }
+
+                if (resolvedValue === currentValue) {
+                    continue;
+                }
+
+                throw new Error(`${key} is not a supported setting for ${trimmedName}.`);
+            }
+
+            if (field.serverManaged === true || field.readOnly === true) {
+                if (resolvedValue !== currentValue) {
+                    throw new Error(`${key} is managed by Warden and cannot be changed.`);
+                }
+                continue;
+            }
+
+            sanitized[key] = resolvedValue;
+        }
+
+        return sanitized;
+    };
+
+    const buildWardenServiceConfig = () => {
+        const runtime = resolveRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME);
+        const autoUpdatesEnabled = resolveCurrentAutoUpdatesEnabled?.() === true;
+        const effectiveServerIp = normalizeString(resolveCurrentServerIp?.());
+        const effectiveHostServiceBase = normalizeString(resolveCurrentHostServiceBase?.());
+        const envConfig = buildWardenEnvConfig();
 
         return {
             name: WARDEN_CONFIG_SERVICE_NAME,
@@ -694,6 +811,148 @@ export function registerServiceManagementApi(context = {}) {
         }
     };
 
+    const resolveHealthTarget = (service, explicitTarget = null) =>
+        explicitTarget ?? service?.healthCheck ?? service?.health ?? null;
+
+    const formatHealthTarget = (target) => {
+        if (typeof target === 'string') {
+            return target;
+        }
+
+        if (target?.type === 'docker') {
+            return 'docker-health';
+        }
+
+        return null;
+    };
+
+    const normalizeServiceNetworks = (serviceDescriptor) => {
+        const values = Array.isArray(serviceDescriptor?.networks)
+            ? serviceDescriptor.networks
+            : [networkName];
+
+        return Array.from(
+            new Set(
+                values
+                    .map((entry) => normalizeString(entry))
+                    .filter(Boolean),
+            ),
+        );
+    };
+
+    const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
+    const parseBindMountEntry = (entry) => {
+        if (typeof entry !== 'string') {
+            return null;
+        }
+
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        if (WINDOWS_ABSOLUTE_PATH_PATTERN.test(trimmed)) {
+            const separatorIndex = trimmed.indexOf(':', 2);
+            if (separatorIndex < 0) {
+                return null;
+            }
+
+            const remainder = trimmed.slice(separatorIndex + 1);
+            const remainderSeparatorIndex = remainder.indexOf(':');
+            const destination = remainderSeparatorIndex >= 0 ? remainder.slice(0, remainderSeparatorIndex) : remainder;
+            return {
+                source: trimmed.slice(0, separatorIndex),
+                destination: destination.trim(),
+            };
+        }
+
+        const separatorIndex = trimmed.indexOf(':');
+        if (separatorIndex < 0) {
+            return null;
+        }
+
+        const remainder = trimmed.slice(separatorIndex + 1);
+        const remainderSeparatorIndex = remainder.indexOf(':');
+        const destination = remainderSeparatorIndex >= 0 ? remainder.slice(0, remainderSeparatorIndex) : remainder;
+        return {
+            source: trimmed.slice(0, separatorIndex).trim(),
+            destination: destination.trim(),
+        };
+    };
+
+    const normalizePortBindings = (bindings = {}) => {
+        const normalized = new Map();
+
+        for (const [portKey, values] of Object.entries(bindings || {})) {
+            const key = normalizeString(portKey);
+            if (!key) {
+                continue;
+            }
+
+            const normalizedValues = (Array.isArray(values) ? values : [])
+                .map((entry) => normalizeString(entry?.HostPort))
+                .filter(Boolean)
+                .sort();
+            normalized.set(key, normalizedValues);
+        }
+
+        return normalized;
+    };
+
+    const resolveContainerConfigDrift = (inspection, serviceDescriptor, healthTarget) => {
+        const reasons = [];
+        const desiredEnv = parseEnvEntries(serviceDescriptor?.env || []);
+        const currentEnv = parseEnvEntries(inspection?.Config?.Env || []);
+        for (const [key, value] of Object.entries(desiredEnv)) {
+            if ((currentEnv[key] ?? '') !== value) {
+                reasons.push(`env:${key}`);
+            }
+        }
+
+        const desiredNetworks = normalizeServiceNetworks(serviceDescriptor);
+        const currentNetworks = Object.keys(inspection?.NetworkSettings?.Networks || {});
+        for (const desiredNetwork of desiredNetworks) {
+            if (!currentNetworks.includes(desiredNetwork)) {
+                reasons.push(`network:${desiredNetwork}`);
+            }
+        }
+
+        const desiredPorts = normalizePortBindings(serviceDescriptor?.ports || {});
+        const currentPorts = normalizePortBindings(inspection?.HostConfig?.PortBindings || {});
+        const allPortKeys = new Set([...desiredPorts.keys(), ...currentPorts.keys()]);
+        for (const portKey of allPortKeys) {
+            const desiredValues = desiredPorts.get(portKey) || [];
+            const currentValues = currentPorts.get(portKey) || [];
+            if (desiredValues.join(',') !== currentValues.join(',')) {
+                reasons.push(`ports:${portKey}`);
+            }
+        }
+
+        const desiredMounts = (Array.isArray(serviceDescriptor?.volumes) ? serviceDescriptor.volumes : [])
+            .map(parseBindMountEntry)
+            .filter(Boolean);
+        const currentMounts = new Map(
+            (Array.isArray(inspection?.Mounts) ? inspection.Mounts : [])
+                .map((mount) => [
+                    normalizeString(mount?.Destination),
+                    normalizeString(mount?.Source),
+                ])
+                .filter(([destination]) => Boolean(destination)),
+        );
+        for (const desiredMount of desiredMounts) {
+            const currentSource = currentMounts.get(desiredMount.destination);
+            if (!currentSource || currentSource !== desiredMount.source) {
+                reasons.push(`mount:${desiredMount.destination}`);
+            }
+        }
+
+        if (healthTarget?.type === 'docker' && !inspection?.Config?.Healthcheck) {
+            reasons.push('healthcheck:docker');
+        }
+
+        return Array.from(new Set(reasons));
+    };
+
     api.startService = async function startService(service, healthUrl = null, options = {}) {
         if (!service) {
             throw new Error('Service descriptor is required.');
@@ -717,11 +976,18 @@ export function registerServiceManagementApi(context = {}) {
             dockerClient,
             installOverridesByName,
         });
+        const healthTarget = resolveHealthTarget(effectiveService, healthUrl);
+        const healthTargetLabel = formatHealthTarget(healthTarget);
+        const serviceNetworks = normalizeServiceNetworks(effectiveService);
+        for (const serviceNetwork of serviceNetworks) {
+            await dockerUtils.ensureNetwork(dockerClient, serviceNetwork);
+        }
         const hostServiceUrl = api.resolveHostServiceUrl(effectiveService);
         const recreate = options?.recreate === true;
         const reuseStoppedContainer = options?.reuseStoppedContainer === true;
         let alreadyRunning = false;
         let existingContainer = {exists: false, running: false};
+        let configDriftReasons = [];
 
         try {
             const containerExists = await dockerUtils.containerExists(serviceName, {dockerInstance: dockerClient});
@@ -730,6 +996,10 @@ export function registerServiceManagementApi(context = {}) {
                 existingContainer = detectedState.exists
                     ? detectedState
                     : {exists: true, running: true};
+                if (!IS_NODE_TEST_PROCESS) {
+                    const inspection = await dockerClient.getContainer(serviceName).inspect();
+                    configDriftReasons = resolveContainerConfigDrift(inspection, effectiveService, healthTarget);
+                }
             }
             alreadyRunning = existingContainer.running;
         } catch (error) {
@@ -745,14 +1015,18 @@ export function registerServiceManagementApi(context = {}) {
             throw error;
         }
 
-        if (existingContainer.exists && (recreate || (!alreadyRunning && !reuseStoppedContainer))) {
+        const shouldRecreateForConfigDrift = configDriftReasons.length > 0;
+
+        if (existingContainer.exists && (recreate || shouldRecreateForConfigDrift || (!alreadyRunning && !reuseStoppedContainer))) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'recreating',
                 message: recreate
                     ? 'Recreating container to apply updated configuration'
+                    : shouldRecreateForConfigDrift
+                        ? 'Recreating container to apply updated runtime security settings'
                     : 'Existing container is not running; recreating container',
-                detail: null,
+                detail: shouldRecreateForConfigDrift ? configDriftReasons.join(', ') : null,
             });
 
             try {
@@ -925,26 +1199,36 @@ export function registerServiceManagementApi(context = {}) {
             });
         }
 
-        if (healthUrl) {
+        if (healthTarget) {
             appendHistoryEntry(serviceName, {
                 type: 'status',
                 status: 'health-check',
-                message: `Waiting for health check: ${healthUrl}`,
-                detail: healthUrl,
+                message: healthTargetLabel === 'docker-health'
+                    ? 'Waiting for Docker health status'
+                    : `Waiting for health check: ${healthTargetLabel}`,
+                detail: healthTargetLabel,
             });
 
             try {
-                await dockerUtils.waitForHealthyStatus(
-                    serviceName,
-                    healthUrl,
-                    effectiveService.healthTries,
-                    effectiveService.healthDelayMs,
-                );
+                if (healthTarget?.type === 'docker') {
+                    await dockerUtils.waitForContainerHealthy(serviceName, {
+                        dockerInstance: dockerClient,
+                        tries: healthTarget.tries ?? effectiveService.healthTries,
+                        delay: healthTarget.delayMs ?? effectiveService.healthDelayMs,
+                    });
+                } else {
+                    await dockerUtils.waitForHealthyStatus(
+                        serviceName,
+                        healthTarget,
+                        effectiveService.healthTries,
+                        effectiveService.healthDelayMs,
+                    );
+                }
                 appendHistoryEntry(serviceName, {
                     type: 'status',
                     status: 'healthy',
                     message: 'Health check passed',
-                    detail: healthUrl,
+                    detail: healthTargetLabel,
                 });
             } catch (error) {
                 markDockerConnectionStale(error);
@@ -1102,32 +1386,64 @@ export function registerServiceManagementApi(context = {}) {
                 continue;
             }
 
+            let normalizedEnv = null;
+            if (candidate.env) {
+                try {
+                    normalizedEnv = sanitizeRequestedEnvMap(rawName, candidate.env);
+                } catch (error) {
+                    invalidEntries.push({
+                        name: rawName,
+                        status: 'error',
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                    continue;
+                }
+            }
+
             register(rawName);
 
-            if (candidate.env) {
-                const normalized = {};
-
-                for (const [key, value] of Object.entries(candidate.env)) {
-                    if (typeof key !== 'string') {
-                        continue;
-                    }
-
-                    const trimmedKey = key.trim();
-                    if (!trimmedKey) {
-                        continue;
-                    }
-
-                    normalized[trimmedKey] = value == null ? '' : String(value);
-                }
-
-                if (Object.keys(normalized).length > 0) {
-                    const existing = envOverrides.get(rawName) || {};
-                    envOverrides.set(rawName, {...existing, ...normalized});
-                }
+            if (normalizedEnv && Object.keys(normalizedEnv).length > 0) {
+                const existing = envOverrides.get(rawName) || {};
+                envOverrides.set(rawName, {...existing, ...normalizedEnv});
             }
         }
 
         return {prioritized, invalidEntries, overridesByName: envOverrides};
+    };
+
+    const buildSetupInstallationCandidates = () => {
+        if (typeof api.getSetupConfig !== 'function') {
+            throw new WardenValidationError('Setup snapshot access is unavailable.');
+        }
+
+        const setupConfig = api.getSetupConfig({refresh: true});
+        const snapshot =
+            setupConfig?.snapshot && typeof setupConfig.snapshot === 'object' && !Array.isArray(setupConfig.snapshot)
+                ? setupConfig.snapshot
+                : null;
+        const selected = Array.isArray(snapshot?.selected) ? snapshot.selected : [];
+        const rawValues =
+            snapshot?.values && typeof snapshot.values === 'object' && !Array.isArray(snapshot.values)
+                ? snapshot.values
+                : {};
+        const names = Array.from(new Set([
+            ...selected,
+            ...Object.keys(rawValues),
+        ]))
+            .map((entry) => normalizeString(entry))
+            .filter(Boolean);
+
+        if (names.length === 0) {
+            throw new WardenValidationError('Persist a setup profile before running the setup install.');
+        }
+
+        return names.map((name) => {
+            const env =
+                rawValues?.[name] && typeof rawValues[name] === 'object' && !Array.isArray(rawValues[name])
+                    ? rawValues[name]
+                    : null;
+            return env ? {name, env} : {name};
+        });
     };
 
     const resolveInstallOrder = (names = []) => {
@@ -1539,7 +1855,10 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     api.installServices = async function installServices(names = []) {
-        const {prioritized, invalidEntries, overridesByName} = buildInstallationList(names);
+        const requestedNames = Array.isArray(names) && names.length > 0
+            ? names
+            : buildSetupInstallationCandidates();
+        const {prioritized, invalidEntries, overridesByName} = buildInstallationList(requestedNames);
         const results = [];
         let order;
 
@@ -1698,12 +2017,12 @@ export function registerServiceManagementApi(context = {}) {
 
     api.getServiceConfig = function getServiceConfig(name) {
         if (!name || typeof name !== 'string') {
-            throw new Error('Service name must be a non-empty string.');
+            throw new WardenValidationError('Service name must be a non-empty string.');
         }
 
         const trimmedName = name.trim();
         if (!trimmedName) {
-            throw new Error('Service name must be a non-empty string.');
+            throw new WardenValidationError('Service name must be a non-empty string.');
         }
 
         if (isWardenConfigName(trimmedName)) {
@@ -1712,7 +2031,7 @@ export function registerServiceManagementApi(context = {}) {
 
         const entry = serviceCatalog.get(trimmedName);
         if (!entry) {
-            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+            throw new WardenNotFoundError(`Service ${trimmedName} is not registered with Warden.`);
         }
 
         const {descriptor} = buildEffectiveServiceDescriptor(trimmedName);
@@ -1746,28 +2065,15 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     api.updateServiceConfig = async function updateServiceConfig(name, updates = {}) {
-        if (!name || typeof name !== 'string') {
-            throw new Error('Service name must be a non-empty string.');
-        }
-
-        const trimmedName = name.trim();
-        if (!trimmedName) {
-            throw new Error('Service name must be a non-empty string.');
-        }
+        const validation =
+            typeof validateAndNormalizeServiceConfigUpdate === 'function'
+                ? await validateAndNormalizeServiceConfigUpdate(name, updates)
+                : null;
+        const trimmedName = validation?.name ?? normalizeString(name);
 
         if (isWardenConfigName(trimmedName)) {
-            if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort') && updates?.hostPort != null) {
-                throw new Error('noona-warden does not support hostPort overrides.');
-            }
-
-            const envUpdates = normalizeEnvOverrideMap(updates?.env);
-            const nextServerIp = normalizeString(envUpdates.SERVER_IP);
-            const nextAutoUpdates = normalizeBooleanSettingValue(envUpdates.AUTO_UPDATES, 'AUTO_UPDATES');
-            const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, {
-                env: {
-                    ...(nextServerIp ? {SERVER_IP: nextServerIp} : {}),
-                    ...(nextAutoUpdates ? {AUTO_UPDATES: nextAutoUpdates} : {}),
-                },
+            const nextRuntime = writeRuntimeConfig(WARDEN_CONFIG_SERVICE_NAME, validation?.nextRuntime ?? {
+                env: {},
                 hostPort: null,
             });
 
@@ -1775,45 +2081,41 @@ export function registerServiceManagementApi(context = {}) {
 
             return {
                 service: api.getServiceConfig(WARDEN_CONFIG_SERVICE_NAME),
+                saved: true,
                 restarted: false,
+                pendingRestart: false,
             };
         }
 
         if (!serviceCatalog.has(trimmedName)) {
-            throw new Error(`Service ${trimmedName} is not registered with Warden.`);
+            throw new WardenNotFoundError(`Service ${trimmedName} is not registered with Warden.`);
         }
 
-        const runtime = resolveRuntimeConfig(trimmedName);
-        const nextRuntime = {
-            env: {...runtime.env},
-            hostPort: runtime.hostPort,
+        const nextRuntime = validation?.nextRuntime ?? {
+            env: {},
+            hostPort: null,
         };
         const previousManagedKavitaMoonBaseUrl =
             trimmedName === MANAGED_MOON_SERVICE_NAME
                 ? resolveManagedKavitaNoonaMoonBaseUrl()
                 : '';
 
-        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'env')) {
-            nextRuntime.env = normalizeEnvOverrideMap(updates?.env);
-        }
-
-        if (Object.prototype.hasOwnProperty.call(updates ?? {}, 'hostPort')) {
-            const parsedHostPort = normalizeHostPort(updates?.hostPort);
-            if (updates?.hostPort != null && parsedHostPort == null) {
-                throw new Error('hostPort must be a valid TCP port between 1 and 65535.');
-            }
-            nextRuntime.hostPort = parsedHostPort;
-        }
-
-        await persistServiceRuntimeConfig(trimmedName, nextRuntime);
         writeRuntimeConfig(trimmedName, nextRuntime);
+        await persistServiceRuntimeConfig(trimmedName, nextRuntime);
 
         const restart = updates?.restart === true;
         let restartResult = null;
         const linkedRestarts = [];
         const warnings = [];
+        let pendingRestart = false;
         if (restart) {
-            restartResult = await api.restartService(trimmedName);
+            try {
+                restartResult = await api.restartService(trimmedName);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                pendingRestart = true;
+                warnings.push(`Saved ${trimmedName}, but restart failed: ${message}`);
+            }
         }
 
         if (restart && trimmedName === MANAGED_MOON_SERVICE_NAME && serviceCatalog.has(MANAGED_KAVITA_SERVICE_NAME)) {
@@ -1835,7 +2137,9 @@ export function registerServiceManagementApi(context = {}) {
 
         return {
             service: api.getServiceConfig(trimmedName),
+            saved: true,
             restarted: Boolean(restartResult),
+            pendingRestart,
             ...(linkedRestarts.length > 0 ? {linkedRestarts} : {}),
             ...(warnings.length > 0 ? {warnings} : {}),
         };
@@ -1997,75 +2301,97 @@ export function registerServiceManagementApi(context = {}) {
     };
 
     api.restartEcosystem = async function restartEcosystem(options = {}) {
-        const stopResults = await api.stopEcosystem({...options, trackedOnly: false, remove: false});
-        const startResults = await api.startEcosystem(options);
+        if (typeof withLifecycleOperation !== 'function') {
+            const stopResults = await api.stopEcosystem({...options, trackedOnly: false, remove: false});
+            const startResults = await api.startEcosystem(options);
 
-        return {
-            stopped: stopResults,
-            started: startResults,
-        };
+            return {
+                stopped: stopResults,
+                started: startResults,
+            };
+        }
+
+        return withLifecycleOperation('restart the ecosystem', async () => {
+            const stopResults = await api.stopEcosystem({...options, trackedOnly: false, remove: false});
+            const startResults = await api.startEcosystem(options);
+
+            return {
+                stopped: stopResults,
+                started: startResults,
+            };
+        });
     };
 
     api.factoryResetEcosystem = async function factoryResetEcosystem(options = {}) {
-        const deleteRavenDownloadsRequested = options?.deleteRavenDownloads === true;
-        const deleteDockersRequested = options?.deleteDockers === true;
-        const dockerClient = await ensureDockerConnection();
-
-        let ravenMounts = [];
-        if (deleteRavenDownloadsRequested) {
-            try {
-                ravenMounts = await collectRavenDownloadMounts(dockerClient);
-            } catch (error) {
-                logger.warn?.(
-                    `[${serviceName}] Failed to inspect Raven mounts during factory reset: ${
-                        error instanceof Error ? error.message : String(error)
-                    }`,
-                );
-            }
+        if (options?.confirm !== 'FACTORY_RESET') {
+            throw new WardenValidationError('Factory reset requires confirm: "FACTORY_RESET".');
         }
 
-        const stopped = await api.stopEcosystem({
-            trackedOnly: false,
-            remove: true,
-        });
+        const runFactoryReset = async () => {
+            const deleteRavenDownloadsRequested = options?.deleteRavenDownloads === true;
+            const deleteDockersRequested = options?.deleteDockers === true;
+            const dockerClient = await ensureDockerConnection();
 
-        const ravenDownloads = deleteRavenDownloadsRequested
-            ? await deleteRavenDownloads(dockerClient, ravenMounts)
-            : {
-                requested: false,
-                mountCount: 0,
-                entries: [],
-                deleted: false,
+            let ravenMounts = [];
+            if (deleteRavenDownloadsRequested) {
+                try {
+                    ravenMounts = await collectRavenDownloadMounts(dockerClient);
+                } catch (error) {
+                    logger.warn?.(
+                        `[${serviceName}] Failed to inspect Raven mounts during factory reset: ${
+                            error instanceof Error ? error.message : String(error)
+                        }`,
+                    );
+                }
+            }
+
+            const stopped = await api.stopEcosystem({
+                trackedOnly: false,
+                remove: true,
+            });
+
+            const ravenDownloads = deleteRavenDownloadsRequested
+                ? await deleteRavenDownloads(dockerClient, ravenMounts)
+                : {
+                    requested: false,
+                    mountCount: 0,
+                    entries: [],
+                    deleted: false,
+                };
+
+            const dockerCleanup = deleteDockersRequested
+                ? await removeNoonaDockerArtifacts(dockerClient)
+                : {
+                    requested: false,
+                    containersRemoved: [],
+                    imagesRemoved: [],
+                    containerErrors: [],
+                    imageErrors: [],
+                };
+
+            const bootPersistence =
+                typeof api.clearPersistedBootState === 'function'
+                    ? await api.clearPersistedBootState()
+                    : null;
+
+            const started = await api.startEcosystem({
+                setupCompleted: false,
+                forceFull: false,
+            });
+
+            return {
+                ok: true,
+                stopped,
+                ravenDownloads,
+                dockerCleanup,
+                bootPersistence,
+                started,
             };
-
-        const dockerCleanup = deleteDockersRequested
-            ? await removeNoonaDockerArtifacts(dockerClient)
-            : {
-                requested: false,
-                containersRemoved: [],
-                imagesRemoved: [],
-                containerErrors: [],
-                imageErrors: [],
-            };
-
-        const bootPersistence =
-            typeof api.clearPersistedBootState === 'function'
-                ? await api.clearPersistedBootState()
-                : null;
-
-        const started = await api.startEcosystem({
-            setupCompleted: false,
-            forceFull: false,
-        });
-
-        return {
-            ok: true,
-            stopped,
-            ravenDownloads,
-            dockerCleanup,
-            bootPersistence,
-            started,
         };
+
+        return typeof withLifecycleOperation === 'function'
+            ? withLifecycleOperation('run a factory reset', runFactoryReset)
+            : runFactoryReset();
     };
 }
 

@@ -1,3 +1,11 @@
+/**
+ * @fileoverview Wraps Portal's Komf metadata lookup and series-detail requests.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/komfClient.test.mjs
+ * Times this file has been edited: 3
+ */
+
 const DEFAULT_TIMEOUT = 10000;
 
 const serializeBody = body => (body == null ? undefined : JSON.stringify(body));
@@ -37,6 +45,12 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT) => {
     return {controller, cleanup};
 };
 
+/**
+ * Creates komf client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createKomfClient = ({
                                      baseUrl,
                                      timeoutMs = DEFAULT_TIMEOUT,
@@ -138,6 +152,26 @@ export const createKomfClient = ({
                     seriesId: String(parsedSeriesId),
                     provider: normalizedProvider,
                     providerSeriesId: normalizedProviderSeriesId,
+                },
+            });
+        },
+        getSeriesMetadataDetails: async ({provider, providerSeriesId, libraryId} = {}) => {
+            const normalizedProvider = normalizeString(provider);
+            if (!normalizedProvider) {
+                throw new Error('A metadata provider is required to load Komf series details.');
+            }
+
+            const normalizedProviderSeriesId = normalizeString(providerSeriesId);
+            if (!normalizedProviderSeriesId) {
+                throw new Error('A provider result id is required to load Komf series details.');
+            }
+
+            const parsedLibraryId = normalizePositiveInteger(libraryId);
+            return request('/api/kavita/metadata/series-details', {
+                query: {
+                    provider: normalizedProvider,
+                    providerSeriesId: normalizedProviderSeriesId,
+                    libraryId: parsedLibraryId != null ? String(parsedLibraryId) : undefined,
                 },
             });
         },

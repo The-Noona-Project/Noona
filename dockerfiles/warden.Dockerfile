@@ -4,6 +4,10 @@ FROM node:24-slim
 
 WORKDIR /app/Noona
 
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY services/warden ./services/warden
 COPY services/sage/clients ./services/sage/clients
 COPY services/sage/lib ./services/sage/lib

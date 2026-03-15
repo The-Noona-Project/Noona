@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Discord presence snapshots and polling updates.
+ * Related files:
+ * - discord/presenceUpdater.mjs
+ * Times this file has been edited: 3
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

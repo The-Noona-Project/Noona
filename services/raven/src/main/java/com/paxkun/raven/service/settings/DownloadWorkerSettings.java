@@ -1,3 +1,9 @@
+/**
+ * Represents Raven download worker settings.
+ * Related files:
+ * - None yet.
+ * Times this file has been edited: 3
+ */
 package com.paxkun.raven.service.settings;
 
 import lombok.AllArgsConstructor;
@@ -17,4 +23,5 @@ import java.util.List;
 public class DownloadWorkerSettings {
     private String key;
     private List<Integer> threadRateLimitsKbps = new ArrayList<>();
+    private List<Integer> cpuCoreIds = new ArrayList<>();
 }

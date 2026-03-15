@@ -1,7 +1,7 @@
 "use client";
 
 import {useEffect, useEffectEvent, useMemo, useState} from "react";
-import {Badge, Button, Card, Carousel, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
+import {Badge, Button, Card, Column, Heading, Row, Spinner, Text} from "@once-ui-system/core";
 import {SetupModeGate} from "./SetupModeGate";
 import {AuthGate} from "./AuthGate";
 import styles from "./DownloadsPage.module.scss";
@@ -30,13 +30,33 @@ type RavenDownloadProgress = {
     remainingChapterNumbers?: string[] | null;
     newChapterNumbers?: string[] | null;
     missingChapterNumbers?: string[] | null;
+    workerIndex?: number | null;
+    cpuCoreId?: number | null;
+    workerPid?: number | null;
+    executionMode?: string | null;
+    pauseRequested?: boolean | null;
     lastUpdated?: number | null;
+};
+
+type RavenActiveWorker = {
+    taskId?: string | null;
+    title?: string | null;
+    status?: string | null;
+    workerIndex?: number | null;
+    cpuCoreId?: number | null;
+    workerPid?: number | null;
+    executionMode?: string | null;
+    pauseRequested?: boolean | null;
 };
 
 type RavenDownloadSummary = {
     activeDownloads?: number;
     maxThreads?: number;
     threadRateLimitsKbps?: number[] | null;
+    workerExecutionMode?: string | null;
+    workerCpuCoreIds?: number[] | null;
+    availableCpuIds?: number[] | null;
+    activeWorkers?: RavenActiveWorker[] | null;
     state?: string | null;
     statusText?: string | null;
     currentTask?: RavenDownloadProgress | null;
@@ -77,6 +97,11 @@ type ResolvedTaskView = {
     recovered: boolean;
     recoveryState: string;
     sourceChapterCount: number | null;
+    workerIndex: number | null;
+    cpuCoreId: number | null;
+    workerPid: number | null;
+    executionMode: string;
+    pauseRequested: boolean;
     queuedAtLabel: string;
     updatedAtLabel: string;
     completedAtLabel: string;
@@ -254,6 +279,20 @@ const resolveTaskView = (entry: RavenDownloadProgress, fallbackIndex = 0): Resol
             typeof entry.sourceChapterCount === "number" && Number.isFinite(entry.sourceChapterCount)
                 ? entry.sourceChapterCount
                 : null,
+        workerIndex:
+            typeof entry.workerIndex === "number" && Number.isFinite(entry.workerIndex)
+                ? entry.workerIndex
+                : null,
+        cpuCoreId:
+            typeof entry.cpuCoreId === "number" && Number.isFinite(entry.cpuCoreId)
+                ? entry.cpuCoreId
+                : null,
+        workerPid:
+            typeof entry.workerPid === "number" && Number.isFinite(entry.workerPid)
+                ? entry.workerPid
+                : null,
+        executionMode: normalizeString(entry.executionMode).trim() || "thread",
+        pauseRequested: entry.pauseRequested === true,
         queuedAtLabel: formatEpochMs(entry.queuedAt),
         updatedAtLabel: formatEpochMs(entry.lastUpdated ?? entry.startedAt),
         completedAtLabel: formatEpochMs(entry.completedAt),
@@ -484,86 +523,139 @@ export function DownloadsPage() {
                 .map((entry, index) => resolveTaskView(entry, index)),
         [history],
     );
+    const focusTask = currentTaskDeckViews[0] ?? null;
+    const remainingChapterCount = activeTaskViews.reduce((total, task) => total + task.remaining.length, 0);
+    const completedHistoryCount = historyViews.filter((task) => task.status === "completed").length;
+    const interruptedHistoryCount = historyViews.length - completedHistoryCount;
     const showcaseStatus = currentTaskDeckViews[0]?.statusRaw || normalizeString(summary?.state).trim() || "idle";
-    const taskCarouselItems = useMemo(
-        () =>
-            currentTaskDeckViews.map((task, index) => ({
-                alt: `${task.titleName} download task`,
-                slide: (
-                    <div className={styles.taskCarouselSlide}>
-                        <div className={styles.taskSlideGrid}>
-                            <div className={styles.taskHeroPanel}>
-                                <Column gap="12">
-                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Column gap="4" style={{minWidth: 0}}>
-                                            <Text variant="label-default-s" onBackground="neutral-weak">
-                                                Task {index + 1} of {currentTaskDeckViews.length}
-                                            </Text>
-                                            <Heading as="h3" variant="heading-strong-l" wrap="balance">
-                                                {task.titleName}
-                                            </Heading>
-                                        </Column>
-                                        <Row gap="8" style={{flexWrap: "wrap"}}>
-                                            <Badge background={statusBadgeBackground(task.statusRaw)}
-                                                   onBackground="neutral-strong">
-                                                {task.statusRaw}
+    const taskShowcaseCard = (
+        <Card
+            fillWidth
+            background="surface"
+            border="neutral-alpha-weak"
+            padding="l"
+            radius="xl"
+            className={`${styles.sectionCard} ${styles.showcaseCard}`}
+        >
+            <Column gap="16">
+                <Row fillWidth horizontal="between" vertical="start" gap="16" s={{direction: "column"}}>
+                    <Column gap="8" style={{minWidth: 0}}>
+                        <Text variant="label-default-s" onBackground="neutral-weak">
+                            Raven mission control
+                        </Text>
+                        <Heading as="h2" variant="display-strong-s" wrap="balance">
+                            {focusTask
+                                ? `${focusTask.titleName} is in focus`
+                                : normalizeString(summary?.statusText).trim() || "Raven is standing by"}
+                        </Heading>
+                        <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
+                            A cleaner ops board for live queue health, chapter progress, and worker pacing.
+                        </Text>
+                    </Column>
+                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                        <Badge background={statusBadgeBackground(showcaseStatus)}>
+                            {showcaseStatus}
+                        </Badge>
+                        <Badge background="neutral-alpha-weak">
+                            live tasks: {currentTaskDeckViews.length}
+                        </Badge>
+                        <Badge background="neutral-alpha-weak">
+                            remaining chapters: {remainingChapterCount}
+                        </Badge>
+                        <Badge background="neutral-alpha-weak">
+                            workers: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
+                        </Badge>
+                    </Row>
+                </Row>
+
+                <Row
+                    fillWidth
+                    gap="12"
+                    style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1.45fr) minmax(min(100%, 18rem), 0.95fr)",
+                        alignItems: "stretch",
+                    }}
+                    m={{style: {gridTemplateColumns: "1fr"}}}
+                >
+                    <Card fillWidth padding="l" radius="l" background="surface" border="neutral-alpha-weak">
+                        <Column gap="12">
+                            <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                <Column gap="4">
+                                    <Text variant="label-default-s" onBackground="neutral-weak">
+                                        Focus board
+                                    </Text>
+                                    <Heading as="h3" variant="heading-strong-l" wrap="balance">
+                                        {focusTask ? focusTask.titleName : "No active task"}
+                                    </Heading>
+                                </Column>
+                                {focusTask && (
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Badge background={statusBadgeBackground(focusTask.statusRaw)}>
+                                            {focusTask.statusRaw}
+                                        </Badge>
+                                        {focusTask.workerIndex != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                worker {focusTask.workerIndex + 1}
                                             </Badge>
-                                            <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                                                chapters: {task.completed}/{task.total || "?"}
+                                        )}
+                                        {focusTask.cpuCoreId != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                CPU {focusTask.cpuCoreId >= 0 ? focusTask.cpuCoreId : "auto"}
                                             </Badge>
-                                            {task.remaining.length > 0 && (
-                                                <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                                                    remaining: {task.remaining.length}
-                                                </Badge>
-                                            )}
-                                            {task.recovered && (
-                                                <Badge background="brand-alpha-weak" onBackground="neutral-strong">
-                                                    recovered
-                                                </Badge>
-                                            )}
-                                        </Row>
+                                        )}
+                                        {focusTask.recovered && (
+                                            <Badge background="brand-alpha-weak">
+                                                recovered
+                                            </Badge>
+                                        )}
                                     </Row>
+                                )}
+                            </Row>
 
-                                    {(task.message || task.current) && (
-                                        <Column gap="4">
-                                            {task.message && (
-                                                <Text onBackground="neutral-weak" variant="body-default-s"
-                                                      wrap="balance">
-                                                    {task.message}
-                                                </Text>
-                                            )}
-                                            {task.current && (
-                                                <Text onBackground="neutral-weak" variant="body-default-xs"
-                                                      wrap="balance">
-                                                    Current chapter: {task.current}
-                                                </Text>
-                                            )}
-                                        </Column>
-                                    )}
-
-                                    {task.errorMessage && (
-                                        <Text onBackground="danger-strong" variant="body-default-xs" wrap="balance">
-                                            {task.errorMessage}
+                            {focusTask ? (
+                                <>
+                                    {(focusTask.message || focusTask.current) && (
+                                        <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
+                                            {focusTask.current ? `Current chapter: ${focusTask.current}` : focusTask.message}
                                         </Text>
                                     )}
-
-                                    <Row
-                                        fillWidth
-                                        background="neutral-alpha-weak"
-                                        radius="l"
-                                        className={styles.progressTrackLarge}
-                                    >
+                                    {focusTask.errorMessage && (
+                                        <Text onBackground="danger-strong" variant="body-default-xs" wrap="balance">
+                                            {focusTask.errorMessage}
+                                        </Text>
+                                    )}
+                                    <Row fillWidth background="neutral-alpha-weak" radius="l"
+                                         className={styles.progressTrackLarge}>
                                         <Row
-                                            background={progressBarBackground(task.statusRaw)}
+                                            background={progressBarBackground(focusTask.statusRaw)}
                                             radius="l"
                                             style={{
-                                                width: task.status === "queued" ? "12%" : `${task.percent}%`,
+                                                width: focusTask.status === "queued" ? "12%" : `${focusTask.percent}%`,
                                                 height: "100%",
-                                                minWidth: task.status === "queued" ? 18 : 0,
+                                                minWidth: focusTask.status === "queued" ? 18 : 0,
                                             }}
                                         />
                                     </Row>
-
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Badge background="neutral-alpha-weak">
+                                            chapters: {focusTask.completed}/{focusTask.total || "?"}
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            remaining: {focusTask.remaining.length}
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            new: {focusTask.newChapters.length}
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            missing: {focusTask.missingChapters.length}
+                                        </Badge>
+                                    </Row>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        {focusTask.remaining.length > 0
+                                            ? `Remaining queue: ${formatTaskListPreview(focusTask.remaining, 10)}`
+                                            : "No remaining queue on the focused task."}
+                                    </Text>
                                     <div className={styles.taskTimelineGrid}>
                                         <Column gap="2">
                                             <Text variant="label-default-xs" onBackground="neutral-weak">
@@ -571,7 +663,7 @@ export function DownloadsPage() {
                                             </Text>
                                             <Text variant="body-default-xs" onBackground="neutral-strong"
                                                   wrap="balance">
-                                                {task.queuedAtLabel || "No timestamp"}
+                                                {focusTask.queuedAtLabel || "No timestamp"}
                                             </Text>
                                         </Column>
                                         <Column gap="2">
@@ -580,149 +672,93 @@ export function DownloadsPage() {
                                             </Text>
                                             <Text variant="body-default-xs" onBackground="neutral-strong"
                                                   wrap="balance">
-                                                {task.updatedAtLabel || "No timestamp"}
+                                                {focusTask.updatedAtLabel || "No timestamp"}
                                             </Text>
                                         </Column>
                                         <Column gap="2">
                                             <Text variant="label-default-xs" onBackground="neutral-weak">
-                                                Completed
+                                                Recovery
                                             </Text>
                                             <Text variant="body-default-xs" onBackground="neutral-strong"
                                                   wrap="balance">
-                                                {task.completedAtLabel || "In progress"}
+                                                {focusTask.recoveryState || "Direct run"}
                                             </Text>
                                         </Column>
                                     </div>
-                                </Column>
-                            </div>
-                            <div className={styles.taskInsetStack}>
-                                <Card
-                                    fillWidth
-                                    background="surface"
-                                    border="neutral-alpha-weak"
-                                    padding="m"
-                                    radius="l"
-                                    className={styles.taskInsetCard}
-                                >
-                                    <Column gap="8">
-                                        <Text variant="label-default-s" onBackground="neutral-weak">
-                                            Remaining queue
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            {task.remaining.length > 0
-                                                ? formatTaskListPreview(task.remaining, 12)
-                                                : "No remaining chapters."}
-                                        </Text>
-                                    </Column>
-                                </Card>
-                                <Card
-                                    fillWidth
-                                    background="surface"
-                                    border="neutral-alpha-weak"
-                                    padding="m"
-                                    radius="l"
-                                    className={styles.taskInsetCard}
-                                >
-                                    <Column gap="8">
-                                        <Text variant="label-default-s" onBackground="neutral-weak">
-                                            Discovery split
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            {task.newChapters.length > 0
-                                                ? `New: ${formatTaskListPreview(task.newChapters, 10)}`
-                                                : "No newly discovered chapters in this task."}
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            {task.missingChapters.length > 0
-                                                ? `Missing: ${formatTaskListPreview(task.missingChapters, 10)}`
-                                                : "No missing chapters in this task."}
-                                        </Text>
-                                    </Column>
-                                </Card>
-                            </div>
-                        </div>
-                    </div>
-                ),
-            })),
-        [currentTaskDeckViews],
-    );
-
-    const taskShowcaseCard = (
-        <Card
-            fillWidth
-            background="surface"
-            border="neutral-alpha-weak"
-            padding="l"
-            radius="l"
-            className={`${styles.sectionCard} ${styles.showcaseCard}`}
-        >
-            <Column gap="16">
-                <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                    <Column gap="4" style={{minWidth: 0}}>
-                        <Text variant="label-default-s" onBackground="neutral-weak">
-                            Current Raven tasks
-                        </Text>
-                        <Heading as="h2" variant="heading-strong-l">
-                            {normalizeString(summary?.statusText).trim() || "Raven live deck"}
-                        </Heading>
-                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                            Auto-rotating deck for live Raven work, including recovered tasks restored from cache.
-                        </Text>
-                    </Column>
-                    <Row gap="8" style={{flexWrap: "wrap"}}>
-                        <Badge background={statusBadgeBackground(showcaseStatus)} onBackground="neutral-strong">
-                            {showcaseStatus}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            live tasks: {currentTaskDeckViews.length}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            active downloads: {activeTaskViews.length}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            workers: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
-                        </Badge>
-                    </Row>
-                </Row>
-
-                {currentTaskDeckViews.length > 0 ? (
-                    <>
-                        <Carousel
-                            items={taskCarouselItems}
-                            aspectRatio="16 / 9"
-                            indicator={taskCarouselItems.length > 1 ? "line" : false}
-                            controls={taskCarouselItems.length > 1}
-                            play={{
-                                auto: taskCarouselItems.length > 1,
-                                interval: 5200,
-                                controls: true,
-                                progress: true,
-                            }}
-                            radius="l"
-                            border="neutral-alpha-weak"
-                            className={styles.taskCarousel}
-                        />
-
-                        <Row fillWidth horizontal="start" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                {currentTaskDeckViews.length > 1
-                                    ? "The carousel rotates automatically. Use controls or indicators to inspect a specific task."
-                                    : "Raven currently has one task in focus."}
-                            </Text>
-                        </Row>
-                    </>
-                ) : (
-                    <div className={styles.taskHeroPanel}>
-                        <Column gap="8">
-                            <Heading as="h3" variant="heading-strong-l">
-                                Raven is idle
-                            </Heading>
-                            <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
-                                Queue a title or run a library sync and this deck will become a live Raven presentation.
-                            </Text>
+                                </>
+                            ) : (
+                                <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
+                                    Raven is idle. Queue a title or run a library sweep and the focus board will lock
+                                    onto the next task automatically.
+                                </Text>
+                            )}
                         </Column>
-                    </div>
-                )}
+                    </Card>
+
+                    <Column gap="12">
+                        <Card fillWidth padding="m" radius="l" background="surface" border="neutral-alpha-weak">
+                            <Column gap="8">
+                                <Text variant="label-default-s" onBackground="neutral-weak">
+                                    Queue actions
+                                </Text>
+                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                    <Button variant="primary" href="/downloads/add">
+                                        Add download
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        disabled={pausingDownloads || activeTaskViews.length === 0}
+                                        onClick={() => void requestPauseDownloads()}
+                                    >
+                                        {pausingDownloads ? "Pausing..." : "Pause downloads"}
+                                    </Button>
+                                </Row>
+                                <Row gap="8" style={{flexWrap: "wrap"}}>
+                                    <Button variant="secondary" onClick={() => void checkLibraryForNewChapters()}
+                                            disabled={syncingLibrary}>
+                                        {syncingLibrary ? "Checking..." : "Check new/missing"}
+                                    </Button>
+                                    <Button variant="secondary" onClick={() => void refreshAll()}>
+                                        Refresh all
+                                    </Button>
+                                </Row>
+                            </Column>
+                        </Card>
+                        <Card fillWidth padding="m" radius="l" background="surface" border="neutral-alpha-weak">
+                            <Column gap="8">
+                                <Text variant="label-default-s" onBackground="neutral-weak">
+                                    Signals
+                                </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                    Completed jobs: {completedHistoryCount}
+                                </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                    Interrupted jobs: {interruptedHistoryCount}
+                                </Text>
+                                {pauseDownloadsMessage && !pauseDownloadsError && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        {pauseDownloadsMessage}
+                                    </Text>
+                                )}
+                                {pauseDownloadsError && (
+                                    <Text onBackground="danger-strong" variant="body-default-xs" wrap="balance">
+                                        {pauseDownloadsError}
+                                    </Text>
+                                )}
+                                {syncLibraryMessage && !syncLibraryError && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        {syncLibraryMessage}
+                                    </Text>
+                                )}
+                                {syncLibraryError && (
+                                    <Text onBackground="danger-strong" variant="body-default-xs" wrap="balance">
+                                        {syncLibraryError}
+                                    </Text>
+                                )}
+                            </Column>
+                        </Card>
+                    </Column>
+                </Row>
             </Column>
         </Card>
     );
@@ -732,22 +768,22 @@ export function DownloadsPage() {
             background="surface"
             border="neutral-alpha-weak"
             padding="l"
-            radius="l"
+            radius="xl"
             className={styles.sectionCard}
         >
             <Column gap="12">
                 <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                     <Column gap="4">
                         <Text variant="label-default-s" onBackground="neutral-weak">
-                            Active downloads
+                            Live queue
                         </Text>
                         <Heading as="h2" variant="heading-strong-l">
-                            Live queue cards
+                            Active jobs
                         </Heading>
                     </Column>
                     <Row gap="8" style={{flexWrap: "wrap"}}>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            {activeTaskViews.length} live
+                        <Badge background="neutral-alpha-weak">
+                            {activeTaskViews.length} active
                         </Badge>
                         <Button
                             variant="secondary"
@@ -792,7 +828,7 @@ export function DownloadsPage() {
                 )}
 
                 {downloads && activeTaskViews.length > 0 && (
-                    <div className={styles.queueGrid}>
+                    <Column gap="12">
                         {activeTaskViews.map((task) => (
                             <Card
                                 key={task.key}
@@ -801,46 +837,44 @@ export function DownloadsPage() {
                                 border="neutral-alpha-weak"
                                 padding="m"
                                 radius="l"
-                                className={`${styles.downloadCard} ${styles.queueCard}`}
+                                className={styles.downloadCard}
                             >
                                 <Column gap="12">
                                     <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                        <Text variant="heading-default-s" wrap="balance">
+                                        <Text variant="body-strong-s" wrap="balance">
                                             {task.titleName}
                                         </Text>
-                                        <Badge background={statusBadgeBackground(task.statusRaw)}
-                                               onBackground="neutral-strong">
+                                        <Badge background={statusBadgeBackground(task.statusRaw)}>
                                             {task.statusRaw}
                                         </Badge>
                                     </Row>
 
-                                    <div className={styles.queueMetaGrid}>
-                                        <div className={styles.queueMetaCell}>
-                                            <Text variant="label-default-xs" onBackground="neutral-weak">
-                                                Progress
-                                            </Text>
-                                            <Text variant="body-default-xs" onBackground="neutral-strong">
-                                                {task.completed}/{task.total || "?"} chapters
-                                            </Text>
-                                        </div>
-                                        <div className={styles.queueMetaCell}>
-                                            <Text variant="label-default-xs" onBackground="neutral-weak">
-                                                Remaining
-                                            </Text>
-                                            <Text variant="body-default-xs" onBackground="neutral-strong">
-                                                {task.remaining.length} chapter(s)
-                                            </Text>
-                                        </div>
-                                        <div className={styles.queueMetaCell}>
-                                            <Text variant="label-default-xs" onBackground="neutral-weak">
-                                                Task type
-                                            </Text>
-                                            <Text variant="body-default-xs" onBackground="neutral-strong"
-                                                  wrap="balance">
-                                                {task.taskType || "download"}
-                                            </Text>
-                                        </div>
-                                    </div>
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Badge background="neutral-alpha-weak">
+                                            {task.completed}/{task.total || "?"} chapters
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            remaining {task.remaining.length}
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            {task.taskType || "download"}
+                                        </Badge>
+                                        {task.workerIndex != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                worker {task.workerIndex + 1}
+                                            </Badge>
+                                        )}
+                                        {task.cpuCoreId != null && (
+                                            <Badge background="neutral-alpha-weak">
+                                                CPU {task.cpuCoreId >= 0 ? task.cpuCoreId : "auto"}
+                                            </Badge>
+                                        )}
+                                        {task.recovered && (
+                                            <Badge background="brand-alpha-weak">
+                                                recovered
+                                            </Badge>
+                                        )}
+                                    </Row>
 
                                     {(task.current || task.message) && (
                                         <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
@@ -850,7 +884,7 @@ export function DownloadsPage() {
 
                                     {task.remaining.length > 0 && (
                                         <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Remaining: {formatTaskListPreview(task.remaining, 8)}
+                                            Next up: {formatTaskListPreview(task.remaining, 8)}
                                         </Text>
                                     )}
                                     {task.completedChapterNumbers.length > 0 && (
@@ -884,7 +918,7 @@ export function DownloadsPage() {
                                 </Column>
                             </Card>
                         ))}
-                    </div>
+                    </Column>
                 )}
             </Column>
         </Card>
@@ -895,17 +929,17 @@ export function DownloadsPage() {
             background="surface"
             border="neutral-alpha-weak"
             padding="l"
-            radius="l"
+            radius="xl"
             className={styles.sectionCard}
         >
-            <Column gap="8">
+            <Column gap="12">
                 <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                     <Column gap="4">
                         <Text variant="label-default-s" onBackground="neutral-weak">
-                            Download workers
+                            Worker lanes
                         </Text>
                         <Heading as="h3" variant="heading-strong-l">
-                            Worker lanes
+                            Throughput settings
                         </Heading>
                     </Column>
                     <Button variant="secondary" disabled={summaryLoading} onClick={() => void loadSummary()}>
@@ -923,20 +957,105 @@ export function DownloadsPage() {
                     </Row>
                 )}
                 {!summaryLoading && (
-                    <Row gap="8" style={{flexWrap: "wrap"}}>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            active: {activeTaskViews.length}
-                        </Badge>
-                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
-                            max threads: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
-                        </Badge>
-                        {Array.isArray(summary?.threadRateLimitsKbps) && summary.threadRateLimitsKbps.map((limit, index) => (
-                            <Badge key={`worker-${index}`} background="neutral-alpha-weak"
-                                   onBackground="neutral-strong">
-                                worker {index + 1}: {typeof limit === "number" && limit > 0 ? `${limit} KB/s` : "unlimited"}
+                    <Column gap="8">
+                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                            <Badge background="neutral-alpha-weak">
+                                active: {activeTaskViews.length}
                             </Badge>
-                        ))}
-                    </Row>
+                            <Badge background="neutral-alpha-weak">
+                                completed: {completedHistoryCount}
+                            </Badge>
+                            <Badge background="neutral-alpha-weak">
+                                interrupted: {interruptedHistoryCount}
+                            </Badge>
+                        </Row>
+                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                            <Badge background="neutral-alpha-weak">
+                                max threads: {typeof summary?.maxThreads === "number" ? summary.maxThreads : "unknown"}
+                            </Badge>
+                            <Badge background="neutral-alpha-weak">
+                                mode: {normalizeString(summary?.workerExecutionMode).trim() || "thread"}
+                            </Badge>
+                        </Row>
+                        {Array.isArray(summary?.availableCpuIds) && summary.availableCpuIds.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {summary.availableCpuIds.map((cpuId) => (
+                                    <Badge key={`available-cpu-${cpuId}`} background="neutral-alpha-weak">
+                                        CPU {cpuId}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
+                        {Array.isArray(summary?.workerCpuCoreIds) && summary.workerCpuCoreIds.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {summary.workerCpuCoreIds.map((cpuCoreId, index) => (
+                                    <Badge key={`worker-core-${index}`} background="neutral-alpha-weak">
+                                        worker {index + 1}:
+                                        CPU {typeof cpuCoreId === "number" && cpuCoreId >= 0 ? cpuCoreId : "auto"}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
+                        {Array.isArray(summary?.threadRateLimitsKbps) && summary.threadRateLimitsKbps.length > 0 ? (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {summary.threadRateLimitsKbps.map((limit, index) => (
+                                    <Badge key={`worker-${index}`} background="neutral-alpha-weak">
+                                        worker {index + 1}: {typeof limit === "number" && limit > 0 ? `${limit} KB/s` : "unlimited"}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        ) : (
+                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                No worker speed limits are currently exposed by Raven.
+                            </Text>
+                        )}
+                        {Array.isArray(summary?.activeWorkers) && summary.activeWorkers.length > 0 && (
+                            <Column gap="8">
+                                {summary.activeWorkers.map((worker, index) => (
+                                    <Card
+                                        key={normalizeString(worker.taskId).trim() || `active-worker-${index}`}
+                                        fillWidth
+                                        background="surface"
+                                        border="neutral-alpha-weak"
+                                        padding="m"
+                                        radius="l"
+                                    >
+                                        <Column gap="8">
+                                            <Row horizontal="between" vertical="center" gap="12"
+                                                 style={{flexWrap: "wrap"}}>
+                                                <Text variant="body-strong-s" wrap="balance">
+                                                    {normalizeString(worker.title).trim() || "Idle worker"}
+                                                </Text>
+                                                <Badge
+                                                    background={statusBadgeBackground(normalizeString(worker.status).trim() || "queued")}>
+                                                    {normalizeString(worker.status).trim() || "queued"}
+                                                </Badge>
+                                            </Row>
+                                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                                <Badge background="neutral-alpha-weak">
+                                                    worker {typeof worker.workerIndex === "number" ? worker.workerIndex + 1 : index + 1}
+                                                </Badge>
+                                                <Badge background="neutral-alpha-weak">
+                                                    CPU {typeof worker.cpuCoreId === "number" && worker.cpuCoreId >= 0 ? worker.cpuCoreId : "auto"}
+                                                </Badge>
+                                                <Badge background="neutral-alpha-weak">
+                                                    PID {typeof worker.workerPid === "number" ? worker.workerPid : "unknown"}
+                                                </Badge>
+                                                <Badge background="neutral-alpha-weak">
+                                                    {normalizeString(worker.executionMode).trim() || "thread"}
+                                                </Badge>
+                                                {worker.pauseRequested === true && (
+                                                    <Badge background="warning-alpha-weak">
+                                                        pause queued
+                                                    </Badge>
+                                                )}
+                                            </Row>
+                                        </Column>
+                                    </Card>
+                                ))}
+                            </Column>
+                        )}
+                    </Column>
                 )}
             </Column>
         </Card>
@@ -947,17 +1066,17 @@ export function DownloadsPage() {
             background="surface"
             border="neutral-alpha-weak"
             padding="l"
-            radius="l"
+            radius="xl"
             className={styles.sectionCard}
         >
             <Column gap="8" id="raven-history">
                 <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                     <Column gap="4">
                         <Text variant="label-default-s" onBackground="neutral-weak">
-                            Download history
+                            History
                         </Text>
                         <Heading as="h3" variant="heading-strong-l">
-                            Completed and interrupted jobs
+                            Finished and interrupted runs
                         </Heading>
                     </Column>
                     <Button variant="secondary" disabled={historyLoading} onClick={() => void loadHistory()}>
@@ -980,155 +1099,83 @@ export function DownloadsPage() {
                     </Text>
                 )}
                 {!historyLoading && historyViews.length > 0 && (
-                    <div className={styles.historySheet} role="table" aria-label="Raven download history grid">
-                        <div className={`${styles.historyRow} ${styles.historyHeader}`} role="row">
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Title
-                            </Text>
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Status
-                            </Text>
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Chapters
-                            </Text>
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Queue detail
-                            </Text>
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Timeline
-                            </Text>
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Recovery
-                            </Text>
-                            <Text variant="label-default-xs" onBackground="neutral-weak"
-                                  className={styles.historyHeaderCell}>
-                                Errors
-                            </Text>
-                        </div>
+                    <Row
+                        fillWidth
+                        gap="12"
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                            alignItems: "stretch",
+                        }}
+                    >
                         {historyViews.map((task) => (
-                            <div key={task.key} className={styles.historyRow} role="row">
-                                <div className={`${styles.historyCell} ${styles.historyTitleCell}`} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Title
-                                    </Text>
-                                    <Column gap="4">
-                                        <Text variant="body-strong-s" wrap="balance">
-                                            {task.titleName}
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            {task.taskType || "download job"}
-                                        </Text>
-                                    </Column>
-                                </div>
-
-                                <div className={styles.historyCell} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Status
-                                    </Text>
-                                    <Badge background={statusBadgeBackground(task.statusRaw)}
-                                           onBackground="neutral-strong">
-                                        {task.statusRaw}
-                                    </Badge>
-                                </div>
-
-                                <div className={styles.historyCell} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Chapters
-                                    </Text>
-                                    <Column gap="4">
-                                        <Text onBackground="neutral-strong" variant="body-default-xs">
-                                            {task.completed}/{task.total || "?"} done
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs">
-                                            source: {task.sourceChapterCount ?? "unknown"}
-                                        </Text>
-                                    </Column>
-                                </div>
-
-                                <div className={styles.historyCell} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Queue detail
-                                    </Text>
-                                    <Column gap="4">
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Remaining: {task.remaining.length}
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            New: {task.newChapters.length}
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Missing: {task.missingChapters.length}
-                                        </Text>
-                                        {task.remaining.length > 0 && (
-                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                                Next: {formatTaskListPreview(task.remaining, 4)}
+                            <Card
+                                key={task.key}
+                                fillWidth
+                                background="surface"
+                                border="neutral-alpha-weak"
+                                padding="m"
+                                radius="l"
+                                className={styles.downloadCard}
+                            >
+                                <Column gap="12">
+                                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                                        <Column gap="4" style={{minWidth: 0}}>
+                                            <Text variant="body-strong-s" wrap="balance">
+                                                {task.titleName}
                                             </Text>
-                                        )}
-                                    </Column>
-                                </div>
-
-                                <div className={styles.historyCell} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Timeline
-                                    </Text>
-                                    <Column gap="4">
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Queued: {task.queuedAtLabel || "n/a"}
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Updated: {task.updatedAtLabel || "n/a"}
-                                        </Text>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            Completed: {task.completedAtLabel || "n/a"}
-                                        </Text>
-                                    </Column>
-                                </div>
-
-                                <div className={styles.historyCell} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Recovery
-                                    </Text>
-                                    <Column gap="4">
-                                        <Badge
-                                            background={task.recovered ? "brand-alpha-weak" : "neutral-alpha-weak"}
-                                            onBackground="neutral-strong"
-                                        >
-                                            {task.recovered ? "Recovered" : "Direct"}
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                {task.taskType || "download job"}
+                                            </Text>
+                                        </Column>
+                                        <Badge background={statusBadgeBackground(task.statusRaw)}>
+                                            {task.statusRaw}
                                         </Badge>
-                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            {task.recoveryState || "No recovery state"}
-                                        </Text>
-                                    </Column>
-                                </div>
+                                    </Row>
 
-                                <div className={styles.historyCell} role="cell">
-                                    <Text variant="label-default-xs" onBackground="neutral-weak"
-                                          className={styles.historyMobileLabel}>
-                                        Errors
+                                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                                        <Badge background="neutral-alpha-weak">
+                                            done {task.completed}/{task.total || "?"}
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            new {task.newChapters.length}
+                                        </Badge>
+                                        <Badge background="neutral-alpha-weak">
+                                            missing {task.missingChapters.length}
+                                        </Badge>
+                                    </Row>
+
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Queued: {task.queuedAtLabel || "n/a"}
                                     </Text>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Updated: {task.updatedAtLabel || "n/a"}
+                                    </Text>
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Completed: {task.completedAtLabel || "n/a"}
+                                    </Text>
+
+                                    {task.remaining.length > 0 && (
+                                        <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                            Remaining queue: {formatTaskListPreview(task.remaining, 6)}
+                                        </Text>
+                                    )}
+
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Recovery: {task.recovered ? "Recovered" : "Direct"}{task.recoveryState ? ` - ${task.recoveryState}` : ""}
+                                    </Text>
+
                                     <Text
                                         onBackground={task.errorMessage ? "danger-strong" : "neutral-weak"}
                                         variant="body-default-xs"
                                         wrap="balance"
                                     >
-                                        {task.errorMessage || "None"}
+                                        {task.errorMessage || "No error recorded."}
                                     </Text>
-                                </div>
-                            </div>
+                                </Column>
+                            </Card>
                         ))}
-                    </div>
+                    </Row>
                 )}
             </Column>
         </Card>
@@ -1174,30 +1221,21 @@ export function DownloadsPage() {
                         </Row>
                     </Row>
 
-                    {(syncLibraryError || syncLibraryMessage) && (
-                        <Card
-                            fillWidth
-                            background="surface"
-                            border={syncLibraryError ? "danger-alpha-weak" : "neutral-alpha-weak"}
-                            padding="m"
-                            radius="l"
-                            className={styles.sectionCard}
-                        >
-                            <Text
-                                variant="body-default-xs"
-                                onBackground={syncLibraryError ? "danger-strong" : "neutral-weak"}
-                                wrap="balance"
-                            >
-                                {syncLibraryError || syncLibraryMessage}
-                            </Text>
-                        </Card>
-                    )}
-
                     {taskShowcaseCard}
 
-                    {activeDownloadsCard}
-
-                    {workersCard}
+                    <Row
+                        fillWidth
+                        gap="16"
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "minmax(0, 1.25fr) minmax(min(100%, 21rem), 0.85fr)",
+                            alignItems: "start",
+                        }}
+                        m={{style: {gridTemplateColumns: "1fr"}}}
+                    >
+                        {activeDownloadsCard}
+                        {workersCard}
+                    </Row>
 
                     {historyCard}
                 </Column>

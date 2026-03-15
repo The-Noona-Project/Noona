@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Raven client request construction and payload handling.
+ * Related files:
+ * - clients/ravenClient.mjs
+ * Times this file has been edited: 9
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -30,6 +37,64 @@ test('searchTitle requests the Raven search endpoint and returns the payload', a
     assert.equal(calls.length, 1);
     assert.equal(calls[0].options.method, 'GET');
     assert.equal(new URL(calls[0].url).pathname, '/v1/download/search/Solo%20Leveling');
+});
+
+test('getTitleDetails requests the Raven title-details endpoint and normalizes adult-content', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                sourceUrl: 'https://source.example/solo-leveling',
+                summary: 'A hunter rises.',
+                type: 'Manhwa',
+                adultContent: 'yes',
+                associatedNames: ['Only I level up'],
+                status: 'Complete',
+                released: '2018',
+                officialTranslation: 'yes',
+                animeAdaptation: 'yes',
+                relatedSeries: [
+                    {
+                        title: 'Solo Leveling: Ragnarok',
+                        sourceUrl: 'https://source.example/ragnarok',
+                        relation: 'Sequel',
+                    },
+                ],
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const payload = await raven.getTitleDetails('https://source.example/solo-leveling');
+
+    assert.deepEqual(payload, {
+        sourceUrl: 'https://source.example/solo-leveling',
+        summary: 'A hunter rises.',
+        type: 'Manhwa',
+        adultContent: true,
+        associatedNames: ['Only I level up'],
+        status: 'Complete',
+        released: '2018',
+        officialTranslation: true,
+        animeAdaptation: true,
+        relatedSeries: [
+            {
+                title: 'Solo Leveling: Ragnarok',
+                sourceUrl: 'https://source.example/ragnarok',
+                relation: 'Sequel',
+            },
+        ],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'GET');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/download/title-details');
+    assert.equal(new URL(calls[0].url).searchParams.get('url'), 'https://source.example/solo-leveling');
 });
 
 test('getLibrary requests the Raven library endpoint and returns titles', async () => {
@@ -197,5 +262,98 @@ test('updateTitle patches Raven title cover metadata', async () => {
     assert.equal(new URL(calls[0].url).pathname, '/v1/library/title/title-1');
     assert.deepEqual(JSON.parse(calls[0].options.body), {
         coverUrl: 'https://covers.example/solo-leveling.jpg',
+    });
+});
+
+test('applyTitleVolumeMap posts Raven volume-map payloads', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                title: {uuid: 'title-1'},
+                renameSummary: {attempted: true, renamed: 2},
+            }), {
+                status: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const payload = await raven.applyTitleVolumeMap('title-1', {
+        provider: 'MANGA_UPDATES',
+        providerSeriesId: '15180124327',
+        chapterVolumeMap: {'1': 1, '2': 1, '3': 2},
+        autoRename: false,
+    });
+
+    assert.equal(payload.title.uuid, 'title-1');
+    assert.equal(payload.renameSummary.renamed, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/library/title/title-1/volume-map');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        provider: 'MANGA_UPDATES',
+        providerSeriesId: '15180124327',
+        chapterVolumeMap: {'1': 1, '2': 1, '3': 2},
+        autoRename: false,
+    });
+});
+
+test('bulkQueueDownload posts Raven bulk queue filters and accepts maintenance responses', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                status: 'maintenance_paused',
+                message: 'Bulk queue paused while VPN rotation completes.',
+                filters: {
+                    type: 'Manga',
+                    nsfw: false,
+                    titlePrefix: 'a',
+                },
+                pagesScanned: '2',
+                matchedCount: '4',
+                queuedCount: '0',
+                skippedActiveCount: '3',
+                failedCount: '1',
+                queuedTitles: [],
+                skippedActiveTitles: ['Another Dawn'],
+                failedTitles: ['Abyss Reset'],
+            }), {
+                status: 409,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const result = await raven.bulkQueueDownload({
+        type: 'Manga',
+        nsfw: false,
+        titlePrefix: 'a',
+    });
+
+    assert.equal(result.status, 'maintenance_paused');
+    assert.equal(result.filters.type, 'Manga');
+    assert.equal(result.filters.nsfw, false);
+    assert.equal(result.pagesScanned, 2);
+    assert.equal(result.skippedActiveTitles[0], 'Another Dawn');
+    assert.equal(result.failedTitles[0], 'Abyss Reset');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'POST');
+    assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.equal(new URL(calls[0].url).pathname, '/v1/download/bulk-queue');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        type: 'Manga',
+        nsfw: false,
+        titlePrefix: 'a',
     });
 });

@@ -5,6 +5,7 @@ export function registerBootApi(context = {}) {
         api,
         bootOrder,
         buildEffectiveServiceDescriptor,
+        dataNetworkName,
         dockerUtils,
         ensureDockerConnection,
         isPersistedServiceRuntimeConfigLoaded,
@@ -19,6 +20,7 @@ export function registerBootApi(context = {}) {
         requiredServiceSet,
         resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
+        resolvePersistedSetupSelectionState,
         serviceCatalog,
         sleepImpl,
         startServiceUpdateTimer,
@@ -149,24 +151,39 @@ export function registerBootApi(context = {}) {
                 .filter((name) => Boolean(name) && serviceCatalog.has(name)),
         );
 
+    const resolveBootHealthTarget = (service) => {
+        if (!service || typeof service !== 'object') {
+            return null;
+        }
+
+        if (service.healthCheck || service.health) {
+            return service.healthCheck || service.health || null;
+        }
+
+        if (service.name === 'noona-sage') {
+            const sagePort = normalizeHostPort(service.internalPort || service.port || 3004);
+            return sagePort == null ? null : `http://${service.name}:${sagePort}/health`;
+        }
+
+        if (service.name === 'noona-moon') {
+            const moonEnv = parseEnvEntries(service.env);
+            const moonPort = normalizeHostPort(service.internalPort || service.port || moonEnv.WEBGUI_PORT || 3000);
+            return moonPort == null ? null : `http://${service.name}:${moonPort}/`;
+        }
+
+        return null;
+    };
+
     api.bootMinimal = async function bootMinimal() {
         const moon = buildEffectiveServiceDescriptor('noona-moon').descriptor;
         const sage = buildEffectiveServiceDescriptor('noona-sage').descriptor;
-        const moonHealthUrl = moon.health || (() => {
-            const moonEnv = parseEnvEntries(moon.env);
-            const moonPort = normalizeHostPort(moon.internalPort || moon.port || moonEnv.WEBGUI_PORT || 3000);
-            if (moonPort == null) {
-                return null;
-            }
-
-            return `http://${moon.name}:${moonPort}/`;
-        })();
+        const moonHealthUrl = resolveBootHealthTarget(moon);
 
         if (autoUpdatesEnabled()) {
             await runStartupAutoUpdates(['noona-sage', 'noona-moon'], {restart: true});
         }
 
-        await api.startService(sage, 'http://noona-sage:3004/health');
+        await api.startService(sage, resolveBootHealthTarget(sage));
         await api.startService(moon, moonHealthUrl);
     };
 
@@ -176,14 +193,7 @@ export function registerBootApi(context = {}) {
         }
 
         const svc = buildEffectiveServiceDescriptor(name).descriptor;
-        const healthUrl =
-            name === 'noona-redis'
-                ? 'http://noona-redis:8001/'
-                : name === 'noona-sage'
-                    ? 'http://noona-sage:3004/health'
-                    : svc.health || null;
-
-        await api.startService(svc, healthUrl, {
+        await api.startService(svc, resolveBootHealthTarget(svc), {
             recreate: options?.recreate === true,
             reuseStoppedContainer: true,
         });
@@ -295,6 +305,14 @@ export function registerBootApi(context = {}) {
     };
 
     api.startEcosystem = async function startEcosystem(options = {}) {
+        const persistedSelectionState =
+            !Array.isArray(options?.services) && typeof resolvePersistedSetupSelectionState === 'function'
+                ? await resolvePersistedSetupSelectionState().catch(() => ({
+                    mode: 'unspecified',
+                    selected: [],
+                    explicit: false,
+                }))
+                : {mode: 'unspecified', selected: [], explicit: false};
         const setupCompleted = options?.setupCompleted === true
             ? true
             : options?.setupCompleted === false
@@ -302,9 +320,19 @@ export function registerBootApi(context = {}) {
                 : await api.isSetupCompleted();
         let dockerClient = null;
         let detectedServices = [];
-        let shouldBootFull = options?.forceFull === true || SUPER_MODE || setupCompleted;
+        let shouldBootFull =
+            options?.forceMinimal === true
+                ? false
+                : persistedSelectionState?.mode === 'minimal'
+                    ? false
+                    : options?.forceFull === true || SUPER_MODE || setupCompleted;
 
-        if (!shouldBootFull && !Array.isArray(options?.services)) {
+        if (
+            !shouldBootFull
+            && !Array.isArray(options?.services)
+            && options?.forceMinimal !== true
+            && persistedSelectionState?.mode !== 'minimal'
+        ) {
             if (typeof resolveManagedLifecycleServices === 'function') {
                 detectedServices = await resolveManagedLifecycleServices({
                     dockerClient: null,
@@ -373,6 +401,7 @@ export function registerBootApi(context = {}) {
     api.init = async function init() {
         const dockerClient = await ensureDockerConnection();
         await dockerUtils.ensureNetwork(dockerClient, networkName);
+        await dockerUtils.ensureNetwork(dockerClient, dataNetworkName);
         await dockerUtils.attachSelfToNetwork(dockerClient, networkName);
 
         const setupCompleted = await api.isSetupCompleted();

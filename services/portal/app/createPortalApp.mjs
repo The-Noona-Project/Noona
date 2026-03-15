@@ -1,10 +1,23 @@
-// services/portal/app/createPortalApp.mjs
+/**
+ * @fileoverview Builds the Express app and HTTP server wrapper used by Portal.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - routes/registerPortalRoutes.mjs
+ * - tests/portalApp.test.mjs
+ * Times this file has been edited: 4
+ */
 
 import express from 'express';
 
 import {log} from '../../../utilities/etc/logger.mjs';
 import {registerPortalRoutes} from '../routes/registerPortalRoutes.mjs';
 
+/**
+ * Creates the Express application used by Portal.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createPortalApp = ({
                                     config,
                                     discord,
@@ -38,6 +51,12 @@ export const createPortalApp = ({
     return app;
 };
 
+/**
+ * Starts portal server.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {Promise<*>} The asynchronous result.
+ */
 export const startPortalServer = async ({
                                             config,
                                             discord,

@@ -1,3 +1,10 @@
+/**
+ * Covers debug controller behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/controller/DebugController.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.LoggerService;
@@ -14,6 +21,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Covers debug controller behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 class DebugControllerTest {

@@ -1,10 +1,21 @@
+/**
+ * Coordinates Raven search sessions, queueing, worker execution, persistence, and chapter downloads.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/library/NewChapter.java
+ * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
+ * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
+ * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
+ * Times this file has been edited: 33
+ */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.download.*;
 import com.paxkun.raven.service.library.NewChapter;
 import com.paxkun.raven.service.library.NewTitle;
 import com.paxkun.raven.service.settings.DownloadNamingSettings;
+import com.paxkun.raven.service.settings.DownloadVpnSettings;
 import com.paxkun.raven.service.settings.SettingsService;
+import com.paxkun.raven.service.vpn.VpnRuntimeStatus;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.openqa.selenium.StaleElementReferenceException;
@@ -33,14 +44,34 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+/**
+ * Coordinates Raven search sessions, queueing, worker execution, persistence, and chapter downloads.
+ */
+
 @Service
 public class DownloadService {
     private static final String DOWNLOAD_WORKER_NAME_PREFIX = "raven-download-";
+    private static final String EXECUTION_MODE_THREAD = "thread";
+    private static final String EXECUTION_MODE_PROCESS = "process";
     private static final String DOWNLOADING_FOLDER_NAME = "downloading";
     private static final String DOWNLOADED_FOLDER_NAME = "downloaded";
     private static final String TASK_COLLECTION = "raven_download_tasks";
     private static final String CURRENT_TASK_REDIS_KEY = "raven:download:current-task";
     private static final long VAULT_SNAPSHOT_WARNING_COOLDOWN_MS = TimeUnit.SECONDS.toMillis(30);
+    private static final long VPN_CONNECTION_WAIT_POLL_MS = 1000L;
+    private static final long WORKER_SUPERVISOR_POLL_MS = 1000L;
+    private static final int MAX_STATUS_HISTORY_ENTRIES = 10;
+    private static final Set<String> ACTIVE_TASK_STATUSES = Set.of(
+            "queued",
+            "downloading",
+            "recovering"
+    );
+    private static final Set<String> RESTORABLE_TASK_STATUSES = Set.of(
+            "queued",
+            "downloading",
+            "recovering",
+            "interrupted"
+    );
     private static final Set<String> TERMINAL_STATUSES = Set.of(
             "completed",
             "failed",
@@ -58,6 +89,12 @@ public class DownloadService {
     private VaultService vaultService;
     @Autowired
     private SettingsService settingsService;
+    @Autowired
+    @Lazy
+    private VPNServices vpnServices;
+    private final Object processWorkerLock = new Object();
+    private final Map<String, ActiveWorkerProcess> activeWorkerProcesses = new ConcurrentHashMap<>();
+    private final Map<Integer, String> workerSlots = new ConcurrentHashMap<>();
 
     private static final String USER_AGENT = "Mozilla/5.0";
     private static final String REFERER = "https://weebcentral.com";
@@ -67,7 +104,13 @@ public class DownloadService {
 
     private ExecutorService executor;
     private final Map<String, Future<?>> activeDownloads = new ConcurrentHashMap<>();
-    private final Set<String> pauseRequestedDownloads = ConcurrentHashMap.newKeySet();
+    @Autowired(required = false)
+    private RavenRuntimeProperties runtimeProperties = new RavenRuntimeProperties();
+    @Autowired(required = false)
+    private RavenWorkerLauncher workerLauncher = new RavenWorkerLauncher();
+    @Autowired(required = false)
+    private LinuxCpuAffinity cpuAffinity = new LinuxCpuAffinity();
+    private ScheduledExecutorService workerSupervisor;
     private final AtomicBoolean maintenancePauseActive = new AtomicBoolean(false);
     private final Map<String, DownloadProgress> downloadProgress = new ConcurrentHashMap<>();
     private final Deque<DownloadProgress> progressHistory = new ConcurrentLinkedDeque<>();
@@ -78,6 +121,9 @@ public class DownloadService {
     private Supplier<Long> currentTimeSupplier = System::currentTimeMillis;
 
     private synchronized ExecutorService ensureExecutor() {
+        if (isProcessWorkerMain()) {
+            throw new IllegalStateException("Executor-backed downloads are disabled while Raven is supervising process workers.");
+        }
         if (executor != null && !executor.isShutdown() && !executor.isTerminated()) {
             return executor;
         }
@@ -94,26 +140,55 @@ public class DownloadService {
         return executor;
     }
 
+    /**
+     * Handles init executor.
+     */
+
     @PostConstruct
     public void initExecutor() {
-        ensureExecutor();
-        restorePersistedDownloads();
-    }
-
-    @PreDestroy
-    public void shutdownExecutor() {
-        if (executor == null) {
+        if (isWorkerMode()) {
             return;
         }
 
-        executor.shutdownNow();
+        if (isProcessWorkerMain()) {
+            startWorkerSupervisor();
+            restorePersistedDownloadsForProcessMode();
+            dispatchQueuedProcessWorkers();
+            return;
+        }
+
+        ensureExecutor();
+        restorePersistedDownloadsForThreadMode();
     }
 
-    void restorePersistedDownloads() {
+    /**
+     * Handles shutdown executor.
+     */
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        if (workerSupervisor != null) {
+            workerSupervisor.shutdownNow();
+        }
+
+        synchronized (processWorkerLock) {
+            for (ActiveWorkerProcess handle : activeWorkerProcesses.values()) {
+                stopWorkerProcess(handle);
+            }
+            activeWorkerProcesses.clear();
+            workerSlots.clear();
+        }
+
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+    }
+
+    void restorePersistedDownloadsForThreadMode() {
         try {
             List<Map<String, Object>> docs = vaultService.findMany(
                     TASK_COLLECTION,
-                    Map.of("status", Map.of("$in", List.of("queued", "downloading", "recovering", "interrupted")))
+                    Map.of("status", Map.of("$in", new ArrayList<>(RESTORABLE_TASK_STATUSES)))
             );
             if (docs == null || docs.isEmpty()) {
                 return;
@@ -142,9 +217,14 @@ public class DownloadService {
                     continue;
                 }
 
+                if (progress.isPauseRequested()) {
+                    progress.markPaused("Pause requested before download started. Task saved for later.");
+                    persistTaskSnapshot(progress);
+                    continue;
+                }
                 progress.markRecoveredFromCache("restored-from-vault");
                 persistTaskSnapshot(progress);
-                Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, buildSelectedTitle(progress), progress));
+                Future<?> future = submitThreadedDownload(titleName, buildSelectedTitle(progress), progress);
                 downloadProgress.put(titleName, progress);
                 activeDownloads.put(titleName, future);
             }
@@ -152,6 +232,35 @@ public class DownloadService {
             logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to restore persisted Raven downloads: " + e.getMessage());
         }
     }
+
+    void restorePersistedDownloadsForProcessMode() {
+        for (DownloadProgress progress : loadPersistedTasks(new ArrayList<>(RESTORABLE_TASK_STATUSES))) {
+            if (progress == null) {
+                continue;
+            }
+
+            if (progress.isPauseRequested()) {
+                progress.markPaused("Pause requested before download started. Task saved for later.");
+                persistTaskSnapshot(progress);
+                continue;
+            }
+
+            String status = normalizeStatus(progress.getStatus());
+            if ("downloading".equals(status) || "interrupted".equals(status)) {
+                progress.markRecoveredFromCache("restored-from-vault");
+                progress.setMessage("Recovered download resumed from Vault.");
+            }
+            progress.assignWorker(progress.getWorkerIndex(), progress.getCpuCoreId(), null, EXECUTION_MODE_PROCESS);
+            persistTaskSnapshot(progress);
+        }
+    }
+
+    /**
+     * Searches title.
+     *
+     * @param titleName The title name to search or resolve.
+     * @return The resulting SearchTitle.
+     */
 
     public SearchTitle searchTitle(String titleName) {
         cleanupExpiredSearches();
@@ -183,6 +292,144 @@ public class DownloadService {
         return new SearchTitle(searchId, searchResults);
     }
 
+    /**
+     * Returns title details.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting TitleDetails.
+     */
+
+    public TitleDetails getTitleDetails(String titleUrl) {
+        return titleScraper.getTitleDetails(titleUrl);
+    }
+
+    /**
+     * Queues every title matching the supplied browse filters.
+     *
+     * @param type        The requested content type.
+     * @param nsfw        Whether adult-only titles should be matched.
+     * @param titlePrefix The visible title prefix.
+     * @return The resulting bulk queue summary.
+     */
+    public BulkQueueDownloadResult queueBulkDownload(String type, boolean nsfw, String titlePrefix) {
+        String normalizedType = normalizeMediaType(type);
+        String normalizedPrefix = normalizeBulkTitlePrefix(titlePrefix);
+        BulkQueueDownloadResult.Filters filters = new BulkQueueDownloadResult.Filters(
+                normalizedType != null ? normalizedType : normalizeQueueTitle(type),
+                nsfw,
+                normalizedPrefix == null ? "" : normalizedPrefix
+        );
+
+        if (normalizedType == null || normalizedPrefix == null) {
+            return new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_INVALID_REQUEST,
+                    "type and titlePrefix are required.",
+                    filters,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        if (maintenancePauseActive.get()) {
+            return new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_MAINTENANCE_PAUSED,
+                    "Raven is temporarily pausing new downloads while VPN rotation completes.",
+                    filters,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        logger.debug(
+                "DOWNLOAD_SERVICE",
+                "Bulk queue browse starting | type=" + sanitizeForLog(normalizedType) +
+                        " | nsfw=" + nsfw +
+                        " | titlePrefix=" + sanitizeForLog(normalizedPrefix));
+
+        TitleScraper.BrowseResult browseResult = titleScraper.browseTitlesAlphabetically(normalizedType, nsfw);
+        List<Map<String, String>> matchedTitles = filterTitlesByPrefix(
+                browseResult != null ? browseResult.titles() : List.of(),
+                normalizedPrefix
+        );
+        int pagesScanned = browseResult != null ? browseResult.pagesScanned() : 0;
+        if (matchedTitles.isEmpty()) {
+            return new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_EMPTY_RESULTS,
+                    "No titles matched the supplied filters.",
+                    filters,
+                    pagesScanned,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        List<String> queuedTitles = new ArrayList<>();
+        List<String> skippedActiveTitles = new ArrayList<>();
+        List<String> failedTitles = new ArrayList<>();
+
+        for (Map<String, String> selectedTitle : matchedTitles) {
+            String titleName = normalizeQueueTitle(selectedTitle != null ? selectedTitle.get("title") : null);
+            String titleUrl = selectedTitle != null ? selectedTitle.get("href") : null;
+            String sanitizedTitle = sanitizeForLog(titleName);
+
+            if (titleUrl == null || titleUrl.isBlank()) {
+                failedTitles.add(titleName);
+                logger.warn("DOWNLOAD_SERVICE", "Skipping bulk queue entry with missing href for title=" + sanitizedTitle);
+                continue;
+            }
+
+            if (isTaskActive(titleName)) {
+                skippedActiveTitles.add(titleName);
+                logger.info("DOWNLOAD", "Skipping already active download: " + titleName);
+                continue;
+            }
+
+            try {
+                DownloadProgress progress = createQueuedProgress(titleName, selectedTitle, "library-download");
+                queueProgressForExecution(titleName, selectedTitle, progress);
+                queuedTitles.add(titleName);
+            } catch (Exception e) {
+                failedTitles.add(titleName);
+                logger.warn(
+                        "DOWNLOAD_SERVICE",
+                        "Bulk queue failed for title=" + sanitizedTitle + " | reason=" + sanitizeForLog(e.getMessage()));
+            }
+        }
+
+        String status = resolveBulkQueueStatus(queuedTitles, skippedActiveTitles, failedTitles);
+        String message = buildBulkQueueMessage(queuedTitles, skippedActiveTitles, failedTitles, matchedTitles.size());
+        return new BulkQueueDownloadResult(
+                status,
+                message,
+                filters,
+                pagesScanned,
+                matchedTitles.size(),
+                queuedTitles.size(),
+                skippedActiveTitles.size(),
+                failedTitles.size(),
+                queuedTitles,
+                skippedActiveTitles,
+                failedTitles
+        );
+    }
+
     private Map<String, String> buildSelectedTitle(DownloadProgress progress) {
         Map<String, String> selectedTitle = new HashMap<>();
         selectedTitle.put("title", progress.getTitle());
@@ -210,6 +457,8 @@ public class DownloadService {
                 selectedTitle != null ? selectedTitle.get("coverUrl") : null,
                 null
         );
+        progress.assignWorker(progress.getWorkerIndex(), -1, null, resolveWorkerExecutionMode());
+        progress.setPauseRequested(false);
         progress.setMessage("Queued in Raven.");
         persistTaskSnapshot(progress);
         return progress;
@@ -220,16 +469,35 @@ public class DownloadService {
             return false;
         }
 
+        for (DownloadProgress progress : loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES))) {
+            if (titleName.equals(progress.getTitle())) {
+                return true;
+            }
+        }
+
         DownloadProgress progress = downloadProgress.get(titleName);
         if (progress == null) {
             return activeDownloads.containsKey(titleName);
         }
 
-        String status = Optional.ofNullable(progress.getStatus()).orElse("").trim().toLowerCase(Locale.ROOT);
-        return !isTerminalStatus(status);
+        return ACTIVE_TASK_STATUSES.contains(normalizeStatus(progress.getStatus()));
     }
 
+    /**
+     * Requests pause active downloads.
+     *
+     * @return The resulting PauseRequestResult.
+     */
+
     public PauseRequestResult requestPauseActiveDownloads() {
+        if (isProcessWorkerMain()) {
+            return requestPauseForProcessWorkers();
+        }
+
+        return requestPauseForThreadedWorkers();
+    }
+
+    private PauseRequestResult requestPauseForThreadedWorkers() {
         List<String> pausedImmediately = new ArrayList<>();
         List<String> pausingAfterChapter = new ArrayList<>();
 
@@ -245,7 +513,7 @@ public class DownloadService {
                 continue;
             }
 
-            pauseRequestedDownloads.add(titleName);
+            progress.setPauseRequested(true);
             if ("queued".equals(status)) {
                 Future<?> future = activeDownloads.get(titleName);
                 boolean pausedBeforeStart = future != null && future.cancel(false);
@@ -253,7 +521,6 @@ public class DownloadService {
                     progress.markPaused("Pause requested before chapter download started. Task saved for later.");
                     persistTaskSnapshot(progress);
                     activeDownloads.remove(titleName);
-                    pauseRequestedDownloads.remove(titleName);
                     finalizeProgress(titleName, progress);
                     pausedImmediately.add(titleName);
                     continue;
@@ -268,19 +535,83 @@ public class DownloadService {
         return new PauseRequestResult(pausedImmediately, pausingAfterChapter);
     }
 
+    private PauseRequestResult requestPauseForProcessWorkers() {
+        List<String> pausedImmediately = new ArrayList<>();
+        List<String> pausingAfterChapter = new ArrayList<>();
+
+        synchronized (processWorkerLock) {
+            List<DownloadProgress> activeTasks = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
+            activeTasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+            for (DownloadProgress progress : activeTasks) {
+                if (progress == null || progress.getTaskId() == null || progress.getTaskId().isBlank()) {
+                    continue;
+                }
+
+                String titleName = Optional.ofNullable(progress.getTitle()).orElse("");
+                String status = normalizeStatus(progress.getStatus());
+                if (isTerminalStatus(status)) {
+                    continue;
+                }
+
+                progress.setPauseRequested(true);
+                ActiveWorkerProcess handle = activeWorkerProcesses.get(progress.getTaskId());
+                if ("queued".equals(status) && handle == null) {
+                    progress.markPaused("Pause requested before download started. Task saved for later.");
+                    persistTaskSnapshot(progress);
+                    pausedImmediately.add(titleName);
+                    continue;
+                }
+
+                progress.setMessage("Pause requested. Raven will stop this task after the current chapter finishes.");
+                persistTaskSnapshot(progress);
+                pausingAfterChapter.add(titleName);
+            }
+        }
+
+        return new PauseRequestResult(pausedImmediately, pausingAfterChapter);
+    }
+
+    /**
+     * Begins maintenance pause.
+     *
+     * @param reason The reason for the operation.
+     */
+
     public void beginMaintenancePause(String reason) {
         maintenancePauseActive.set(true);
         logger.info("DOWNLOAD_SERVICE", "⏸️ Raven maintenance pause enabled. " + sanitizeForLog(reason));
     }
 
+    /**
+     * Ends maintenance pause.
+     *
+     * @param reason The reason for the operation.
+     */
+
     public void endMaintenancePause(String reason) {
         maintenancePauseActive.set(false);
         logger.info("DOWNLOAD_SERVICE", "▶️ Raven maintenance pause cleared. " + sanitizeForLog(reason));
+        if (isProcessWorkerMain()) {
+            dispatchQueuedProcessWorkers();
+        }
     }
+
+    /**
+     * Indicates whether maintenance pause active.
+     *
+     * @return True when the condition is satisfied.
+     */
 
     public boolean isMaintenancePauseActive() {
         return maintenancePauseActive.get();
     }
+
+    /**
+     * Handles wait for no active downloads.
+     *
+     * @param timeout The timeout.
+     * @return True when the condition is satisfied.
+     */
 
     public boolean waitForNoActiveDownloads(Duration timeout) {
         long timeoutMs = timeout == null ? TimeUnit.MINUTES.toMillis(20) : Math.max(1L, timeout.toMillis());
@@ -302,34 +633,14 @@ public class DownloadService {
         return !hasInFlightDownloads();
     }
 
+    /**
+     * Resumes paused downloads.
+     *
+     * @return The resulting count or numeric value.
+     */
+
     public int resumePausedDownloads() {
-        List<Map<String, Object>> docs;
-        try {
-            docs = vaultService.findMany(TASK_COLLECTION, Map.of("status", "paused"));
-        } catch (Exception e) {
-            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to read paused Raven tasks from Vault: " + e.getMessage());
-            return 0;
-        }
-
-        if (docs == null || docs.isEmpty()) {
-            return 0;
-        }
-
-        List<DownloadProgress> pausedTasks = new ArrayList<>();
-        for (Map<String, Object> doc : docs) {
-            DownloadProgress progress = vaultService.parseJson(doc, DownloadProgress.class);
-            if (progress == null) {
-                continue;
-            }
-
-            String titleName = progress.getTitle();
-            String sourceUrl = progress.getSourceUrl();
-            if (titleName == null || titleName.isBlank() || sourceUrl == null || sourceUrl.isBlank()) {
-                continue;
-            }
-            pausedTasks.add(progress);
-        }
-
+        List<DownloadProgress> pausedTasks = loadPersistedTasks(List.of("paused"));
         pausedTasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
         int resumed = 0;
         for (DownloadProgress progress : pausedTasks) {
@@ -338,15 +649,18 @@ public class DownloadService {
                 continue;
             }
 
-            pauseRequestedDownloads.remove(titleName);
+            progress.setPauseRequested(false);
             progress.markRecoveredFromCache("vpn-rotation-resume");
             progress.setMessage("Resumed after Raven VPN rotation.");
             persistTaskSnapshot(progress);
 
-            Map<String, String> selectedTitle = buildSelectedTitle(progress);
-            downloadProgress.put(titleName, progress);
-            Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, selectedTitle, progress));
-            activeDownloads.put(titleName, future);
+            if (isProcessWorkerMain()) {
+                dispatchQueuedProcessWorkers();
+            } else {
+                downloadProgress.put(titleName, progress);
+                Future<?> future = submitThreadedDownload(titleName, buildSelectedTitle(progress), progress);
+                activeDownloads.put(titleName, future);
+            }
             resumed++;
         }
 
@@ -354,6 +668,10 @@ public class DownloadService {
     }
 
     private boolean hasInFlightDownloads() {
+        if (isProcessWorkerMain()) {
+            return !activeWorkerProcesses.isEmpty() || getActiveDownloadCount() > 0;
+        }
+
         if (getActiveDownloadCount() > 0) {
             return true;
         }
@@ -391,6 +709,8 @@ public class DownloadService {
                 title != null ? title.getSummary() : null
         );
         progress.applyChapterPlan(queuedChapters, newChapters, missingChapters, latestChapter, sourceChapterCount, message);
+        progress.assignWorker(progress.getWorkerIndex(), -1, ProcessHandle.current().pid(), EXECUTION_MODE_THREAD);
+        progress.setPauseRequested(false);
         progress.markStarted(progress.getTotalChapters());
         downloadProgress.put(titleName, progress);
         persistTaskSnapshot(progress);
@@ -406,9 +726,35 @@ public class DownloadService {
         finalizeProgress(titleName, progress);
     }
 
+    /**
+     * Queues download all chapters.
+     *
+     * @param searchId The Raven search session id.
+     * @param userIndex The user index.
+     * @return The resulting message or value.
+     */
+
     public String queueDownloadAllChapters(String searchId, int userIndex) {
+        return queueDownloadAllChaptersResult(searchId, userIndex).getMessage();
+    }
+
+    /**
+     * Queues download all chapters result.
+     *
+     * @param searchId  The Raven search session id.
+     * @param userIndex The user index.
+     * @return The resulting QueueDownloadResult.
+     */
+
+    public QueueDownloadResult queueDownloadAllChaptersResult(String searchId, int userIndex) {
         if (maintenancePauseActive.get()) {
-            return "⚠️ Raven is temporarily pausing new downloads while VPN rotation completes.";
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_MAINTENANCE_PAUSED,
+                    "Raven is temporarily pausing new downloads while VPN rotation completes.",
+                    0,
+                    List.of(),
+                    List.of()
+            );
         }
 
         List<Map<String, String>> results = getSearchResults(searchId);
@@ -422,7 +768,13 @@ public class DownloadService {
             logger.debug(
                     "DOWNLOAD_SERVICE",
                     "Search session missing or expired | searchId=" + sanitizedSearchId);
-            return "⚠️ Search session expired or not found. Please search again.";
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_SEARCH_EXPIRED,
+                    "Search session expired or not found. Please search again.",
+                    0,
+                    List.of(),
+                    List.of()
+            );
         }
         if (userIndex == 0) {
             logger.debug(
@@ -433,32 +785,37 @@ public class DownloadService {
                         "DOWNLOAD_SERVICE",
                         "No titles available to queue | searchId=" + sanitizedSearchId);
                 searchSessions.remove(searchId);
-                return "⚠️ No search results to download.";
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_EMPTY_RESULTS,
+                        "No search results to download.",
+                        0,
+                        List.of(),
+                        List.of()
+                );
             }
 
-            StringBuilder queued = new StringBuilder("✅ Queued downloads for: ");
             List<String> queuedTitles = new ArrayList<>();
+            List<String> skippedTitles = new ArrayList<>();
             for (Map<String, String> title : results) {
                 String titleName = title.get("title");
-                String sanitizedTitle = sanitizeForLog(titleName);
+                String safeTitleName = normalizeQueueTitle(titleName);
+                String sanitizedTitle = sanitizeForLog(safeTitleName);
                 logger.debug(
                         "DOWNLOAD_SERVICE",
                         "Evaluating title for queue | searchId=" + sanitizedSearchId +
                                 " | title=" + sanitizedTitle);
-                if (activeDownloads.containsKey(titleName)) {
+                if (isTaskActive(titleName)) {
                     logger.debug(
                             "DOWNLOAD_SERVICE",
                             "Title already downloading | title=" + sanitizedTitle);
-                    logger.info("DOWNLOAD", "🔁 Skipping already active download: " + titleName);
+                    logger.info("DOWNLOAD", "Skipping already active download: " + titleName);
+                    skippedTitles.add(safeTitleName);
                     continue;
                 }
 
                 DownloadProgress progress = createQueuedProgress(titleName, title, "library-download");
-                downloadProgress.put(titleName, progress);
-                Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, title, progress));
-                activeDownloads.put(titleName, future);
-                queued.append(titleName).append(", ");
-                queuedTitles.add(sanitizedTitle);
+                queueProgressForExecution(titleName, title, progress);
+                queuedTitles.add(safeTitleName);
                 logger.debug(
                         "DOWNLOAD_SERVICE",
                         "Queued title for download | title=" + sanitizedTitle);
@@ -468,7 +825,32 @@ public class DownloadService {
                     "DOWNLOAD_SERVICE",
                     "Queued titles summary | searchId=" + sanitizedSearchId +
                             " | titles=" + String.join(";", queuedTitles));
-            return queued.toString();
+            if (queuedTitles.isEmpty()) {
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_ALREADY_ACTIVE,
+                        buildAlreadyActiveMessage(skippedTitles),
+                        0,
+                        List.of(),
+                        skippedTitles
+                );
+            }
+            if (!skippedTitles.isEmpty()) {
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_PARTIAL,
+                        "Queued " + queuedTitles.size() + " download(s). Skipped " + skippedTitles.size()
+                                + " already-active title(s).",
+                        queuedTitles.size(),
+                        queuedTitles,
+                        skippedTitles
+                );
+            }
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_QUEUED,
+                    "Queued downloads for: " + String.join(", ", queuedTitles),
+                    queuedTitles.size(),
+                    queuedTitles,
+                    List.of()
+            );
 
         } else {
             Map<String, String> selectedTitle;
@@ -479,33 +861,50 @@ public class DownloadService {
                         "DOWNLOAD_SERVICE",
                         "Invalid selection index | searchId=" + sanitizedSearchId +
                                 " | userIndex=" + userIndex);
-                return "⚠️ Invalid selection. Please choose a valid option.";
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_INVALID_SELECTION,
+                        "Invalid selection. Please choose a valid option.",
+                        0,
+                        List.of(),
+                        List.of()
+                );
             }
             String titleName = selectedTitle.get("title");
-            String sanitizedTitle = sanitizeForLog(titleName);
+            String safeTitleName = normalizeQueueTitle(titleName);
+            String sanitizedTitle = sanitizeForLog(safeTitleName);
 
             logger.debug(
                     "DOWNLOAD_SERVICE",
                     "Processing SINGLE title branch | searchId=" + sanitizedSearchId +
                             " | userIndex=" + userIndex + " | title=" + sanitizedTitle);
 
-            if (activeDownloads.containsKey(titleName)) {
+            if (isTaskActive(titleName)) {
                 logger.debug(
                         "DOWNLOAD_SERVICE",
                         "Active download already in progress | title=" + sanitizedTitle);
-                return "⚠️ Download already in progress for: " + titleName;
+                return new QueueDownloadResult(
+                        QueueDownloadResult.STATUS_ALREADY_ACTIVE,
+                        "Download already in progress for: " + safeTitleName,
+                        0,
+                        List.of(),
+                        List.of(safeTitleName)
+                );
             }
 
             DownloadProgress progress = createQueuedProgress(titleName, selectedTitle, "library-download");
-            downloadProgress.put(titleName, progress);
-            Future<?> future = ensureExecutor().submit(() -> runDownload(titleName, selectedTitle, progress));
-            activeDownloads.put(titleName, future);
+            queueProgressForExecution(titleName, selectedTitle, progress);
             // Keep the search session so clients can queue multiple selected options from one search result.
             logger.debug(
                     "DOWNLOAD_SERVICE",
                     "Queued single title | title=" + sanitizedTitle +
                             " | searchId=" + sanitizedSearchId);
-            return "✅ Download queued for: " + titleName;
+            return new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_QUEUED,
+                    "Download queued for: " + safeTitleName,
+                    1,
+                    List.of(safeTitleName),
+                    List.of()
+            );
         }
     }
 
@@ -513,6 +912,16 @@ public class DownloadService {
         DownloadChapter result = new DownloadChapter();
 
         try {
+            if (!isWorkerMode()) {
+                assignThreadWorkerContext(progress);
+                persistTaskSnapshot(progress);
+            }
+
+            if (!waitForVpnConnectionIfRequired(titleName, progress)) {
+                result.setStatus("⏸️ Download waiting stopped.");
+                return;
+            }
+
             String titleUrl = selectedTitle.get("href");
             progress.ensureTaskId(UUID.randomUUID().toString());
             logger.info("DOWNLOAD", "🚀 Starting download for [" + titleName + "]");
@@ -536,10 +945,7 @@ public class DownloadService {
                 titleRecord.setType(normalizedType);
             }
 
-            String summary = titleScraper.getSummary(titleUrl);
-            if (summary != null && !summary.isBlank()) {
-                titleRecord.setSummary(summary);
-            }
+            applyTitleDetailsMetadata(titleRecord, titleScraper.getTitleDetails(titleUrl));
             progress.attachTaskContext(
                     progress.getTaskId(),
                     Optional.ofNullable(progress.getTaskType()).orElse("library-download"),
@@ -654,7 +1060,7 @@ public class DownloadService {
 
                 String sourceDomain = extractDomain(pageUrls.get(0));
                 Path chapterFolder = workingTitleFolder.resolve("temp_" + chapterNumber);
-                int pageCount = saveImagesToFolder(pageUrls, chapterFolder, naming, titleName, titleRecord.getType(), chapterNumber);
+                int pageCount = saveImagesToFolder(pageUrls, chapterFolder, naming, titleRecord, chapterNumber);
                 if (pageCount <= 0) {
                     logger.warn("DOWNLOAD", "⚠️ No files were saved for chapter " + chapterNumber + ". Leaving it pending.");
                     failedChapters.add(chapterNumber);
@@ -663,7 +1069,7 @@ public class DownloadService {
                     continue;
                 }
 
-                String cbzName = formatChapterCbzName(naming, titleName, titleRecord.getType(), chapterNumber, pageCount, sourceDomain);
+                String cbzName = formatChapterCbzName(naming, titleRecord, chapterNumber, pageCount, sourceDomain);
                 Path cbzPath = workingTitleFolder.resolve(cbzName);
 
                 zipFolderAsCbz(chapterFolder, cbzPath);
@@ -677,6 +1083,7 @@ public class DownloadService {
                 persistTaskSnapshot(progress);
                 titleRecord.setLastDownloaded(chapterNumber);
                 mergeDownloadedChapter(titleRecord, chapterNumber);
+                recordDownloadedChapterFile(titleRecord, chapterNumber, cbzName);
                 titleRecord.setChaptersDownloaded(Optional.ofNullable(titleRecord.getDownloadedChapterNumbers()).orElse(List.of()).size());
                 libraryService.addOrUpdateTitle(titleRecord, new NewChapter(chapterNumber));
             }
@@ -709,7 +1116,6 @@ public class DownloadService {
             progress.markFailed(e.getMessage());
             persistTaskSnapshot(progress);
         } finally {
-            pauseRequestedDownloads.remove(titleName);
             activeDownloads.remove(titleName);
             logger.debug(
                     "DOWNLOAD",
@@ -718,11 +1124,53 @@ public class DownloadService {
         }
     }
 
+    private boolean waitForVpnConnectionIfRequired(String titleName, DownloadProgress progress) {
+        if (isProcessWorkerMain() || isWorkerMode()) {
+            return !shouldPauseBeforeDownloadStart(titleName, progress);
+        }
+
+        boolean waitingMessagePublished = false;
+        String waitingMessage = "Waiting for Raven VPN connection before download starts.";
+
+        while (shouldWaitForVpnConnection()) {
+            if (shouldPauseBeforeDownloadStart(titleName, progress)) {
+                return false;
+            }
+
+            if (!waitingMessagePublished || !waitingMessage.equals(progress.getMessage())) {
+                progress.setMessage(waitingMessage);
+                persistTaskSnapshot(progress);
+                waitingMessagePublished = true;
+            }
+
+            try {
+                Thread.sleep(VPN_CONNECTION_WAIT_POLL_MS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                progress.markInterrupted("Interrupted while waiting for Raven VPN connection.");
+                persistTaskSnapshot(progress);
+                return false;
+            }
+        }
+
+        return !shouldPauseBeforeDownloadStart(titleName, progress);
+    }
+
+    private boolean shouldWaitForVpnConnection() {
+        DownloadVpnSettings vpnSettings = settingsService.getDownloadVpnSettings();
+        if (vpnSettings == null || !Boolean.TRUE.equals(vpnSettings.getOnlyDownloadWhenVpnOn())) {
+            return false;
+        }
+
+        VpnRuntimeStatus status = vpnServices != null ? vpnServices.getStatus() : null;
+        return status == null || !status.isConnected();
+    }
+
     private void finalizeProgress(String titleName, DownloadProgress progress) {
         DownloadProgress snapshot = progress.copy();
         downloadProgress.remove(titleName);
         progressHistory.addFirst(snapshot);
-        while (progressHistory.size() > 10) {
+        while (progressHistory.size() > MAX_STATUS_HISTORY_ENTRIES) {
             progressHistory.removeLast();
         }
     }
@@ -776,12 +1224,27 @@ public class DownloadService {
         document.put("remainingChapterNumbers", progress.getRemainingChapterNumbers());
         document.put("newChapterNumbers", progress.getNewChapterNumbers());
         document.put("missingChapterNumbers", progress.getMissingChapterNumbers());
+        document.put("workerIndex", progress.getWorkerIndex());
+        document.put("cpuCoreId", progress.getCpuCoreId());
+        document.put("workerPid", progress.getWorkerPid());
+        document.put("executionMode", progress.getExecutionMode());
+        document.put("pauseRequested", progress.isPauseRequested());
         document.put("lastUpdated", progress.getLastUpdated());
         return document;
     }
 
+    private boolean shouldPauseBeforeDownloadStart(String titleName, DownloadProgress progress) {
+        if (titleName == null || titleName.isBlank() || progress == null || !refreshPauseRequestedFlag(progress)) {
+            return false;
+        }
+
+        progress.markPaused("Pause requested before download started. Task saved for later.");
+        persistTaskSnapshot(progress);
+        return true;
+    }
+
     private boolean shouldPauseAtChapterBoundary(String titleName, DownloadProgress progress) {
-        if (titleName == null || titleName.isBlank() || progress == null || !pauseRequestedDownloads.contains(titleName)) {
+        if (titleName == null || titleName.isBlank() || progress == null || !refreshPauseRequestedFlag(progress)) {
             return false;
         }
 
@@ -874,14 +1337,41 @@ public class DownloadService {
             return;
         }
 
+        String normalizedChapterNumber = normalizeChapterNumber(chapterNumber);
+        if (normalizedChapterNumber == null || normalizedChapterNumber.isBlank() || "0".equals(normalizedChapterNumber)) {
+            return;
+        }
+
         List<String> current = titleRecord.getDownloadedChapterNumbers() == null
                 ? new ArrayList<>()
                 : new ArrayList<>(titleRecord.getDownloadedChapterNumbers());
-        if (!current.contains(chapterNumber)) {
-            current.add(chapterNumber);
+        if (!current.contains(normalizedChapterNumber)) {
+            current.add(normalizedChapterNumber);
             current.sort(this::compareChapterNumbers);
             titleRecord.setDownloadedChapterNumbers(current);
         }
+    }
+
+    private void recordDownloadedChapterFile(NewTitle titleRecord, String chapterNumber, String cbzName) {
+        if (titleRecord == null || cbzName == null || cbzName.isBlank()) {
+            return;
+        }
+
+        String normalizedChapterNumber = normalizeChapterNumber(chapterNumber);
+        if (normalizedChapterNumber == null || normalizedChapterNumber.isBlank() || "0".equals(normalizedChapterNumber)) {
+            return;
+        }
+
+        String normalizedFileName = sanitizeStoredFileName(cbzName);
+        if (normalizedFileName.isBlank()) {
+            return;
+        }
+
+        Map<String, String> current = titleRecord.getDownloadedChapterFiles() == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(titleRecord.getDownloadedChapterFiles());
+        current.put(normalizedChapterNumber, normalizedFileName);
+        titleRecord.setDownloadedChapterFiles(sortChapterFileMap(current));
     }
 
     private List<Map<String, String>> fetchAllChaptersWithRetry(String titleUrl) {
@@ -921,13 +1411,25 @@ public class DownloadService {
     }
 
     private String extractChapterNumberFull(String text) {
-        if (text == null || text.isEmpty()) return "0000";
+        if (text == null || text.isBlank()) {
+            return "0000";
+        }
 
-        Matcher m = Pattern.compile("Chapter\\s*(\\d+(\\.\\d+)?)").matcher(text);
-        if (m.find()) return m.group(1);
+        Matcher matcher = Pattern.compile("(?i)\\bc\\s*(\\d+(\\.\\d+)?)\\b").matcher(text);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
 
-        m = Pattern.compile("(\\d+(\\.\\d+)?)").matcher(text);
-        if (m.find()) return m.group(1);
+        matcher = Pattern.compile("(?i)\\bch(?:apter)?\\.?\\s*(\\d+(\\.\\d+)?)\\b").matcher(text);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        String stripped = stripTrailingFileDecorators(text);
+        matcher = Pattern.compile("(?i)(?:^|[^a-z])(\\d+(\\.\\d+)?)$").matcher(stripped);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
 
         return "0000";
     }
@@ -1024,18 +1526,36 @@ public class DownloadService {
         return sanitized;
     }
 
-    private String formatChapterCbzName(DownloadNamingSettings naming, String titleName, String type, String chapterNumber, int pageCount, String domain) {
-        String title = titleName == null ? "" : titleName.trim();
+    /**
+     * Builds chapter archive name.
+     *
+     * @param title The Raven title.
+     * @param chapterNumber The chapter number.
+     * @param pageCount The page count.
+     * @param domain The domain.
+     * @return The resulting message or value.
+    */
+
+    public String buildChapterArchiveName(NewTitle title, String chapterNumber, int pageCount, String domain) {
+        return formatChapterCbzName(settingsService.getDownloadNamingSettings(), title, chapterNumber, pageCount, domain);
+    }
+
+    private String formatChapterCbzName(DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber, int pageCount, String domain) {
+        String title = titleRecord != null && titleRecord.getTitleName() != null ? titleRecord.getTitleName().trim() : "";
+        String type = titleRecord != null ? titleRecord.getType() : null;
         String normalizedType = normalizeMediaType(type);
         String typeSlug = resolveMediaTypeFolder(type);
         String chapter = chapterNumber == null ? "" : chapterNumber.trim();
 
-        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 4;
+        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 3;
         String chapterPadded = formatChapterPadded(chapter, chapterPad);
+        int volumePad = naming != null && naming.getVolumePad() != null ? Math.max(1, naming.getVolumePad()) : 2;
+        int volumeNumber = resolveChapterVolumeNumber(titleRecord, chapterNumber);
+        String volumePadded = formatVolumePadded(volumeNumber, volumePad);
 
         String template = naming != null ? naming.getChapterTemplate() : null;
         if (template == null || template.isBlank()) {
-            template = "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz";
+            template = "{title} c{chapter} (v{volume}) [Noona].cbz";
         }
 
         Map<String, String> values = new HashMap<>();
@@ -1044,12 +1564,16 @@ public class DownloadService {
         values.put("type_slug", typeSlug != null ? typeSlug : "");
         values.put("chapter", chapterPadded);
         values.put("chapter_padded", chapterPadded);
+        values.put("volume", volumePadded);
+        values.put("volume_padded", volumePadded);
         values.put("pages", String.valueOf(pageCount));
         values.put("domain", domain != null ? domain : "");
 
         String raw = applyTemplate(template, values);
         if (raw == null || raw.isBlank()) {
-            raw = String.format("Chapter %s [Pages %d %s - Noona].cbz", chapter, pageCount, domain);
+            raw = title.isBlank()
+                    ? String.format("c%s (v%s) [Noona].cbz", chapterPadded, volumePadded)
+                    : String.format("%s c%s (v%s) [Noona].cbz", title, chapterPadded, volumePadded);
         }
 
         String withExt = raw.trim();
@@ -1064,8 +1588,9 @@ public class DownloadService {
         return sanitized.isBlank() ? "Chapter.cbz" : sanitized;
     }
 
-    private String formatPageFileName(DownloadNamingSettings naming, String titleName, String type, String chapterNumber, int pageIndex, String ext) {
-        String title = titleName == null ? "" : titleName.trim();
+    private String formatPageFileName(DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber, int pageIndex, String ext) {
+        String title = titleRecord != null && titleRecord.getTitleName() != null ? titleRecord.getTitleName().trim() : "";
+        String type = titleRecord != null ? titleRecord.getType() : null;
         String normalizedType = normalizeMediaType(type);
         String typeSlug = resolveMediaTypeFolder(type);
         String chapter = chapterNumber == null ? "" : chapterNumber.trim();
@@ -1074,8 +1599,11 @@ public class DownloadService {
         int pagePad = naming != null && naming.getPagePad() != null ? Math.max(1, naming.getPagePad()) : 3;
         String pagePadded = String.format("%0" + pagePad + "d", pageIndex);
 
-        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 4;
+        int chapterPad = naming != null && naming.getChapterPad() != null ? Math.max(1, naming.getChapterPad()) : 3;
         String chapterPadded = formatChapterPadded(chapter, chapterPad);
+        int volumePad = naming != null && naming.getVolumePad() != null ? Math.max(1, naming.getVolumePad()) : 2;
+        int volumeNumber = resolveChapterVolumeNumber(titleRecord, chapterNumber);
+        String volumePadded = formatVolumePadded(volumeNumber, volumePad);
 
         String template = naming != null ? naming.getPageTemplate() : null;
         if (template == null || template.isBlank()) {
@@ -1088,6 +1616,8 @@ public class DownloadService {
         values.put("type_slug", typeSlug != null ? typeSlug : "");
         values.put("chapter", chapterPadded);
         values.put("chapter_padded", chapterPadded);
+        values.put("volume", volumePadded);
+        values.put("volume_padded", volumePadded);
         values.put("page", String.valueOf(pageIndex));
         values.put("page_padded", pagePadded);
         values.put("ext", extension);
@@ -1132,6 +1662,39 @@ public class DownloadService {
         }
     }
 
+    private String formatVolumePadded(int volumeNumber, int width) {
+        return String.format("%0" + Math.max(1, width) + "d", Math.max(1, volumeNumber));
+    }
+
+    private int resolveChapterVolumeNumber(NewTitle titleRecord, String chapterNumber) {
+        if (titleRecord == null || titleRecord.getChapterVolumeMap() == null || titleRecord.getChapterVolumeMap().isEmpty()) {
+            return 1;
+        }
+
+        String normalizedChapter = normalizeChapterNumber(chapterNumber);
+        if (normalizedChapter == null || normalizedChapter.isBlank()) {
+            return 1;
+        }
+
+        Integer directMatch = titleRecord.getChapterVolumeMap().get(normalizedChapter);
+        if (directMatch != null && directMatch > 0) {
+            return directMatch;
+        }
+
+        for (Map.Entry<String, Integer> entry : titleRecord.getChapterVolumeMap().entrySet()) {
+            if (!Objects.equals(normalizeChapterNumber(entry.getKey()), normalizedChapter)) {
+                continue;
+            }
+
+            Integer value = entry.getValue();
+            if (value != null && value > 0) {
+                return value;
+            }
+        }
+
+        return 1;
+    }
+
     private String applyTemplate(String template, Map<String, String> values) {
         if (template == null) {
             return null;
@@ -1166,7 +1729,7 @@ public class DownloadService {
         return sanitizePathSegment(raw);
     }
 
-    protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, String titleName, String type, String chapterNumber) {
+    protected int saveImagesToFolder(List<String> urls, Path folder, DownloadNamingSettings naming, NewTitle titleRecord, String chapterNumber) {
         int count = 0;
         int workerRateLimitKbps = getCurrentWorkerRateLimitKbps();
 
@@ -1177,7 +1740,7 @@ public class DownloadService {
 
             for (String url : urls) {
                 String ext = extractExtension(url);
-                String fileName = formatPageFileName(naming, titleName, type, chapterNumber, index, ext);
+                String fileName = formatPageFileName(naming, titleRecord, chapterNumber, index, ext);
                 if (fileName == null || fileName.isBlank() || usedNames.contains(fileName)) {
                     fileName = String.format("%03d%s", index, ext);
                 }
@@ -1208,16 +1771,8 @@ public class DownloadService {
     }
 
     private int getCurrentWorkerRateLimitKbps() {
-        String threadName = Thread.currentThread().getName();
-        if (threadName == null || !threadName.startsWith(DOWNLOAD_WORKER_NAME_PREFIX)) {
-            return 0;
-        }
-
-        String suffix = threadName.substring(DOWNLOAD_WORKER_NAME_PREFIX.length()).trim();
-        int workerIndex;
-        try {
-            workerIndex = Integer.parseInt(suffix) - 1;
-        } catch (NumberFormatException e) {
+        Integer workerIndex = resolveCurrentThreadWorkerIndex();
+        if (workerIndex == null) {
             return 0;
         }
 
@@ -1302,11 +1857,47 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Fetches chapters.
+     *
+     * @param titleUrl The source title URL.
+     * @return The resulting String>>.
+    */
+
     public List<Map<String, String>> fetchChapters(String titleUrl) {
         return fetchAllChaptersWithRetry(titleUrl);
     }
 
+    /**
+     * Returns download statuses.
+     *
+     * @return The resulting list.
+    */
+
     public List<DownloadProgress> getDownloadStatuses() {
+        List<DownloadProgress> persisted = loadPersistedTasks(null);
+        if (!persisted.isEmpty()) {
+            List<DownloadProgress> active = new ArrayList<>();
+            List<DownloadProgress> terminal = new ArrayList<>();
+            for (DownloadProgress progress : persisted) {
+                if (ACTIVE_TASK_STATUSES.contains(normalizeStatus(progress.getStatus()))) {
+                    active.add(progress);
+                } else {
+                    terminal.add(progress);
+                }
+            }
+
+            active.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+            terminal.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt).reversed());
+
+            List<DownloadProgress> combined = new ArrayList<>(active);
+            for (int index = 0; index < Math.min(MAX_STATUS_HISTORY_ENTRIES, terminal.size()); index++) {
+                combined.add(terminal.get(index));
+            }
+            combined.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+            return combined;
+        }
+
         List<DownloadProgress> statuses = new ArrayList<>();
         for (DownloadProgress progress : downloadProgress.values()) {
             statuses.add(progress.copy());
@@ -1318,7 +1909,25 @@ public class DownloadService {
         return statuses;
     }
 
+    /**
+     * Returns download history.
+     *
+     * @return The resulting list.
+    */
+
     public List<DownloadProgress> getDownloadHistory() {
+        List<DownloadProgress> persisted = loadPersistedTasks(null);
+        if (!persisted.isEmpty()) {
+            List<DownloadProgress> history = new ArrayList<>();
+            for (DownloadProgress progress : persisted) {
+                if (!ACTIVE_TASK_STATUSES.contains(normalizeStatus(progress.getStatus()))) {
+                    history.add(progress);
+                }
+            }
+            history.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt).reversed());
+            return history;
+        }
+
         List<DownloadProgress> history = new ArrayList<>();
         for (DownloadProgress entry : progressHistory) {
             history.add(entry.copy());
@@ -1327,22 +1936,50 @@ public class DownloadService {
         return history;
     }
 
+    /**
+     * Returns configured download threads.
+     *
+     * @return The resulting count or numeric value.
+    */
+
     public int getConfiguredDownloadThreads() {
         return Math.max(1, configuredDownloadThreads);
     }
 
+    /**
+     * Returns active download count.
+     *
+     * @return The resulting count or numeric value.
+    */
+
     public int getActiveDownloadCount() {
+        List<DownloadProgress> persisted = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
+        if (!persisted.isEmpty()) {
+            return persisted.size();
+        }
+
         int activeCount = 0;
         for (DownloadProgress progress : downloadProgress.values()) {
-            String status = Optional.ofNullable(progress.getStatus()).orElse("").trim().toLowerCase(Locale.ROOT);
-            if (!isTerminalStatus(status)) {
+            if (ACTIVE_TASK_STATUSES.contains(normalizeStatus(progress.getStatus()))) {
                 activeCount++;
             }
         }
         return activeCount;
     }
 
+    /**
+     * Returns primary active download status.
+     *
+     * @return The resulting DownloadProgress.
+    */
+
     public DownloadProgress getPrimaryActiveDownloadStatus() {
+        List<DownloadProgress> persisted = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
+        if (!persisted.isEmpty()) {
+            persisted.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+            return persisted.getFirst();
+        }
+
         return downloadProgress.values().stream()
                 .map(DownloadProgress::copy)
                 .sorted(Comparator.comparingLong(DownloadProgress::getQueuedAt))
@@ -1350,10 +1987,24 @@ public class DownloadService {
                 .orElse(null);
     }
 
+    /**
+     * Returns current task snapshot.
+     *
+     * @return The resulting DownloadProgress.
+    */
+
     public DownloadProgress getCurrentTaskSnapshot() {
         DownloadProgress active = getPrimaryActiveDownloadStatus();
         if (active != null) {
             return active;
+        }
+
+        List<DownloadProgress> persisted = loadPersistedTasks(null);
+        if (!persisted.isEmpty()) {
+            persisted.sort(Comparator
+                    .comparingLong((DownloadProgress progress) -> Math.max(progress.getLastUpdated(), progress.getQueuedAt()))
+                    .reversed());
+            return persisted.getFirst();
         }
 
         try {
@@ -1384,20 +2035,518 @@ public class DownloadService {
         logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to load cached Raven task snapshot: " + error.getMessage());
     }
 
+    /**
+     * Returns thread rate limits kbps.
+     *
+     * @return The resulting list.
+    */
+
     public List<Integer> getThreadRateLimitsKbps() {
         return new ArrayList<>(settingsService.getDownloadWorkerSettings(getConfiguredDownloadThreads()).getThreadRateLimitsKbps());
     }
 
+    /**
+     * Returns worker cpu core ids.
+     *
+     * @return The resulting list.
+    */
+
+    public List<Integer> getWorkerCpuCoreIds() {
+        return new ArrayList<>(settingsService.getDownloadWorkerSettings(getConfiguredDownloadThreads()).getCpuCoreIds());
+    }
+
+    /**
+     * Returns available cpu ids.
+     *
+     * @return The resulting list.
+    */
+
+    public List<Integer> getAvailableCpuIds() {
+        return cpuAffinity == null ? List.of() : cpuAffinity.getAvailableCpuIds();
+    }
+
+    /**
+     * Returns worker execution mode.
+     *
+     * @return The resulting message or value.
+    */
+
+    public String getWorkerExecutionMode() {
+        return resolveWorkerExecutionMode();
+    }
+
+    /**
+     * Returns active workers.
+     *
+     * @return The resulting Object>>.
+    */
+
+    public List<Map<String, Object>> getActiveWorkers() {
+        List<Map<String, Object>> workers = new ArrayList<>();
+        List<DownloadProgress> activeTasks = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
+        Map<String, DownloadProgress> activeByTaskId = new HashMap<>();
+        for (DownloadProgress progress : activeTasks) {
+            if (progress.getTaskId() != null && !progress.getTaskId().isBlank()) {
+                activeByTaskId.put(progress.getTaskId(), progress);
+            }
+        }
+
+        synchronized (processWorkerLock) {
+            if (!activeWorkerProcesses.isEmpty()) {
+                List<ActiveWorkerProcess> handles = new ArrayList<>(activeWorkerProcesses.values());
+                handles.sort(Comparator.comparingInt(ActiveWorkerProcess::workerIndex));
+                for (ActiveWorkerProcess handle : handles) {
+                    DownloadProgress progress = activeByTaskId.get(handle.taskId());
+                    Map<String, Object> worker = new LinkedHashMap<>();
+                    worker.put("taskId", handle.taskId());
+                    worker.put("title", progress != null ? progress.getTitle() : handle.title());
+                    worker.put("status", progress != null ? progress.getStatus() : "queued");
+                    worker.put("workerIndex", handle.workerIndex());
+                    worker.put("cpuCoreId", handle.cpuCoreId());
+                    worker.put("workerPid", handle.pid());
+                    worker.put("executionMode", handle.executionMode());
+                    worker.put("pauseRequested", progress != null && progress.isPauseRequested());
+                    workers.add(worker);
+                }
+                return workers;
+            }
+        }
+
+        activeTasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+        for (DownloadProgress progress : activeTasks) {
+            Map<String, Object> worker = new LinkedHashMap<>();
+            worker.put("taskId", progress.getTaskId());
+            worker.put("title", progress.getTitle());
+            worker.put("status", progress.getStatus());
+            worker.put("workerIndex", progress.getWorkerIndex());
+            worker.put("cpuCoreId", progress.getCpuCoreId());
+            worker.put("workerPid", progress.getWorkerPid());
+            worker.put("executionMode", progress.getExecutionMode());
+            worker.put("pauseRequested", progress.isPauseRequested());
+            workers.add(worker);
+        }
+        return workers;
+    }
+
+    /**
+     * Clears download status.
+     *
+     * @param titleName The title name to search or resolve.
+    */
+
     public void clearDownloadStatus(String titleName) {
-        pauseRequestedDownloads.remove(titleName);
         downloadProgress.remove(titleName);
         progressHistory.removeIf(progress -> progress.getTitle().equals(titleName));
+        activeDownloads.remove(titleName);
+
+        try {
+            for (DownloadProgress progress : loadPersistedTasksByTitle(titleName)) {
+                if (progress.getTaskId() != null && !progress.getTaskId().isBlank()) {
+                    vaultService.delete(TASK_COLLECTION, Map.of("taskId", progress.getTaskId()));
+                }
+            }
+
+            DownloadProgress currentSnapshot = getCurrentTaskSnapshot();
+            if (currentSnapshot != null && titleName.equals(currentSnapshot.getTitle())) {
+                vaultService.deleteRedisValue(CURRENT_TASK_REDIS_KEY);
+            }
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to clear persisted Raven status: " + e.getMessage());
+        }
+
         logger.debug("DOWNLOAD_SERVICE", "Cleared progress entry for title=" + sanitizeForLog(titleName));
     }
+
+    /**
+     * Runs persisted task in worker.
+     *
+     * @param taskId The Raven task id.
+     * @param workerIndex The worker index.
+     * @param cpuCoreId The CPU core id.
+     * @param executionMode The worker execution mode.
+    */
+
+    public void runPersistedTaskInWorker(String taskId, int workerIndex, int cpuCoreId, String executionMode) {
+        String normalizedTaskId = taskId == null ? "" : taskId.trim();
+        if (normalizedTaskId.isBlank()) {
+            throw new IllegalArgumentException("raven.worker.task-id is required when Raven runs in worker mode.");
+        }
+
+        DownloadProgress progress = loadPersistedTaskById(normalizedTaskId);
+        if (progress == null) {
+            throw new IllegalStateException("Unable to load persisted Raven task for worker taskId=" + normalizedTaskId);
+        }
+
+        String titleName = progress.getTitle();
+        if (titleName == null || titleName.isBlank() || progress.getSourceUrl() == null || progress.getSourceUrl().isBlank()) {
+            throw new IllegalStateException("Persisted Raven task is missing title metadata for taskId=" + normalizedTaskId);
+        }
+
+        String normalizedExecutionMode = executionMode == null || executionMode.isBlank()
+                ? EXECUTION_MODE_PROCESS
+                : executionMode.trim().toLowerCase(Locale.ROOT);
+        progress.assignWorker(workerIndex, cpuCoreId, ProcessHandle.current().pid(), normalizedExecutionMode);
+        persistTaskSnapshot(progress);
+        if (shouldPauseBeforeDownloadStart(titleName, progress)) {
+            finalizeProgress(titleName, progress);
+            return;
+        }
+
+        runDownload(titleName, buildSelectedTitle(progress), progress);
+    }
+
+    private void queueProgressForExecution(String titleName, Map<String, String> selectedTitle, DownloadProgress progress) {
+        if (progress == null) {
+            return;
+        }
+
+        if (isProcessWorkerMain()) {
+            dispatchQueuedProcessWorkers();
+            return;
+        }
+
+        downloadProgress.put(titleName, progress);
+        Future<?> future = submitThreadedDownload(titleName, selectedTitle, progress);
+        activeDownloads.put(titleName, future);
+    }
+
+    private Future<?> submitThreadedDownload(String titleName, Map<String, String> selectedTitle, DownloadProgress progress) {
+        return ensureExecutor().submit(() -> runDownload(titleName, selectedTitle, progress));
+    }
+
+    private void assignThreadWorkerContext(DownloadProgress progress) {
+        if (progress == null) {
+            return;
+        }
+
+        Integer workerIndex = resolveCurrentThreadWorkerIndex();
+        progress.assignWorker(workerIndex, -1, ProcessHandle.current().pid(), EXECUTION_MODE_THREAD);
+    }
+
+    private Integer resolveCurrentThreadWorkerIndex() {
+        String threadName = Thread.currentThread().getName();
+        if (threadName == null || !threadName.startsWith(DOWNLOAD_WORKER_NAME_PREFIX)) {
+            return null;
+        }
+
+        String suffix = threadName.substring(DOWNLOAD_WORKER_NAME_PREFIX.length()).trim();
+        try {
+            int slotNumber = Integer.parseInt(suffix);
+            return Math.max(0, slotNumber - 1);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private String resolveWorkerExecutionMode() {
+        if (isWorkerMode()) {
+            return runtimeProperties.getNormalizedWorkerExecutionMode();
+        }
+        return isProcessWorkerMain() ? EXECUTION_MODE_PROCESS : EXECUTION_MODE_THREAD;
+    }
+
+    private boolean isWorkerMode() {
+        return runtimeProperties != null && runtimeProperties.isWorkerMode();
+    }
+
+    private boolean isProcessWorkerMain() {
+        return runtimeProperties != null && runtimeProperties.useProcessWorkers();
+    }
+
+    private synchronized void startWorkerSupervisor() {
+        if (workerSupervisor != null && !workerSupervisor.isShutdown() && !workerSupervisor.isTerminated()) {
+            return;
+        }
+
+        workerSupervisor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable);
+            thread.setName("raven-download-supervisor");
+            thread.setDaemon(true);
+            return thread;
+        });
+        workerSupervisor.scheduleWithFixedDelay(this::runWorkerSupervisorTick, 0L, WORKER_SUPERVISOR_POLL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void runWorkerSupervisorTick() {
+        try {
+            reconcileActiveWorkerProcesses();
+            dispatchQueuedProcessWorkers();
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Raven worker supervisor tick failed: " + e.getMessage());
+        }
+    }
+
+    private void dispatchQueuedProcessWorkers() {
+        if (!isProcessWorkerMain()) {
+            return;
+        }
+
+        synchronized (processWorkerLock) {
+            reconcileActiveWorkerProcesses();
+            if (maintenancePauseActive.get()) {
+                return;
+            }
+
+            if (shouldWaitForVpnConnection()) {
+                publishQueuedVpnWaitingMessages();
+                return;
+            }
+
+            List<DownloadProgress> queuedTasks = loadPersistedTasks(List.of("queued", "recovering"));
+            if (queuedTasks.isEmpty()) {
+                return;
+            }
+
+            queuedTasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+            List<Integer> cpuCoreIds = getWorkerCpuCoreIds();
+            int maxWorkers = getConfiguredDownloadThreads();
+            for (DownloadProgress progress : queuedTasks) {
+                if (activeWorkerProcesses.size() >= maxWorkers) {
+                    return;
+                }
+                if (progress == null || progress.getTaskId() == null || progress.getTaskId().isBlank()) {
+                    continue;
+                }
+                if (progress.getTitle() == null || progress.getTitle().isBlank()
+                        || progress.getSourceUrl() == null || progress.getSourceUrl().isBlank()) {
+                    continue;
+                }
+                if (activeWorkerProcesses.containsKey(progress.getTaskId())) {
+                    continue;
+                }
+                if (progress.isPauseRequested()) {
+                    progress.markPaused("Pause requested before download started. Task saved for later.");
+                    persistTaskSnapshot(progress);
+                    continue;
+                }
+
+                int workerIndex = reserveAvailableWorkerSlot(maxWorkers);
+                if (workerIndex < 0) {
+                    return;
+                }
+
+                int cpuCoreId = workerIndex < cpuCoreIds.size() ? cpuCoreIds.get(workerIndex) : -1;
+                progress.assignWorker(workerIndex, cpuCoreId, null, EXECUTION_MODE_PROCESS);
+                persistTaskSnapshot(progress);
+
+                try {
+                    Process process = workerLauncher.launch(new RavenWorkerLauncher.WorkerLaunchRequest(
+                            progress.getTaskId(),
+                            workerIndex,
+                            cpuCoreId,
+                            EXECUTION_MODE_PROCESS
+                    ));
+                    long pid = process.pid();
+                    progress.assignWorker(workerIndex, cpuCoreId, pid, EXECUTION_MODE_PROCESS);
+                    persistTaskSnapshot(progress);
+                    ActiveWorkerProcess handle = new ActiveWorkerProcess(
+                            progress.getTaskId(),
+                            progress.getTitle(),
+                            workerIndex,
+                            cpuCoreId,
+                            process,
+                            pid,
+                            EXECUTION_MODE_PROCESS
+                    );
+                    activeWorkerProcesses.put(progress.getTaskId(), handle);
+                    workerSlots.put(workerIndex, progress.getTaskId());
+                } catch (Exception e) {
+                    workerSlots.remove(workerIndex);
+                    progress.markInterrupted("Failed to launch Raven worker process: " + e.getMessage());
+                    persistTaskSnapshot(progress);
+                    logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to launch Raven worker process: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    private void reconcileActiveWorkerProcesses() {
+        if (!isProcessWorkerMain()) {
+            return;
+        }
+
+        synchronized (processWorkerLock) {
+            List<ActiveWorkerProcess> handles = new ArrayList<>(activeWorkerProcesses.values());
+            for (ActiveWorkerProcess handle : handles) {
+                Process process = handle.process();
+                if (process != null && process.isAlive()) {
+                    continue;
+                }
+
+                activeWorkerProcesses.remove(handle.taskId());
+                workerSlots.remove(handle.workerIndex());
+
+                DownloadProgress progress = loadPersistedTaskById(handle.taskId());
+                if (progress == null) {
+                    continue;
+                }
+
+                String status = normalizeStatus(progress.getStatus());
+                if (!ACTIVE_TASK_STATUSES.contains(status)) {
+                    continue;
+                }
+
+                progress.assignWorker(handle.workerIndex(), handle.cpuCoreId(), handle.pid(), handle.executionMode());
+                if (progress.isPauseRequested()) {
+                    progress.markPaused(buildPauseMessage(progress.getRemainingChapterNumbers()));
+                } else {
+                    int exitCode = safeExitCode(process);
+                    progress.markInterrupted("Raven worker process exited unexpectedly (exit " + exitCode + ").");
+                }
+                persistTaskSnapshot(progress);
+            }
+        }
+    }
+
+    private void publishQueuedVpnWaitingMessages() {
+        String waitingMessage = "Waiting for Raven VPN connection before download starts.";
+        for (DownloadProgress progress : loadPersistedTasks(List.of("queued", "recovering"))) {
+            if (progress.isPauseRequested()) {
+                continue;
+            }
+            if (waitingMessage.equals(progress.getMessage())) {
+                continue;
+            }
+            progress.setMessage(waitingMessage);
+            persistTaskSnapshot(progress);
+        }
+    }
+
+    private int reserveAvailableWorkerSlot(int maxWorkers) {
+        for (int index = 0; index < Math.max(1, maxWorkers); index++) {
+            if (!workerSlots.containsKey(index)) {
+                workerSlots.put(index, "");
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private void stopWorkerProcess(ActiveWorkerProcess handle) {
+        if (handle == null || handle.process() == null) {
+            return;
+        }
+
+        Process process = handle.process();
+        if (!process.isAlive()) {
+            return;
+        }
+
+        process.destroy();
+        try {
+            if (!process.waitFor(3, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
+    }
+
+    private int safeExitCode(Process process) {
+        if (process == null) {
+            return -1;
+        }
+        try {
+            return process.exitValue();
+        } catch (IllegalThreadStateException ignored) {
+            return -1;
+        }
+    }
+
+    private List<DownloadProgress> loadPersistedTasks(Collection<String> statuses) {
+        if (vaultService == null) {
+            return List.of();
+        }
+
+        try {
+            Map<String, Object> query = Map.of();
+            if (statuses != null && !statuses.isEmpty()) {
+                query = Map.of("status", Map.of("$in", new ArrayList<>(statuses)));
+            }
+
+            List<Map<String, Object>> docs = vaultService.findMany(TASK_COLLECTION, query);
+            if (docs == null || docs.isEmpty()) {
+                return List.of();
+            }
+
+            List<DownloadProgress> progressEntries = new ArrayList<>();
+            for (Map<String, Object> doc : docs) {
+                DownloadProgress progress = vaultService.parseJson(doc, DownloadProgress.class);
+                if (progress != null && progress.getTaskId() != null && !progress.getTaskId().isBlank()) {
+                    progressEntries.add(progress);
+                }
+            }
+            return progressEntries;
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    private List<DownloadProgress> loadPersistedTasksByTitle(String titleName) {
+        if (titleName == null || titleName.isBlank()) {
+            return List.of();
+        }
+
+        List<DownloadProgress> matches = new ArrayList<>();
+        for (DownloadProgress progress : loadPersistedTasks(null)) {
+            if (titleName.equals(progress.getTitle())) {
+                matches.add(progress);
+            }
+        }
+        return matches;
+    }
+
+    private DownloadProgress loadPersistedTaskById(String taskId) {
+        if (taskId == null || taskId.isBlank() || vaultService == null) {
+            return null;
+        }
+
+        try {
+            Map<String, Object> document = vaultService.findOne(TASK_COLLECTION, Map.of("taskId", taskId));
+            return document == null ? null : vaultService.parseJson(document, DownloadProgress.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean refreshPauseRequestedFlag(DownloadProgress progress) {
+        if (progress == null) {
+            return false;
+        }
+
+        DownloadProgress persisted = loadPersistedTaskById(progress.getTaskId());
+        boolean pauseRequested = persisted != null ? persisted.isPauseRequested() : progress.isPauseRequested();
+        if (progress.isPauseRequested() != pauseRequested) {
+            progress.setPauseRequested(pauseRequested);
+        }
+        return pauseRequested;
+    }
+
+    private String normalizeStatus(String status) {
+        return status == null ? "" : status.trim().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Downloads single chapter.
+     *
+     * @param title The Raven title.
+     * @param chapterNumber The chapter number.
+     * @return True when the condition is satisfied.
+    */
 
     public boolean downloadSingleChapter(NewTitle title, String chapterNumber) {
         return downloadSingleChapter(title, chapterNumber, null);
     }
+
+    /**
+     * Downloads single chapter.
+     *
+     * @param title The Raven title.
+     * @param chapterNumber The chapter number.
+     * @param progress The progress.
+     * @return True when the condition is satisfied.
+    */
 
     public boolean downloadSingleChapter(NewTitle title, String chapterNumber, DownloadProgress progress) {
 
@@ -1452,7 +2601,7 @@ public class DownloadService {
             String domain = extractDomain(pages.get(0));
             Path chapterFolder = workingTitleFolder.resolve("temp_" + chapterNumber);
             Files.createDirectories(workingTitleFolder);
-            int count = saveImagesToFolder(pages, chapterFolder, naming, title.getTitleName(), title.getType(), chapterNumber);
+            int count = saveImagesToFolder(pages, chapterFolder, naming, title, chapterNumber);
             if (count <= 0) {
                 logger.warn("DOWNLOAD", "⚠️ No files were saved for chapter " + chapterNumber);
                 if (progress != null) {
@@ -1462,12 +2611,14 @@ public class DownloadService {
                 return false;
             }
 
-            String cbzName = formatChapterCbzName(naming, title.getTitleName(), title.getType(), chapterNumber, count, domain);
+            String cbzName = formatChapterCbzName(naming, title, chapterNumber, count, domain);
             Path cbzPath = workingTitleFolder.resolve(cbzName);
             zipFolderAsCbz(chapterFolder, cbzPath);
             deleteFolder(chapterFolder);
             promoteTitleFolder(workingTitleFolder, finalTitleFolder);
             title.setDownloadPath(finalTitleFolder.toString());
+            mergeDownloadedChapter(title, chapterNumber);
+            recordDownloadedChapterFile(title, chapterNumber, cbzName);
             completed = true;
             if (progress != null) {
                 progress.chapterCompleted(chapterNumber);
@@ -1619,6 +2770,61 @@ public class DownloadService {
         }
     }
 
+    private String sanitizeStoredFileName(String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            return "";
+        }
+
+        try {
+            return Path.of(rawName).getFileName().toString().trim();
+        } catch (Exception ignored) {
+            return rawName.trim();
+        }
+    }
+
+    private LinkedHashMap<String, String> sortChapterFileMap(Map<String, String> chapterFiles) {
+        LinkedHashMap<String, String> sorted = new LinkedHashMap<>();
+        if (chapterFiles == null || chapterFiles.isEmpty()) {
+            return sorted;
+        }
+
+        List<Map.Entry<String, String>> entries = new ArrayList<>();
+        for (Map.Entry<String, String> entry : chapterFiles.entrySet()) {
+            String normalizedChapter = normalizeChapterNumber(entry.getKey());
+            String normalizedFileName = sanitizeStoredFileName(entry.getValue());
+            if (normalizedChapter == null || normalizedChapter.isBlank() || normalizedFileName.isBlank()) {
+                continue;
+            }
+            entries.add(Map.entry(normalizedChapter, normalizedFileName));
+        }
+
+        entries.sort((left, right) -> compareChapterNumbers(left.getKey(), right.getKey()));
+        for (Map.Entry<String, String> entry : entries) {
+            sorted.put(entry.getKey(), entry.getValue());
+        }
+        return sorted;
+    }
+
+    private String stripTrailingFileDecorators(String rawText) {
+        String stripped = rawText == null ? "" : rawText.trim();
+        if (stripped.isBlank()) {
+            return stripped;
+        }
+
+        stripped = stripped.replaceFirst("(?i)\\.cbz$", "").trim();
+        boolean changed;
+        do {
+            changed = false;
+            String next = stripped.replaceFirst("\\s*(\\[[^\\]]*]|\\([^)]*\\))\\s*$", "").trim();
+            if (!next.equals(stripped)) {
+                stripped = next;
+                changed = true;
+            }
+        } while (changed);
+
+        return stripped;
+    }
+
     private void migrateExistingTitleFolder(String titleName, String existingDownloadPath, Path finalTitleFolder) {
         Path existingPath = parsePath(existingDownloadPath);
         if (existingPath == null || existingPath.equals(finalTitleFolder.normalize())) {
@@ -1730,11 +2936,60 @@ public class DownloadService {
 
         String lower = cleaned.toLowerCase(Locale.ROOT);
         return switch (lower) {
-            case "manga" -> "Manga";
+            case "manga", "managa" -> "Manga";
             case "manhwa" -> "Manhwa";
             case "manhua" -> "Manhua";
+            case "oel" -> "OEL";
             default -> prettifyLabel(cleaned);
         };
+    }
+
+    private void applyTitleDetailsMetadata(NewTitle titleRecord, TitleDetails details) {
+        if (titleRecord == null || details == null) {
+            return;
+        }
+
+        if (details.getSummary() != null && !details.getSummary().isBlank()) {
+            titleRecord.setSummary(details.getSummary().trim());
+        }
+
+        String normalizedType = normalizeMediaType(details.getType());
+        if (normalizedType != null) {
+            titleRecord.setType(normalizedType);
+        }
+
+        if (details.getAssociatedNames() != null && !details.getAssociatedNames().isEmpty()) {
+            titleRecord.setAssociatedNames(new ArrayList<>(details.getAssociatedNames()));
+        }
+
+        if (details.getStatus() != null && !details.getStatus().isBlank()) {
+            titleRecord.setStatus(details.getStatus().trim());
+        }
+
+        if (details.getReleased() != null && !details.getReleased().isBlank()) {
+            titleRecord.setReleased(details.getReleased().trim());
+        }
+
+        if (details.getOfficialTranslation() != null) {
+            titleRecord.setOfficialTranslation(details.getOfficialTranslation());
+        }
+
+        if (details.getAnimeAdaptation() != null) {
+            titleRecord.setAnimeAdaptation(details.getAnimeAdaptation());
+        }
+
+        if (details.getRelatedSeries() != null && !details.getRelatedSeries().isEmpty()) {
+            List<Map<String, String>> relatedSeries = new ArrayList<>();
+            for (Map<String, String> entry : details.getRelatedSeries()) {
+                if (entry == null || entry.isEmpty()) {
+                    continue;
+                }
+                relatedSeries.add(new LinkedHashMap<>(entry));
+            }
+            if (!relatedSeries.isEmpty()) {
+                titleRecord.setRelatedSeries(relatedSeries);
+            }
+        }
     }
 
     private String prettifyLabel(String value) {
@@ -1819,7 +3074,7 @@ public class DownloadService {
     }
 
     private boolean isTerminalStatus(String status) {
-        return TERMINAL_STATUSES.contains(status);
+        return TERMINAL_STATUSES.contains(normalizeStatus(status));
     }
 
     private String sanitizeForLog(String value) {
@@ -1827,6 +3082,135 @@ public class DownloadService {
             return "";
         }
         return value.replaceAll("[\\r\\n]", "").replaceAll("[^-\\p{Alnum}\\s_:]", "").trim();
+    }
+
+    private String normalizeQueueTitle(String value) {
+        if (value == null) {
+            return "Unknown title";
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? "Unknown title" : trimmed;
+    }
+
+    private String buildAlreadyActiveMessage(List<String> skippedTitles) {
+        if (skippedTitles == null || skippedTitles.isEmpty()) {
+            return "Download already in progress.";
+        }
+        if (skippedTitles.size() == 1) {
+            return "Download already in progress for: " + skippedTitles.get(0);
+        }
+        return "Downloads already in progress for: " + String.join(", ", skippedTitles);
+    }
+
+    private String normalizeBulkTitlePrefix(String value) {
+        if (value == null) {
+            return null;
+        }
+
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private List<Map<String, String>> filterTitlesByPrefix(List<Map<String, String>> titles, String titlePrefix) {
+        if (titles == null || titles.isEmpty() || titlePrefix == null || titlePrefix.isBlank()) {
+            return List.of();
+        }
+
+        String normalizedPrefix = titlePrefix.toLowerCase(Locale.ROOT);
+        List<Map<String, String>> matched = new ArrayList<>();
+        for (Map<String, String> title : titles) {
+            if (title == null || title.isEmpty()) {
+                continue;
+            }
+
+            String comparableTitle = normalizePrefixComparableTitle(title.get("title"));
+            if (comparableTitle == null || comparableTitle.isBlank()) {
+                continue;
+            }
+
+            if (comparableTitle.toLowerCase(Locale.ROOT).startsWith(normalizedPrefix)) {
+                matched.add(new HashMap<>(title));
+            }
+        }
+
+        return matched.isEmpty() ? List.of() : List.copyOf(matched);
+    }
+
+    private String normalizePrefixComparableTitle(String rawTitle) {
+        if (rawTitle == null) {
+            return null;
+        }
+
+        String trimmed = rawTitle.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+
+        int index = 0;
+        while (index < trimmed.length()) {
+            char candidate = trimmed.charAt(index);
+            if (Character.isWhitespace(candidate) || !Character.isLetterOrDigit(candidate)) {
+                index++;
+                continue;
+            }
+            break;
+        }
+
+        String normalized = trimmed.substring(Math.min(index, trimmed.length())).trim();
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String resolveBulkQueueStatus(
+            List<String> queuedTitles,
+            List<String> skippedActiveTitles,
+            List<String> failedTitles
+    ) {
+        boolean hasQueued = queuedTitles != null && !queuedTitles.isEmpty();
+        boolean hasSkipped = skippedActiveTitles != null && !skippedActiveTitles.isEmpty();
+        boolean hasFailed = failedTitles != null && !failedTitles.isEmpty();
+
+        if (hasQueued && !hasSkipped && !hasFailed) {
+            return BulkQueueDownloadResult.STATUS_QUEUED;
+        }
+        if (!hasQueued && hasSkipped && !hasFailed) {
+            return BulkQueueDownloadResult.STATUS_ALREADY_ACTIVE;
+        }
+        return BulkQueueDownloadResult.STATUS_PARTIAL;
+    }
+
+    private String buildBulkQueueMessage(
+            List<String> queuedTitles,
+            List<String> skippedActiveTitles,
+            List<String> failedTitles,
+            int matchedCount
+    ) {
+        int queuedCount = queuedTitles == null ? 0 : queuedTitles.size();
+        int skippedCount = skippedActiveTitles == null ? 0 : skippedActiveTitles.size();
+        int failedCount = failedTitles == null ? 0 : failedTitles.size();
+
+        if (matchedCount <= 0) {
+            return "No titles matched the supplied filters.";
+        }
+        if (queuedCount > 0 && skippedCount == 0 && failedCount == 0) {
+            return "Queued " + queuedCount + " title(s) for download.";
+        }
+        if (queuedCount == 0 && skippedCount > 0 && failedCount == 0) {
+            return buildAlreadyActiveMessage(skippedActiveTitles);
+        }
+
+        return "Queued " + queuedCount + " title(s). Skipped " + skippedCount
+                + " already-active title(s). Failed " + failedCount + " title(s).";
+    }
+
+    private record ActiveWorkerProcess(
+            String taskId,
+            String title,
+            int workerIndex,
+            int cpuCoreId,
+            Process process,
+            long pid,
+            String executionMode
+    ) {
     }
 
     private static class SearchSession {
@@ -1851,6 +3235,13 @@ public class DownloadService {
         }
     }
 
+    /**
+     * Represents Raven search sessions, queueing, worker execution, persistence, and chapter downloads.
+     *
+     * @param pausedImmediately The paused immediately.
+     * @param pausingAfterCurrentChapter The pausing after current chapter.
+    */
+
     public record PauseRequestResult(
             List<String> pausedImmediately,
             List<String> pausingAfterCurrentChapter
@@ -1861,6 +3252,12 @@ public class DownloadService {
                     ? List.of()
                     : List.copyOf(pausingAfterCurrentChapter);
         }
+
+        /**
+         * Returns affected tasks.
+         *
+         * @return The resulting count or numeric value.
+         */
 
         public int getAffectedTasks() {
             return pausedImmediately.size() + pausingAfterCurrentChapter.size();

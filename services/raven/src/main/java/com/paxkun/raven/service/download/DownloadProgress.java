@@ -1,3 +1,12 @@
+/**
+ * Encapsulates Raven download progress behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/controller/DownloadController.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/test/java/com/paxkun/raven/controller/DownloadControllerTest.java
+ * - src/test/java/com/paxkun/raven/service/DownloadServiceTest.java
+ * Times this file has been edited: 5
+ */
 package com.paxkun.raven.service.download;
 
 import java.util.*;
@@ -35,6 +44,11 @@ public class DownloadProgress {
     private List<String> completedChapterNumbers;
     private List<String> newChapterNumbers;
     private List<String> missingChapterNumbers;
+    private Integer workerIndex;
+    private Integer cpuCoreId;
+    private Long workerPid;
+    private String executionMode;
+    private boolean pauseRequested;
     private long lastUpdated;
 
     /**
@@ -80,6 +94,11 @@ public class DownloadProgress {
             List<String> completedChapterNumbers,
             List<String> newChapterNumbers,
             List<String> missingChapterNumbers,
+            Integer workerIndex,
+            Integer cpuCoreId,
+            Long workerPid,
+            String executionMode,
+            boolean pauseRequested,
             long lastUpdated) {
         this.title = title;
         this.queuedAt = queuedAt;
@@ -107,6 +126,11 @@ public class DownloadProgress {
         this.completedChapterNumbers = dedupeChapterList(completedChapterNumbers);
         this.newChapterNumbers = dedupeChapterList(newChapterNumbers);
         this.missingChapterNumbers = dedupeChapterList(missingChapterNumbers);
+        this.workerIndex = workerIndex;
+        this.cpuCoreId = cpuCoreId;
+        this.workerPid = workerPid;
+        this.executionMode = executionMode;
+        this.pauseRequested = pauseRequested;
         this.lastUpdated = lastUpdated;
     }
 
@@ -132,12 +156,30 @@ public class DownloadProgress {
         return new ArrayList<>(deduped);
     }
 
+    /**
+     * Ensures task id.
+     *
+     * @param fallbackTaskId The fallback task id.
+     */
+
     public synchronized void ensureTaskId(String fallbackTaskId) {
         if (taskId == null || taskId.isBlank()) {
             taskId = fallbackTaskId;
             this.lastUpdated = now();
         }
     }
+
+    /**
+     * Attaches task context.
+     *
+     * @param nextTaskId The next task id.
+     * @param nextTaskType The next task type.
+     * @param nextTitleUuid The next title uuid.
+     * @param nextSourceUrl The next source url.
+     * @param nextMediaType The next media type.
+     * @param nextCoverUrl The next cover url.
+     * @param nextSummary The next summary.
+     */
 
     public synchronized void attachTaskContext(
             String nextTaskId,
@@ -171,6 +213,17 @@ public class DownloadProgress {
         this.lastUpdated = now();
     }
 
+    /**
+     * Applies chapter plan.
+     *
+     * @param queuedChapters The queued chapters.
+     * @param newChapters The new chapters.
+     * @param missingChapters The missing chapters.
+     * @param nextLatestChapter The next latest chapter.
+     * @param nextSourceChapterCount The next source chapter count.
+     * @param nextMessage The next message.
+     */
+
     public synchronized void applyChapterPlan(
             Collection<String> queuedChapters,
             Collection<String> newChapters,
@@ -190,16 +243,36 @@ public class DownloadProgress {
         this.lastUpdated = now();
     }
 
+    /**
+     * Marks started.
+     *
+     * @param totalChapters The total chapters.
+     */
+
     public synchronized void markStarted(int totalChapters) {
         this.totalChapters = totalChapters;
         this.startedAt = now();
         this.status = "downloading";
+        this.pauseRequested = false;
         this.lastUpdated = this.startedAt;
     }
+
+    /**
+     * Handles chapter started.
+     *
+     * @param chapterTitle The chapter title.
+     */
 
     public synchronized void chapterStarted(String chapterTitle) {
         chapterStarted(chapterTitle, null);
     }
+
+    /**
+     * Handles chapter started.
+     *
+     * @param chapterTitle The chapter title.
+     * @param chapterNumber The chapter number.
+     */
 
     public synchronized void chapterStarted(String chapterTitle, String chapterNumber) {
         this.currentChapter = chapterTitle;
@@ -208,9 +281,19 @@ public class DownloadProgress {
         this.lastUpdated = now();
     }
 
+    /**
+     * Handles chapter completed.
+     */
+
     public synchronized void chapterCompleted() {
         chapterCompleted(null);
     }
+
+    /**
+     * Handles chapter completed.
+     *
+     * @param chapterNumber The chapter number.
+     */
 
     public synchronized void chapterCompleted(String chapterNumber) {
         this.completedChapters++;
@@ -224,40 +307,66 @@ public class DownloadProgress {
         this.lastUpdated = now();
     }
 
+    /**
+     * Marks completed.
+     */
+
     public synchronized void markCompleted() {
         long now = now();
         this.status = "completed";
+        this.pauseRequested = false;
         this.currentChapter = null;
         this.currentChapterNumber = null;
         this.completedAt = now;
         this.lastUpdated = now;
     }
 
+    /**
+     * Marks failed.
+     *
+     * @param message The message to store.
+     */
+
     public synchronized void markFailed(String message) {
         long now = now();
         this.status = "failed";
         this.errorMessage = message;
+        this.pauseRequested = false;
         this.currentChapter = null;
         this.currentChapterNumber = null;
         this.completedAt = now;
         this.lastUpdated = now;
     }
+
+    /**
+     * Marks interrupted.
+     *
+     * @param message The message to store.
+     */
 
     public synchronized void markInterrupted(String message) {
         long now = now();
         this.status = "interrupted";
         this.message = message;
         this.errorMessage = message;
+        this.pauseRequested = false;
         this.currentChapter = null;
         this.currentChapterNumber = null;
         this.completedAt = now;
         this.lastUpdated = now;
     }
 
+    /**
+     * Marks paused.
+     *
+     * @param message The message to store.
+     */
+
     public synchronized void markPaused(String message) {
         long now = now();
         this.status = "paused";
         this.message = message;
+        this.pauseRequested = true;
         this.errorMessage = null;
         this.currentChapter = null;
         this.currentChapterNumber = null;
@@ -265,29 +374,44 @@ public class DownloadProgress {
         this.lastUpdated = now;
     }
 
+    /**
+     * Marks recovered from cache.
+     *
+     * @param state The state.
+     */
+
     public synchronized void markRecoveredFromCache(String state) {
         this.recoveredFromCache = true;
         this.recoveryState = state;
         this.status = "recovering";
+        this.pauseRequested = false;
         this.lastUpdated = now();
     }
 
-    public synchronized boolean hasCompletedChapter(String chapterNumber) {
-        if (chapterNumber == null || chapterNumber.isBlank()) {
-            return false;
+    /**
+     * Handles assign worker.
+     *
+     * @param nextWorkerIndex The next worker index.
+     * @param nextCpuCoreId The next cpu core id.
+     * @param nextWorkerPid The next worker pid.
+     * @param nextExecutionMode The next execution mode.
+     */
+
+    public synchronized void assignWorker(Integer nextWorkerIndex, Integer nextCpuCoreId, Long nextWorkerPid, String nextExecutionMode) {
+        this.workerIndex = nextWorkerIndex;
+        this.cpuCoreId = nextCpuCoreId;
+        this.workerPid = nextWorkerPid;
+        if (nextExecutionMode != null && !nextExecutionMode.isBlank()) {
+            this.executionMode = nextExecutionMode.trim();
         }
-        return completedChapterNumbers.contains(chapterNumber.trim());
+        this.lastUpdated = now();
     }
 
-    public synchronized List<String> getRemainingChapterNumbers() {
-        List<String> remaining = new ArrayList<>();
-        for (String chapterNumber : queuedChapterNumbers) {
-            if (!completedChapterNumbers.contains(chapterNumber)) {
-                remaining.add(chapterNumber);
-            }
-        }
-        return remaining;
-    }
+    /**
+     * Handles copy.
+     *
+     * @return The resulting DownloadProgress.
+     */
 
     public synchronized DownloadProgress copy() {
         return new DownloadProgress(
@@ -317,7 +441,40 @@ public class DownloadProgress {
                 completedChapterNumbers,
                 newChapterNumbers,
                 missingChapterNumbers,
+                workerIndex,
+                cpuCoreId,
+                workerPid,
+                executionMode,
+                pauseRequested,
                 lastUpdated);
+    }
+
+    /**
+     * Handles has completed chapter.
+     *
+     * @param chapterNumber The chapter number.
+     * @return True when the condition is satisfied.
+     */
+
+    public synchronized boolean hasCompletedChapter(String chapterNumber) {
+        if (chapterNumber == null || chapterNumber.isBlank()) {
+            return false;
+        }
+        return completedChapterNumbers.contains(chapterNumber.trim());
+    }
+
+    public synchronized List<String> getRemainingChapterNumbers() {
+        List<String> remaining = new ArrayList<>();
+        for (String chapterNumber : queuedChapterNumbers) {
+            if (!completedChapterNumbers.contains(chapterNumber)) {
+                remaining.add(chapterNumber);
+            }
+        }
+        return remaining;
+    }
+
+    public synchronized Integer getWorkerIndex() {
+        return workerIndex;
     }
 
     public synchronized String getTaskId() {
@@ -427,6 +584,27 @@ public class DownloadProgress {
 
     public synchronized List<String> getMissingChapterNumbers() {
         return new ArrayList<>(missingChapterNumbers);
+    }
+
+    public synchronized Integer getCpuCoreId() {
+        return cpuCoreId;
+    }
+
+    public synchronized Long getWorkerPid() {
+        return workerPid;
+    }
+
+    public synchronized String getExecutionMode() {
+        return executionMode;
+    }
+
+    public synchronized boolean isPauseRequested() {
+        return pauseRequested;
+    }
+
+    public synchronized void setPauseRequested(boolean pauseRequested) {
+        this.pauseRequested = pauseRequested;
+        this.lastUpdated = now();
     }
 
     public synchronized long getLastUpdated() {

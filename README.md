@@ -1,94 +1,72 @@
 # Noona Stack 2.2
 
-Noona is a multi-service platform for orchestration, onboarding, library automation, and download management.
+Noona is a self-hosted stack for manga and comics servers. It combines a web app, downloader, Discord onboarding, and
+managed reading services behind a single Docker-first control plane.
+
+The supported release install path is Docker + Warden. If you are setting up a server, start
+with [ServerAdmin.md](ServerAdmin.md).
+
+Noona also builds on great upstream projects. Show some love to [Kavita](https://github.com/Kareadita/Kavita) and
+[Komf](https://github.com/Snd-R/komf).
 
 ## Quick Navigation
 
+- [Server admin guide](ServerAdmin.md)
 - [Repository rules](AGENTS.md)
-- [Dockerfiles](dockerfiles/)
-- [Warden orchestrator](services/warden/readme.md)
-- [Moon web UI](services/moon/README.md)
-- [Portal API gateway](services/portal/README.md)
-- [Sage setup/proxy service](services/sage/README.md)
-- [Raven downloader](services/raven/readme.md)
-- [Vault data and auth broker](services/vault/readme.md)
-- [Kavita integration](services/kavita/README.md)
-- [Komf metadata helper](services/komf/README.md)
-- [Kavita service guide](services/kavita/AGENTS.md)
-- [Komf service guide](services/komf/AGENTS.md)
-- [Project docs](docs/)
+- [Warden README](services/warden/readme.md)
+- [Moon README](services/moon/README.md)
+- [Portal README](services/portal/README.md)
+- [Sage README](services/sage/README.md)
+- [Raven README](services/raven/readme.md)
+- [Vault README](services/vault/readme.md)
+- [Kavita README](services/kavita/README.md)
+- [Komf README](services/komf/README.md)
+- [AI docs index](docs/agents/README.md)
+- [Warden bootstrap script for bash](scripts/run-warden.sh)
+- [Warden bootstrap script for PowerShell](scripts/run-warden.ps1)
 
-## Services
+## What Noona Does
 
-| Service | Runtime              | README                                                 | Responsibility                                                                                                         |
-|---------|----------------------|--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
-| Warden  | Node.js              | [services/warden/readme.md](services/warden/readme.md) | Container lifecycle, install order, stack orchestration APIs                                                           |
-| Moon    | Next.js + Once UI    | [services/moon/README.md](services/moon/README.md)     | Web GUI for `/libraries`, `/downloads`, `/downloads/add`, `/recommendations`, `/mysubscriptions`, `/settings/*`, setup |
-| Portal  | Node.js + Discord.js | [services/portal/README.md](services/portal/README.md) | Discord onboarding and Kavita/Vault bridging                                                                           |
-| Sage    | Node.js + Express    | [services/sage/README.md](services/sage/README.md)     | Warden and Raven proxy APIs for setup and downloads                                                                    |
-| Raven   | Spring Boot (Java)   | [services/raven/readme.md](services/raven/readme.md)   | Search, scrape, download, library metadata updates                                                                     |
-| Vault   | Node.js + Express    | [services/vault/readme.md](services/vault/readme.md)   | Token-authenticated packet handling, users, secrets                                                                    |
-| Kavita  | .NET 10 + Angular    | [services/kavita/README.md](services/kavita/README.md) | Managed reading server image and first-admin bootstrap flow                                                            |
-| Komf    | Kotlin + Ktor        | [services/komf/README.md](services/komf/README.md)     | Managed metadata matching and enrichment for Kavita libraries                                                          |
+- Warden starts, updates, and restores the managed Docker stack.
+- Warden keeps Mongo and Redis private to the stack and routes shared data access through Vault.
+- Moon is the main web UI for setup, settings, users, downloads, and daily admin work.
+- Portal handles Discord onboarding, recommendations, and Kavita bridge features.
+- Sage brokers setup, auth, and browser-facing API traffic for Moon.
+- Raven downloads content, builds library files, and keeps the library in sync.
+- Vault stores users, secrets, and shared service state over internal service-to-service HTTPS.
+- Managed Kavita and Komf round out the reading and metadata experience.
 
-## Stack 2.2 Baseline
+## Who Noona Is For
 
-- Core services: Warden, Moon, Portal, Sage, Raven, Vault.
-- Shared modules live in [utilities/](utilities/).
-- Stack-level docs live in [docs/](docs/).
-- Service Dockerfiles live in [dockerfiles/](dockerfiles/).
-- Managed Kavita is built as `docker.darkmatterservers.com/the-noona-project/noona-kavita`
-  from [dockerfiles/kavita.Dockerfile](dockerfiles/kavita.Dockerfile).
-- Managed Komf is built as `docker.darkmatterservers.com/the-noona-project/noona-komf`
-  from [dockerfiles/komf.Dockerfile](dockerfiles/komf.Dockerfile).
+- Self-hosters who want one supported install story instead of wiring every service by hand.
+- Server admins who need a single place to manage users, roles, updates, and storage.
+- Readers and community members who mainly interact through Moon, Discord, and Kavita after the server is set up.
 
-## Local Workflow
+## Install Noona
 
-1. Start Warden first:
+1. Follow [ServerAdmin.md](ServerAdmin.md).
+2. Pull and start Warden with Docker.
+3. Open Moon and complete the first-run setup flow.
+4. Use Moon for ongoing updates, user management, and troubleshooting.
 
-```bash
-cd services/warden
-DEBUG=false node initWarden.mjs
-```
+Source installs and parallel quick starts are intentionally not the public path for this repository.
 
-2. Start the full stack profile:
+## Services At A Glance
 
-```bash
-cd services/warden
-DEBUG=super node initWarden.mjs
-```
+| Service                             | What it does                                   | When an admin cares                                     |
+|-------------------------------------|------------------------------------------------|---------------------------------------------------------|
+| [Warden](services/warden/readme.md) | Docker control plane and setup source of truth | First install, updates, restarts, logs, restore issues  |
+| [Moon](services/moon/README.md)     | Main web UI                                    | Setup, settings, users, permissions, operations         |
+| [Portal](services/portal/README.md) | Discord and Kavita bridge                      | Discord bot setup, onboarding, recommendation flows     |
+| [Sage](services/sage/README.md)     | Setup, auth, and browser API broker            | Login, setup, and proxy troubleshooting                 |
+| [Raven](services/raven/readme.md)   | Downloader and library worker                  | Download jobs, imports, worker tuning, storage checks   |
+| [Vault](services/vault/readme.md)   | Shared data and auth broker                    | User/auth persistence, secrets, reset and recovery work |
+| [Kavita](services/kavita/README.md) | Managed reading server                         | Reader access, external links, Noona login handoff      |
+| [Komf](services/komf/README.md)     | Managed metadata helper                        | Metadata matching and enrichment issues                 |
 
-3. Open Moon when healthy: `http://localhost:3000`.
+## Where To Go Next
 
-Set `SERVER_IP` on Warden when Moon should advertise LAN URLs like `http://192.168.x.x:<port>` for managed services.
-
-## Root Scripts
-
-- Generate docs: `npm run docs`
-- List docker targets: `npm run docker:list`
-- Build docker images: `npm run docker:build`
-- Push docker images: `npm run docker:push`
-- Build + push helper: `npm run docker:publish`
-- Docker scripts default to `docker.darkmatterservers.com/the-noona-project`
-- Override the default target with `NOONA_DOCKER_NAMESPACE`, or split it with `NOONA_DOCKER_REGISTRY` and
-  `NOONA_DOCKER_PROJECT`
-- The helper now runs `docker login` to Harbor automatically before `push` and `publish`
-- Set `NOONA_DOCKER_USERNAME` and `NOONA_DOCKER_PASSWORD` only if you need to override the built-in Harbor login
-- Pass `--skip-login` after `--` if you want to rely on an existing Docker login session instead
-- Pass docker helper flags after `--`, for example `npm run docker:publish -- --no-cache`
-- Build and publish default to `--progress=plain` so long-running layers such as Kavita's `dotnet publish` keep printing
-  logs
-- Override progress with `NOONA_DOCKER_PROGRESS` or `npm run docker:publish -- --progress=tty`
-
-## Repo Map
-
-- [dockerfiles/](dockerfiles/) - Container build definitions for core services and managed Kavita/Komf
-- [services/](services/) - Service source, tests, and service-level docs
-- [utilities/](utilities/) - Shared helpers and modules
-- [docs/](docs/) - Deployment and operations documentation
-- [scripts/](scripts/) - Monorepo tooling and automation scripts
-
-## Documentation Rule
-
-When any major service behavior changes, update that service README and keep this file's links current so GitHub
-navigation stays accurate.
+- Admins: [ServerAdmin.md](ServerAdmin.md)
+- Public service summaries: the README in each `services/*` folder
+- AI contributors: [AGENTS.md](AGENTS.md) and [docs/agents/README.md](docs/agents/README.md)
+- Archived pre-release docs: [docs/archive/README.md](docs/archive/README.md)

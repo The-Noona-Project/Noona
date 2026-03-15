@@ -1,3 +1,10 @@
+/**
+ * Encapsulates Raven source finder behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/test/java/com/paxkun/raven/service/DownloadServiceTest.java
+ * Times this file has been edited: 16
+ */
 package com.paxkun.raven.service.download;
 
 import com.paxkun.raven.service.LoggerService;
@@ -35,6 +42,10 @@ public class SourceFinder {
      * Map of domain -> ScraperFunction
      */
     private final Map<String, ScraperFunction> scrapers = new HashMap<>();
+
+    /**
+     * Creates a new source finder instance.
+     */
 
     public SourceFinder() {
         // Register supported domain scrapers here

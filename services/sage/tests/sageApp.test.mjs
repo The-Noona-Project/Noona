@@ -3,11 +3,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {once} from 'node:events'
+import {readFile, stat} from 'node:fs/promises'
 import crypto from 'node:crypto'
 
 import {ChannelType, GatewayIntentBits} from 'discord.js'
 
 import {createSageApp, normalizeServiceInstallPayload, SetupValidationError, startSage,} from '../app/createSageApp.mjs'
+import {WardenUpstreamHttpError} from '../app/createSetupClient.mjs'
 import {
     appendWizardStepHistoryEntries,
     applyWizardStateUpdates,
@@ -15,6 +17,8 @@ import {
     DEFAULT_WIZARD_STEP_METADATA,
 } from '../wizard/wizardStateSchema.mjs'
 import {createDiscordSetupClient} from '../clients/discordSetupClient.mjs'
+
+const BACKGROUND_TRACK_FILE_URL = new URL('../assets/background-track.mp3', import.meta.url)
 
 const listen = (app) => new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -48,6 +52,9 @@ const createRavenStub = (overrides = {}) => ({
     async checkLibraryForNewChapters() {
         throw new Error('checkLibraryForNewChapters should not be called')
     },
+    async checkAvailableLibraryImports() {
+        throw new Error('checkAvailableLibraryImports should not be called')
+    },
     async getTitle() {
         throw new Error('getTitle should not be called')
     },
@@ -72,8 +79,14 @@ const createRavenStub = (overrides = {}) => ({
     async searchTitle() {
         throw new Error('searchTitle should not be called')
     },
+    async getTitleDetails() {
+        throw new Error('getTitleDetails should not be called')
+    },
     async queueDownload() {
         throw new Error('queueDownload should not be called')
+    },
+    async queueDownloadDetailed() {
+        throw new Error('queueDownloadDetailed should not be called')
     },
     async getDownloadStatus() {
         throw new Error('getDownloadStatus should not be called')
@@ -105,6 +118,9 @@ const createPortalMetadataStub = (overrides = {}) => ({
     },
     async applyTitleMetadataMatch() {
         throw new Error('applyTitleMetadataMatch should not be called')
+    },
+    async applyRavenTitleVolumeMap() {
+        throw new Error('applyRavenTitleVolumeMap should not be called')
     },
     ...overrides,
 })
@@ -1303,7 +1319,7 @@ test('createDiscordSetupClient maps invalid Discord tokens to validation errors'
     assert.equal(destroyCalls.length, 1)
 })
 
-test('GET /api/setup/services requests installable set from Warden by default', async (t) => {
+test('GET /api/setup/services requests the full catalog from Warden by default', async (t) => {
     const fetchCalls = []
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -1328,7 +1344,7 @@ test('GET /api/setup/services requests installable set from Warden by default', 
     assert.equal(response.status, 200)
     await response.json()
 
-    assert.deepEqual(fetchCalls, ['http://warden.local/api/services?includeInstalled=false'])
+    assert.deepEqual(fetchCalls, ['http://warden.local/api/services?includeInstalled=true'])
 })
 
 test('GET /api/setup/services falls back across Warden base URLs', async (t) => {
@@ -1364,8 +1380,8 @@ test('GET /api/setup/services falls back across Warden base URLs', async (t) => 
     assert.deepEqual(payload.services, [{ name: 'noona-moon' }])
 
     assert.deepEqual(fetchCalls, [
-        'http://unreachable.local:4001/api/services?includeInstalled=false',
-        'http://warden-ok.local:4001/api/services?includeInstalled=false',
+        'http://unreachable.local:4001/api/services?includeInstalled=true',
+        'http://warden-ok.local:4001/api/services?includeInstalled=true',
     ])
 })
 
@@ -1469,7 +1485,42 @@ test('POST /api/setup/install forwards async install mode to setup client', asyn
     }])
 })
 
-test('POST /api/setup/install validates payload', async (t) => {
+test('POST /api/setup/install allows persisted setup installs with no explicit services', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices(services) {
+                calls.push(services)
+                return {status: 202, results: [], accepted: true, started: true, alreadyRunning: false, progress: null}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: []}),
+    })
+
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {
+        results: [],
+        accepted: true,
+        started: true,
+        alreadyRunning: false,
+        progress: null,
+    })
+    assert.deepEqual(calls, [[]])
+})
+
+test('POST /api/setup/install validates explicit service payloads', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         setupClient: {
@@ -1489,7 +1540,7 @@ test('POST /api/setup/install validates payload', async (t) => {
     const response = await fetch(`${baseUrl}/api/setup/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ services: [] }),
+        body: JSON.stringify({services: ['   ']}),
     })
 
     assert.equal(response.status, 400)
@@ -1572,6 +1623,248 @@ test('setupClient.installServices can request async forwarding to Warden', async
     assert.equal(bodies[0].url, 'http://warden.local/api/services/install?async=true')
     const parsedBody = JSON.parse(bodies[0].body)
     assert.deepEqual(parsedBody.services, [{name: 'noona-sage'}])
+})
+
+test('setupClient.installServices can forward the persisted setup profile without an explicit services array', async (t) => {
+    const bodies = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            fetchImpl: async (url, options = {}) => {
+                bodies.push({url, body: options.body})
+                return {
+                    ok: true,
+                    status: 202,
+                    async json() {
+                        return {accepted: true, started: true, alreadyRunning: false, progress: null}
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/install?async=true`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({}),
+    })
+
+    assert.equal(response.status, 202)
+    await response.json()
+
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].url, 'http://warden.local/api/services/install?async=true')
+    assert.deepEqual(JSON.parse(bodies[0].body), {})
+})
+
+test('setupClient forwards Warden bearer auth when a WARDEN_API_TOKEN is configured', async (t) => {
+    const requests = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setup: {
+            baseUrl: 'http://warden.local',
+            env: {
+                WARDEN_API_TOKEN: 'warden-secret',
+            },
+            fetchImpl: async (url, options = {}) => {
+                requests.push({url, headers: options.headers})
+                return {
+                    ok: true,
+                    status: 200,
+                    async json() {
+                        return {services: []}
+                    },
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services`)
+    assert.equal(response.status, 200)
+    await response.json()
+
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].url, 'http://warden.local/api/services?includeInstalled=true')
+    assert.equal(requests[0].headers.Authorization, 'Bearer warden-secret')
+})
+
+test('setup routes proxy setup config and storage layout through the setup client', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({status: 200, results: []}),
+            getStorageLayout: async () => {
+                calls.push('layout')
+                return {root: '/srv/noona', services: []}
+            },
+            getSetupConfig: async () => {
+                calls.push('get-config')
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 2},
+                    error: null
+                }
+            },
+            saveSetupConfig: async (payload) => {
+                calls.push({save: payload})
+                return {exists: true, snapshot: payload}
+            },
+            normalizeSetupConfig: async (payload) => {
+                calls.push({normalize: payload})
+                return {snapshot: {version: 3, discord: {botToken: 'bot-token'}}}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const layoutResponse = await fetch(`${baseUrl}/api/setup/layout`)
+    assert.equal(layoutResponse.status, 200)
+    assert.deepEqual(await layoutResponse.json(), {root: '/srv/noona', services: []})
+
+    const configResponse = await fetch(`${baseUrl}/api/setup/config`)
+    assert.equal(configResponse.status, 200)
+    assert.deepEqual(await configResponse.json(), {
+        exists: true,
+        path: '/srv/noona/wardenm/noona-settings.json',
+        snapshot: {version: 2},
+        error: null,
+    })
+
+    const payload = {version: 2, selected: ['noona-portal']}
+    const saveResponse = await fetch(`${baseUrl}/api/setup/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    })
+    assert.equal(saveResponse.status, 200)
+    assert.deepEqual(await saveResponse.json(), {
+        exists: true,
+        snapshot: payload,
+    })
+
+    const normalizeResponse = await fetch(`${baseUrl}/api/setup/config/normalize`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    })
+    assert.equal(normalizeResponse.status, 200)
+    assert.deepEqual(await normalizeResponse.json(), {
+        snapshot: {version: 3, discord: {botToken: 'bot-token'}},
+    })
+    assert.deepEqual(calls, ['layout', 'get-config', {save: payload}, {normalize: payload}])
+})
+
+test('setup config routes preserve upstream Warden validation errors', async (t) => {
+    const invalidStorageError = new WardenUpstreamHttpError({
+        status: 400,
+        payload: {
+            error: "storageRoot must stay within Warden's managed Noona data root (/srv/noona).",
+        },
+    })
+    const normalizeError = new WardenUpstreamHttpError({
+        status: 400,
+        payload: {
+            error: 'Older setup profiles must be reviewed before they can be saved.',
+        },
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({status: 200, results: []}),
+            getSetupConfig: async () => ({
+                exists: false,
+                path: null,
+                snapshot: null,
+                error: null,
+            }),
+            saveSetupConfig: async () => {
+                throw invalidStorageError
+            },
+            normalizeSetupConfig: async () => {
+                throw normalizeError
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const saveResponse = await fetch(`${baseUrl}/api/setup/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version: 2, selected: ['noona-portal']}),
+    })
+    assert.equal(saveResponse.status, 400)
+    assert.deepEqual(await saveResponse.json(), {
+        error: "storageRoot must stay within Warden's managed Noona data root (/srv/noona).",
+    })
+
+    const normalizeResponse = await fetch(`${baseUrl}/api/setup/config/normalize`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version: 2, selected: ['noona-portal']}),
+    })
+    assert.equal(normalizeResponse.status, 400)
+    assert.deepEqual(await normalizeResponse.json(), {
+        error: 'Older setup profiles must be reviewed before they can be saved.',
+    })
+})
+
+test('GET /api/setup/status returns completion, config, progress, and debug state', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            listServices: async () => [],
+            installServices: async () => ({status: 200, results: []}),
+            getSetupConfig: async () => ({
+                exists: true,
+                path: '/srv/noona/wardenm/noona-settings.json',
+                snapshot: {version: 3},
+                error: null,
+            }),
+            getInstallProgress: async () => ({
+                items: [{name: 'noona-kavita', status: 'installing'}],
+                status: 'installing',
+                percent: 30,
+            }),
+        },
+        vaultClient: {
+            mongo: {
+                findOne: async (_collection, query = {}) => query?.key === 'noona.debug'
+                    ? {enabled: true}
+                    : null,
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        completed: true,
+        configured: true,
+        installing: true,
+        debugEnabled: true,
+    })
 })
 
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
@@ -2278,6 +2571,72 @@ test('DELETE /api/recommendations/:id allows manageRecommendations users to clos
     assert.deepEqual(deleteCalls, [['portal_recommendations', {_id: 'rec-delete-1'}]])
 })
 
+test('GET /api/recommendations/:id includes sourceAdultContent from the stored recommendation', async (t) => {
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return [
+                {
+                    _id: 'rec-source-adult-1',
+                    source: 'discord',
+                    status: 'pending',
+                    requestedAt: '2026-03-10T00:00:00.000Z',
+                    query: 'Ore no Level Up ga Okashii!',
+                    searchId: 'search-source-adult-1',
+                    selectedOptionIndex: 1,
+                    title: 'Ore no Level Up ga Okashii!',
+                    href: 'https://weebcentral.com/series/017J6XGG6KRM1YDSXY4JENCO9B/ore-no-level-up-ga-okashi-dekiru-otoko-no-isekai-tensei',
+                    sourceAdultContent: true,
+                    requestedBy: {
+                        discordId: '111',
+                        tag: 'requester',
+                    },
+                },
+            ]
+        }
+        return originalFindMany(collection, query)
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-source-adult-1`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(response.status, 200)
+
+    const payload = await response.json()
+    assert.equal(payload.recommendation?.id, 'rec-source-adult-1')
+    assert.equal(payload.recommendation?.sourceAdultContent, true)
+})
+
 test('DELETE /api/recommendations/:id retries fallback query for serialized recommendation ids', async (t) => {
     const deleteCalls = []
     const recommendations = [
@@ -2474,11 +2833,8 @@ test('POST /api/recommendations/:id/approve queues Raven downloads for manageRec
     assert.equal(recommendations[0].status, 'approved')
 })
 
-test('POST /api/recommendations/:id/approve auto-applies metadata through Portal when available', async (t) => {
+test('POST /api/recommendations/:id/approve stores selected metadata for deferred apply', async (t) => {
     const queueCalls = []
-    const portalSearchCalls = []
-    const portalMatchCalls = []
-    const portalApplyCalls = []
     const recommendations = [
         {
             _id: 'rec-approve-metadata-1',
@@ -2531,37 +2887,6 @@ test('POST /api/recommendations/:id/approve auto-applies metadata through Portal
                 return {completed: true}
             },
         },
-        portalClient: createPortalMetadataStub({
-            async searchKavitaTitles(query) {
-                portalSearchCalls.push(query)
-                return {
-                    series: [
-                        {
-                            seriesId: 17,
-                            libraryId: 4,
-                            name: 'Solo Leveling',
-                        },
-                    ],
-                }
-            },
-            async fetchTitleMetadataMatches(payload) {
-                portalMatchCalls.push(payload)
-                return {
-                    matches: [
-                        {
-                            provider: 'mal',
-                            providerSeriesId: '15180124327',
-                            title: 'Solo Leveling',
-                            coverImageUrl: 'https://covers.example/solo-leveling.jpg',
-                        },
-                    ],
-                }
-            },
-            async applyTitleMetadataMatch(payload) {
-                portalApplyCalls.push(payload)
-                return {message: 'Applied the selected Kavita metadata match.'}
-            },
-        }),
         ravenClient: createRavenStub({
             async queueDownload(payload) {
                 queueCalls.push(payload)
@@ -2588,28 +2913,649 @@ test('POST /api/recommendations/:id/approve auto-applies metadata through Portal
 
     const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-metadata-1/approve`, {
         method: 'POST',
-        headers: {Authorization: `Bearer ${token}`},
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Solo Leveling',
+            metadataSelection: {
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                aliases: ['Only I Level Up'],
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                summary: 'The strongest hunter returns.',
+                sourceUrl: 'https://metadata.example/solo-leveling',
+                coverImageUrl: 'https://covers.example/solo-leveling.jpg',
+                adultContent: true,
+            },
+        }),
     })
     assert.equal(response.status, 200)
     const payload = await response.json()
 
     assert.deepEqual(queueCalls, [{searchId: 'search-metadata-123', optionIndex: 1}])
-    assert.deepEqual(portalSearchCalls, ['Solo Leveling'])
-    assert.deepEqual(portalMatchCalls, [{seriesId: 17, query: 'Solo Leveling'}])
-    assert.equal(portalApplyCalls.length, 1)
-    assert.equal(portalApplyCalls[0]?.seriesId, 17)
-    assert.equal(portalApplyCalls[0]?.libraryId, 4)
-    assert.equal(portalApplyCalls[0]?.provider, 'mal')
-    assert.equal(portalApplyCalls[0]?.providerSeriesId, '15180124327')
-    assert.equal(portalApplyCalls[0]?.titleUuid, 'title-uuid-7')
-    assert.equal(portalApplyCalls[0]?.coverImageUrl, 'https://covers.example/solo-leveling.jpg')
-
-    assert.equal(payload.metadata?.status, 'applied')
+    assert.equal(payload.metadataSelection?.status, 'pending')
+    assert.equal(payload.metadataSelection?.provider, 'mal')
+    assert.equal(payload.metadataSelection?.providerSeriesId, '15180124327')
+    assert.equal(payload.metadataSelection?.adultContent, true)
+    assert.deepEqual(payload.metadataSelection?.aliases, ['Only I Level Up'])
+    assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-7')
     assert.ok(Array.isArray(payload.recommendation?.timeline))
     const metadataComment = payload.recommendation.timeline.find((event) =>
-        event?.type === 'comment' && /auto-applied metadata/i.test(event?.body ?? ''))
+        event?.type === 'comment' && /Queued metadata plan/i.test(event?.body ?? ''))
     assert.ok(metadataComment)
-    assert.equal(metadataComment?.actor?.username, 'Portal')
+    assert.equal(metadataComment?.actor?.username, 'Moon')
+    assert.equal(recommendations[0]?.metadataSelection?.status, 'pending')
+    assert.equal(recommendations[0]?.metadataSelection?.adultContent, true)
+    assert.deepEqual(recommendations[0]?.metadataSelection?.aliases, ['Only I Level Up'])
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-7')
+})
+
+test('POST /api/recommendations/:id/approve pre-seeds Raven volume metadata before queueing confirmed matches', async (t) => {
+    const callOrder = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-preseed-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Solo Leveling',
+            searchId: 'search-preseed-123',
+            selectedOptionIndex: 1,
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        portalClient: createPortalMetadataStub({
+            async applyRavenTitleVolumeMap(payload) {
+                callOrder.push({type: 'volume-map', payload})
+                return {status: 'applied', mappedChapterCount: 12}
+            },
+        }),
+        ravenClient: createRavenStub({
+            async createTitle(payload) {
+                callOrder.push({type: 'create-title', payload})
+                return {uuid: 'title-uuid-preseed-1'}
+            },
+            async queueDownload(payload) {
+                callOrder.push({type: 'queue-download', payload})
+                return {taskId: 'raven-task-preseed-1'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-preseed-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Solo Leveling',
+            metadataSelection: {
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+            },
+        }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(callOrder, [
+        {
+            type: 'create-title',
+            payload: {
+                title: 'Solo Leveling',
+                sourceUrl: 'https://source.example/solo-leveling',
+            },
+        },
+        {
+            type: 'volume-map',
+            payload: {
+                titleUuid: 'title-uuid-preseed-1',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                autoRename: false,
+            },
+        },
+        {
+            type: 'queue-download',
+            payload: {
+                searchId: 'search-preseed-123',
+                optionIndex: 1,
+            },
+        },
+    ])
+    assert.equal(payload.recommendation?.status, 'approved')
+    assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-preseed-1')
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-preseed-1')
+})
+
+test('POST /api/recommendations/:id/approve keeps queueing when Raven volume pre-seeding fails', async (t) => {
+    const callOrder = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-preseed-fail-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Solo Leveling',
+            searchId: 'search-preseed-fail-123',
+            selectedOptionIndex: 1,
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        portalClient: createPortalMetadataStub({
+            async applyRavenTitleVolumeMap(payload) {
+                callOrder.push({type: 'volume-map', payload})
+                throw new Error('Komf unavailable')
+            },
+        }),
+        ravenClient: createRavenStub({
+            async createTitle(payload) {
+                callOrder.push({type: 'create-title', payload})
+                return {uuid: 'title-uuid-preseed-fail-1'}
+            },
+            async queueDownload(payload) {
+                callOrder.push({type: 'queue-download', payload})
+                return {
+                    taskId: 'raven-task-preseed-fail-1',
+                    titleUuid: 'title-uuid-from-queue-1',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-preseed-fail-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Solo Leveling',
+            metadataSelection: {
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+            },
+        }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(callOrder, [
+        {
+            type: 'create-title',
+            payload: {
+                title: 'Solo Leveling',
+                sourceUrl: 'https://source.example/solo-leveling',
+            },
+        },
+        {
+            type: 'volume-map',
+            payload: {
+                titleUuid: 'title-uuid-preseed-fail-1',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                autoRename: false,
+            },
+        },
+        {
+            type: 'queue-download',
+            payload: {
+                searchId: 'search-preseed-fail-123',
+                optionIndex: 1,
+            },
+        },
+    ])
+    assert.equal(payload.recommendation?.status, 'approved')
+    assert.equal(payload.metadataSelection?.titleUuid, 'title-uuid-from-queue-1')
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-from-queue-1')
+})
+
+test('POST /api/recommendations/:id/approve recovers a Raven queue target from metadata aliases', async (t) => {
+    const queueCalls = []
+    const searchCalls = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-recover-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Only I Level Up',
+            searchId: null,
+            selectedOptionIndex: null,
+            title: 'Only I Level Up',
+            href: null,
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async searchTitle(query) {
+                searchCalls.push(query)
+                if (query === 'Ore no Level Up ga Okashii!') {
+                    return {searchId: 'search-recover-empty', options: []}
+                }
+                if (query === 'Only I Level Up') {
+                    return {
+                        searchId: 'search-recover-hit',
+                        options: [
+                            {
+                                index: '1',
+                                title: 'Solo Leveling',
+                                href: 'https://source.example/solo-leveling',
+                            },
+                        ],
+                    }
+                }
+                return {searchId: 'search-recover-other', options: []}
+            },
+            async getTitleDetails(sourceUrl) {
+                assert.equal(sourceUrl, 'https://source.example/solo-leveling')
+                return {
+                    sourceUrl,
+                    adultContent: false,
+                    associatedNames: ['Only I Level Up'],
+                }
+            },
+            async queueDownload(payload) {
+                queueCalls.push(payload)
+                return {
+                    taskId: 'raven-task-recovered-1',
+                    titleUuid: 'title-uuid-recovered-1',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-recover-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Ore no Level Up ga Okashii!',
+            metadataSelection: {
+                query: 'Ore no Level Up ga Okashii!',
+                title: 'Ore no Level Up ga Okashii!',
+                aliases: ['Only I Level Up'],
+                provider: 'mal',
+                providerSeriesId: 'recover-1518',
+            },
+        }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+
+    assert.deepEqual(searchCalls, ['Ore no Level Up ga Okashii!', 'Only I Level Up'])
+    assert.deepEqual(queueCalls, [{searchId: 'search-recover-hit', optionIndex: 1}])
+    assert.equal(payload.recommendation?.status, 'approved')
+    assert.equal(payload.recommendation?.searchId, 'search-recover-hit')
+    assert.equal(payload.recommendation?.selectedOptionIndex, 1)
+    assert.equal(payload.recommendation?.title, 'Solo Leveling')
+    assert.equal(payload.recommendation?.href, 'https://source.example/solo-leveling')
+    assert.equal(payload.recommendation?.sourceAdultContent, false)
+    assert.equal(recommendations[0]?.status, 'approved')
+    assert.equal(recommendations[0]?.searchId, 'search-recover-hit')
+    assert.equal(recommendations[0]?.selectedOptionIndex, 1)
+})
+
+test('POST /api/recommendations/:id/approve saves unmatched metadata plans for later when Raven recovery fails', async (t) => {
+    const queueCalls = []
+    const searchCalls = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-save-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Unknown Hunter Story',
+            searchId: null,
+            selectedOptionIndex: null,
+            title: 'Unknown Hunter Story',
+            href: null,
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+    vault.client.mongo.update = async (collection, query = {}, update = {}) => {
+        if (collection !== 'portal_recommendations') {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        const index = recommendations.findIndex((entry) => matchesMongoQuery(entry, query))
+        if (index < 0) {
+            return {status: 'ok', matched: 0, modified: 0}
+        }
+
+        recommendations[index] = applyMongoUpdate({...recommendations[index]}, update, {isInsert: false})
+        return {status: 'ok', matched: 1, modified: 1}
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async searchTitle(query) {
+                searchCalls.push(query)
+                return {searchId: `search-miss-${searchCalls.length}`, options: []}
+            },
+            async queueDownload(payload) {
+                queueCalls.push(payload)
+                return {taskId: 'should-not-queue'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-save-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Unknown Hunter Story',
+            metadataSelection: {
+                query: 'Unknown Hunter Story',
+                title: 'Ore no Hunter Story',
+                aliases: ['Unknown Hunter Story', 'Mystery Hunter'],
+                provider: 'mal',
+                providerSeriesId: 'save-1518',
+            },
+        }),
+    })
+    assert.equal(response.status, 202)
+    const payload = await response.json()
+
+    assert.equal(payload.savedForLater, true)
+    assert.match(payload.message, /expand our content reach/i)
+    assert.equal(payload.recommendation?.status, 'pending')
+    assert.equal(payload.metadataSelection?.status, 'pending')
+    assert.equal(payload.metadataSelection?.lastError, payload.message)
+    assert.deepEqual(queueCalls, [])
+    assert.deepEqual(searchCalls, ['Ore no Hunter Story', 'Unknown Hunter Story', 'Mystery Hunter'])
+    const savedComment = payload.recommendation?.timeline?.find((event) =>
+        event?.type === 'comment' && /expand our content reach/i.test(event?.body ?? ''))
+    assert.ok(savedComment)
+    assert.equal(recommendations[0]?.status, 'pending')
+    assert.equal(recommendations[0]?.metadataSelection?.lastError, payload.message)
+})
+
+test('POST /api/recommendations/:id/approve rejects invalid metadata selections before queueing Raven', async (t) => {
+    const queueCalls = []
+    const recommendations = [
+        {
+            _id: 'rec-approve-invalid-metadata-1',
+            source: 'discord',
+            status: 'pending',
+            requestedAt: '2025-01-01T00:00:00.000Z',
+            query: 'Wind Breaker',
+            searchId: 'search-invalid-metadata-123',
+            selectedOptionIndex: 1,
+            title: 'Wind Breaker',
+            href: 'https://source.example/wind-breaker',
+            requestedBy: {
+                discordId: '111',
+                tag: 'requester',
+            },
+        },
+    ]
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'RecommendationManager',
+        password: 'Password123',
+        permissions: ['moon_login', 'manageRecommendations'],
+    })
+    const originalFindMany = vault.client.mongo.findMany
+    vault.client.mongo.findMany = async (collection, query = {}) => {
+        if (collection === 'portal_recommendations') {
+            return recommendations.map((entry) => ({...entry}))
+        }
+        return originalFindMany(collection, query)
+    }
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+        ravenClient: createRavenStub({
+            async queueDownload(payload) {
+                queueCalls.push(payload)
+                return {taskId: 'should-not-queue'}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'RecommendationManager', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    const token = loginPayload?.token
+    assert.ok(typeof token === 'string' && token.length > 10)
+
+    const response = await fetch(`${baseUrl}/api/recommendations/rec-approve-invalid-metadata-1/approve`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            metadataQuery: 'Wind Breaker',
+            metadataSelection: {
+                title: 'Wind Breaker',
+            },
+        }),
+    })
+    assert.equal(response.status, 400)
+    const payload = await response.json()
+    assert.match(payload.error, /valid metadata selection/i)
+    assert.deepEqual(queueCalls, [])
 })
 
 test('POST /api/recommendations/:id/approve retries fallback query for serialized recommendation ids', async (t) => {
@@ -2784,7 +3730,7 @@ test('POST /api/recommendations/:id/approve validates recommendation queue metad
     })
     assert.equal(response.status, 409)
     const payload = await response.json()
-    assert.match(payload.error ?? '', /missing Raven queue details/i)
+    assert.match(payload.error ?? '', /saved metadata match before Noona can search alternate Raven titles/i)
     assert.deepEqual(queueCalls, [])
 })
 
@@ -3046,6 +3992,46 @@ test('POST /api/raven/library/checkForNew surfaces Raven errors', async (t) => {
     assert.ok(payload.error.includes('Unable to check Raven library for updates'))
 })
 
+test('POST /api/raven/library/imports/check proxies Raven library imports', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkAvailableLibraryImports() {
+                calls.push('imports')
+                return {manifestsFound: 2, importedTitles: 2, queuedChapters: 1}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/imports/check`, {method: 'POST'})
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), {manifestsFound: 2, importedTitles: 2, queuedChapters: 1})
+    assert.deepEqual(calls, ['imports'])
+})
+
+test('POST /api/raven/library/imports/check surfaces Raven errors', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async checkAvailableLibraryImports() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/library/imports/check`, {method: 'POST'})
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.ok(payload.error.includes('Unable to check Raven library imports'))
+})
+
 test('GET /api/raven/title/:uuid proxies Raven title lookups', async (t) => {
     const calls = []
     const app = createSageApp({
@@ -3084,6 +4070,53 @@ test('GET /api/raven/title/:uuid returns 404 for unknown titles', async (t) => {
     assert.equal(response.status, 404)
     const payload = await response.json()
     assert.ok(payload.error.includes('not found'))
+})
+
+test('GET /api/raven/title-details proxies Raven source-title metadata lookups', async (t) => {
+    const calls = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async getTitleDetails(sourceUrl) {
+                calls.push(sourceUrl)
+                return {
+                    sourceUrl,
+                    status: 'Complete',
+                    released: '2018',
+                    officialTranslation: true,
+                    animeAdaptation: true,
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title-details?url=${encodeURIComponent('https://source.example/solo-leveling')}`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        sourceUrl: 'https://source.example/solo-leveling',
+        status: 'Complete',
+        released: '2018',
+        officialTranslation: true,
+        animeAdaptation: true,
+    })
+    assert.deepEqual(calls, ['https://source.example/solo-leveling'])
+})
+
+test('GET /api/raven/title-details validates the source url query parameter', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub(),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/title-details`)
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {error: 'url is required.'})
 })
 
 test('POST /api/raven/title/:uuid/checkForNew proxies title sync', async (t) => {
@@ -3220,7 +4253,7 @@ test('GET /api/raven/title/:uuid/files proxies Raven file listings', async (t) =
     assert.deepEqual(calls, [['title-files', {limit: '50'}]])
 })
 
-test('POST /api/raven/search forwards trimmed query to Raven client', async (t) => {
+test('POST /api/raven/search forwards trimmed special-character queries to Raven client', async (t) => {
     const queries = []
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -3238,12 +4271,12 @@ test('POST /api/raven/search forwards trimmed query to Raven client', async (t) 
     const response = await fetch(`${baseUrl}/api/raven/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: '  naruto  ' }),
+        body: JSON.stringify({query: "  D.Gray-man & JoJo's: Part 7/Steel Ball Run? #1%+()  "}),
     })
 
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { results: [{ title: 'Naruto' }] })
-    assert.deepEqual(queries, ['naruto'])
+    assert.deepEqual(queries, ["D.Gray-man & JoJo's: Part 7/Steel Ball Run? #1%+()"])
 })
 
 test('POST /api/raven/search validates missing query payloads', async (t) => {
@@ -3299,9 +4332,12 @@ test('POST /api/raven/download queues downloads via Raven client', async (t) => 
     const app = createSageApp({
         serviceName: 'test-sage',
         ravenClient: createRavenStub({
-            async queueDownload(payload) {
+            async queueDownloadDetailed(payload) {
                 payloads.push(payload)
-                return { status: 'queued' }
+                return {
+                    status: 202,
+                    payload: {status: 'queued', message: 'Download queued for: Naruto'},
+                }
             },
         }),
     })
@@ -3316,7 +4352,7 @@ test('POST /api/raven/download queues downloads via Raven client', async (t) => 
     })
 
     assert.equal(response.status, 202)
-    assert.deepEqual(await response.json(), { result: { status: 'queued' } })
+    assert.deepEqual(await response.json(), {status: 'queued', message: 'Download queued for: Naruto'})
     assert.deepEqual(payloads, [{ searchId: 'search-123', optionIndex: 2 }])
 })
 
@@ -3324,8 +4360,8 @@ test('POST /api/raven/download rejects invalid payloads', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         ravenClient: createRavenStub({
-            async queueDownload() {
-                throw new Error('queueDownload should not run')
+            async queueDownloadDetailed() {
+                throw new Error('queueDownloadDetailed should not run')
             },
         }),
     })
@@ -3356,7 +4392,7 @@ test('POST /api/raven/download surfaces Raven failures', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         ravenClient: createRavenStub({
-            async queueDownload() {
+            async queueDownloadDetailed() {
                 throw new Error('boom')
             },
         }),
@@ -3374,6 +4410,47 @@ test('POST /api/raven/download surfaces Raven failures', async (t) => {
     assert.equal(response.status, 502)
     const payload = await response.json()
     assert.ok(payload.error.includes('Unable to queue Raven download'))
+})
+
+test('POST /api/raven/download preserves Raven semantic failure statuses', async (t) => {
+    const payloads = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async queueDownloadDetailed(payload) {
+                payloads.push(payload)
+                return {
+                    status: 410,
+                    payload: {
+                        status: 'search_expired',
+                        message: 'Search session expired or not found. Please search again.',
+                        queuedCount: 0,
+                        queuedTitles: [],
+                        skippedTitles: [],
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/download`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({searchId: 'stale-search', optionIndex: 1}),
+    })
+
+    assert.equal(response.status, 410)
+    assert.deepEqual(await response.json(), {
+        status: 'search_expired',
+        message: 'Search session expired or not found. Please search again.',
+        queuedCount: 0,
+        queuedTitles: [],
+        skippedTitles: [],
+    })
+    assert.deepEqual(payloads, [{searchId: 'stale-search', optionIndex: 1}])
 })
 
 test('POST /api/raven/downloads/pause proxies Raven pause requests', async (t) => {
@@ -3711,9 +4788,9 @@ test('POST /api/setup/services/noona-raven/detect proxies detection result', asy
 test('POST /api/setup/services/noona-kavita/service-key provisions a managed key and updates selected services', async (t) => {
     const vault = createVaultAuthStub()
     const serviceConfigs = new Map([
-        ['noona-portal', {env: {DISCORD_BOT_TOKEN: 'bot-token'}}],
-        ['noona-raven', {env: {KAVITA_LIBRARY_ROOT: ''}}],
-        ['noona-komf', {env: {KOMF_LOG_LEVEL: 'INFO'}}],
+        ['noona-portal', {env: {SERVICE_NAME: 'noona-portal', DISCORD_BOT_TOKEN: 'bot-token'}}],
+        ['noona-raven', {env: {SERVICE_NAME: 'noona-raven', KAVITA_LIBRARY_ROOT: ''}}],
+        ['noona-komf', {env: {SERVICE_NAME: 'noona-komf', KOMF_LOG_LEVEL: 'INFO'}}],
     ])
     const updateCalls = []
     const managedCalls = []
@@ -3799,7 +4876,6 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
         'noona-portal',
         {
             env: {
-                DISCORD_BOT_TOKEN: 'bot-token',
                 KAVITA_BASE_URL: 'http://noona-kavita:5000',
                 KAVITA_API_KEY: 'managed-kavita-key',
             },
@@ -3821,13 +4897,15 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
         'noona-komf',
         {
             env: {
-                KOMF_LOG_LEVEL: 'INFO',
                 KOMF_KAVITA_BASE_URI: 'http://noona-kavita:5000',
                 KOMF_KAVITA_API_KEY: 'managed-kavita-key',
             },
             restart: true,
         },
     ])
+    assert.equal(Object.prototype.hasOwnProperty.call(updateCalls[0][1].env, 'SERVICE_NAME'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(updateCalls[1][1].env, 'SERVICE_NAME'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(updateCalls[2][1].env, 'SERVICE_NAME'), false)
 
     const stored = vault.settingDocs.find((entry) => entry.key === 'setup.managedKavitaServiceAccount')
     assert.ok(stored)
@@ -3884,6 +4962,60 @@ test('POST /api/setup/services/noona-kavita/service-key validates partial manage
     assert.equal(response.status, 400)
     assert.deepEqual(await response.json(), {
         error: 'Managed Kavita account requires a username, email, and password.',
+    })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key asks for the real password when setup only has a masked placeholder', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {
+                        env: {
+                            KAVITA_ADMIN_USERNAME: 'reader-admin',
+                            KAVITA_ADMIN_EMAIL: 'reader@example.com',
+                            KAVITA_ADMIN_PASSWORD: '********',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig() {
+                throw new Error('updateServiceConfig should not be called')
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                throw new Error('ensureServiceApiKey should not be called')
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            services: ['noona-portal'],
+        }),
+    })
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {
+        error: 'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
     })
 })
 
@@ -4148,6 +5280,74 @@ const finalizeBootstrapAdmin = async ({baseUrl, token}) => {
     const payload = await response.json()
     return {response, payload}
 }
+
+test('GET /api/media/background-track serves the full track as audio', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const fileStat = await stat(BACKGROUND_TRACK_FILE_URL)
+    const response = await fetch(`${baseUrl}/api/media/background-track`)
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(Number(response.headers.get('content-length')), fileStat.size)
+
+    const body = Buffer.from(await response.arrayBuffer())
+    assert.equal(body.length, fileStat.size)
+})
+
+test('GET /api/media/background-track honors byte range requests', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const [fileStat, fileBuffer] = await Promise.all([
+        stat(BACKGROUND_TRACK_FILE_URL),
+        readFile(BACKGROUND_TRACK_FILE_URL),
+    ])
+
+    const response = await fetch(`${baseUrl}/api/media/background-track`, {
+        headers: {
+            Range: 'bytes=0-63',
+        },
+    })
+
+    assert.equal(response.status, 206)
+    assert.equal(response.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(response.headers.get('accept-ranges'), 'bytes')
+    assert.equal(response.headers.get('content-range'), `bytes 0-63/${fileStat.size}`)
+    assert.equal(Number(response.headers.get('content-length')), 64)
+
+    const body = Buffer.from(await response.arrayBuffer())
+    assert.equal(body.length, 64)
+    assert.deepEqual(body, fileBuffer.subarray(0, 64))
+})
+
+test('GET /api/media/background-track requires a session after setup completes', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/media/background-track`)
+    assert.equal(response.status, 401)
+    assert.deepEqual(await response.json(), {error: 'Unauthorized.'})
+})
 
 const jsonResponse = (body, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -4550,6 +5750,47 @@ test('Discord OAuth config, callback test, and bootstrap create the first admin 
     const statusPayload = await statusResponse.json()
     assert.equal(statusPayload.user.discordUserId, '123456789012345678')
     assert.equal(statusPayload.user.role, 'admin')
+})
+
+test('POST /api/auth/discord/config reuses the stored client secret when setup sends the masked placeholder', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: false}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const firstResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id',
+            clientSecret: 'discord-client-secret',
+        }),
+    })
+    assert.equal(firstResponse.status, 200)
+
+    const secondResponse = await fetch(`${baseUrl}/api/auth/discord/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            clientId: 'discord-client-id-2',
+            clientSecret: '********',
+        }),
+    })
+    assert.equal(secondResponse.status, 200)
+
+    const storedDiscordConfig = vault.settingDocs.find((entry) => entry.key === 'auth.discord')
+    assert.ok(storedDiscordConfig)
+    assert.equal(storedDiscordConfig.clientId, 'discord-client-id-2')
+    assert.equal(storedDiscordConfig.clientSecret, 'discord-client-secret')
 })
 
 test('auth user management creates Discord-linked users and Discord login uses OAuth callback', async (t) => {
@@ -5396,11 +6637,170 @@ test('Discord OAuth login auto-creates a Discord user with configured default pe
     ])
 })
 
+test('settings Discord onboarding message route returns the seeded default template', async (t) => {
+    const defaultTemplate = [
+        'Welcome to {guild_name}!',
+        '',
+        'Start with Moon: {moon_url}',
+        'Read in Kavita: {kavita_url}',
+        '',
+        'Use the website onboarding flow to create your library access.',
+        'Server: {server_ip}',
+    ].join('\n')
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const finalized = await finalizeBootstrapAdmin({baseUrl, token})
+    assert.equal(finalized.response.status, 200)
+
+    const response = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.key, 'discord.onboarding_message')
+    assert.equal(payload.template, defaultTemplate)
+    assert.ok(typeof payload.updatedAt === 'string')
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'discord.onboarding_message')
+    assert.ok(stored)
+    assert.equal(stored.template, defaultTemplate)
+})
+
+test('settings Discord onboarding message route persists updates and returns updatedAt', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const template = [
+        'Hello {guild_name},',
+        '',
+        'Moon: {moon_url}',
+        'Kavita: {kavita_url}',
+        'Unknown token stays: {custom_note}',
+    ].join('\n')
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({template}),
+    })
+    assert.equal(putResponse.status, 200)
+    const putPayload = await putResponse.json()
+    assert.equal(putPayload.key, 'discord.onboarding_message')
+    assert.equal(putPayload.template, template)
+    assert.ok(typeof putPayload.updatedAt === 'string')
+
+    const getResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(getResponse.status, 200)
+    const getPayload = await getResponse.json()
+    assert.equal(getPayload.template, template)
+    assert.equal(getPayload.updatedAt, putPayload.updatedAt)
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'discord.onboarding_message')
+    assert.ok(stored)
+    assert.equal(stored.template, template)
+    assert.equal(stored.updatedAt, putPayload.updatedAt)
+})
+
+test('settings Discord onboarding message route rejects empty templates', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const response = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({template: ' \n \t '}),
+    })
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), {
+        error: 'template must not be empty.',
+    })
+})
+
+test('settings Discord onboarding message route stays admin-gated after setup completes', async (t) => {
+    const vault = createVaultAuthStub()
+    await vault.client.users.create({
+        username: 'ReaderOne',
+        password: 'Password123',
+        role: 'member',
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        wizardStateClient: {
+            async loadState() {
+                return {completed: true}
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const unauthorizedResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`)
+    assert.equal(unauthorizedResponse.status, 401)
+    assert.deepEqual(await unauthorizedResponse.json(), {
+        error: 'Unauthorized.',
+    })
+
+    const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: 'ReaderOne', password: 'Password123'}),
+    })
+    assert.equal(loginResponse.status, 200)
+    const loginPayload = await loginResponse.json()
+    assert.equal(loginPayload.user.role, 'member')
+
+    const memberResponse = await fetch(`${baseUrl}/api/settings/discord/onboarding-message`, {
+        headers: {Authorization: `Bearer ${loginPayload.token}`},
+    })
+    assert.equal(memberResponse.status, 403)
+    assert.deepEqual(await memberResponse.json(), {
+        error: 'Admin privileges are required.',
+    })
+})
+
 test('settings download worker routes read and update per-thread rate limits', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
             key: 'downloads.workers',
             threadRateLimitsKbps: [128, 0, 1024 * 1024],
+            cpuCoreIds: [2, -1],
             updatedAt: '2026-01-01T00:00:00.000Z',
         }],
     })
@@ -5408,6 +6808,9 @@ test('settings download worker routes read and update per-thread rate limits', a
     const app = createSageApp({
         serviceName: 'test-sage',
         vaultClient: vault.client,
+        ravenClient: {
+            getDownloadSummary: async () => ({maxThreads: 5}),
+        },
     })
 
     const {server, baseUrl} = await listen(app)
@@ -5421,7 +6824,8 @@ test('settings download worker routes read and update per-thread rate limits', a
     assert.equal(getResponse.status, 200)
     assert.deepEqual(await getResponse.json(), {
         key: 'downloads.workers',
-        threadRateLimitsKbps: [128, -1, 1024 * 1024],
+        threadRateLimitsKbps: [128, -1, 1024 * 1024, -1, -1],
+        cpuCoreIds: [2, -1, -1, -1, -1],
         updatedAt: '2026-01-01T00:00:00.000Z',
     })
 
@@ -5433,17 +6837,20 @@ test('settings download worker routes read and update per-thread rate limits', a
         },
         body: JSON.stringify({
             threadRateLimitsKbps: [512, -1, '10mb', '1gb', '0'],
+            cpuCoreIds: [3, -1, '7', '8', 9.8],
         }),
     })
     assert.equal(putResponse.status, 200)
     const putPayload = await putResponse.json()
     assert.equal(putPayload.key, 'downloads.workers')
     assert.deepEqual(putPayload.threadRateLimitsKbps, [512, -1, 10 * 1024, 1024 * 1024, -1])
+    assert.deepEqual(putPayload.cpuCoreIds, [3, -1, 7, 8, 9])
     assert.ok(typeof putPayload.updatedAt === 'string')
 
     const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.workers')
     assert.ok(stored)
     assert.deepEqual(stored.threadRateLimitsKbps, [512, -1, 10 * 1024, 1024 * 1024, -1])
+    assert.deepEqual(stored.cpuCoreIds, [3, -1, 7, 8, 9])
 })
 
 test('settings download worker routes reject invalid unit strings', async (t) => {
@@ -5475,12 +6882,46 @@ test('settings download worker routes reject invalid unit strings', async (t) =>
     assert.equal(payload.error, 'Thread 1 rate limit must be a number in KB/s, may use `mb`/`gb`, or `-1` for unlimited.')
 })
 
+test('settings download worker routes reject invalid cpu core assignments', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: {
+            getDownloadSummary: async () => ({maxThreads: 3}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putResponse = await fetch(`${baseUrl}/api/settings/downloads/workers`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            threadRateLimitsKbps: [512, -1, -1],
+            cpuCoreIds: [0, 'left', -1],
+        }),
+    })
+
+    assert.equal(putResponse.status, 400)
+    const payload = await putResponse.json()
+    assert.equal(payload.error, 'Thread 2 CPU core must be `-1` or a non-negative integer CPU ID.')
+})
+
 test('settings VPN routes read and update masked PIA credentials', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
             key: 'downloads.vpn',
             provider: 'pia',
             enabled: true,
+            onlyDownloadWhenVpnOn: true,
             autoRotate: true,
             rotateEveryMinutes: 30,
             region: 'us_california',
@@ -5515,6 +6956,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     const getPayload = await getRes.json()
     assert.equal(getPayload.provider, 'pia')
     assert.equal(getPayload.enabled, true)
+    assert.equal(getPayload.onlyDownloadWhenVpnOn, true)
     assert.equal(getPayload.piaUsername, 'pia-user')
     assert.equal(getPayload.piaPassword, '********')
     assert.equal(getPayload.passwordConfigured, true)
@@ -5528,6 +6970,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
         },
         body: JSON.stringify({
             enabled: true,
+            onlyDownloadWhenVpnOn: false,
             autoRotate: true,
             rotateEveryMinutes: 45,
             region: 'us_texas',
@@ -5538,6 +6981,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     assert.equal(putRes.status, 200)
     const putPayload = await putRes.json()
     assert.equal(putPayload.enabled, true)
+    assert.equal(putPayload.onlyDownloadWhenVpnOn, false)
     assert.equal(putPayload.rotateEveryMinutes, 45)
     assert.equal(putPayload.region, 'us_texas')
     assert.equal(putPayload.piaUsername, 'new-user')
@@ -5548,6 +6992,7 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     assert.ok(stored)
     assert.equal(stored.piaUsername, 'new-user')
     assert.equal(stored.piaPassword, 'new-secret')
+    assert.equal(stored.onlyDownloadWhenVpnOn, false)
     assert.equal(stored.rotateEveryMinutes, 45)
 })
 
@@ -5638,6 +7083,68 @@ test('settings VPN routes proxy region list and rotate action to Raven', async (
     assert.equal(loginTestCalls[0].region, 'us_california')
     assert.equal(loginTestCalls[0].piaUsername, 'pia-user')
     assert.equal(loginTestCalls[0].piaPassword, 'pia-secret')
+})
+
+test('settings VPN test-login falls back to persisted credentials when form values are blank', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.vpn',
+            provider: 'pia',
+            enabled: true,
+            autoRotate: true,
+            rotateEveryMinutes: 45,
+            region: 'us_texas',
+            piaUsername: 'saved-user',
+            piaPassword: 'saved-secret',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+    const loginTestCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async testVpnLogin(payload) {
+                loginTestCalls.push(payload)
+                return {
+                    ok: true,
+                    message: 'PIA login succeeded for region us_texas.',
+                    region: payload.region,
+                    endpoint: '203.0.113.22',
+                    reportedIp: '198.51.100.42',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const testLoginRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/test-login`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            triggeredBy: 'moon-settings',
+            region: '',
+            piaUsername: '',
+            piaPassword: '',
+        }),
+    })
+    assert.equal(testLoginRes.status, 200)
+    const testLoginPayload = await testLoginRes.json()
+    assert.equal(testLoginPayload.ok, true)
+    assert.equal(testLoginPayload.region, 'us_texas')
+    assert.equal(loginTestCalls.length, 1)
+    assert.equal(loginTestCalls[0].triggeredBy, 'moon-settings')
+    assert.equal(loginTestCalls[0].region, 'us_texas')
+    assert.equal(loginTestCalls[0].piaUsername, 'saved-user')
+    assert.equal(loginTestCalls[0].piaPassword, 'saved-secret')
 })
 
 test('settings debug routes read and update live debug mode', async (t) => {

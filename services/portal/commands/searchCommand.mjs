@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Defines the `/search` Discord flow for Komf metadata lookups.
+ * Related files:
+ * - commands/index.mjs
+ * - clients/komfClient.mjs
+ * - tests/discordCommands.test.mjs
+ * - commands/utils.mjs
+ * Times this file has been edited: 3
+ */
+
 import {ApplicationCommandOptionType, MessageFlags} from 'discord.js';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 import {respondWithError} from './utils.mjs';
@@ -52,6 +62,12 @@ const buildSeriesLabel = series => {
     return parts.join(' | ');
 };
 
+/**
+ * Creates search command.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createSearchCommand = ({
                                         kavita,
                                     } = {}) => ({

@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Portal config loading, normalization, and validation behavior.
+ * Related files:
+ * - config/portalConfig.mjs
+ * Times this file has been edited: 12
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -51,7 +58,7 @@ test('safeLoadPortalConfig uses VAULT_API_TOKEN when override is provided', () =
     assert.equal(config.vault.token, 'api-token-override');
 });
 
-test('safeLoadPortalConfig parses join defaults from csv env values', () => {
+test('safeLoadPortalConfig parses website onboarding defaults from csv env values', () => {
     const config = safeLoadPortalConfig({
         ...REQUIRED_ENV,
         VAULT_ACCESS_TOKEN: 'vault-token',
@@ -73,6 +80,50 @@ test('safeLoadPortalConfig parses recommendation notifier poll interval', () => 
     assert.equal(config.recommendations.pollMs, 45000);
 });
 
+test('safeLoadPortalConfig defaults Portal Redis namespaces for onboarding and DM queues', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+    });
+
+    assert.equal(config.redis.onboardingNamespace, 'portal:onboarding');
+    assert.equal(config.redis.directMessageNamespace, 'portal:discord:dm');
+});
+
+test('safeLoadPortalConfig parses Portal Redis namespace overrides', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        PORTAL_REDIS_NAMESPACE: 'portal:custom:onboarding',
+        PORTAL_DM_QUEUE_NAMESPACE: 'portal:custom:dm',
+    });
+
+    assert.equal(config.redis.onboardingNamespace, 'portal:custom:onboarding');
+    assert.equal(config.redis.directMessageNamespace, 'portal:custom:dm');
+});
+
+test('safeLoadPortalConfig rejects non-portal Redis namespace overrides', () => {
+    assert.throws(
+        () =>
+            safeLoadPortalConfig({
+                ...REQUIRED_ENV,
+                VAULT_ACCESS_TOKEN: 'vault-token',
+                PORTAL_REDIS_NAMESPACE: 'redis:onboarding',
+            }),
+        /PORTAL_REDIS_NAMESPACE must start with "portal:"/i,
+    );
+
+    assert.throws(
+        () =>
+            safeLoadPortalConfig({
+                ...REQUIRED_ENV,
+                VAULT_ACCESS_TOKEN: 'vault-token',
+                PORTAL_DM_QUEUE_NAMESPACE: 'discord:dm',
+            }),
+        /PORTAL_DM_QUEUE_NAMESPACE must start with "portal:"/i,
+    );
+});
+
 test('safeLoadPortalConfig parses optional Moon base URL override', () => {
     const config = safeLoadPortalConfig({
         ...REQUIRED_ENV,
@@ -91,6 +142,16 @@ test('safeLoadPortalConfig parses optional Kavita external URL override', () => 
     });
 
     assert.equal(config.kavita.externalUrl, 'https://kavita.example.com/');
+});
+
+test('safeLoadPortalConfig preserves the optional Discord superuser id', () => {
+    const config = safeLoadPortalConfig({
+        ...REQUIRED_ENV,
+        VAULT_ACCESS_TOKEN: 'vault-token',
+        DISCORD_SUPERUSER_ID: '123456789012345678',
+    });
+
+    assert.equal(config.discord.superuserId, '123456789012345678');
 });
 
 test('safeLoadPortalConfig defaults Komf base URL to the managed noona-komf service', () => {
@@ -137,7 +198,7 @@ test('safeLoadPortalConfig defaults Kavita base URL to the managed noona-kavita 
     assert.equal(config.kavita.baseUrl, 'http://noona-kavita:5000/');
 });
 
-test('safeLoadPortalConfig defaults /join access to all non-admin roles and all libraries', () => {
+test('safeLoadPortalConfig defaults website onboarding access to all non-admin roles and all libraries', () => {
     const config = safeLoadPortalConfig({
         DISCORD_BOT_TOKEN: 'bot-token',
         DISCORD_CLIENT_ID: 'client-id',

@@ -1,4 +1,10 @@
-// services/portal/config/portalConfig.mjs
+/**
+ * @fileoverview Loads, normalizes, and validates Portal's runtime configuration.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/config.test.mjs
+ * Times this file has been edited: 15
+ */
 
 import dotenv from 'dotenv';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
@@ -9,6 +15,8 @@ const DEFAULT_MANAGED_KAVITA_BASE_URL = 'http://noona-kavita:5000';
 const DEFAULT_MANAGED_KOMF_BASE_URL = 'http://noona-komf:8085';
 const DEFAULT_RAVEN_BASE_URL = 'http://noona-raven:8080';
 const DEFAULT_WARDEN_BASE_URL = 'http://noona-warden:4001';
+const DEFAULT_PORTAL_ONBOARDING_NAMESPACE = 'portal:onboarding';
+const DEFAULT_PORTAL_DM_QUEUE_NAMESPACE = 'portal:discord:dm';
 
 const REQUIRED_STRINGS = [
     'KAVITA_API_KEY',
@@ -80,6 +88,27 @@ const normalizeUrl = (value) => {
     }
 };
 
+/**
+ * Normalizes Portal Redis namespaces and keeps them inside the `portal:` key family.
+ *
+ * @param {*} value - Candidate namespace value.
+ * @param {string} fallback - Namespace used when no override is provided.
+ * @param {string} envKey - Environment variable name used for error messages.
+ * @returns {string} A validated Portal Redis namespace.
+ */
+const normalizePortalRedisNamespace = (value, fallback, envKey) => {
+    const normalized = normalizeString(value);
+    if (!normalized) {
+        return fallback;
+    }
+
+    if (!normalized.startsWith('portal:')) {
+        throw new Error(`${envKey} must start with "portal:".`);
+    }
+
+    return normalized;
+};
+
 const resolveEnv = (overrides = {}) => ({
     ...process.env,
     ...overrides,
@@ -117,6 +146,12 @@ const collectMissing = (env) => {
     return missing;
 };
 
+/**
+ * Loads, validates, and freezes Portal configuration.
+ *
+ * @param {*} overrides - Input passed to the function.
+ * @returns {*} The function result.
+ */
 export const loadPortalConfig = (overrides = {}) => {
     if (!envLoaded) {
         dotenv.config({path: DEFAULT_ENV_PATH});
@@ -136,6 +171,7 @@ export const loadPortalConfig = (overrides = {}) => {
     const discordClientId = normalizeString(env.DISCORD_CLIENT_ID);
     const discordGuildId = normalizeString(env.DISCORD_GUILD_ID);
     const discordRole = normalizeString(env.DISCORD_GUILD_ROLE_ID) || normalizeString(env.DISCORD_DEFAULT_ROLE_ID) || null;
+    const discordSuperuserId = normalizeString(env.DISCORD_SUPERUSER_ID);
     const discordEnabled = Boolean(discordToken && discordClientId && discordGuildId);
 
     const config = {
@@ -147,6 +183,7 @@ export const loadPortalConfig = (overrides = {}) => {
             clientId: discordClientId,
             guildId: discordGuildId,
             defaultRoleId: discordRole,
+            superuserId: discordSuperuserId,
         },
         kavita: {
             baseUrl: normalizeUrl(env.KAVITA_BASE_URL || DEFAULT_MANAGED_KAVITA_BASE_URL),
@@ -169,6 +206,9 @@ export const loadPortalConfig = (overrides = {}) => {
         },
         warden: {
             baseUrl: normalizeUrl(env.WARDEN_BASE_URL || DEFAULT_WARDEN_BASE_URL),
+            token:
+                normalizeString(env.WARDEN_API_TOKEN) ||
+                normalizeString(env.WARDEN_ACCESS_TOKEN),
         },
         moon: {
             baseUrl: normalizeUrl(env.MOON_BASE_URL),
@@ -184,7 +224,16 @@ export const loadPortalConfig = (overrides = {}) => {
             pollMs: numberOrDefault(env.PORTAL_RECOMMENDATION_POLL_MS, 30000),
         },
         redis: {
-            namespace: normalizeString(env.PORTAL_REDIS_NAMESPACE) || 'portal:onboarding',
+            onboardingNamespace: normalizePortalRedisNamespace(
+                env.PORTAL_REDIS_NAMESPACE,
+                DEFAULT_PORTAL_ONBOARDING_NAMESPACE,
+                'PORTAL_REDIS_NAMESPACE',
+            ),
+            directMessageNamespace: normalizePortalRedisNamespace(
+                env.PORTAL_DM_QUEUE_NAMESPACE,
+                DEFAULT_PORTAL_DM_QUEUE_NAMESPACE,
+                'PORTAL_DM_QUEUE_NAMESPACE',
+            ),
             ttlSeconds: numberOrDefault(env.PORTAL_TOKEN_TTL, 900),
         },
         http: {
@@ -221,6 +270,12 @@ export const loadPortalConfig = (overrides = {}) => {
     return Object.freeze(config);
 };
 
+/**
+ * Loads Portal configuration and logs failures before rethrowing them.
+ *
+ * @param {*} overrides - Input passed to the function.
+ * @returns {*} The function result.
+ */
 export const safeLoadPortalConfig = (overrides = {}) => {
     try {
         return loadPortalConfig(overrides);

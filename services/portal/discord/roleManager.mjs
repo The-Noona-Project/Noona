@@ -1,4 +1,11 @@
-// services/portal/discord/roleManager.mjs
+/**
+ * @fileoverview Applies guild and per-command role gates to Discord interactions.
+ * Related files:
+ * - discord/client.mjs
+ * - discord/interactionRouter.mjs
+ * - tests/discordCommands.test.mjs
+ * Times this file has been edited: 4
+ */
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -109,6 +116,12 @@ const resolveDeniedMessage = ({reason}) => {
     }
 };
 
+/**
+ * Creates role manager.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createRoleManager = ({env = process.env} = {}) => {
     const requiredGuildId = normalizeString(env.REQUIRED_GUILD_ID);
 

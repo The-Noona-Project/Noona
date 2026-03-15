@@ -1,13 +1,20 @@
 "use client";
 
 import {usePathname, useRouter} from "next/navigation";
-import {type CSSProperties, useEffect, useMemo, useState} from "react";
-import {FiMenu, FiX} from "react-icons/fi";
-import {Badge, Button, Card, Column, MegaMenu, MobileMegaMenu, Row, Spinner, Text,} from "@once-ui-system/core";
+import {type CSSProperties, useEffect, useMemo, useRef, useState} from "react";
+import {FiMenu, FiPlus, FiX} from "react-icons/fi";
+import {Accordion, Badge, Button, Card, Column, MegaMenu, Option, Row, Spinner, Text,} from "@once-ui-system/core";
 import {moonShell} from "@/resources";
 import {hasMoonPermission} from "@/utils/moonPermissions";
-import {SETTINGS_NAV_SECTIONS, SETTINGS_USER_MANAGEMENT_HREF} from "@/components/noona/settings";
+import {
+    getSettingsHrefForView,
+    SETTINGS_LANDING_HREF,
+    SETTINGS_USER_MANAGEMENT_HREF
+} from "@/components/noona/settings";
 import {Footer} from "./Footer";
+import {MoonMusicCard} from "./MoonMusicCard";
+import {isMoonShellSuppressedPath} from "./noona/moonShellRoutes.mjs";
+import {NOONA_OPEN_MUSIC_CONTROLS_EVENT} from "./noona/siteNotificationLive.mjs";
 import {type MoonViewMode, MoonViewModeToggle} from "./MoonViewModeToggle";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./AppShell.module.scss";
@@ -16,6 +23,7 @@ type ShellAuthUser = {
     username?: string | null;
     discordUsername?: string | null;
     discordGlobalName?: string | null;
+    discordUserId?: string | null;
     avatarUrl?: string | null;
     permissions?: string[] | null;
 };
@@ -38,7 +46,6 @@ type ViewModeConfig = {
 
 const MOON_VIEW_MODE_STORAGE_KEY = "moon-view-mode";
 const DEFAULT_MOON_VIEW_MODE: MoonViewMode = "ultrawide";
-const SHELLLESS_ROUTES = new Set(["/login", "/signup", "/discord/callback", "/rebooting"]);
 const VIEW_MODE_CONFIG: Record<MoonViewMode, ViewModeConfig> = {
     desktop: {
         shellPadding: "20",
@@ -122,19 +129,78 @@ const buildPageWidthVariables = (viewMode: MoonViewMode): Record<string, string>
     };
 };
 
-const isActivityPath = (pathname: string) =>
+const isAdminPath = (pathname: string) =>
+    pathname.startsWith("/settings") || pathname.startsWith("/setupwizard");
+
+const isLinkSelected = (pathname: string, href: string) =>
+    pathname === href || pathname.startsWith(`${href}/`);
+
+const MobileNavigationMenu = ({
+                                  menuGroups,
+                                  onClose,
+                              }: {
+    menuGroups: MegaMenuGroup[];
+    onClose: () => void;
+}) => (
+    <Column fillWidth gap="8">
+        {menuGroups.map((group) => {
+            if (group.href && !group.sections) {
+                return (
+                    <Button
+                        key={group.id}
+                        fillWidth
+                        horizontal="start"
+                        variant={group.selected ? "primary" : "secondary"}
+                        href={group.href}
+                        onClick={onClose}
+                    >
+                        {group.label}
+                    </Button>
+                );
+            }
+
+            return (
+                <Accordion
+                    key={group.id}
+                    title={group.label}
+                    icon={group.suffixIcon || "chevronDown"}
+                    size="m"
+                    radius="l"
+                    open={group.selected === true}
+                >
+                    <Column fillWidth gap="12" paddingX="8" paddingY="8">
+                        {group.sections?.map((section, sectionIndex) => (
+                            <Column key={`${group.id}-${section.title ?? sectionIndex}`} gap="4" fillWidth>
+                                {section.title && (
+                                    <Text variant="label-default-s" onBackground="neutral-weak">
+                                        {section.title}
+                                    </Text>
+                                )}
+                                {section.links.map((link) => (
+                                    <Option
+                                        key={`${group.id}-${section.title ?? sectionIndex}-${link.href}`}
+                                        href={link.href}
+                                        value={link.href}
+                                        selected={link.selected}
+                                        label={link.label}
+                                        description={link.description}
+                                        onClick={onClose}
+                                    />
+                                ))}
+                            </Column>
+                        ))}
+                    </Column>
+                </Accordion>
+            );
+        })}
+    </Column>
+);
+
+const isRequestsPath = (pathname: string) =>
     pathname.startsWith("/recommendations")
     || pathname.startsWith("/myrecommendations")
     || pathname.startsWith("/mysubscriptions")
     || pathname.startsWith("/recommendation");
-
-const getSettingsItemIcon = (href: string) => {
-    if (href.startsWith("/settings/storage")) return "document";
-    if (href.startsWith("/settings/downloads")) return "document";
-    if (href.startsWith("/settings/external")) return "settings";
-    if (href.startsWith("/settings/users")) return "settings";
-    return "settings";
-};
 
 const TimeDisplay = () => {
     const [currentTime, setCurrentTime] = useState("");
@@ -166,8 +232,11 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const [accountUser, setAccountUser] = useState<ShellAuthUser | null>(null);
     const [viewMode, setViewMode] = useState<MoonViewMode>(DEFAULT_MOON_VIEW_MODE);
     const [menuOpen, setMenuOpen] = useState(false);
+    const menuOpenRef = useRef(false);
+    const musicControlsRef = useRef<HTMLDivElement | null>(null);
+    const pendingMusicFocusRef = useRef(false);
 
-    const shellSuppressed = SHELLLESS_ROUTES.has(pathname);
+    const shellSuppressed = isMoonShellSuppressedPath(pathname);
     const setupLoading = setupCompleted == null;
     const permissions = accountUser?.permissions ?? null;
     const canAccessLibrary = hasMoonPermission(permissions, "library_management");
@@ -178,11 +247,10 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const canAccessMyRecommendations = hasMoonPermission(permissions, "myRecommendations");
     const canAccessMySubscriptions = hasMoonPermission(permissions, "mySubscriptions");
     const canAccessRecommendations = canManageRecommendations || canAccessMyRecommendations;
-    const recommendationsNavHref = canManageRecommendations ? "/recommendations" : "/myrecommendations";
-    const activityNavHref = canAccessDownloads
-        ? "/downloads"
+    const requestsNavHref = canManageRecommendations
+        ? "/recommendations"
         : canAccessRecommendations
-            ? recommendationsNavHref
+            ? "/myrecommendations"
             : canAccessMySubscriptions
                 ? "/mysubscriptions"
                 : "/";
@@ -190,6 +258,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const showSetupNav = !shellSuppressed && setupCompleted === false;
     const showMainNav = !shellSuppressed && setupCompleted === true;
     const showShellChrome = !shellSuppressed;
+    const setupNavHref = pathname.startsWith("/setupwizard/summary") ? "/setupwizard/summary" : "/setupwizard";
+    const showSetupSummaryLink = pathname.startsWith("/setupwizard");
 
     const displayName =
         normalizeString(accountUser?.discordGlobalName).trim()
@@ -264,6 +334,10 @@ export function AppShell({children}: { children: React.ReactNode }) {
     }, [pathname, setupCompleted, shellSuppressed]);
 
     useEffect(() => {
+        menuOpenRef.current = menuOpen;
+    }, [menuOpen]);
+
+    useEffect(() => {
         setViewMode(getViewModeFromDocument());
     }, []);
 
@@ -292,6 +366,66 @@ export function AppShell({children}: { children: React.ReactNode }) {
         };
     }, [menuOpen]);
 
+    useEffect(() => {
+        if (showMainNav) {
+            return;
+        }
+
+        pendingMusicFocusRef.current = false;
+    }, [showMainNav]);
+
+    useEffect(() => {
+        if (!showMainNav) {
+            return;
+        }
+
+        const focusMusicControls = () => {
+            const node = musicControlsRef.current;
+            if (!node) {
+                return false;
+            }
+
+            node.scrollIntoView({behavior: "smooth", block: "nearest"});
+            node.focus({preventScroll: true});
+            return true;
+        };
+
+        const handleOpenMusicControls = () => {
+            pendingMusicFocusRef.current = true;
+            setMenuOpen(true);
+
+            if (menuOpenRef.current && focusMusicControls()) {
+                pendingMusicFocusRef.current = false;
+            }
+        };
+
+        window.addEventListener(NOONA_OPEN_MUSIC_CONTROLS_EVENT, handleOpenMusicControls);
+        return () => {
+            window.removeEventListener(NOONA_OPEN_MUSIC_CONTROLS_EVENT, handleOpenMusicControls);
+        };
+    }, [showMainNav]);
+
+    useEffect(() => {
+        if (!showMainNav || !menuOpen || !pendingMusicFocusRef.current) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            const node = musicControlsRef.current;
+            pendingMusicFocusRef.current = false;
+            if (!node) {
+                return;
+            }
+
+            node.scrollIntoView({behavior: "smooth", block: "nearest"});
+            node.focus({preventScroll: true});
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
+    }, [menuOpen, showMainNav]);
+
     const applyViewMode = (nextViewMode: MoonViewMode) => {
         setViewMode(nextViewMode);
         if (typeof document !== "undefined") {
@@ -318,158 +452,205 @@ export function AppShell({children}: { children: React.ReactNode }) {
         const groups: MegaMenuGroup[] = [];
 
         if (showMainNav) {
-            const browseSections: MegaMenuSection[] = [
-                {
-                    title: "Launch",
-                    links: [
-                        {
-                            label: "Home",
-                            href: "/",
-                            icon: "home",
-                            description: "Landing view, recent titles, and quick shortcuts.",
-                            selected: pathname === "/",
-                        },
-                    ],
-                },
-            ];
-
-            if (canAccessLibrary) {
-                browseSections.push({
-                    title: "Library",
-                    links: [
-                        {
-                            label: "Library",
-                            href: "/libraries",
-                            icon: "book",
-                            description: "Browse Raven titles and open series detail pages.",
-                            selected: pathname.startsWith("/libraries"),
-                        },
-                    ],
-                });
-            }
-
             groups.push({
-                id: "browse",
-                label: "Browse",
+                id: "home",
+                label: "Home",
                 href: "/",
-                suffixIcon: "chevronDown",
-                selected: pathname === "/" || pathname.startsWith("/libraries"),
-                sections: browseSections,
+                selected: pathname === "/",
             });
 
-            const activitySections: MegaMenuSection[] = [];
-
-            if (canAccessDownloads) {
-                activitySections.push({
-                    title: "Downloads",
-                    links: [
-                        {
-                            label: "Queue overview",
-                            href: "/downloads",
-                            icon: "document",
-                            description: "Monitor active Raven downloads, workers, and history.",
-                            selected: pathname.startsWith("/downloads") && !pathname.startsWith("/downloads/add"),
-                        },
-                        {
-                            label: "Add download",
-                            href: "/downloads/add",
-                            icon: "document",
-                            description: "Search sources and queue a new title without leaving Moon.",
-                            selected: pathname.startsWith("/downloads/add"),
-                        },
-                    ],
+            if (canAccessLibrary) {
+                groups.push({
+                    id: "library",
+                    label: "Library",
+                    href: "/libraries",
+                    selected: pathname.startsWith("/libraries"),
                 });
             }
 
-            if (canAccessRecommendations) {
-                const recommendationLinks: MegaMenuLink[] = [];
+            if (canAccessDownloads) {
+                groups.push({
+                    id: "downloads",
+                    label: "Downloads",
+                    href: "/downloads",
+                    selected: pathname.startsWith("/downloads"),
+                });
+            }
 
+            const requestLinks: MegaMenuLink[] = [];
+
+            if (canAccessRecommendations) {
                 if (canManageRecommendations) {
-                    recommendationLinks.push({
-                        label: "Manager queue",
+                    requestLinks.push({
+                        label: "Review requests",
                         href: "/recommendations",
                         icon: "document",
-                        description: "Approve, deny, and review user-submitted title requests.",
+                        description: "Approve, deny, and comment on user download requests.",
                         selected: pathname.startsWith("/recommendations"),
                     });
                 }
 
                 if (canAccessMyRecommendations) {
-                    recommendationLinks.push({
-                        label: "My recommendations",
+                    requestLinks.push({
+                        label: "My requests",
                         href: "/myrecommendations",
                         icon: "document",
-                        description: "Track your own submissions and timeline updates.",
+                        description: "Check the status and updates on your submitted requests.",
                         selected: pathname.startsWith("/myrecommendations") || pathname.startsWith("/recommendation"),
-                    });
-                }
-
-                if (recommendationLinks.length > 0) {
-                    activitySections.push({
-                        title: "Recommendations",
-                        links: recommendationLinks,
                     });
                 }
             }
 
             if (canAccessMySubscriptions) {
-                activitySections.push({
-                    title: "Subscriptions",
-                    links: [
-                        {
-                            label: "My subscriptions",
-                            href: "/mysubscriptions",
-                            icon: "document",
-                            description: "Review subscribed titles and unsubscribe from chapter notifications.",
-                            selected: pathname.startsWith("/mysubscriptions"),
-                        },
-                    ],
+                requestLinks.push({
+                    label: "Following",
+                    href: "/mysubscriptions",
+                    icon: "document",
+                    description: "Manage followed titles and chapter notifications.",
+                    selected: pathname.startsWith("/mysubscriptions"),
                 });
             }
 
-            if (activitySections.length > 0) {
+            if (requestLinks.length > 0) {
                 groups.push({
-                    id: "activity",
-                    label: "Activity",
-                    href: activityNavHref,
+                    id: "requests",
+                    label: "Requests",
+                    href: requestsNavHref,
                     suffixIcon: "chevronDown",
-                    selected: pathname.startsWith("/downloads") || isActivityPath(pathname),
-                    sections: activitySections,
+                    selected: isRequestsPath(pathname),
+                    sections: [{links: requestLinks}],
                 });
             }
 
             if (canAccessSettings) {
-                const controlSections = SETTINGS_NAV_SECTIONS.flatMap<MegaMenuSection>((section) => {
-                    if (section.id === "users") {
-                        if (!canManageUsers) {
-                            return [];
-                        }
-                    } else if (!canAccessEcosystemSettings) {
-                        return [];
-                    }
+                const adminSections: MegaMenuSection[] = [];
 
-                    return [
+                if (canAccessEcosystemSettings) {
+                    adminSections.push({
+                        title: "System",
+                        links: [
+                            {
+                                label: "Overview",
+                                href: getSettingsHrefForView("overview"),
+                                icon: "settings",
+                                description: "Check service status, links, and core system actions.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("overview")),
+                            },
+                            {
+                                label: "Storage folders",
+                                href: getSettingsHrefForView("filesystem"),
+                                icon: "document",
+                                description: "Review storage paths, shared mounts, and folder layout.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("filesystem")),
+                            },
+                            {
+                                label: "Database",
+                                href: getSettingsHrefForView("database"),
+                                icon: "document",
+                                description: "Inspect database access, collections, and reset tools.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("database")),
+                            },
+                            {
+                                label: "Updates",
+                                href: getSettingsHrefForView("updater"),
+                                icon: "settings",
+                                description: "Check for service updates and apply managed image changes.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("updater")),
+                            },
+                        ],
+                    });
+
+                    adminSections.push({
+                        title: "Downloads",
+                        links: [
+                            {
+                                label: "Download rules, workers & VPN",
+                                href: getSettingsHrefForView("downloader"),
+                                icon: "document",
+                                description: "Adjust naming, worker limits, and VPN behavior for downloads.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("downloader")),
+                            },
+                        ],
+                    });
+
+                    adminSections.push({
+                        title: "Integrations",
+                        links: [
+                            {
+                                label: "Discord",
+                                href: getSettingsHrefForView("discord"),
+                                icon: "settings",
+                                description: "Change Discord bot credentials, onboarding, and command access.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("discord")),
+                            },
+                            {
+                                label: "Kavita",
+                                href: getSettingsHrefForView("kavita"),
+                                icon: "settings",
+                                description: "Manage Kavita defaults and Portal integration settings.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("kavita")),
+                            },
+                            {
+                                label: "Komf",
+                                href: getSettingsHrefForView("komf"),
+                                icon: "settings",
+                                description: "Edit Komf metadata settings and the managed application.yml.",
+                                selected: isLinkSelected(pathname, getSettingsHrefForView("komf")),
+                            },
+                        ],
+                    });
+                }
+
+                if (canManageUsers) {
+                    adminSections.push({
+                        title: "People",
+                        links: [
+                            {
+                                label: "Users & roles",
+                                href: SETTINGS_USER_MANAGEMENT_HREF,
+                                icon: "settings",
+                                description: "Manage Moon accounts, roles, and default permissions.",
+                                selected: isLinkSelected(pathname, SETTINGS_USER_MANAGEMENT_HREF),
+                            },
+                        ],
+                    });
+                }
+
+                if (canAccessEcosystemSettings) {
+                    const setupLinks: MegaMenuLink[] = [
                         {
-                            title: section.label,
-                            links: section.items.map((item) => ({
-                                label: item.label,
-                                href: item.href,
-                                icon: getSettingsItemIcon(item.href),
-                                description: item.description,
-                                selected: pathname === item.href || pathname.startsWith(`${item.href}/`),
-                            })),
+                            label: "Resume setup",
+                            href: "/setupwizard",
+                            icon: "rocket",
+                            description: "Reopen the guided setup flow to review or change the stack profile.",
+                            selected: pathname === "/setupwizard",
                         },
                     ];
-                });
 
-                if (controlSections.length > 0) {
+                    if (showSetupSummaryLink) {
+                        setupLinks.push({
+                            label: "Setup summary",
+                            href: "/setupwizard/summary",
+                            icon: "document",
+                            description: "Review the setup summary and final stack details.",
+                            selected: pathname.startsWith("/setupwizard/summary"),
+                        });
+                    }
+
+                    adminSections.push({
+                        title: "Setup",
+                        links: setupLinks,
+                    });
+                }
+
+                if (adminSections.length > 0) {
                     groups.push({
-                        id: "control",
-                        label: "Control",
-                        href: canAccessEcosystemSettings ? "/settings/general" : SETTINGS_USER_MANAGEMENT_HREF,
+                        id: "admin",
+                        label: "Admin",
+                        href: canAccessEcosystemSettings ? SETTINGS_LANDING_HREF : SETTINGS_USER_MANAGEMENT_HREF,
                         suffixIcon: "chevronDown",
-                        selected: pathname.startsWith("/settings"),
-                        sections: controlSections,
+                        selected: isAdminPath(pathname),
+                        sections: adminSections,
                     });
                 }
             }
@@ -479,30 +660,8 @@ export function AppShell({children}: { children: React.ReactNode }) {
             groups.push({
                 id: "setup",
                 label: "Setup",
-                href: "/setupwizard",
-                suffixIcon: "chevronDown",
+                href: setupNavHref,
                 selected: pathname.startsWith("/setupwizard"),
-                sections: [
-                    {
-                        title: "Install",
-                        links: [
-                            {
-                                label: "Setup wizard",
-                                href: "/setupwizard",
-                                icon: "rocket",
-                                description: "Configure storage, integrations, and managed services.",
-                                selected: pathname === "/setupwizard",
-                            },
-                            {
-                                label: "Setup summary",
-                                href: "/setupwizard/summary",
-                                icon: "document",
-                                description: "Review completed setup steps and installed services.",
-                                selected: pathname.startsWith("/setupwizard/summary"),
-                            },
-                        ],
-                    },
-                ],
             });
         }
 
@@ -518,9 +677,11 @@ export function AppShell({children}: { children: React.ReactNode }) {
         canManageRecommendations,
         canManageUsers,
         pathname,
-        activityNavHref,
+        requestsNavHref,
         showMainNav,
+        showSetupSummaryLink,
         showSetupNav,
+        setupNavHref,
     ]);
 
     const contentStyle = useMemo(
@@ -574,6 +735,22 @@ export function AppShell({children}: { children: React.ReactNode }) {
                                     <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
                                         <TimeDisplay/>
                                     </Badge>
+                                )}
+                                {showMainNav && canAccessDownloads && (
+                                    <Button
+                                        size="s"
+                                        variant="primary"
+                                        href="/downloads/add"
+                                        onClick={() => setMenuOpen(false)}
+                                        aria-label="Add download"
+                                    >
+                                        <Row gap="8" vertical="center">
+                                            <FiPlus aria-hidden="true"/>
+                                            <Row s={{hide: true}}>
+                                                <Text variant="label-default-s">Add download</Text>
+                                            </Row>
+                                        </Row>
+                                    </Button>
                                 )}
                                 <Button
                                     size="s"
@@ -726,11 +903,7 @@ export function AppShell({children}: { children: React.ReactNode }) {
                                 </Row>
                             )}
                             {!setupLoading && menuGroups.length > 0 && (
-                                <MobileMegaMenu
-                                    fillWidth
-                                    menuGroups={menuGroups}
-                                    onClose={() => setMenuOpen(false)}
-                                />
+                                <MobileNavigationMenu menuGroups={menuGroups} onClose={() => setMenuOpen(false)}/>
                             )}
                             {!setupLoading && menuGroups.length === 0 && (
                                 <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
@@ -739,6 +912,12 @@ export function AppShell({children}: { children: React.ReactNode }) {
                             )}
                         </Column>
                     </Card>
+
+                    {showMainNav && (
+                        <div ref={musicControlsRef} tabIndex={-1} aria-label="Music controls" style={{outline: "none"}}>
+                            <MoonMusicCard cardPadding={viewModeConfig.cardPadding}/>
+                        </div>
+                    )}
 
                     <Card
                         fillWidth

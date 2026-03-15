@@ -1,3 +1,11 @@
+/**
+ * Encapsulates Raven search title behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/controller/DownloadController.java
+ * - src/test/java/com/paxkun/raven/controller/DownloadControllerTest.java
+ * - src/test/java/com/paxkun/raven/service/DownloadServiceTest.java
+ * Times this file has been edited: 5
+ */
 package com.paxkun.raven.service.download;
 
 import lombok.AllArgsConstructor;

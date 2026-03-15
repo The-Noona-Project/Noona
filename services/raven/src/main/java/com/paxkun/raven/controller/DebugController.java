@@ -1,3 +1,10 @@
+/**
+ * Exposes Raven debug state endpoints.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/test/java/com/paxkun/raven/controller/DebugControllerTest.java
+ * Times this file has been edited: 3
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.LoggerService;
@@ -8,12 +15,22 @@ import org.springframework.web.bind.annotation.*;
 import java.util.Locale;
 import java.util.Map;
 
+/**
+ * Exposes Raven debug state endpoints.
+ */
+
 @RestController
 @RequestMapping("/v1/debug")
 @RequiredArgsConstructor
 public class DebugController {
 
     private final LoggerService loggerService;
+
+    /**
+     * Returns debug state.
+     *
+     * @return The resulting Object>>.
+     */
 
     @GetMapping
     public ResponseEntity<Map<String, Object>> getDebugState() {

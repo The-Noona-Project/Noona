@@ -21,7 +21,7 @@ EXPOSE 3005
 
 # Add healthcheck for Vault
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3005/v1/vault/health', res => res.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))"
+  CMD node -e "const fs=require('fs'); const http=require('http'); const https=require('https'); const tlsEnabled=/^(1|true|yes|on)$/i.test(String(process.env.VAULT_TLS_ENABLED||'')); const client=tlsEnabled?https:http; const url=(tlsEnabled?'https':'http')+'://localhost:3005/v1/vault/health'; const options=tlsEnabled&&process.env.VAULT_CA_CERT_PATH?{ca:fs.readFileSync(process.env.VAULT_CA_CERT_PATH,'utf8')}:{ }; client.get(url, options, res => res.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))"
 
 # Set default command
 CMD ["node", "initVault.mjs"]

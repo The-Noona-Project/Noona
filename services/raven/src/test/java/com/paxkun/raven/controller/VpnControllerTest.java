@@ -1,3 +1,12 @@
+/**
+ * Covers vpn controller behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/VPNServices.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
+ * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.LoggerService;
@@ -23,6 +32,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Covers vpn controller behavior.
+ */
 
 @ExtendWith(MockitoExtension.class)
 class VpnControllerTest {

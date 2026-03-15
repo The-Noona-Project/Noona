@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers Kavita client request handling and payload normalization.
+ * Related files:
+ * - clients/kavitaClient.mjs
+ * Times this file has been edited: 11
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -616,6 +623,42 @@ test('searchTitles rejects empty title queries', async () => {
     });
 
     await assert.rejects(() => kavita.searchTitles('   '), /Title query is required/i);
+});
+
+test('fetchSeriesMetadataStatus calls Kavita manage series-metadata endpoint', async () => {
+    const calls = [];
+    const kavita = createKavitaClient({
+        baseUrl: 'https://kavita.example',
+        apiKey: 'portal-api-key',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+
+            return {
+                ok: true,
+                status: 200,
+                text: async () => JSON.stringify([{isMatched: false, series: {seriesId: 17, name: 'Solo Leveling'}}]),
+            };
+        },
+    });
+
+    const payload = await kavita.fetchSeriesMetadataStatus({
+        matchStateOption: 2,
+        searchTerm: 'Solo Leveling',
+        pageNumber: 3,
+        pageSize: 0,
+    });
+
+    assert.equal(payload.length, 1);
+    const requestUrl = new URL(calls[0].url);
+    assert.equal(requestUrl.pathname, '/api/Manage/series-metadata');
+    assert.equal(requestUrl.searchParams.get('pageNumber'), '3');
+    assert.equal(requestUrl.searchParams.get('pageSize'), '0');
+    assert.equal(calls[0].options.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        matchStateOption: 2,
+        libraryType: -1,
+        searchTerm: 'Solo Leveling',
+    });
 });
 
 test('scanLibrary triggers Kavita library scan endpoint', async () => {

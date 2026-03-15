@@ -1,3 +1,9 @@
+/**
+ * Covers kavita sync service behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/KavitaSyncService.java
+ * Times this file has been edited: 2
+ */
 package com.paxkun.raven.service;
 
 import org.junit.jupiter.api.Test;
@@ -13,6 +19,10 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+
+/**
+ * Covers kavita sync service behavior.
+ */
 
 class KavitaSyncServiceTest {
 

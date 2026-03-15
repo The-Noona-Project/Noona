@@ -12,6 +12,7 @@ type KavitaLoginResponse = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const trimTrailingSlashes = (value: string): string => value.replace(/\/+$/, "");
 
 const normalizeAbsoluteHttpUrl = (value: unknown): string => {
     const normalized = normalizeString(value).trim();
@@ -28,8 +29,44 @@ const normalizeAbsoluteHttpUrl = (value: unknown): string => {
     }
 };
 
+const isTrustedKavitaTarget = (targetUrl: URL, baseUrl: URL): boolean => {
+    if (targetUrl.origin !== baseUrl.origin) {
+        return false;
+    }
+
+    const normalizedBasePath = trimTrailingSlashes(baseUrl.pathname) || "/";
+    if (normalizedBasePath === "/") {
+        return true;
+    }
+
+    const normalizedTargetPath = trimTrailingSlashes(targetUrl.pathname) || "/";
+    return normalizedTargetPath === normalizedBasePath || normalizedTargetPath.startsWith(`${normalizedBasePath}/`);
+};
+
+const resolveTrustedKavitaTarget = (baseUrl: string, fallbackTarget = ""): string => {
+    const normalizedBaseUrl = normalizeAbsoluteHttpUrl(baseUrl);
+    if (!normalizedBaseUrl) {
+        return "";
+    }
+
+    const parsedBaseUrl = new URL(normalizedBaseUrl);
+    const normalizedFallbackTarget = normalizeAbsoluteHttpUrl(fallbackTarget);
+    if (!normalizedFallbackTarget) {
+        return parsedBaseUrl.toString();
+    }
+
+    try {
+        const parsedFallbackTarget = new URL(normalizedFallbackTarget);
+        return isTrustedKavitaTarget(parsedFallbackTarget, parsedBaseUrl)
+            ? parsedFallbackTarget.toString()
+            : parsedBaseUrl.toString();
+    } catch {
+        return parsedBaseUrl.toString();
+    }
+};
+
 const buildKavitaLoginUrl = (baseUrl: string, token: string, fallbackTarget = ""): string => {
-    const target = normalizeAbsoluteHttpUrl(fallbackTarget) || normalizeAbsoluteHttpUrl(baseUrl);
+    const target = resolveTrustedKavitaTarget(baseUrl, fallbackTarget);
     if (!target) {
         throw new Error("Moon could not resolve the Kavita login URL for the Noona handoff.");
     }
@@ -54,6 +91,14 @@ const maskNoonaToken = (value: string): string => {
     }
 };
 
+const buildMoonLoginRetryUrl = (): string => {
+    const loginUrl = new URL("/login", window.location.origin);
+    const returnToUrl = new URL(window.location.href);
+    returnToUrl.searchParams.set("moonRetry", "1");
+    loginUrl.searchParams.set("returnTo", `${returnToUrl.pathname}${returnToUrl.search}`);
+    return loginUrl.toString();
+};
+
 export function KavitaLoginBridgePage() {
     const router = useRouter();
     const searchParams = useSearchParams();
@@ -65,6 +110,7 @@ export function KavitaLoginBridgePage() {
         startedRef.current = true;
 
         const target = normalizeString(searchParams.get("target")).trim();
+        const alreadyRetried = normalizeString(searchParams.get("moonRetry")).trim() === "1";
         dev.info("[NoonaKavitaBridge] Bridge started", {target});
 
         const complete = async () => {
@@ -76,6 +122,20 @@ export function KavitaLoginBridgePage() {
                 });
                 const payload = (await response.json().catch(() => null)) as KavitaLoginResponse | null;
                 if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        if (alreadyRetried) {
+                            throw new Error("Moon login succeeded, but the Noona session was still unavailable when returning to the Kavita handoff.");
+                        }
+
+                        const loginUrl = buildMoonLoginRetryUrl();
+                        dev.warn("[NoonaKavitaBridge] Missing Noona session during bridge; retrying Moon login", {
+                            status: response.status,
+                            loginUrl,
+                        });
+                        window.location.replace(loginUrl);
+                        return;
+                    }
+
                     dev.warn("[NoonaKavitaBridge] Moon API rejected Kavita bridge request", {
                         status: response.status,
                         error: normalizeString(payload?.error).trim(),

@@ -3,6 +3,7 @@
 export function registerSecretRoutes(context = {}) {
     const {
         app,
+        authorizer,
         requireAuth,
         resolvePacketHandler,
         secretsCollection,
@@ -12,6 +13,12 @@ export function registerSecretRoutes(context = {}) {
         const rawPath = typeof req.params?.path === 'string' ? req.params.path.trim() : '';
         if (!rawPath) {
             res.status(400).json({error: 'path is required.'});
+            return;
+        }
+
+        const access = authorizer?.canAccessSecretPath?.(req.serviceName, rawPath) ?? {ok: true};
+        if (access.ok !== true) {
+            res.status(access.status ?? 403).json({error: access.error || 'Forbidden'});
             return;
         }
 
@@ -50,6 +57,12 @@ export function registerSecretRoutes(context = {}) {
         const rawPath = typeof req.params?.path === 'string' ? req.params.path.trim() : '';
         if (!rawPath) {
             res.status(400).json({error: 'path is required.'});
+            return;
+        }
+
+        const access = authorizer?.canAccessSecretPath?.(req.serviceName, rawPath) ?? {ok: true};
+        if (access.ok !== true) {
+            res.status(access.status ?? 403).json({error: access.error || 'Forbidden'});
             return;
         }
 
@@ -96,6 +109,12 @@ export function registerSecretRoutes(context = {}) {
         const rawPath = typeof req.params?.path === 'string' ? req.params.path.trim() : '';
         if (!rawPath) {
             res.status(400).json({error: 'path is required.'});
+            return;
+        }
+
+        const access = authorizer?.canAccessSecretPath?.(req.serviceName, rawPath) ?? {ok: true};
+        if (access.ok !== true) {
+            res.status(access.status ?? 403).json({error: access.error || 'Forbidden'});
             return;
         }
 

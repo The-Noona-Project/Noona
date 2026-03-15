@@ -30,6 +30,7 @@
   "dependencies": {
     "dockerode": "^4.0.9",
     "express": "^4.22.1",
+    "gh": "^2.8.9",
     "ignore": "^7.0.5",
     "ioredis": "^5.10.0",
     "mongodb": "^7.1.0",

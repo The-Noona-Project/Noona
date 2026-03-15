@@ -14,6 +14,7 @@ import {createWizardStateClient} from '../wizard/wizardStateClient.mjs'
 import {normalizeWizardMetadata, WIZARD_STEP_KEYS} from '../wizard/wizardStateSchema.mjs'
 import {createSetupClient, defaultWardenBaseUrl, normalizeServiceInstallPayload} from './createSetupClient.mjs'
 import {registerAuthRoutes} from '../routes/registerAuthRoutes.mjs'
+import {registerMediaRoutes} from '../routes/registerMediaRoutes.mjs'
 import {registerRavenRoutes} from '../routes/registerRavenRoutes.mjs'
 import {registerSettingsRoutes} from '../routes/registerSettingsRoutes.mjs'
 import {registerSetupRoutes} from '../routes/registerSetupRoutes.mjs'
@@ -447,10 +448,24 @@ export const createSageApp = ({
     const DEFAULT_NAMING_SETTINGS = Object.freeze({
         key: 'downloads.naming',
         titleTemplate: '{title}',
-        chapterTemplate: 'Chapter {chapter} [Pages {pages} {domain} - Noona].cbz',
+        chapterTemplate: '{title} c{chapter} (v{volume}) [Noona].cbz',
         pageTemplate: '{page_padded}{ext}',
         pagePad: 3,
-        chapterPad: 4,
+        chapterPad: 3,
+        volumePad: 2,
+    })
+    const DISCORD_ONBOARDING_MESSAGE_SETTINGS_KEY = 'discord.onboarding_message'
+    const DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS = Object.freeze({
+        key: DISCORD_ONBOARDING_MESSAGE_SETTINGS_KEY,
+        template: [
+            'Welcome to {guild_name}!',
+            '',
+            'Start with Moon: {moon_url}',
+            'Read in Kavita: {kavita_url}',
+            '',
+            'Use the website onboarding flow to create your library access.',
+            'Server: {server_ip}',
+        ].join('\n'),
     })
 
     const DEFAULT_DEBUG_SETTINGS = Object.freeze({
@@ -679,11 +694,13 @@ export const createSageApp = ({
     const DEFAULT_DOWNLOAD_WORKER_SETTINGS = Object.freeze({
         key: DOWNLOAD_WORKER_SETTINGS_KEY,
         threadRateLimitsKbps: [],
+        cpuCoreIds: [],
     })
     const DEFAULT_DOWNLOAD_VPN_SETTINGS = Object.freeze({
         key: DOWNLOAD_VPN_SETTINGS_KEY,
         provider: 'pia',
         enabled: false,
+        onlyDownloadWhenVpnOn: false,
         autoRotate: true,
         rotateEveryMinutes: 30,
         region: 'us_california',
@@ -692,6 +709,8 @@ export const createSageApp = ({
     })
     const UNLIMITED_THREAD_RATE_LIMIT_KBPS = -1
     const MAX_THREAD_RATE_LIMIT_KBPS = 2_147_483_647
+    const UNPINNED_CPU_CORE_ID = -1
+    const DEFAULT_RAVEN_DOWNLOAD_THREADS = 3
     const THREAD_RATE_LIMIT_SUFFIX_MULTIPLIERS = Object.freeze({
         '': 1,
         k: 1,
@@ -847,6 +866,92 @@ export const createSageApp = ({
 
         return {ok: true, threadRateLimitsKbps: normalized}
     }
+    const parseCpuCoreIdEntry = (value, {strict = false} = {}) => {
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) {
+                return strict
+                    ? {ok: false, error: 'must be an integer CPU ID or `-1`.'}
+                    : {ok: true, value: UNPINNED_CPU_CORE_ID}
+            }
+
+            const normalized = Math.floor(value)
+            if (normalized < UNPINNED_CPU_CORE_ID) {
+                return strict
+                    ? {ok: false, error: 'must be `-1` or a non-negative integer CPU ID.'}
+                    : {ok: true, value: UNPINNED_CPU_CORE_ID}
+            }
+            return {ok: true, value: normalized}
+        }
+
+        const raw = normalizeString(value).trim()
+        if (!raw) {
+            return strict
+                ? {ok: false, error: 'must not be empty. Use `-1` or a Linux CPU ID.'}
+                : {ok: true, value: UNPINNED_CPU_CORE_ID}
+        }
+        if (!/^-?\d+$/.test(raw)) {
+            return strict
+                ? {ok: false, error: 'must be `-1` or a non-negative integer CPU ID.'}
+                : {ok: true, value: UNPINNED_CPU_CORE_ID}
+        }
+
+        const normalized = Number.parseInt(raw, 10)
+        if (!Number.isFinite(normalized) || normalized < UNPINNED_CPU_CORE_ID) {
+            return strict
+                ? {ok: false, error: 'must be `-1` or a non-negative integer CPU ID.'}
+                : {ok: true, value: UNPINNED_CPU_CORE_ID}
+        }
+        return {ok: true, value: normalized}
+    }
+    const normalizeCpuCoreIds = (value) => {
+        if (!Array.isArray(value)) {
+            return []
+        }
+
+        return value.map((entry) => parseCpuCoreIdEntry(entry).value)
+    }
+    const validateCpuCoreIdsInput = (value) => {
+        if (!Array.isArray(value)) {
+            return {ok: false, error: 'cpuCoreIds must be provided as an array.'}
+        }
+
+        const normalized = []
+        for (let index = 0; index < value.length; index += 1) {
+            const parsed = parseCpuCoreIdEntry(value[index], {strict: true})
+            if (!parsed.ok) {
+                return {ok: false, error: `Thread ${index + 1} CPU core ${parsed.error}`}
+            }
+            normalized.push(parsed.value)
+        }
+
+        return {ok: true, cpuCoreIds: normalized}
+    }
+    const normalizeWorkerSettingArray = (value, slotCount, fallbackValue, normalizer) => {
+        const normalizedSlotCount = Math.max(1, Math.floor(slotCount || DEFAULT_RAVEN_DOWNLOAD_THREADS))
+        const source = Array.isArray(value) ? normalizer(value) : []
+        return Array.from({length: normalizedSlotCount}, (_, index) => (
+            index < source.length ? source[index] : fallbackValue
+        ))
+    }
+    const resolveDownloadWorkerSlotCount = async () => {
+        try {
+            if (ravenClient?.getDownloadSummary) {
+                const summary = await ravenClient.getDownloadSummary()
+                const maxThreads = Number(summary?.maxThreads)
+                if (Number.isFinite(maxThreads) && maxThreads > 0) {
+                    return Math.max(1, Math.floor(maxThreads))
+                }
+            }
+        } catch {
+            // Fall back to local environment defaults below.
+        }
+
+        const envValue = Number(process.env.RAVEN_DOWNLOAD_THREADS)
+        if (Number.isFinite(envValue) && envValue > 0) {
+            return Math.max(1, Math.floor(envValue))
+        }
+        return DEFAULT_RAVEN_DOWNLOAD_THREADS
+    }
     const normalizeVpnProvider = (value) => {
         const normalized = normalizeString(value).toLowerCase()
         return normalized || DEFAULT_DOWNLOAD_VPN_SETTINGS.provider
@@ -862,6 +967,8 @@ export const createSageApp = ({
         }
         return Math.max(1, Math.min(1440, Math.floor(parsed)))
     }
+    const hasNonEmptyDiscordOnboardingTemplate = (value) =>
+        typeof value === 'string' && value.trim().length > 0
     const sanitizeDownloadVpnSettingsForResponse = (settings = {}) => {
         const password = normalizeString(settings?.piaPassword)
         const maskedPassword = password ? '********' : ''
@@ -869,6 +976,7 @@ export const createSageApp = ({
             key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
             provider: normalizeVpnProvider(settings?.provider),
             enabled: parseBooleanInput(settings?.enabled) === true,
+            onlyDownloadWhenVpnOn: parseBooleanInput(settings?.onlyDownloadWhenVpnOn) === true,
             autoRotate: parseBooleanInput(settings?.autoRotate) !== false,
             rotateEveryMinutes: normalizeVpnRotateEveryMinutes(settings?.rotateEveryMinutes),
             region: normalizeVpnRegion(settings?.region),
@@ -1774,7 +1882,11 @@ export const createSageApp = ({
         }
 
         const nextClientId = normalizeString(clientId)
-        const nextClientSecret = normalizeString(clientSecret)
+        let nextClientSecret = normalizeString(clientSecret)
+        if (!nextClientSecret || nextClientSecret === '********') {
+            const current = await readDiscordAuthConfig()
+            nextClientSecret = normalizeString(current?.clientSecret)
+        }
         if (!nextClientId || !nextClientSecret) {
             throw new Error('Discord client ID and client secret are required.')
         }
@@ -1955,6 +2067,23 @@ export const createSageApp = ({
             )
         }
 
+        const existingDiscordOnboardingMessage = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+        })
+        if (!existingDiscordOnboardingMessage) {
+            await vaultClient.mongo.update(
+                settingsCollection,
+                {key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key},
+                {
+                    $set: {
+                        ...DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS,
+                        updatedAt: timestamp,
+                    },
+                },
+                {upsert: true},
+            )
+        }
+
         const existingDebug = await vaultClient.mongo.findOne(settingsCollection, {
             key: DEFAULT_DEBUG_SETTINGS.key,
         })
@@ -2021,6 +2150,8 @@ export const createSageApp = ({
                         ...DEFAULT_DOWNLOAD_VPN_SETTINGS,
                         provider: normalizeVpnProvider(DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
                         enabled: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.enabled) === true,
+                        onlyDownloadWhenVpnOn:
+                            parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.onlyDownloadWhenVpnOn) === true,
                         autoRotate: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.autoRotate) !== false,
                         rotateEveryMinutes: normalizeVpnRotateEveryMinutes(DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes),
                         region: normalizeVpnRegion(DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
@@ -2078,11 +2209,69 @@ export const createSageApp = ({
             updatedAt,
         }
     }
+    const readDiscordOnboardingMessageSetting = async () => {
+        if (!vaultClient?.mongo?.findOne) {
+            return {
+                key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+                template: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.template,
+                updatedAt: null,
+            }
+        }
+
+        const doc = await vaultClient.mongo.findOne(settingsCollection, {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+        })
+
+        return {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+            template: hasNonEmptyDiscordOnboardingTemplate(doc?.template)
+                ? doc.template
+                : DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.template,
+            updatedAt: normalizeString(doc?.updatedAt) || null,
+        }
+    }
+    const writeDiscordOnboardingMessageSetting = async (template) => {
+        if (!vaultClient?.mongo?.update) {
+            throw new Error('Vault storage is not configured.')
+        }
+
+        if (!hasNonEmptyDiscordOnboardingTemplate(template)) {
+            throw new Error('template must not be empty.')
+        }
+
+        const updatedAt = new Date().toISOString()
+        const next = {
+            key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key,
+            template,
+            updatedAt,
+        }
+
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS.key},
+            {$set: next},
+            {upsert: true},
+        )
+
+        return next
+    }
     const readDownloadWorkerSettings = async () => {
+        const slotCount = await resolveDownloadWorkerSlotCount()
         if (!vaultClient?.mongo?.findOne) {
             return {
                 key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
-                threadRateLimitsKbps: normalizeThreadRateLimits(DEFAULT_DOWNLOAD_WORKER_SETTINGS.threadRateLimitsKbps),
+                threadRateLimitsKbps: normalizeWorkerSettingArray(
+                    DEFAULT_DOWNLOAD_WORKER_SETTINGS.threadRateLimitsKbps,
+                    slotCount,
+                    UNLIMITED_THREAD_RATE_LIMIT_KBPS,
+                    normalizeThreadRateLimits,
+                ),
+                cpuCoreIds: normalizeWorkerSettingArray(
+                    DEFAULT_DOWNLOAD_WORKER_SETTINGS.cpuCoreIds,
+                    slotCount,
+                    UNPINNED_CPU_CORE_ID,
+                    normalizeCpuCoreIds,
+                ),
                 updatedAt: null,
             }
         }
@@ -2093,16 +2282,39 @@ export const createSageApp = ({
 
         return {
             key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
-            threadRateLimitsKbps: normalizeThreadRateLimits(doc?.threadRateLimitsKbps),
+            threadRateLimitsKbps: normalizeWorkerSettingArray(
+                doc?.threadRateLimitsKbps,
+                slotCount,
+                UNLIMITED_THREAD_RATE_LIMIT_KBPS,
+                normalizeThreadRateLimits,
+            ),
+            cpuCoreIds: normalizeWorkerSettingArray(
+                doc?.cpuCoreIds,
+                slotCount,
+                UNPINNED_CPU_CORE_ID,
+                normalizeCpuCoreIds,
+            ),
             updatedAt: normalizeString(doc?.updatedAt) || null,
         }
     }
-    const writeDownloadWorkerSettings = async (threadRateLimitsKbps) => {
+    const writeDownloadWorkerSettings = async (threadRateLimitsKbps, cpuCoreIds) => {
         if (!vaultClient?.mongo?.update) {
             throw new Error('Vault storage is not configured.')
         }
 
-        const nextThreadRateLimitsKbps = normalizeThreadRateLimits(threadRateLimitsKbps)
+        const slotCount = await resolveDownloadWorkerSlotCount()
+        const nextThreadRateLimitsKbps = normalizeWorkerSettingArray(
+            threadRateLimitsKbps,
+            slotCount,
+            UNLIMITED_THREAD_RATE_LIMIT_KBPS,
+            normalizeThreadRateLimits,
+        )
+        const nextCpuCoreIds = normalizeWorkerSettingArray(
+            cpuCoreIds,
+            slotCount,
+            UNPINNED_CPU_CORE_ID,
+            normalizeCpuCoreIds,
+        )
         const updatedAt = new Date().toISOString()
         await vaultClient.mongo.update(
             settingsCollection,
@@ -2111,6 +2323,7 @@ export const createSageApp = ({
                 $set: {
                     key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
                     threadRateLimitsKbps: nextThreadRateLimitsKbps,
+                    cpuCoreIds: nextCpuCoreIds,
                     updatedAt,
                 },
             },
@@ -2120,6 +2333,7 @@ export const createSageApp = ({
         return {
             key: DEFAULT_DOWNLOAD_WORKER_SETTINGS.key,
             threadRateLimitsKbps: nextThreadRateLimitsKbps,
+            cpuCoreIds: nextCpuCoreIds,
             updatedAt,
         }
     }
@@ -2129,6 +2343,8 @@ export const createSageApp = ({
                 ...DEFAULT_DOWNLOAD_VPN_SETTINGS,
                 provider: normalizeVpnProvider(DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
                 enabled: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.enabled) === true,
+                onlyDownloadWhenVpnOn:
+                    parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.onlyDownloadWhenVpnOn) === true,
                 autoRotate: parseBooleanInput(DEFAULT_DOWNLOAD_VPN_SETTINGS.autoRotate) !== false,
                 rotateEveryMinutes: normalizeVpnRotateEveryMinutes(DEFAULT_DOWNLOAD_VPN_SETTINGS.rotateEveryMinutes),
                 region: normalizeVpnRegion(DEFAULT_DOWNLOAD_VPN_SETTINGS.region),
@@ -2146,6 +2362,7 @@ export const createSageApp = ({
             key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
             provider: normalizeVpnProvider(doc?.provider ?? DEFAULT_DOWNLOAD_VPN_SETTINGS.provider),
             enabled: parseBooleanInput(doc?.enabled) === true,
+            onlyDownloadWhenVpnOn: parseBooleanInput(doc?.onlyDownloadWhenVpnOn) === true,
             autoRotate: parseBooleanInput(doc?.autoRotate) !== false,
             rotateEveryMinutes: normalizeVpnRotateEveryMinutes(
                 doc?.rotateEveryMinutes,
@@ -2166,6 +2383,10 @@ export const createSageApp = ({
         const nextEnabled = (() => {
             const parsed = parseBooleanInput(payload?.enabled)
             return parsed == null ? current.enabled : parsed
+        })()
+        const nextOnlyDownloadWhenVpnOn = (() => {
+            const parsed = parseBooleanInput(payload?.onlyDownloadWhenVpnOn)
+            return parsed == null ? parseBooleanInput(current.onlyDownloadWhenVpnOn) === true : parsed
         })()
         const nextAutoRotate = (() => {
             const parsed = parseBooleanInput(payload?.autoRotate)
@@ -2207,6 +2428,7 @@ export const createSageApp = ({
             key: DEFAULT_DOWNLOAD_VPN_SETTINGS.key,
             provider: nextProvider,
             enabled: nextEnabled,
+            onlyDownloadWhenVpnOn: nextOnlyDownloadWhenVpnOn,
             autoRotate: nextAutoRotate,
             rotateEveryMinutes: nextRotateEveryMinutes,
             region: nextRegion,
@@ -2861,6 +3083,7 @@ export const createSageApp = ({
         createEmptyVerificationSummary,
         createSessionToken,
         defaultPermissionsForRole,
+        DEFAULT_DISCORD_ONBOARDING_MESSAGE_SETTINGS,
         DEFAULT_DOWNLOAD_WORKER_SETTINGS,
         DEFAULT_DOWNLOAD_VPN_SETTINGS,
         DEFAULT_MEMBER_PERMISSIONS_SETTINGS,
@@ -2902,6 +3125,7 @@ export const createSageApp = ({
         publicUser,
         queueEcosystemRestart,
         ravenClient,
+        readDiscordOnboardingMessageSetting,
         readDefaultMemberPermissions,
         readDebugSetting,
         readDownloadWorkerSettings,
@@ -2930,6 +3154,7 @@ export const createSageApp = ({
         sortMoonPermissions,
         toSessionUser,
         updateAuthUser,
+        validateCpuCoreIdsInput,
         validatePermissionListInput,
         validateThreadRateLimitsInput,
         vaultClient,
@@ -2941,6 +3166,7 @@ export const createSageApp = ({
         verifySessionPassword,
         wizardMetadata,
         wizardStateClient,
+        writeDiscordOnboardingMessageSetting,
         writeDefaultMemberPermissions,
         writeDownloadWorkerSettings,
         writeDownloadVpnSettings,
@@ -2950,6 +3176,7 @@ export const createSageApp = ({
     }
 
     registerAuthRoutes(routeContext)
+    registerMediaRoutes(routeContext)
     registerSettingsRoutes(routeContext)
     registerSetupRoutes(routeContext)
     registerRavenRoutes(routeContext)

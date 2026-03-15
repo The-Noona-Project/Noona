@@ -1,15 +1,55 @@
-// services/portal/storage/onboardingStore.mjs
+/**
+ * @fileoverview Persists onboarding tokens through Vault-backed Redis helpers with TTL support.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - routes/registerPortalRoutes.mjs
+ * - tests/portalApp.test.mjs
+ * Times this file has been edited: 4
+ */
 
 import crypto from 'node:crypto';
-import redis from '../../../utilities/database/redis/redisClient.mjs';
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
 const buildKey = (namespace, id) => `${namespace}:${id}`;
 
+/**
+ * Resolves the Vault Redis helpers required by the onboarding store.
+ *
+ * @param {object} vaultClient - Portal's Vault client.
+ * @returns {{redisDel: Function, redisGet: Function, redisSet: Function}} The Redis helper interface.
+ */
+const resolveVaultRedisHelpers = (vaultClient) => {
+    if (
+        typeof vaultClient?.redisSet !== 'function'
+        || typeof vaultClient?.redisGet !== 'function'
+        || typeof vaultClient?.redisDel !== 'function'
+    ) {
+        throw new Error('Vault Redis helpers are required when creating the Portal onboarding store.');
+    }
+
+    return {
+        redisSet: vaultClient.redisSet.bind(vaultClient),
+        redisGet: vaultClient.redisGet.bind(vaultClient),
+        redisDel: vaultClient.redisDel.bind(vaultClient),
+    };
+};
+
+/**
+ * Creates onboarding store.
+ *
+ * @param {object} options - Named function inputs.
+ * @param {string} [options.namespace] - Redis namespace for onboarding tokens.
+ * @param {number} [options.ttlSeconds] - Token time-to-live in seconds.
+ * @param {object} options.vaultClient - Vault client exposing Redis helpers.
+ * @returns {{consumeToken: Function, getToken: Function, namespace: string, setToken: Function, ttlSeconds: number}}
+ * The onboarding token store.
+ */
 export const createOnboardingStore = ({
                                           namespace = 'portal:onboarding',
                                           ttlSeconds = 900,
+                                          vaultClient,
                                       } = {}) => {
+    const {redisSet, redisGet, redisDel} = resolveVaultRedisHelpers(vaultClient);
     const generateToken = () => crypto.randomUUID();
 
     const setToken = async (discordId, payload = {}) => {
@@ -22,7 +62,7 @@ export const createOnboardingStore = ({
         const key = buildKey(namespace, token);
 
         try {
-            await redis.set(key, JSON.stringify(record), 'EX', ttlSeconds);
+            await redisSet(key, record, {ttl: ttlSeconds});
             log(`[Portal/Onboarding] Stored onboarding token for ${discordId}.`);
             return record;
         } catch (error) {
@@ -38,8 +78,7 @@ export const createOnboardingStore = ({
 
         const key = buildKey(namespace, token);
         try {
-            const raw = await redis.get(key);
-            return raw ? JSON.parse(raw) : null;
+            return await redisGet(key);
         } catch (error) {
             errMSG(`[Portal/Onboarding] Failed to load token ${token}: ${error.message}`);
             throw error;
@@ -57,7 +96,7 @@ export const createOnboardingStore = ({
         }
 
         try {
-            await redis.del(buildKey(namespace, token));
+            await redisDel(buildKey(namespace, token));
             log(`[Portal/Onboarding] Consumed onboarding token ${token}.`);
         } catch (error) {
             errMSG(`[Portal/Onboarding] Failed to consume token ${token}: ${error.message}`);

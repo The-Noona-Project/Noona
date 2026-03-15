@@ -1,4 +1,10 @@
-// services/portal/clients/kavitaClient.mjs
+/**
+ * @fileoverview Wraps Portal's Kavita HTTP calls for users, libraries, metadata, and login handoff flows.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * - tests/kavitaClient.test.mjs
+ * Times this file has been edited: 10
+ */
 
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
 
@@ -295,6 +301,12 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT) => {
     return {controller, cleanup};
 };
 
+/**
+ * Creates kavita client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createKavitaClient = ({
                                        baseUrl,
                                        apiKey,
@@ -440,6 +452,49 @@ export const createKavitaClient = ({
         }
 
         throw lastError ?? new Error('Unable to search Kavita titles.');
+    };
+
+    const fetchSeriesMetadataStatus = async ({
+                                                 matchStateOption = 0,
+                                                 libraryType = -1,
+                                                 searchTerm = '',
+                                                 pageNumber = 1,
+                                                 pageSize = 0,
+                                             } = {}) => {
+        const parsedMatchStateOption = Number.parseInt(String(matchStateOption), 10);
+        if (!Number.isInteger(parsedMatchStateOption) || parsedMatchStateOption < 0 || parsedMatchStateOption > 4) {
+            throw new Error('A valid metadata match state option is required.');
+        }
+
+        const parsedLibraryType = Number.parseInt(String(libraryType), 10);
+        if (!Number.isInteger(parsedLibraryType)) {
+            throw new Error('libraryType must be an integer.');
+        }
+
+        const parsedPageNumber = Number.parseInt(String(pageNumber), 10);
+        if (!Number.isInteger(parsedPageNumber) || parsedPageNumber < 1) {
+            throw new Error('pageNumber must be a positive integer.');
+        }
+
+        const parsedPageSize = Number.parseInt(String(pageSize), 10);
+        if (!Number.isInteger(parsedPageSize) || parsedPageSize < 0) {
+            throw new Error('pageSize must be zero or a positive integer.');
+        }
+
+        const payload = await request('/api/Manage/series-metadata', {
+            method: 'POST',
+            query: {
+                pageNumber: String(parsedPageNumber),
+                pageSize: String(parsedPageSize),
+            },
+            body: {
+                matchStateOption: parsedMatchStateOption,
+                libraryType: parsedLibraryType,
+                searchTerm: normalizeString(searchTerm),
+            },
+        });
+
+        return Array.isArray(payload) ? payload : [];
     };
 
     const fetchSeriesMetadataMatches = async (seriesId, {query} = {}) => {
@@ -1005,6 +1060,7 @@ export const createKavitaClient = ({
         fetchLibraries,
         fetchUser,
         searchTitles,
+        fetchSeriesMetadataStatus,
         fetchSeriesMetadataMatches,
         applySeriesMetadataMatch,
         setSeriesCover,

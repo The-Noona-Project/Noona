@@ -1,3 +1,12 @@
+/**
+ * Encapsulates Raven new title behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/controller/LibraryController.java
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/test/java/com/paxkun/raven/controller/LibraryControllerTest.java
+ * Times this file has been edited: 13
+ */
 package com.paxkun.raven.service.library;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
@@ -8,6 +17,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Represents a manga title stored in the Raven library.
@@ -71,7 +81,62 @@ public class NewTitle {
     private String type;
 
     /**
+     * Alternate names listed on the source title page.
+     */
+    private List<String> associatedNames;
+
+    /**
+     * Source-site release status (ex: Ongoing, Complete).
+     */
+    private String status;
+
+    /**
+     * Source-site release year or label.
+     */
+    private String released;
+
+    /**
+     * Whether the source marks this title as officially translated.
+     */
+    private Boolean officialTranslation;
+
+    /**
+     * Whether the source marks this title as having an anime adaptation.
+     */
+    private Boolean animeAdaptation;
+
+    /**
+     * Related series links scraped from the source title page.
+     */
+    private List<Map<String, String>> relatedSeries;
+
+    /**
      * Canonical downloaded chapter index used for missing-chapter detection.
      */
     private List<String> downloadedChapterNumbers;
+
+    /**
+     * Explicit Noona-owned chapter-to-volume assignments keyed by normalized chapter number.
+     */
+    private Map<String, Integer> chapterVolumeMap;
+
+    /**
+     * Canonical chapter-to-file index keyed by normalized chapter number.
+     */
+    private Map<String, String> downloadedChapterFiles;
+
+    /**
+     * Confirmed metadata match provider name.
+     */
+    private String metadataProvider;
+
+    /**
+     * Confirmed metadata match provider series id.
+     */
+    private String metadataProviderSeriesId;
+
+    /**
+     * Timestamp (ISO-8601) when Noona confirmed the metadata match.
+     */
+    private String metadataMatchedAt;
 }

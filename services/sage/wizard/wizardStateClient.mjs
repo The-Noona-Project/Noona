@@ -10,6 +10,7 @@ import {
     resolveWizardStateOperation,
     WIZARD_STEP_KEYS,
 } from './wizardStateSchema.mjs'
+import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs'
 
 const normalizeUrl = (candidate) => {
     if (!candidate || typeof candidate !== 'string') {
@@ -25,7 +26,7 @@ const normalizeUrl = (candidate) => {
         return trimmed
     }
 
-    return `http://${trimmed}`
+    return `https://${trimmed}`
 }
 
 const resolveDefaultVaultUrls = (env = process.env) => {
@@ -45,11 +46,11 @@ const resolveDefaultVaultUrls = (env = process.env) => {
     }
 
     candidates.push(
-        'http://noona-vault:3005',
-        'http://vault:3005',
-        'http://host.docker.internal:3005',
-        'http://127.0.0.1:3005',
-        'http://localhost:3005',
+        'https://noona-vault:3005',
+        'https://vault:3005',
+        'https://host.docker.internal:3005',
+        'https://127.0.0.1:3005',
+        'https://localhost:3005',
     )
 
     return Array.from(
@@ -72,6 +73,41 @@ const parseJson = async (response) => {
     } catch {
         return {}
     }
+}
+
+const EXPECTED_WIZARD_TRUST_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM'])
+
+const normalizeErrorMessage = (error) =>
+    error instanceof Error ? error.message : String(error)
+
+const readErrorCode = (error) =>
+    error && typeof error === 'object' && typeof error.code === 'string'
+        ? error.code
+        : ''
+
+const isExpectedWizardTrustFallbackError = (error) => {
+    const code = readErrorCode(error)
+    const message = normalizeErrorMessage(error)
+    if (EXPECTED_WIZARD_TRUST_ERROR_CODES.has(code)) {
+        return true
+    }
+
+    return /VAULT_CA_CERT_PATH is required/i.test(message)
+        || /The configured Vault CA file could not be read/i.test(message)
+        || /Unable to read Vault CA certificate .*?(ENOENT|EACCES|EPERM|no such file or directory|permission denied)/i.test(message)
+}
+
+const wrapWizardTrustFailure = (error) => {
+    if (error && typeof error === 'object' && error.wizardTrustFailure === true) {
+        return error
+    }
+
+    const wrapped = new Error(normalizeErrorMessage(error))
+    wrapped.code = readErrorCode(error) || undefined
+    wrapped.cause = error
+    wrapped.wizardTrustFailure = true
+    wrapped.expectedLocalFallback = isExpectedWizardTrustFallbackError(error)
+    return wrapped
 }
 
 const stampState = (state) => {
@@ -103,6 +139,7 @@ export const createWizardStateClient = ({
     logger = {},
     serviceName = env?.SERVICE_NAME || 'noona-sage',
     timeoutMs = 10000,
+                                            trustVaultUrl = ensureTrustedCaForUrl,
 } = {}) => {
     if (!token || typeof token !== 'string' || !token.trim()) {
         throw new Error('Vault API token is required to manage wizard state.')
@@ -127,9 +164,31 @@ export const createWizardStateClient = ({
     }
 
     let preferredBaseUrl = deduped[0]
+    const loggedTrustFallbacks = new Set()
+
+    const logTrustFallbackOnce = (action, error) => {
+        const message = normalizeErrorMessage(error)
+        const key = `${action}:${message}`
+        if (loggedTrustFallbacks.has(key)) {
+            return
+        }
+
+        loggedTrustFallbacks.add(key)
+        if (error?.expectedLocalFallback === true) {
+            logger.debug?.(
+                `[${serviceName}] Wizard state ${action} is using local fallback until Vault TLS trust material is ready (key=${redisKey}): ${message}`,
+            )
+            return
+        }
+
+        logger.warn?.(
+            `[${serviceName}] Wizard state ${action} is using local fallback because Vault trust setup failed (key=${redisKey}): ${message}`,
+        )
+    }
 
     const request = async (packet) => {
         const errors = []
+        const failures = []
         const candidates = preferredBaseUrl
             ? [preferredBaseUrl, ...deduped.filter((url) => url !== preferredBaseUrl)]
             : deduped
@@ -139,7 +198,13 @@ export const createWizardStateClient = ({
             const controller = new AbortController()
             const timer = setTimeout(() => controller.abort(), timeoutMs)
             try {
-                const response = await fetchImpl(new URL('/v1/vault/handle', candidate).toString(), {
+                const requestUrl = new URL('/v1/vault/handle', candidate).toString()
+                try {
+                    trustVaultUrl(requestUrl, {env})
+                } catch (error) {
+                    throw wrapWizardTrustFailure(error)
+                }
+                const response = await fetchImpl(requestUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -162,14 +227,22 @@ export const createWizardStateClient = ({
                 preferredBaseUrl = candidate
                 return payload
             } catch (error) {
-                const message = error instanceof Error ? error.message : String(error)
+                const message = normalizeErrorMessage(error)
                 errors.push(`${candidate} (${message})`)
+                failures.push(error)
             } finally {
                 clearTimeout(timer)
             }
         }
 
-        throw new Error(`All Vault endpoints failed: ${errors.join(' | ')}`)
+        const requestError = new Error(`All Vault endpoints failed: ${errors.join(' | ')}`)
+        requestError.cause = failures[0] ?? null
+        if (failures.length > 0 && failures.every((entry) => entry?.wizardTrustFailure === true)) {
+            requestError.wizardTrustFailure = true
+            requestError.expectedLocalFallback = failures.every((entry) => entry?.expectedLocalFallback === true)
+        }
+
+        throw requestError
     }
 
     const loadState = async ({ fallbackToDefault = true } = {}) => {
@@ -191,11 +264,13 @@ export const createWizardStateClient = ({
                 return null
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
+            const message = normalizeErrorMessage(error)
             if (!fallbackToDefault) {
                 throw error
             }
-            if (/key not found in redis/i.test(message)) {
+            if (error?.wizardTrustFailure === true) {
+                logTrustFallbackOnce('load', error)
+            } else if (/key not found in redis/i.test(message)) {
                 logger.debug?.(`[${serviceName}] ℹ️ Wizard state not found in Vault, returning defaults.`)
             } else {
                 logger.warn?.(`[${serviceName}] Wizard state load failed (key=${redisKey}): ${message}`)
@@ -215,8 +290,12 @@ export const createWizardStateClient = ({
             })
             logger.debug?.(`[${serviceName}] 💾 Persisted wizard state to Vault (key=${redisKey}).`)
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            logger.warn?.(`[${serviceName}] Wizard state persistence failed (key=${redisKey}): ${message}`)
+            const message = normalizeErrorMessage(error)
+            if (error?.wizardTrustFailure === true) {
+                logTrustFallbackOnce('persistence', error)
+            } else {
+                logger.warn?.(`[${serviceName}] Wizard state persistence failed (key=${redisKey}): ${message}`)
+            }
         }
 
         localState = payload

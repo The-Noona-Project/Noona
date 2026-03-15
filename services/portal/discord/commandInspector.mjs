@@ -1,3 +1,12 @@
+/**
+ * @fileoverview Inspects Discord application commands and formats inventory reports.
+ * Related files:
+ * - commands/index.mjs
+ * - scripts/listCommands.mjs
+ * - tests/commandInspector.test.mjs
+ * Times this file has been edited: 2
+ */
+
 import {REST, Routes} from 'discord.js';
 
 const normalizeString = value => {
@@ -22,6 +31,12 @@ const sortByName = (left, right) => {
     return leftName.localeCompare(rightName);
 };
 
+/**
+ * Resolves Discord command inspection configuration from environment variables.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const resolveDiscordCommandConfig = ({env = process.env} = {}) => {
     const token = normalizeString(env.DISCORD_BOT_TOKEN);
     const clientId = normalizeString(env.DISCORD_CLIENT_ID);
@@ -49,6 +64,12 @@ export const resolveDiscordCommandConfig = ({env = process.env} = {}) => {
     });
 };
 
+/**
+ * Loads the current application command inventory from Discord.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {Promise<*>} The asynchronous result.
+ */
 export const listApplicationCommands = async ({
                                                   token,
                                                   clientId,
@@ -88,6 +109,12 @@ export const listApplicationCommands = async ({
     };
 };
 
+/**
+ * Summarizes local and remote command definitions for inspection output.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const summarizeCommandInventory = ({
                                               clientId,
                                               guildId = null,
@@ -118,6 +145,12 @@ const formatCommandLine = command => {
     return `- /${name} :: ${description} [id: ${id}]`;
 };
 
+/**
+ * Formats a command inventory summary for console output.
+ *
+ * @param {*} inventory - Input passed to the function.
+ * @returns {string} The formatted output string.
+ */
 export const formatCommandInventory = (inventory = {}) => {
     const summary = summarizeCommandInventory(inventory);
     const lines = [

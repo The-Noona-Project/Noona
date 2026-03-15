@@ -9,6 +9,7 @@ type SubscriptionRecord = {
     id?: string | null;
     title?: string | null;
     titleQuery?: string | null;
+    titleUuid?: string | null;
     status?: string | null;
     subscribedAt?: string | null;
     unsubscribedAt?: string | null;

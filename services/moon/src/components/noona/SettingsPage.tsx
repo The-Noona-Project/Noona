@@ -49,6 +49,7 @@ import {
     type SettingsViewId as ViewId,
     TAB_LABELS,
 } from "./settings";
+import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -165,6 +166,14 @@ type DownloadNamingSettings = {
     pageTemplate?: string | null;
     pagePad?: number | null;
     chapterPad?: number | null;
+    volumePad?: number | null;
+    updatedAt?: string | null;
+    error?: string;
+};
+
+type DiscordOnboardingMessageSettings = {
+    key?: string | null;
+    template?: string | null;
     updatedAt?: string | null;
     error?: string;
 };
@@ -172,7 +181,15 @@ type DownloadNamingSettings = {
 type DownloadWorkerSettings = {
     key?: string | null;
     threadRateLimitsKbps?: number[] | null;
+    cpuCoreIds?: number[] | null;
     updatedAt?: string | null;
+    error?: string;
+};
+
+type RavenWorkerRuntimeSummary = {
+    workerExecutionMode?: string | null;
+    workerCpuCoreIds?: number[] | null;
+    availableCpuIds?: number[] | null;
     error?: string;
 };
 
@@ -201,6 +218,7 @@ type DownloadVpnSettings = {
     key?: string | null;
     provider?: string | null;
     enabled?: boolean;
+    onlyDownloadWhenVpnOn?: boolean;
     autoRotate?: boolean;
     rotateEveryMinutes?: number | null;
     region?: string | null;
@@ -374,12 +392,55 @@ const TOKENS = [
     "{type_slug}",
     "{chapter}",
     "{chapter_padded}",
+    "{volume}",
+    "{volume_padded}",
     "{pages}",
     "{domain}",
     "{page}",
     "{page_padded}",
     "{ext}",
 ];
+const DEFAULT_DISCORD_ONBOARDING_TEMPLATE = [
+    "Welcome to {guild_name}!",
+    "",
+    "Start with Moon: {moon_url}",
+    "Read in Kavita: {kavita_url}",
+    "",
+    "Use the website onboarding flow to create your library access.",
+    "Server: {server_ip}",
+].join("\n");
+const DISCORD_ONBOARDING_PLACEHOLDERS = [
+    {
+        token: "{guild_name}",
+        label: "Guild name",
+        description: "Guild name from the latest successful Discord connection test in this browser session.",
+    },
+    {
+        token: "{guild_id}",
+        label: "Guild ID",
+        description: "Current Portal DISCORD_GUILD_ID value.",
+    },
+    {
+        token: "{moon_url}",
+        label: "Moon URL",
+        description: "Moon's published host URL from the current stack service catalog.",
+    },
+    {
+        token: "{kavita_url}",
+        label: "Kavita URL",
+        description: "Portal KAVITA_EXTERNAL_URL when set, otherwise Kavita's published host URL.",
+    },
+    {
+        token: "{server_ip}",
+        label: "Server IP",
+        description: "Warden SERVER_IP value from the updater settings.",
+    },
+] as const;
+type DiscordOnboardingPlaceholderToken = (typeof DISCORD_ONBOARDING_PLACEHOLDERS)[number]["token"];
+type DiscordOnboardingPreviewResult = {
+    preview: string;
+    unresolvedPlaceholders: string[];
+};
 
 const PORTAL_JOIN_DEFAULT_KEYS = new Set([
     "PORTAL_JOIN_DEFAULT_ROLES",
@@ -392,11 +453,11 @@ const PORTAL_DISCORD_KEYS = new Set([
     "DISCORD_GUILD_ID",
     "DISCORD_GUILD_ROLE_ID",
     "DISCORD_DEFAULT_ROLE_ID",
+    "DISCORD_SUPERUSER_ID",
 ]);
 const PORTAL_COMMAND_ACCESS_KEYS = new Set([
     "REQUIRED_GUILD_ID",
     "REQUIRED_ROLE_DING",
-    "REQUIRED_ROLE_JOIN",
     "REQUIRED_ROLE_SCAN",
     "REQUIRED_ROLE_SEARCH",
     "REQUIRED_ROLE_RECOMMEND",
@@ -441,20 +502,6 @@ const STORAGE_LABELS: Record<string, string> = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-const normalizeSetupSelection = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return [];
-
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const entry of value) {
-        const normalized = normalizeString(entry).trim();
-        if (!normalized || seen.has(normalized)) continue;
-        seen.add(normalized);
-        out.push(normalized);
-    }
-
-    return out;
-};
 const parseBooleanEnvFlag = (value: unknown): boolean => {
     const normalized = normalizeString(value).trim().toLowerCase();
     if (!normalized) return false;
@@ -801,6 +848,89 @@ const FACTORY_RESET_REQUIRED_SERVICES = ["noona-warden", "noona-sage", "noona-mo
 const BG_SURFACE = "surface" as const;
 const BG_NEUTRAL_ALPHA_WEAK = "neutral-alpha-weak" as const;
 const BG_WARNING_ALPHA_WEAK = "warning-alpha-weak" as const;
+const DISCORD_ONBOARDING_PLACEHOLDER_SET = new Set<string>(
+    DISCORD_ONBOARDING_PLACEHOLDERS.map((entry) => entry.token),
+);
+const DISCORD_ONBOARDING_PLACEHOLDER_PATTERN = /\{[a-z0-9_]+\}/gi;
+
+const collectDistinctDiscordOnboardingPlaceholders = (template: string): string[] => {
+    const matches = template.match(DISCORD_ONBOARDING_PLACEHOLDER_PATTERN) ?? [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+
+    for (const entry of matches) {
+        const token = entry.trim();
+        if (!token || seen.has(token)) continue;
+        seen.add(token);
+        out.push(token);
+    }
+
+    return out;
+};
+const resolvePublishedServiceUrl = (
+    serviceName: string,
+    editors: Record<string, ServiceEditorState>,
+    catalogByName: Map<string, ServiceCatalogEntry>,
+): string =>
+    normalizeString(editors[serviceName]?.config?.hostServiceUrl ?? catalogByName.get(serviceName)?.hostServiceUrl).trim();
+const resolveDiscordOnboardingPreview = (
+    template: string,
+    values: Partial<Record<DiscordOnboardingPlaceholderToken, string>>,
+): DiscordOnboardingPreviewResult => {
+    let preview = template;
+    const unresolvedPlaceholders: string[] = [];
+
+    for (const placeholder of DISCORD_ONBOARDING_PLACEHOLDERS) {
+        const token = placeholder.token;
+        if (!template.includes(token)) {
+            continue;
+        }
+
+        const value = normalizeString(values[token]).trim();
+        if (value) {
+            preview = preview.split(token).join(value);
+            continue;
+        }
+
+        unresolvedPlaceholders.push(token);
+    }
+
+    for (const token of collectDistinctDiscordOnboardingPlaceholders(template)) {
+        if (!DISCORD_ONBOARDING_PLACEHOLDER_SET.has(token)) {
+            unresolvedPlaceholders.push(token);
+        }
+    }
+
+    return {
+        preview,
+        unresolvedPlaceholders: Array.from(new Set(unresolvedPlaceholders)),
+    };
+};
+const copyTextToClipboard = async (value: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+    }
+
+    if (typeof document === "undefined") {
+        throw new Error("Clipboard copy is unavailable in this browser.");
+    }
+
+    const element = document.createElement("textarea");
+    element.value = value;
+    element.setAttribute("readonly", "true");
+    element.style.position = "fixed";
+    element.style.opacity = "0";
+    document.body.appendChild(element);
+    element.select();
+
+    const copied = document.execCommand("copy");
+    document.body.removeChild(element);
+
+    if (!copied) {
+        throw new Error("Clipboard copy is unavailable in this browser.");
+    }
+};
 
 type SettingsPageProps = {
     selection: SettingsRouteSelection;
@@ -860,16 +990,20 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [namingError, setNamingError] = useState<string | null>(null);
     const [namingMessage, setNamingMessage] = useState<string | null>(null);
     const [titleTemplate, setTitleTemplate] = useState("{title}");
-    const [chapterTemplate, setChapterTemplate] = useState("Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
+    const [chapterTemplate, setChapterTemplate] = useState("{title} c{chapter} (v{volume}) [Noona].cbz");
     const [pageTemplate, setPageTemplate] = useState("{page_padded}{ext}");
     const [pagePad, setPagePad] = useState("3");
-    const [chapterPad, setChapterPad] = useState("4");
+    const [chapterPad, setChapterPad] = useState("3");
+    const [volumePad, setVolumePad] = useState("2");
     const [downloadWorkerSettingsLoading, setDownloadWorkerSettingsLoading] = useState(false);
     const [downloadWorkerSettingsSaving, setDownloadWorkerSettingsSaving] = useState(false);
     const [downloadWorkerSettingsError, setDownloadWorkerSettingsError] = useState<string | null>(null);
     const [downloadWorkerSettingsMessage, setDownloadWorkerSettingsMessage] = useState<string | null>(null);
     const [downloadWorkerSettingsUpdatedAt, setDownloadWorkerSettingsUpdatedAt] = useState<string | null>(null);
     const [downloadWorkerRateLimits, setDownloadWorkerRateLimits] = useState<string[]>([THREAD_RATE_LIMIT_UNLIMITED]);
+    const [downloadWorkerCpuCoreIds, setDownloadWorkerCpuCoreIds] = useState<string[]>([CPU_CORE_UNPINNED]);
+    const [downloadWorkerAvailableCpuIds, setDownloadWorkerAvailableCpuIds] = useState<number[]>([]);
+    const [downloadWorkerExecutionMode, setDownloadWorkerExecutionMode] = useState<string>("thread");
     const [vpnLoading, setVpnLoading] = useState(false);
     const [vpnSaving, setVpnSaving] = useState(false);
     const [vpnRotating, setVpnRotating] = useState(false);
@@ -877,6 +1011,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [vpnError, setVpnError] = useState<string | null>(null);
     const [vpnMessage, setVpnMessage] = useState<string | null>(null);
     const [vpnEnabled, setVpnEnabled] = useState(false);
+    const [vpnOnlyDownloadWhenOn, setVpnOnlyDownloadWhenOn] = useState(false);
     const [vpnAutoRotate, setVpnAutoRotate] = useState(true);
     const [vpnRotateEveryMinutes, setVpnRotateEveryMinutes] = useState(DEFAULT_VPN_ROTATE_MINUTES);
     const [vpnRegion, setVpnRegion] = useState(DEFAULT_VPN_REGION);
@@ -905,6 +1040,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [discordValidating, setDiscordValidating] = useState(false);
     const [discordValidation, setDiscordValidation] = useState<DiscordSetupResponse | null>(null);
     const [discordValidationError, setDiscordValidationError] = useState<string | null>(null);
+    const [discordOnboardingLoading, setDiscordOnboardingLoading] = useState(false);
+    const [discordOnboardingSaving, setDiscordOnboardingSaving] = useState(false);
+    const [discordOnboardingError, setDiscordOnboardingError] = useState<string | null>(null);
+    const [discordOnboardingMessage, setDiscordOnboardingMessage] = useState<string | null>(null);
+    const [discordOnboardingTemplate, setDiscordOnboardingTemplate] = useState(DEFAULT_DISCORD_ONBOARDING_TEMPLATE);
+    const [discordOnboardingUpdatedAt, setDiscordOnboardingUpdatedAt] = useState<string | null>(null);
     const [factoryResetConfirmation, setFactoryResetConfirmation] = useState("");
     const [factoryResetBusy, setFactoryResetBusy] = useState(false);
     const [factoryResetDeleteRavenDownloads, setFactoryResetDeleteRavenDownloads] = useState(false);
@@ -1074,6 +1215,36 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const portalEnvConfig = Array.isArray(portalEditor.config?.envConfig) ? portalEditor.config.envConfig : [];
     const portalDiscordFields = portalEnvConfig.filter((entry) => PORTAL_DISCORD_KEYS.has(normalizeString(entry?.key).trim()));
     const portalAccessFields = portalEnvConfig.filter((entry) => PORTAL_COMMAND_ACCESS_KEYS.has(normalizeString(entry?.key).trim()));
+    const discordGuildId = normalizeString(portalEditor.envDraft.DISCORD_GUILD_ID).trim();
+    const discordValidatedGuildName = useMemo(() => {
+        const validationGuildName = normalizeString(discordValidation?.guild?.name).trim();
+        const validationGuildId = normalizeString(discordValidation?.guild?.id).trim();
+        if (validationGuildName && (!discordGuildId || !validationGuildId || validationGuildId === discordGuildId)) {
+            return validationGuildName;
+        }
+
+        const guilds = Array.isArray(discordValidation?.guilds) ? discordValidation.guilds : [];
+        const matchedGuild = guilds.find((entry) => normalizeString(entry?.id).trim() === discordGuildId);
+        return normalizeString(matchedGuild?.name).trim();
+    }, [discordGuildId, discordValidation]);
+    const moonPublishedUrl = resolvePublishedServiceUrl("noona-moon", editors, catalogByName);
+    const fallbackKavitaPublishedUrl = resolvePublishedServiceUrl("noona-kavita", editors, catalogByName);
+    const kavitaPreviewUrl = normalizeString(portalEditor.envDraft.KAVITA_EXTERNAL_URL).trim() || fallbackKavitaPublishedUrl;
+    const serverIpPreviewValue = normalizeString(wardenEditor.envDraft.SERVER_IP).trim();
+    const discordOnboardingPlaceholderValues = useMemo(
+        (): Record<DiscordOnboardingPlaceholderToken, string> => ({
+            "{guild_name}": discordValidatedGuildName,
+            "{guild_id}": discordGuildId,
+            "{moon_url}": moonPublishedUrl,
+            "{kavita_url}": kavitaPreviewUrl,
+            "{server_ip}": serverIpPreviewValue,
+        }),
+        [discordGuildId, discordValidatedGuildName, kavitaPreviewUrl, moonPublishedUrl, serverIpPreviewValue],
+    );
+    const discordOnboardingPreview = useMemo(
+        () => resolveDiscordOnboardingPreview(discordOnboardingTemplate, discordOnboardingPlaceholderValues),
+        [discordOnboardingPlaceholderValues, discordOnboardingTemplate],
+    );
     const komfEditor = editors["noona-komf"] ?? defaultEditor();
     const komfEnvConfig = Array.isArray(komfEditor.config?.envConfig) ? komfEditor.config.envConfig : [];
     const kavitaUsersByIdentity = useMemo(() => {
@@ -1330,6 +1501,78 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setDiscordValidating(false);
         }
     };
+    const loadDiscordOnboardingMessage = async () => {
+        setDiscordOnboardingLoading(true);
+        setDiscordOnboardingError(null);
+        setDiscordOnboardingMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/discord/onboarding-message", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as DiscordOnboardingMessageSettings | null;
+            if (!res.ok) {
+                setDiscordOnboardingError(parseError(json, `Failed to load onboarding message (HTTP ${res.status}).`));
+                return;
+            }
+
+            setDiscordOnboardingTemplate(
+                typeof json?.template === "string" && json.template.trim()
+                    ? json.template
+                    : DEFAULT_DISCORD_ONBOARDING_TEMPLATE,
+            );
+            setDiscordOnboardingUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordOnboardingError(msg);
+        } finally {
+            setDiscordOnboardingLoading(false);
+        }
+    };
+    const saveDiscordOnboardingMessage = async () => {
+        if (!discordOnboardingTemplate.trim()) {
+            setDiscordOnboardingError("Template must not be empty.");
+            setDiscordOnboardingMessage(null);
+            return;
+        }
+
+        setDiscordOnboardingSaving(true);
+        setDiscordOnboardingError(null);
+        setDiscordOnboardingMessage(null);
+        try {
+            const res = await fetch("/api/noona/settings/discord/onboarding-message", {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({template: discordOnboardingTemplate}),
+            });
+            const json = (await res.json().catch(() => null)) as DiscordOnboardingMessageSettings | null;
+            if (!res.ok) {
+                setDiscordOnboardingError(parseError(json, `Failed to save onboarding message (HTTP ${res.status}).`));
+                return;
+            }
+
+            setDiscordOnboardingTemplate(
+                typeof json?.template === "string" && json.template.trim()
+                    ? json.template
+                    : discordOnboardingTemplate,
+            );
+            setDiscordOnboardingUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
+            setDiscordOnboardingMessage("Onboarding message saved.");
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordOnboardingError(msg);
+        } finally {
+            setDiscordOnboardingSaving(false);
+        }
+    };
+    const copyDiscordOnboardingPreview = async () => {
+        setDiscordOnboardingError(null);
+        setDiscordOnboardingMessage(null);
+        try {
+            await copyTextToClipboard(discordOnboardingPreview.preview);
+            setDiscordOnboardingMessage("Preview copied.");
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setDiscordOnboardingError(msg);
+        }
+    };
     const updateEcosystemState = async (
         action: "start" | "stop" | "restart",
         options: { body?: Record<string, unknown>; successMessage?: string } = {},
@@ -1420,26 +1663,22 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             const version = Number(parsed.version);
-            if (version !== 1 && version !== 2) {
+            if (version !== 1 && version !== 2 && version !== 3) {
                 throw new Error("Unsupported settings JSON version.");
             }
 
             const saveResponse = await fetch("/api/noona/setup/config", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(parsed),
+                body: JSON.stringify({...parsed, apply: false}),
             });
             const savePayload = (await saveResponse.json().catch(() => null)) as SetupConfigSnapshotResponse | null;
             if (!saveResponse.ok) {
                 throw new Error(parseError(savePayload, `Failed to load settings JSON (HTTP ${saveResponse.status}).`));
             }
 
-            const selectedServices = normalizeSetupSelection(savePayload?.selected ?? parsed.selected);
             const restarted = await updateEcosystemState("restart", {
-                body: {
-                    forceFull: true,
-                    ...(selectedServices.length > 0 ? {services: selectedServices} : {}),
-                },
+                body: {},
                 successMessage: "Loaded settings JSON and sent ecosystem restart.",
             });
             if (!restarted) {
@@ -1590,10 +1829,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setTitleTemplate(normalizeString(json?.titleTemplate).trim() || "{title}");
-            setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
+            setChapterTemplate(normalizeString(json?.chapterTemplate).trim() || "{title} c{chapter} (v{volume}) [Noona].cbz");
             setPageTemplate(normalizeString(json?.pageTemplate).trim() || "{page_padded}{ext}");
             setPagePad(String(Number.isFinite(Number(json?.pagePad)) && Number(json?.pagePad) > 0 ? Math.floor(Number(json?.pagePad)) : 3));
-            setChapterPad(String(Number.isFinite(Number(json?.chapterPad)) && Number(json?.chapterPad) > 0 ? Math.floor(Number(json?.chapterPad)) : 4));
+            setChapterPad(String(Number.isFinite(Number(json?.chapterPad)) && Number(json?.chapterPad) > 0 ? Math.floor(Number(json?.chapterPad)) : 3));
+            setVolumePad(String(Number.isFinite(Number(json?.volumePad)) && Number(json?.volumePad) > 0 ? Math.floor(Number(json?.volumePad)) : 2));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setNamingError(msg);
@@ -1616,6 +1856,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     pageTemplate,
                     pagePad: Number(pagePad),
                     chapterPad: Number(chapterPad),
+                    volumePad: Number(volumePad),
                 }),
             });
             const json = await res.json().catch(() => null);
@@ -1632,6 +1873,25 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
+    const loadDownloadWorkerRuntimeSummary = async () => {
+        try {
+            const res = await fetch("/api/noona/raven/downloads/summary", {cache: "no-store"});
+            const json = (await res.json().catch(() => null)) as RavenWorkerRuntimeSummary | null;
+            if (!res.ok) {
+                return;
+            }
+
+            const availableCpuIds = Array.isArray(json?.availableCpuIds)
+                ? json.availableCpuIds.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
+                : [];
+            setDownloadWorkerAvailableCpuIds(availableCpuIds);
+            setDownloadWorkerExecutionMode(normalizeString(json?.workerExecutionMode).trim() || "thread");
+        } catch {
+            setDownloadWorkerAvailableCpuIds([]);
+            setDownloadWorkerExecutionMode("thread");
+        }
+    };
+
     const loadDownloadWorkerSettings = async () => {
         setDownloadWorkerSettingsLoading(true);
         setDownloadWorkerSettingsError(null);
@@ -1645,7 +1905,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setDownloadWorkerRateLimits(normalizeThreadRateLimitDrafts(json?.threadRateLimitsKbps, ravenThreadCount));
+            setDownloadWorkerCpuCoreIds(normalizeCpuCoreIdDrafts(json?.cpuCoreIds, ravenThreadCount));
             setDownloadWorkerSettingsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+            await loadDownloadWorkerRuntimeSummary();
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setDownloadWorkerSettingsError(msg);
@@ -1660,11 +1922,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
         setDownloadWorkerSettingsMessage(null);
         try {
             const normalizedRateLimits = normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount);
+            const normalizedCpuCoreIds = normalizeCpuCoreIdDrafts(downloadWorkerCpuCoreIds, ravenThreadCount);
             const res = await fetch("/api/noona/settings/downloads/workers", {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     threadRateLimitsKbps: normalizedRateLimits,
+                    cpuCoreIds: normalizedCpuCoreIds,
                 }),
             });
             const json = (await res.json().catch(() => null)) as DownloadWorkerSettings | null;
@@ -1674,8 +1938,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setDownloadWorkerRateLimits(normalizeThreadRateLimitDrafts(json?.threadRateLimitsKbps, ravenThreadCount));
+            setDownloadWorkerCpuCoreIds(normalizeCpuCoreIdDrafts(json?.cpuCoreIds, ravenThreadCount));
             setDownloadWorkerSettingsUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
-            setDownloadWorkerSettingsMessage("Thread speed limits saved.");
+            await loadDownloadWorkerRuntimeSummary();
+            setDownloadWorkerSettingsMessage("Worker settings saved.");
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setDownloadWorkerSettingsError(msg);
@@ -1717,6 +1983,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
             }
 
             setVpnEnabled(json?.enabled === true);
+            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
             setVpnAutoRotate(json?.autoRotate !== false);
             setVpnRotateEveryMinutes(
                 String(
@@ -1758,6 +2025,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     enabled: vpnEnabled,
+                    onlyDownloadWhenVpnOn: vpnOnlyDownloadWhenOn,
                     autoRotate: vpnAutoRotate,
                     rotateEveryMinutes,
                     region: vpnRegion,
@@ -1773,6 +2041,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
             setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
             setVpnEnabled(json?.enabled === true);
+            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
             setVpnAutoRotate(json?.autoRotate !== false);
             setVpnRotateEveryMinutes(
                 String(
@@ -2826,7 +3095,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
             void loadUpdates();
             return;
         }
-        if (activeView === "discord" || activeView === "kavita") {
+        if (activeView === "discord") {
+            ensureServiceConfigGroupLoaded(["noona-portal", "noona-warden"]);
+            void loadDiscordOnboardingMessage();
+            return;
+        }
+        if (activeView === "kavita") {
             ensureServiceConfigLoaded("noona-portal");
             return;
         }
@@ -2854,6 +3128,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
     useEffect(() => {
         setDownloadWorkerRateLimits((prev) => normalizeThreadRateLimitDrafts(prev, ravenThreadCount));
+        setDownloadWorkerCpuCoreIds((prev) => normalizeCpuCoreIdDrafts(prev, ravenThreadCount));
     }, [ravenThreadCount]);
 
     useEffect(() => {
@@ -3175,7 +3450,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 {renderFieldBlock(
                                     "Discord bot",
                                     portalDiscordFields,
-                                    "These values control which Discord application Portal logs into and which Discord role is assigned after /join.",
+                                    "These values control which Discord application Portal logs into and which Discord role is assigned after website onboarding.",
                                     "discord",
                                 )}
                             </Column>
@@ -3231,14 +3506,14 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
                         <Column gap="12">
                             <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                <Heading as="h3" variant="heading-strong-l">Join defaults</Heading>
+                                <Heading as="h3" variant="heading-strong-l">Website onboarding defaults</Heading>
                                 <Button variant="secondary" disabled={portalJoinOptionsLoading}
                                         onClick={() => void loadPortalJoinOptions()}>
                                     {portalJoinOptionsLoading ? "Loading..." : "Reload choices"}
                                 </Button>
                             </Row>
                             <Text onBackground="neutral-weak" variant="body-default-xs">
-                                These defaults are applied when `/join` creates a Kavita account from Discord.
+                                These defaults are applied when website onboarding provisions a Kavita account.
                             </Text>
                             {portalJoinOptionsError && (
                                 <Text onBackground="danger-strong"
@@ -3249,7 +3524,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     <Text onBackground="neutral-weak" variant="label-default-s">Kavita role
                                         reference</Text>
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
-                                        These are the Kavita roles Portal can assign through `/join`, with a short
+                                        These are the Kavita roles Portal can assign during website onboarding, with a
+                                        short
                                         summary of what each one unlocks.
                                     </Text>
                                     <Column gap="8">
@@ -3285,7 +3561,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     <Input
                                         id={`${currentService}:join:${normalizeString(portalJoinRoleField.key).trim()}`}
                                         name={`${currentService}:join:${normalizeString(portalJoinRoleField.key).trim()}`}
-                                        label={normalizeString(portalJoinRoleField.label).trim() || "Default /join Roles"}
+                                        label={normalizeString(portalJoinRoleField.label).trim() || "Website onboarding default roles"}
                                         value={getFieldValue(portalJoinRoleField)}
                                         onChange={(event) =>
                                             updateEnvDraft(
@@ -3324,7 +3600,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     <Input
                                         id={`${currentService}:join:${normalizeString(portalJoinLibraryField.key).trim()}`}
                                         name={`${currentService}:join:${normalizeString(portalJoinLibraryField.key).trim()}`}
-                                        label={normalizeString(portalJoinLibraryField.label).trim() || "Default /join Libraries"}
+                                        label={normalizeString(portalJoinLibraryField.label).trim() || "Website onboarding default libraries"}
                                         value={getFieldValue(portalJoinLibraryField)}
                                         onChange={(event) =>
                                             updateEnvDraft(
@@ -4196,6 +4472,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             <code>{`{chapter}`}</code> now uses the configured chapter
                             padding. <code>{`{chapter_padded}`}</code> remains available as the same padded value.
                         </Text>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            <code>{`{volume}`}</code> uses the stored Noona volume map when one exists and falls back
+                            to volume 1. <code>{`{volume_padded}`}</code> uses the configured volume padding width.
+                        </Text>
                         {namingError &&
                             <Text onBackground="danger-strong" variant="body-default-xs">{namingError}</Text>}
                         {namingMessage &&
@@ -4211,6 +4491,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                    onChange={(event) => setPagePad(event.target.value)}/>
                             <Input id="chapterPad" name="chapterPad" label="Chapter padding" type="number"
                                    value={chapterPad} onChange={(event) => setChapterPad(event.target.value)}/>
+                            <Input id="volumePad" name="volumePad" label="Volume padding" type="number"
+                                   value={volumePad} onChange={(event) => setVolumePad(event.target.value)}/>
                         </Row>
                     </Column>
                 </Card>
@@ -4219,15 +4501,23 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     <Column gap="12">
                         <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
                             <Column gap="4">
-                                <Heading as="h2" variant="heading-strong-l">Thread speed limits</Heading>
+                                <Heading as="h2" variant="heading-strong-l">Worker lanes</Heading>
                                 <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                    Set a per-thread download cap in KB/s, or type values like 10mb or 1gb. Use -1 for
-                                    unlimited speed.
+                                    Set a per-worker download cap in KB/s and an optional Linux CPU core ID. Use -1
+                                    for unlimited speed or an unpinned worker slot.
                                 </Text>
                                 <Text onBackground="neutral-weak" variant="body-default-xs">
                                     Raven is currently configured
                                     for {ravenThreadCount} thread{ravenThreadCount === 1 ? "" : "s"}.
                                 </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Execution mode: {downloadWorkerExecutionMode || "thread"}
+                                </Text>
+                                {downloadWorkerAvailableCpuIds.length > 0 && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                        Available CPU IDs: {downloadWorkerAvailableCpuIds.join(", ")}
+                                    </Text>
+                                )}
                                 {downloadWorkerSettingsUpdatedAt && (
                                     <Text onBackground="neutral-weak" variant="body-default-xs">
                                         Updated {formatIso(downloadWorkerSettingsUpdatedAt)}
@@ -4244,7 +4534,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                     disabled={downloadWorkerSettingsLoading || downloadWorkerSettingsSaving}
                                     onClick={() => void saveDownloadWorkerSettings()}
                                 >
-                                    {downloadWorkerSettingsSaving ? "Saving..." : "Save speed limits"}
+                                    {downloadWorkerSettingsSaving ? "Saving..." : "Save worker settings"}
                                 </Button>
                             </Row>
                         </Row>
@@ -4252,23 +4542,67 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                                               variant="body-default-xs">{downloadWorkerSettingsError}</Text>}
                         {downloadWorkerSettingsMessage && <Text onBackground="neutral-weak"
                                                                 variant="body-default-xs">{downloadWorkerSettingsMessage}</Text>}
+                        {downloadWorkerAvailableCpuIds.length > 0 && (
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                {downloadWorkerAvailableCpuIds.map((cpuId) => (
+                                    <Badge key={`raven-worker-cpu-${cpuId}`} background={BG_NEUTRAL_ALPHA_WEAK}
+                                           onBackground="neutral-strong">
+                                        CPU {cpuId}
+                                    </Badge>
+                                ))}
+                            </Row>
+                        )}
                         <Column gap="12">
-                            {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => (
-                                <Input
-                                    key={`raven-thread-rate-limit-${index + 1}`}
-                                    id={`raven-thread-rate-limit-${index + 1}`}
-                                    name={`raven-thread-rate-limit-${index + 1}`}
-                                    label={`Thread ${index + 1} speed limit`}
-                                    type="text"
-                                    placeholder="512, 10mb, 1gb, or -1"
-                                    value={value}
-                                    onChange={(event) => setDownloadWorkerRateLimits((prev) => {
-                                        const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
-                                        next[index] = event.target.value;
-                                        return next;
-                                    })}
-                                />
-                            ))}
+                            {normalizeThreadRateLimitDrafts(downloadWorkerRateLimits, ravenThreadCount).map((value, index) => {
+                                const cpuCoreDraft = normalizeCpuCoreIdDrafts(downloadWorkerCpuCoreIds, ravenThreadCount)[index];
+                                return (
+                                    <Card
+                                        key={`raven-worker-settings-${index + 1}`}
+                                        fillWidth
+                                        background={BG_SURFACE}
+                                        border="neutral-alpha-weak"
+                                        padding="m"
+                                        radius="l"
+                                    >
+                                        <Column gap="12">
+                                            <Heading as="h3" variant="heading-strong-s">
+                                                Worker {index + 1}
+                                            </Heading>
+                                            <Row gap="12" style={{flexWrap: "wrap"}}>
+                                                <Input
+                                                    id={`raven-thread-rate-limit-${index + 1}`}
+                                                    name={`raven-thread-rate-limit-${index + 1}`}
+                                                    label="Speed limit"
+                                                    type="text"
+                                                    placeholder="512, 10mb, 1gb, or -1"
+                                                    value={value}
+                                                    onChange={(event) => setDownloadWorkerRateLimits((prev) => {
+                                                        const next = normalizeThreadRateLimitDrafts(prev, ravenThreadCount);
+                                                        next[index] = event.target.value;
+                                                        return next;
+                                                    })}
+                                                />
+                                                <Input
+                                                    id={`raven-thread-cpu-core-${index + 1}`}
+                                                    name={`raven-thread-cpu-core-${index + 1}`}
+                                                    label="CPU core ID"
+                                                    type="text"
+                                                    placeholder="-1 or 0"
+                                                    value={cpuCoreDraft}
+                                                    onChange={(event) => setDownloadWorkerCpuCoreIds((prev) => {
+                                                        const next = normalizeCpuCoreIdDrafts(prev, ravenThreadCount);
+                                                        next[index] = event.target.value;
+                                                        return next;
+                                                    })}
+                                                />
+                                            </Row>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                                Use -1 to leave this worker unpinned while still process-isolated.
+                                            </Text>
+                                        </Column>
+                                    </Card>
+                                );
+                            })}
                         </Column>
                     </Column>
                 </Card>
@@ -4337,6 +4671,15 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 onToggle={() => setVpnEnabled((prev) => !prev)}
                             />
                             <Text variant="body-default-xs">Enable VPN for Raven downloads</Text>
+                        </Row>
+                        <Row gap="12" style={{flexWrap: "wrap"}}>
+                            <Switch
+                                isChecked={vpnOnlyDownloadWhenOn}
+                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                ariaLabel="Only download when Raven VPN is connected"
+                                onToggle={() => setVpnOnlyDownloadWhenOn((prev) => !prev)}
+                            />
+                            <Text variant="body-default-xs">Only download when VPN is on</Text>
                         </Row>
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
@@ -4703,6 +5046,11 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Text onBackground="neutral-weak" variant="body-default-xs">
                             Edit the Discord bot credentials and validate them against the selected guild.
                         </Text>
+                        <Text onBackground="neutral-weak" variant="body-default-xs">
+                            Set the optional Discord Superuser ID if you want Portal to accept the DM-only
+                            <code> downloadall </code>
+                            admin command for one trusted account.
+                        </Text>
                         {renderEditorFeedback(portalEditor)}
                         {discordValidationError && <Text onBackground="danger-strong"
                                                          variant="body-default-xs">{discordValidationError}</Text>}
@@ -4771,6 +5119,140 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 ))}
                             </Row>
                         )}
+                    </Column>
+                </Card>
+
+                <Card fillWidth background={BG_SURFACE} border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                            <Column gap="4" style={{flex: "1 1 22rem", minWidth: 0}}>
+                                <Heading as="h2" variant="heading-strong-l">Onboarding message</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    Save a reusable welcome message for manual copy and paste. v1 only previews and
+                                    copies the message; Portal does not send it automatically.
+                                </Text>
+                                {discordOnboardingUpdatedAt && (
+                                    <Text onBackground="neutral-weak" variant="body-default-xs">
+                                        Updated {formatIso(discordOnboardingUpdatedAt)}
+                                    </Text>
+                                )}
+                            </Column>
+                            <Row gap="8" style={{flexWrap: "wrap"}}>
+                                <Button
+                                    variant="secondary"
+                                    disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                    onClick={() => void loadDiscordOnboardingMessage()}
+                                >
+                                    {discordOnboardingLoading ? "Reloading..." : "Reload"}
+                                </Button>
+                                <Button
+                                    variant="secondary"
+                                    disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                    onClick={() => void copyDiscordOnboardingPreview()}
+                                >
+                                    Copy preview
+                                </Button>
+                                <Button
+                                    variant="primary"
+                                    disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                    onClick={() => void saveDiscordOnboardingMessage()}
+                                >
+                                    {discordOnboardingSaving ? "Saving..." : "Save"}
+                                </Button>
+                            </Row>
+                        </Row>
+                        {discordOnboardingError && (
+                            <Text onBackground="danger-strong" variant="body-default-xs">
+                                {discordOnboardingError}
+                            </Text>
+                        )}
+                        {discordOnboardingMessage && (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                {discordOnboardingMessage}
+                            </Text>
+                        )}
+                        <Column gap="8">
+                            <Text variant="label-default-s">Template</Text>
+                            <textarea
+                                id="discordOnboardingTemplate"
+                                name="discordOnboardingTemplate"
+                                className={editorStyles.configTextarea}
+                                value={discordOnboardingTemplate}
+                                disabled={discordOnboardingLoading || discordOnboardingSaving}
+                                aria-label="Discord onboarding message template"
+                                spellCheck={false}
+                                onChange={(event) => setDiscordOnboardingTemplate(event.target.value)}
+                            />
+                        </Column>
+                        <Column gap="8">
+                            <Text variant="label-default-s">Placeholder reference</Text>
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                Supported placeholders use the current Discord validation result, Portal config, Warden
+                                config, and published service links.
+                            </Text>
+                            <div className={settingsStyles.defaultCardGrid}>
+                                {DISCORD_ONBOARDING_PLACEHOLDERS.map((placeholder) => {
+                                    const value = normalizeString(
+                                        discordOnboardingPlaceholderValues[placeholder.token],
+                                    ).trim();
+                                    return (
+                                        <Card
+                                            key={`discord-onboarding-placeholder-${placeholder.token}`}
+                                            fillWidth
+                                            background={BG_NEUTRAL_ALPHA_WEAK}
+                                            border="neutral-alpha-weak"
+                                            padding="m"
+                                            radius="l"
+                                        >
+                                            <Column gap="8">
+                                                <Text variant="label-default-s">
+                                                    <code>{placeholder.token}</code>
+                                                </Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    {placeholder.description}
+                                                </Text>
+                                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                                    {value ? `Preview value: ${value}` : "Preview value unavailable."}
+                                                </Text>
+                                            </Column>
+                                        </Card>
+                                    );
+                                })}
+                            </div>
+                        </Column>
+                        <Column gap="8">
+                            <Text variant="label-default-s">Rendered preview</Text>
+                            <Card
+                                fillWidth
+                                background={BG_NEUTRAL_ALPHA_WEAK}
+                                border="neutral-alpha-weak"
+                                padding="m"
+                                radius="l"
+                            >
+                                <Text
+                                    variant="body-default-s"
+                                    style={{
+                                        whiteSpace: "pre-wrap",
+                                        overflowWrap: "anywhere",
+                                        wordBreak: "break-word",
+                                    }}
+                                >
+                                    {discordOnboardingPreview.preview}
+                                </Text>
+                            </Card>
+                            {discordOnboardingPreview.unresolvedPlaceholders.length > 0 ? (
+                                <Text onBackground="warning-strong" variant="body-default-xs">
+                                    Unresolved
+                                    placeholders: {discordOnboardingPreview.unresolvedPlaceholders.join(", ")}.
+                                    They stay visible until the related config or Discord validation result is
+                                    available.
+                                </Text>
+                            ) : (
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    All placeholders in this template currently resolve in the preview.
+                                </Text>
+                            )}
+                        </Column>
                     </Column>
                 </Card>
 

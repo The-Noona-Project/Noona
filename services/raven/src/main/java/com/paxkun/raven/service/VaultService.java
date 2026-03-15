@@ -1,14 +1,26 @@
+/**
+ * Handles Raven storage requests through Vault Mongo and Redis packets.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
+ * - src/test/java/com/paxkun/raven/service/VaultServiceTest.java
+ * Times this file has been edited: 13
+ */
 package com.paxkun.raven.service;
 
 import com.google.gson.Gson;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClient;
 
+import java.io.File;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,14 +40,17 @@ public class VaultService {
     private static final int READ_RETRY_ATTEMPTS = 4;
     private static final long READ_RETRY_BACKOFF_MS = 250L;
 
-    private final WebClient webClient = WebClient.builder().build();
     private final Gson gson = new Gson();
+    private volatile WebClient webClient;
 
-    @Value("${vault.url:http://noona-vault:3005}")
+    @Value("${vault.url:https://noona-vault:3005}")
     private String vaultUrl;
 
     @Value("${vault.apiToken:${VAULT_API_TOKEN:}}")
     private String vaultApiToken;
+
+    @Value("${vault.caCertPath:${VAULT_CA_CERT_PATH:}}")
+    private String vaultCaCertPath;
 
     // ─────────────────────────────────────────────────────────────
     // AUTH
@@ -84,7 +99,7 @@ public class VaultService {
     }
 
     private Map<String, Object> sendPacketOnce(Map<String, Object> packet) {
-        return webClient.post()
+        return getWebClient().post()
                 .uri(vaultUrl + "/v1/vault/handle")
                 .header("Authorization", "Bearer " + vaultApiToken)
                 .header("Content-Type", "application/json")
@@ -104,6 +119,52 @@ public class VaultService {
                             return Mono.just(body);
                         }))
                 .block();
+    }
+
+    private WebClient getWebClient() {
+        WebClient current = webClient;
+        if (current != null) {
+            return current;
+        }
+
+        synchronized (this) {
+            if (webClient != null) {
+                return webClient;
+            }
+
+            webClient = buildWebClient();
+            return webClient;
+        }
+    }
+
+    private WebClient buildWebClient() {
+        String normalizedUrl = vaultUrl == null ? "" : vaultUrl.trim();
+        if (normalizedUrl.startsWith("https://")) {
+            String caPath = vaultCaCertPath == null ? "" : vaultCaCertPath.trim();
+            if (caPath.isEmpty()) {
+                throw new IllegalStateException("VAULT_CA_CERT_PATH is required when vault.url uses HTTPS.");
+            }
+
+            File caFile = new File(caPath);
+            if (!caFile.isFile()) {
+                throw new IllegalStateException("Vault CA certificate file does not exist: " + caPath);
+            }
+
+            try {
+                SslContext sslContext = SslContextBuilder.forClient()
+                        .trustManager(caFile)
+                        .build();
+                HttpClient httpClient = HttpClient.create()
+                        .secure(spec -> spec.sslContext(sslContext));
+                return WebClient.builder()
+                        .clientConnector(new ReactorClientHttpConnector(httpClient))
+                        .build();
+            } catch (Exception error) {
+                throw new IllegalStateException("Unable to configure HTTPS trust for Vault: " + error.getMessage(), error);
+            }
+        }
+
+        return WebClient.builder().build();
     }
 
     private boolean isTransientVaultFailure(RuntimeException error) {
@@ -133,6 +194,13 @@ public class VaultService {
     // DATABASE OPS
     // ─────────────────────────────────────────────────────────────
 
+    /**
+     * Handles insert.
+     *
+     * @param collection The Vault collection name.
+     * @param doc        The doc.
+     */
+
     public void insert(String collection, Map<String, Object> doc) {
         Map<String, Object> payload = Map.of(
                 "collection", collection,
@@ -147,6 +215,14 @@ public class VaultService {
 
         sendPacket(packet);
     }
+
+    /**
+     * Finds one.
+     *
+     * @param collection The Vault collection name.
+     * @param query The query document.
+     * @return The resulting Object>.
+    */
 
     public Map<String, Object> findOne(String collection, Map<String, Object> query) {
         Map<String, Object> payload = Map.of(
@@ -175,9 +251,24 @@ public class VaultService {
         }
     }
 
+    /**
+     * Finds all.
+     *
+     * @param collection The Vault collection name.
+     * @return The resulting Object>>.
+    */
+
     public List<Map<String, Object>> findAll(String collection) {
         return findMany(collection, Map.of());
     }
+
+    /**
+     * Finds many.
+     *
+     * @param collection The Vault collection name.
+     * @param query The query document.
+     * @return The resulting Object>>.
+    */
 
     public List<Map<String, Object>> findMany(String collection, Map<String, Object> query) {
         Map<String, Object> payload = Map.of(
@@ -213,6 +304,15 @@ public class VaultService {
         return documents;
     }
 
+    /**
+     * Handles update.
+     *
+     * @param collection The Vault collection name.
+     * @param query The query document.
+     * @param update The update document.
+     * @param upsert Whether upsert should be enabled.
+    */
+
     public void update(String collection, Map<String, Object> query, Map<String, Object> update, boolean upsert) {
         Map<String, Object> payload = Map.of(
                 "collection", collection,
@@ -230,9 +330,46 @@ public class VaultService {
         sendPacket(packet);
     }
 
+    /**
+     * Handles delete.
+     *
+     * @param collection The Vault collection name.
+     * @param query The query document.
+    */
+
+    public void delete(String collection, Map<String, Object> query) {
+        Map<String, Object> payload = Map.of(
+                "collection", collection,
+                "query", query
+        );
+
+        Map<String, Object> packet = Map.of(
+                "storageType", "mongo",
+                "operation", "delete",
+                "payload", payload
+        );
+
+        sendPacket(packet);
+    }
+
+    /**
+     * Updates redis value.
+     *
+     * @param key The Redis key.
+     * @param value The value to store.
+    */
+
     public void setRedisValue(String key, Object value) {
         setRedisValue(key, value, null);
     }
+
+    /**
+     * Updates redis value.
+     *
+     * @param key The Redis key.
+     * @param value The value to store.
+     * @param ttlSeconds The Redis time-to-live in seconds.
+    */
 
     public void setRedisValue(String key, Object value, Integer ttlSeconds) {
         if (key == null || key.isBlank()) {
@@ -255,6 +392,13 @@ public class VaultService {
         sendPacket(packet);
     }
 
+    /**
+     * Returns redis value.
+     *
+     * @param key The Redis key.
+     * @return The resulting Object.
+    */
+
     public Object getRedisValue(String key) {
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("Redis key is required.");
@@ -276,6 +420,12 @@ public class VaultService {
         }
     }
 
+    /**
+     * Deletes redis value.
+     *
+     * @param key The Redis key.
+    */
+
     public void deleteRedisValue(String key) {
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("Redis key is required.");
@@ -296,14 +446,14 @@ public class VaultService {
 
     /**
      * Deserialize an object to a target type using Gson.
-     */
+    */
     public <T> T parseJson(Object raw, Type typeOfT) {
         return gson.fromJson(gson.toJson(raw), typeOfT);
     }
 
     /**
      * Converts a list of Vault documents into typed objects.
-     */
+    */
     public <T> List<T> parseDocuments(List<Map<String, Object>> docs, Type typeOfT) {
         return gson.fromJson(gson.toJson(docs), typeOfT);
     }

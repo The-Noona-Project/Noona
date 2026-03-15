@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "namespaces": {
+    "mongo-root-password": {
+      "noona-mongo-root": "noonamongoroot-7a342a482502b237d9d4893307174ad20fc3"
+    },
+    "vault": {
+      "noona-warden": "noonawarden-06a9d62a96894cef97c6d44fd16ded45aa16",
+      "noona-sage": "noonasage-59f39b5717808cfe6cacc1bdd0f4fb5ddfe8",
+      "noona-raven": "noonaraven-da498aeef943e20523492ed6f7071ee9a64b",
+      "noona-portal": "noonaportal-502ac8066b487dddf33caf0ac6821966d1e0"
+    },
+    "warden": {
+      "noona-sage": "noonasage-d77a327024461400354efa76befcd7517995",
+      "noona-portal": "noonaportal-40a9476f1b09eff7f2e74d39c7bd47982b0d"
+    }
+  }
+}

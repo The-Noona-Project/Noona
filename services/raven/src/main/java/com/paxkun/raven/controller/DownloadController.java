@@ -1,11 +1,20 @@
+/**
+ * Exposes Raven download search, queue, status, and pause endpoints.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/LibraryService.java
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/download/DownloadSearchRequest.java
+ * Times this file has been edited: 15
+ */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
-import com.paxkun.raven.service.download.DownloadProgress;
-import com.paxkun.raven.service.download.SearchTitle;
+import com.paxkun.raven.service.download.*;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -44,6 +53,19 @@ public class DownloadController {
      */
     @GetMapping("/search/{titleName}")
     public ResponseEntity<SearchTitle> searchTitle(@PathVariable String titleName) {
+        return ResponseEntity.ok(runSearch(titleName));
+    }
+
+    @PostMapping("/search")
+    public ResponseEntity<SearchTitle> searchTitle(@RequestBody(required = false) DownloadSearchRequest request) {
+        String query = request != null && request.query() != null ? request.query().trim() : "";
+        if (query.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return ResponseEntity.ok(runSearch(query));
+    }
+
+    private SearchTitle runSearch(String titleName) {
         String sanitizedTitle = sanitizeForLog(titleName);
         logger.debug("DOWNLOAD_CONTROLLER", "Request received to search title: " + sanitizedTitle);
         SearchTitle result = downloadService.searchTitle(titleName);
@@ -54,7 +76,30 @@ public class DownloadController {
                 "Search completed for query: " + sanitizedTitle +
                         " | searchId=" + sanitizedSearchId +
                         " | options=" + optionCount);
-        return ResponseEntity.ok(result);
+        return result;
+    }
+
+    /**
+     * Returns title details.
+     *
+     * @param url The source URL.
+     * @return The HTTP response.
+     */
+
+    @GetMapping("/title-details")
+    public ResponseEntity<TitleDetails> getTitleDetails(@RequestParam("url") String url) {
+        String normalized = url == null ? "" : url.trim();
+        if (normalized.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        TitleDetails details = downloadService.getTitleDetails(normalized);
+        if (details == null) {
+            TitleDetails empty = new TitleDetails();
+            empty.setSourceUrl(normalized);
+            return ResponseEntity.ok(empty);
+        }
+        return ResponseEntity.ok(details);
     }
 
     /**
@@ -82,6 +127,86 @@ public class DownloadController {
         return ResponseEntity.ok(result);
     }
 
+    @PostMapping("/select")
+    public ResponseEntity<QueueDownloadResult> queueDownload(@RequestBody(required = false) QueueDownloadRequest request) {
+        String searchId = request != null && request.searchId() != null ? request.searchId().trim() : "";
+        Integer optionIndex = request != null ? request.optionIndex() : null;
+        if (searchId.isBlank() || optionIndex == null) {
+            QueueDownloadResult invalid = new QueueDownloadResult(
+                    QueueDownloadResult.STATUS_INVALID_SELECTION,
+                    "searchId and optionIndex are required.",
+                    0,
+                    List.of(),
+                    List.of()
+            );
+            return ResponseEntity.badRequest().body(invalid);
+        }
+
+        String sanitizedSearchId = sanitizeForLog(searchId);
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Queue request received | searchId=" + sanitizedSearchId + " | optionIndex=" + optionIndex);
+        QueueDownloadResult result = downloadService.queueDownloadAllChaptersResult(searchId, optionIndex);
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Queue response | searchId=" + sanitizedSearchId +
+                        " | optionIndex=" + optionIndex +
+                        " | status=" + sanitizeForLog(result != null ? result.getStatus() : "") +
+                        " | message=" + sanitizeForLog(result != null ? result.getMessage() : ""));
+        return ResponseEntity.status(mapQueueResultStatus(result)).body(result);
+    }
+
+    /**
+     * Queues every source title matching the supplied browse filters.
+     *
+     * @param request The browse and queue request.
+     * @return The resulting bulk queue payload.
+     */
+    @PostMapping("/bulk-queue")
+    public ResponseEntity<BulkQueueDownloadResult> bulkQueueDownloads(
+            @RequestBody(required = false) BulkQueueDownloadRequest request
+    ) {
+        String type = request != null && request.type() != null ? request.type().trim() : "";
+        Boolean nsfw = request != null ? request.nsfw() : null;
+        String titlePrefix = request != null && request.titlePrefix() != null ? request.titlePrefix().trim() : "";
+        BulkQueueDownloadResult.Filters filters = new BulkQueueDownloadResult.Filters(
+                type,
+                Boolean.TRUE.equals(nsfw),
+                titlePrefix
+        );
+
+        if (type.isBlank() || nsfw == null || titlePrefix.isBlank()) {
+            return ResponseEntity.badRequest().body(new BulkQueueDownloadResult(
+                    BulkQueueDownloadResult.STATUS_INVALID_REQUEST,
+                    "type, nsfw, and titlePrefix are required.",
+                    filters,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    List.of(),
+                    List.of(),
+                    List.of()
+            ));
+        }
+
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Bulk queue request received | type=" + sanitizeForLog(type) +
+                        " | nsfw=" + nsfw +
+                        " | titlePrefix=" + sanitizeForLog(titlePrefix));
+        BulkQueueDownloadResult result = downloadService.queueBulkDownload(type, nsfw, titlePrefix);
+        logger.debug(
+                "DOWNLOAD_CONTROLLER",
+                "Bulk queue response | type=" + sanitizeForLog(type) +
+                        " | nsfw=" + nsfw +
+                        " | titlePrefix=" + sanitizeForLog(titlePrefix) +
+                        " | status=" + sanitizeForLog(result != null ? result.getStatus() : "") +
+                        " | queued=" + (result != null ? result.getQueuedCount() : 0));
+        return ResponseEntity.status(mapBulkQueueResultStatus(result)).body(result);
+    }
+
     /**
      * Retrieves the current download queue and recently completed jobs.
      *
@@ -97,12 +222,24 @@ public class DownloadController {
         return ResponseEntity.ok(status);
     }
 
+    /**
+     * Returns history.
+     *
+     * @return The HTTP response.
+     */
+
     @GetMapping("/status/history")
     public ResponseEntity<List<DownloadProgress>> getHistory() {
         logger.debug("DOWNLOAD_CONTROLLER", "History request received");
         List<DownloadProgress> history = downloadService.getDownloadHistory();
         return ResponseEntity.ok(history);
     }
+
+    /**
+     * Returns status summary.
+     *
+     * @return The resulting Object>>.
+     */
 
     @GetMapping("/status/summary")
     public ResponseEntity<Map<String, Object>> getStatusSummary() {
@@ -115,6 +252,10 @@ public class DownloadController {
         payload.put("activeDownloads", downloadService.getActiveDownloadCount());
         payload.put("maxThreads", downloadService.getConfiguredDownloadThreads());
         payload.put("threadRateLimitsKbps", downloadService.getThreadRateLimitsKbps());
+        payload.put("workerExecutionMode", downloadService.getWorkerExecutionMode());
+        payload.put("workerCpuCoreIds", downloadService.getWorkerCpuCoreIds());
+        payload.put("availableCpuIds", downloadService.getAvailableCpuIds());
+        payload.put("activeWorkers", downloadService.getActiveWorkers());
         if (currentTask != null) {
             payload.put("currentTask", toTaskPayload(currentTask));
         }
@@ -145,6 +286,12 @@ public class DownloadController {
 
         return ResponseEntity.ok(payload);
     }
+
+    /**
+     * Pauses downloads.
+     *
+     * @return The resulting Object>>.
+     */
 
     @PostMapping("/pause")
     public ResponseEntity<Map<String, Object>> pauseDownloads() {
@@ -187,6 +334,33 @@ public class DownloadController {
         return value.replaceAll("[\\r\\n]", "").replaceAll("[^\\p{Alnum}\\s_-]", "").trim();
     }
 
+    private HttpStatus mapQueueResultStatus(QueueDownloadResult result) {
+        String status = result != null ? result.getStatus() : null;
+        if (QueueDownloadResult.STATUS_INVALID_SELECTION.equals(status)) {
+            return HttpStatus.BAD_REQUEST;
+        }
+        if (QueueDownloadResult.STATUS_SEARCH_EXPIRED.equals(status)) {
+            return HttpStatus.GONE;
+        }
+        if (QueueDownloadResult.STATUS_ALREADY_ACTIVE.equals(status)
+                || QueueDownloadResult.STATUS_MAINTENANCE_PAUSED.equals(status)
+                || QueueDownloadResult.STATUS_EMPTY_RESULTS.equals(status)) {
+            return HttpStatus.CONFLICT;
+        }
+        return HttpStatus.ACCEPTED;
+    }
+
+    private HttpStatus mapBulkQueueResultStatus(BulkQueueDownloadResult result) {
+        String status = result != null ? result.getStatus() : null;
+        if (BulkQueueDownloadResult.STATUS_INVALID_REQUEST.equals(status)) {
+            return HttpStatus.BAD_REQUEST;
+        }
+        if (BulkQueueDownloadResult.STATUS_MAINTENANCE_PAUSED.equals(status)) {
+            return HttpStatus.CONFLICT;
+        }
+        return HttpStatus.ACCEPTED;
+    }
+
     private Map<String, Object> toTaskPayload(DownloadProgress progress) {
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("taskId", progress.getTaskId());
@@ -211,6 +385,11 @@ public class DownloadController {
         payload.put("remainingChapterNumbers", progress.getRemainingChapterNumbers());
         payload.put("newChapterNumbers", progress.getNewChapterNumbers());
         payload.put("missingChapterNumbers", progress.getMissingChapterNumbers());
+        payload.put("workerIndex", progress.getWorkerIndex());
+        payload.put("cpuCoreId", progress.getCpuCoreId());
+        payload.put("workerPid", progress.getWorkerPid());
+        payload.put("executionMode", progress.getExecutionMode());
+        payload.put("pauseRequested", progress.isPauseRequested());
         return payload;
     }
 

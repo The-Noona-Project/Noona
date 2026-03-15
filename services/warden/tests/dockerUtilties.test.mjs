@@ -7,6 +7,8 @@ import {
     pullImageIfNeeded,
     normalizeDockerProgressEvent,
     formatDockerProgressMessage,
+    runContainerWithLogs,
+    waitForContainerHealthy,
 } from '../docker/dockerUtilties.mjs';
 
 test('normalizeDockerProgressEvent preserves layer metadata and formats message', () => {
@@ -73,4 +75,80 @@ test('pullImageIfNeeded emits layer-aware progress payloads', async () => {
     assert.equal(last.status, 'complete');
     assert.equal(last.detail, 'Image pulled successfully');
     assert.ok(last.message?.includes('[library/redis:latest]'));
+});
+
+test('runContainerWithLogs attaches services to all requested networks and applies Docker health checks', async () => {
+    const tracked = new Set();
+    const networkConnections = [];
+    let createPayload = null;
+    const dockerInstance = {
+        createContainer: async (payload) => {
+            createPayload = payload;
+            return {
+                id: 'container-1',
+                start: async () => {
+                },
+                logs: async () => ({
+                    on() {
+                    },
+                }),
+            };
+        },
+        getNetwork: (name) => ({
+            connect: async (payload) => networkConnections.push({name, payload}),
+        }),
+    };
+
+    await runContainerWithLogs({
+        name: 'noona-vault',
+        image: 'vault:latest',
+        env: [],
+        volumes: [],
+        networks: ['noona-network', 'noona-data-network'],
+        healthCheck: {
+            type: 'docker',
+            test: ['CMD-SHELL', 'echo ok'],
+            intervalMs: 5000,
+            timeoutMs: 3000,
+            startPeriodMs: 2000,
+            retries: 10,
+        },
+    }, 'noona-network', tracked, 'false', {dockerInstance});
+
+    assert.equal(createPayload.HostConfig.NetworkMode, 'noona-network');
+    assert.deepEqual(createPayload.NetworkingConfig.EndpointsConfig, {
+        'noona-network': {},
+    });
+    assert.deepEqual(createPayload.Healthcheck.Test, ['CMD-SHELL', 'echo ok']);
+    assert.equal(networkConnections.length, 1);
+    assert.equal(networkConnections[0].name, 'noona-data-network');
+    assert.ok(tracked.has('noona-vault'));
+});
+
+test('waitForContainerHealthy resolves once Docker reports a healthy status', async () => {
+    let attempts = 0;
+    const dockerInstance = {
+        getContainer: () => ({
+            inspect: async () => {
+                attempts += 1;
+                return {
+                    State: {
+                        Running: true,
+                        Health: {
+                            Status: attempts >= 2 ? 'healthy' : 'starting',
+                        },
+                    },
+                };
+            },
+        }),
+    };
+
+    const inspection = await waitForContainerHealthy('noona-redis', {
+        dockerInstance,
+        tries: 3,
+        delay: 0,
+    });
+
+    assert.equal(inspection.State.Health.Status, 'healthy');
+    assert.equal(attempts, 2);
 });

@@ -1,6 +1,6 @@
 // services/sage/routes/registerSetupRoutes.mjs
 
-import {normalizeServiceInstallPayload} from '../app/createSetupClient.mjs'
+import {normalizeServiceInstallPayload, WardenUpstreamHttpError} from '../app/createSetupClient.mjs'
 import {SetupValidationError} from '../lib/errors.mjs'
 import {createDefaultWizardState, resolveWizardStateOperation} from '../wizard/wizardStateSchema.mjs'
 
@@ -9,6 +9,7 @@ const MANAGED_KAVITA_SERVICE_ACCOUNT_KEY = 'setup.managedKavitaServiceAccount'
 const MANAGED_KAVITA_TARGET_SERVICES = Object.freeze(['noona-portal', 'noona-raven', 'noona-komf'])
 const MANAGED_KAVITA_READY_RETRIES = 20
 const MANAGED_KAVITA_READY_DELAY_MS = 1500
+const SETUP_SECRET_PLACEHOLDER = '********'
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -39,6 +40,20 @@ const wait = (delayMs) =>
     new Promise((resolve) => {
         setTimeout(resolve, delayMs)
     })
+
+const sendSetupClientUpstreamError = (res, error) => {
+    if (!(error instanceof WardenUpstreamHttpError)) {
+        return false
+    }
+
+    const payload =
+        error.payload && typeof error.payload === 'object' && !Array.isArray(error.payload)
+            ? error.payload
+            : {error: error.message}
+
+    res.status(Number.isInteger(error.status) ? error.status : 502).json(payload)
+    return true
+}
 
 const normalizeEnvMap = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -87,25 +102,22 @@ const buildManagedKavitaEnvPatch = (serviceName, env, apiKey, baseUrl) => {
     switch (serviceName) {
         case 'noona-portal':
             return {
-                ...env,
                 KAVITA_BASE_URL: baseUrl,
                 KAVITA_API_KEY: apiKey,
             }
         case 'noona-raven':
             return {
-                ...env,
                 KAVITA_BASE_URL: baseUrl,
                 KAVITA_API_KEY: apiKey,
                 KAVITA_LIBRARY_ROOT: normalizeString(env.KAVITA_LIBRARY_ROOT) || '/manga',
             }
         case 'noona-komf':
             return {
-                ...env,
                 KOMF_KAVITA_BASE_URI: baseUrl,
                 KOMF_KAVITA_API_KEY: apiKey,
             }
         default:
-            return env
+            return {}
     }
 }
 
@@ -124,9 +136,12 @@ const readManagedKavitaSettings = (doc) => {
     }
 }
 
-const normalizeManagedKavitaAccount = (value) => {
+const parseManagedKavitaAccount = (value, {allowMaskedPassword = false} = {}) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return null
+        return {
+            account: null,
+            hasMaskedPassword: false,
+        }
     }
 
     const username = normalizeString(value.username)
@@ -135,22 +150,43 @@ const normalizeManagedKavitaAccount = (value) => {
     const hasAnyValue = Boolean(username || email || password)
 
     if (!hasAnyValue) {
-        return null
+        return {
+            account: null,
+            hasMaskedPassword: false,
+        }
+    }
+
+    if (password === SETUP_SECRET_PLACEHOLDER) {
+        if (allowMaskedPassword) {
+            return {
+                account: null,
+                hasMaskedPassword: true,
+            }
+        }
+
+        throw new SetupValidationError(
+            'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
+        )
     }
 
     if (!username || !email || !password) {
         throw new SetupValidationError('Managed Kavita account requires a username, email, and password.')
     }
 
-    return {username, email, password}
+    return {
+        account: {username, email, password},
+        hasMaskedPassword: false,
+    }
 }
 
 const readManagedKavitaConfiguredAccount = (config) => {
     const env = normalizeEnvMap(config?.env)
-    return normalizeManagedKavitaAccount({
+    return parseManagedKavitaAccount({
         username: env.KAVITA_ADMIN_USERNAME,
         email: env.KAVITA_ADMIN_EMAIL,
         password: env.KAVITA_ADMIN_PASSWORD,
+    }, {
+        allowMaskedPassword: true,
     })
 }
 
@@ -164,7 +200,9 @@ export function registerSetupRoutes(context = {}) {
         logger,
         managedKavitaSetupClient,
         normalizeHistoryLimit,
+        readDebugSetting,
         readVerificationSummary,
+        resolveSetupCompleted,
         resolveWizardStepKey,
         serviceName,
         settingsCollection,
@@ -192,6 +230,112 @@ export function registerSetupRoutes(context = {}) {
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load installable services: ${error.message}`)
             res.status(502).json({error: 'Unable to retrieve installable services.'})
+        }
+    })
+
+    app.get('/api/setup/layout', async (_req, res) => {
+        try {
+            const layout = await setupClient.getStorageLayout()
+            res.json(layout ?? {root: null, services: []})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to load storage layout: ${error.message}`)
+            res.status(502).json({error: 'Unable to load storage layout.'})
+        }
+    })
+
+    app.get('/api/setup/config', async (_req, res) => {
+        try {
+            const config = await setupClient.getSetupConfig()
+            res.json(config ?? {
+                exists: false,
+                path: null,
+                snapshot: null,
+                error: null,
+            })
+        } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
+            logger.error(`[${serviceName}] ⚠️ Failed to load setup config snapshot: ${error.message}`)
+            res.status(502).json({error: 'Unable to load setup config snapshot.'})
+        }
+    })
+
+    app.post('/api/setup/config/normalize', async (req, res) => {
+        const body = req.body ?? {}
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            res.status(400).json({error: 'Setup config payload must be a JSON object.'})
+            return
+        }
+
+        try {
+            const payload = await setupClient.normalizeSetupConfig(body)
+            res.json(payload ?? {snapshot: null})
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({error: error.message})
+                return
+            }
+
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
+            logger.error(`[${serviceName}] Failed to normalize setup config snapshot: ${error.message}`)
+            res.status(502).json({error: 'Unable to normalize setup config snapshot.'})
+        }
+    })
+
+    app.post('/api/setup/config', async (req, res) => {
+        const body = req.body ?? {}
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            res.status(400).json({error: 'Setup config payload must be a JSON object.'})
+            return
+        }
+
+        try {
+            const config = await setupClient.saveSetupConfig(body)
+            res.json(config ?? {})
+        } catch (error) {
+            if (error instanceof SetupValidationError) {
+                res.status(400).json({error: error.message})
+                return
+            }
+
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
+            logger.error(`[${serviceName}] ⚠️ Failed to persist setup config snapshot: ${error.message}`)
+            res.status(502).json({error: 'Unable to persist setup config snapshot.'})
+        }
+    })
+
+    app.get('/api/setup/status', async (_req, res) => {
+        const progressFallback = {items: [], status: 'idle', percent: null}
+
+        try {
+            const [completed, config, progress, debugSetting] = await Promise.all([
+                resolveSetupCompleted ? resolveSetupCompleted() : Promise.resolve(false),
+                setupClient.getSetupConfig().catch(() => null),
+                setupClient.getInstallProgress().catch(() => progressFallback),
+                readDebugSetting ? readDebugSetting().catch(() => null) : Promise.resolve(null),
+            ])
+
+            const progressStatus = normalizeString(progress?.status).toLowerCase()
+            const installing = ['pending', 'downloading', 'installing'].includes(progressStatus)
+            const configured = Boolean(config?.exists === true && config?.snapshot)
+
+            res.json({
+                completed: completed === true,
+                configured,
+                installing,
+                debugEnabled: debugSetting?.enabled === true,
+            })
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to resolve setup status: ${error.message}`)
+            res.status(502).json({error: 'Unable to resolve setup status.'})
         }
     })
 
@@ -819,14 +963,14 @@ export function registerSetupRoutes(context = {}) {
         }
 
         try {
-            const requestedAccount = normalizeManagedKavitaAccount(req.body?.account)
+            const requestedAccountState = parseManagedKavitaAccount(req.body?.account)
             const [managedKavitaConfig, targetConfigs] = await Promise.all([
                 setupClient.getServiceConfig('noona-kavita'),
                 Promise.all(
                     targetServices.map(async (name) => [name, await setupClient.getServiceConfig(name)]),
                 ),
             ])
-            const configuredAccount = readManagedKavitaConfiguredAccount(managedKavitaConfig)
+            const configuredAccountState = readManagedKavitaConfiguredAccount(managedKavitaConfig)
             const configs = new Map(targetConfigs)
 
             const existingKeys = new Set()
@@ -848,7 +992,7 @@ export function registerSetupRoutes(context = {}) {
 
             const {apiKey: storedApiKey, account: storedAccount} = readManagedKavitaSettings(storedSettings)
 
-            const effectiveAccount = requestedAccount || configuredAccount || null
+            const effectiveAccount = requestedAccountState.account || configuredAccountState.account || null
 
             let apiKey = ''
             let account =
@@ -871,6 +1015,12 @@ export function registerSetupRoutes(context = {}) {
                 res.status(409).json({error: 'Managed Kavita setup found conflicting API keys across selected services.'})
                 return
             } else {
+                if (!effectiveAccount && (requestedAccountState.hasMaskedPassword || configuredAccountState.hasMaskedPassword)) {
+                    throw new SetupValidationError(
+                        'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
+                    )
+                }
+
                 let provisioning = null
                 let lastError = null
 

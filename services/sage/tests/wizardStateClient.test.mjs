@@ -129,3 +129,59 @@ test('createWizardStateClient resetState clears the local fallback snapshot', as
     const afterReset = await client.loadState({fallbackToDefault: true})
     assert.equal(afterReset.completed, false)
 })
+
+test('createWizardStateClient falls back locally when HTTPS trust material is missing', async () => {
+    const debugLogs = []
+    const warnLogs = []
+    let fetchCalls = 0
+    const client = createWizardStateClient({
+        token: 'test-token',
+        baseUrl: 'https://noona-vault:3005',
+        env: {},
+        logger: {
+            debug: (message) => debugLogs.push(message),
+            warn: (message) => warnLogs.push(message),
+        },
+        trustVaultUrl: () => {
+            const error = new Error("ENOENT: no such file or directory, open '/srv/noona/vault/tls/ca-cert.pem'")
+            error.code = 'ENOENT'
+            throw error
+        },
+        fetchImpl: async () => {
+            fetchCalls += 1
+            throw new Error('fetch should not run when trust fails')
+        },
+    })
+
+    const first = await client.loadState({fallbackToDefault: true})
+    const second = await client.loadState({fallbackToDefault: true})
+    assert.equal(first.foundation.status, 'pending')
+    assert.equal(second.foundation.status, 'pending')
+    assert.equal(fetchCalls, 0)
+    assert.equal(debugLogs.length, 1)
+    assert.equal(warnLogs.length, 0)
+    assert.match(debugLogs[0], /local fallback until Vault TLS trust material is ready/i)
+})
+
+test('createWizardStateClient still warns and falls back for non-trust Vault failures', async () => {
+    const warnLogs = []
+    const client = createWizardStateClient({
+        token: 'test-token',
+        baseUrl: 'https://noona-vault:3005',
+        env: {
+            VAULT_CA_CERT_PATH: '/srv/noona/vault/tls/ca-cert.pem',
+        },
+        logger: {
+            warn: (message) => warnLogs.push(message),
+        },
+        trustVaultUrl: () => '/srv/noona/vault/tls/ca-cert.pem',
+        fetchImpl: async () => {
+            throw new Error('vault offline')
+        },
+    })
+
+    const state = await client.loadState({fallbackToDefault: true})
+    assert.equal(state.foundation.status, 'pending')
+    assert.equal(warnLogs.length, 1)
+    assert.match(warnLogs[0], /Wizard state load failed/i)
+})

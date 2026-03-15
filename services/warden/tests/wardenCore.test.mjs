@@ -835,6 +835,80 @@ test('installServices returns per-service results with errors', async () => {
     assert.deepEqual(started, ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage']);
 });
 
+test('installServices uses the persisted setup profile when no explicit services are supplied', async () => {
+    const warden = buildWarden({
+        fs: createMemoryFs(),
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    envConfig: [
+                        {key: 'DISCORD_BOT_TOKEN'},
+                        {key: 'DISCORD_CLIENT_ID'},
+                        {key: 'DISCORD_CLIENT_SECRET'},
+                        {key: 'DISCORD_GUILD_ID'},
+                        {key: 'KAVITA_BASE_URL'},
+                        {key: 'KAVITA_API_KEY'},
+                    ],
+                },
+                'noona-raven': {
+                    name: 'noona-raven',
+                    image: 'raven',
+                    port: 3006,
+                    envConfig: [
+                        {key: 'KAVITA_BASE_URL'},
+                        {key: 'KAVITA_API_KEY'},
+                        {key: 'KAVITA_DATA_MOUNT'},
+                        {key: 'KAVITA_LIBRARY_ROOT'},
+                    ],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    await warden.saveSetupConfig({
+        version: 3,
+        storageRoot: '/srv/noona',
+        kavita: {
+            mode: 'external',
+            baseUrl: 'https://kavita.example',
+            apiKey: 'kavita-api',
+            sharedLibraryPath: '/mnt/manga',
+            account: {
+                username: '',
+                email: '',
+                password: '',
+            },
+        },
+        komf: {
+            mode: 'external',
+            baseUrl: '',
+            applicationYml: '',
+        },
+        discord: {
+            botToken: 'portal-token',
+            clientId: 'client-id',
+            clientSecret: 'client-secret',
+            guildId: 'guild-id',
+        },
+    }, {apply: false});
+
+    const results = await warden.installServices([]);
+
+    assert.deepEqual(results.map((entry) => entry.name), ['noona-portal', 'noona-raven']);
+    assert.deepEqual(started, ['noona-portal', 'noona-raven']);
+});
+
 test('installServices publishes wizard state transitions', async () => {
     const events = [];
     const warden = buildWarden({
@@ -902,6 +976,55 @@ test('installServices publishes wizard state transitions', async () => {
     );
     const completion = events.find((event) => event.type === 'complete');
     assert.deepEqual(completion, { type: 'complete', hasErrors: false });
+});
+
+test('installServices gives Portal both managed networks while Mongo, Redis, and Vault keep their current wiring', async () => {
+    const started = [];
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-redis': {name: 'noona-redis', image: 'redis'},
+                'noona-mongo': {name: 'noona-mongo', image: 'mongo'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault', image: 'vault'},
+                'noona-portal': {name: 'noona-portal', image: 'portal'},
+            },
+        },
+        networkName: 'noona-control-test',
+        dataNetworkName: 'noona-data-test',
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async (service) => {
+        started.push({
+            name: service.name,
+            networks: [...(service.networks || [])],
+        });
+    };
+
+    await warden.installServices([{name: 'noona-portal'}]);
+
+    assert.deepEqual(
+        started.map((entry) => entry.name),
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-portal'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-mongo')?.networks,
+        ['noona-data-test'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-redis')?.networks,
+        ['noona-data-test'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-vault')?.networks,
+        ['noona-control-test', 'noona-data-test'],
+    );
+    assert.deepEqual(
+        started.find((entry) => entry.name === 'noona-portal')?.networks,
+        ['noona-control-test', 'noona-data-test'],
+    );
 });
 
 test('installServices publishes wizard errors when installs fail', async () => {
@@ -1165,6 +1288,210 @@ test('installServices mounts managed service log folders and injects NOONA_LOG_D
     assert.ok(vaultStart.volumes.includes(`${path.join('/srv/noona', 'vault-store', 'logs')}:/var/log/noona`));
 });
 
+test('startService bootstraps managed log folders through helper container during storage bootstrap', async () => {
+    const helperCreateCalls = [];
+    const lifecycleEvents = [];
+    let startedService = null;
+    const dockerInstance = createStubDocker({
+        createContainer: async (config) => {
+            helperCreateCalls.push(config);
+            return {
+                start: async () => {
+                    lifecycleEvents.push('helper:start');
+                },
+                wait: async () => {
+                    lifecycleEvents.push('helper:wait');
+                    return {StatusCode: 0};
+                },
+            };
+        },
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service) => {
+            lifecycleEvents.push('service:start');
+            startedService = service;
+            return {Id: 'noona-moon-container'};
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        dockerInstance,
+        dockerUtils,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    user: '1000:1001',
+                },
+            },
+        },
+        storageLayoutBootstrap: true,
+    });
+
+    await warden.startService({
+        name: 'noona-moon',
+        image: 'moon',
+        port: 3000,
+        user: '1000:1001',
+    });
+
+    assert.deepEqual(lifecycleEvents, ['helper:start', 'helper:wait', 'service:start']);
+    assert.equal(helperCreateCalls.length, 1);
+    assert.equal(helperCreateCalls[0]?.Image, 'busybox:1.36');
+    assert.match(helperCreateCalls[0]?.HostConfig?.Binds?.[0] ?? '', /moon[\\/]logs:\/target$/);
+    assert.match(helperCreateCalls[0]?.Cmd?.[2] ?? '', /mkdir -p \/target/);
+    assert.match(helperCreateCalls[0]?.Cmd?.[2] ?? '', /chown -R 1000:1001 \/target; chmod 775 \/target/);
+    assert.ok(startedService?.env?.includes('NOONA_LOG_DIR=/var/log/noona'));
+    assert.ok(startedService?.volumes?.includes(`${path.join('/srv/noona', 'moon', 'logs')}:/var/log/noona`));
+});
+
+test('restartService fails fast when containerized Warden is missing the same-path NOONA_DATA_ROOT bind', async () => {
+    let started = false;
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        removeContainers: async () => [],
+        runContainerWithLogs: async () => {
+            started = true;
+        },
+        waitForContainerHealthy: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            },
+        },
+        env: {
+            HOSTNAME: 'warden-self',
+            NOONA_DATA_ROOT: '/srv/noona',
+        },
+        dockerInstance: createStubDocker({
+            getContainer: (name) => ({
+                inspect: async () => {
+                    if (name === 'warden-self') {
+                        return {
+                            Name: '/noona-warden',
+                            Mounts: [
+                                {
+                                    Type: 'bind',
+                                    Source: '/var/run/docker.sock',
+                                    Destination: '/var/run/docker.sock',
+                                },
+                            ],
+                        };
+                    }
+
+                    const error = new Error('Not found');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            }),
+        }),
+        hostDockerSockets: [],
+    });
+
+    await assert.rejects(
+        () => warden.restartService('noona-vault'),
+        /Containerized Warden must bind-mount NOONA_DATA_ROOT '\/srv\/noona'.*-v \/srv\/noona:\/srv\/noona/s,
+    );
+    assert.equal(started, false);
+});
+
+test('restartService mounts Vault TLS assets when containerized Warden shares NOONA_DATA_ROOT at the same path', async () => {
+    const started = [];
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        removeContainers: async () => [],
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                volumes: [...(service.volumes || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForContainerHealthy: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        services: {
+            addon: {},
+            core: {
+                'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            },
+        },
+        env: {
+            HOSTNAME: 'warden-self',
+            NOONA_DATA_ROOT: '/srv/noona',
+        },
+        dockerInstance: createStubDocker({
+            getContainer: (name) => ({
+                inspect: async () => {
+                    if (name === 'warden-self') {
+                        return {
+                            Name: '/noona-warden',
+                            Mounts: [
+                                {
+                                    Type: 'bind',
+                                    Source: '/srv/noona',
+                                    Destination: '/srv/noona',
+                                },
+                            ],
+                        };
+                    }
+
+                    const error = new Error('Not found');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            }),
+        }),
+        hostDockerSockets: [],
+    });
+
+    await warden.restartService('noona-vault');
+
+    assert.equal(started.length, 1);
+    assert.ok(
+        started[0].volumes.includes(`${path.join('/srv/noona', 'vault', 'tls')}:/var/lib/noona/vault-tls`),
+        'Vault should receive the shared TLS bind mount when Warden shares the same storage root.',
+    );
+});
+
 test('installServices respects explicit Redis and Mongo host mount folder overrides from Vault settings', async () => {
     const started = [];
     const dockerUtils = {
@@ -1425,7 +1752,7 @@ test('installServices provisions managed Kavita API keys before starting portal 
                 env: [
                     'KAVITA_BASE_URL=http://noona-kavita:5000',
                     'KAVITA_API_KEY=',
-                    'VAULT_BASE_URL=http://noona-vault:3005',
+                    'VAULT_BASE_URL=https://noona-vault:3005',
                     'VAULT_API_TOKEN=vault-token',
                     'DISCORD_BOT_TOKEN=discord-token',
                     'DISCORD_CLIENT_ID=discord-client',
@@ -2124,7 +2451,7 @@ test('testService runs Vault health check against custom path', async () => {
                     name: 'noona-vault',
                     image: 'vault',
                     port: 3005,
-                    health: 'http://noona-vault:3005/v1/vault/health',
+                    health: 'https://noona-vault:3005/v1/vault/health',
                 },
             },
         },
@@ -2902,6 +3229,55 @@ test('bootFull applies setup snapshot runtime values when persisted settings are
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=kavita-api'));
 });
 
+test('bootFull loads legacy NOONA_DATA_ROOT setup snapshots without applying unsupported noona-vault runtime overrides', async () => {
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            values: {
+                'noona-vault': {
+                    NOONA_DATA_ROOT: '/srv/noona',
+                },
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                    KAVITA_BASE_URL: 'https://kavita.example',
+                    KAVITA_API_KEY: 'kavita-api',
+                },
+            },
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        settings: {
+            client: {
+                mongo: {
+                    findMany: async () => {
+                        throw new Error('vault settings unavailable');
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const starts = [];
+    warden.startService = async (service) => {
+        starts.push(service.name);
+    };
+
+    await warden.bootFull({
+        services: ['noona-redis', 'noona-mongo', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+    });
+
+    assert.ok(starts.includes('noona-portal'));
+    assert.equal(warden.getSetupConfig().snapshot.storageRoot, '/srv/noona');
+    assert.equal(warden.getServiceConfig('noona-vault').runtimeConfig.env.NOONA_DATA_ROOT, undefined);
+    assert.equal(warden.getServiceConfig('noona-raven').runtimeConfig.env.KAVITA_API_KEY, 'kavita-api');
+    assert.equal(Object.prototype.hasOwnProperty.call(warden.getServiceConfig('noona-raven').runtimeConfig.env, 'NOONA_DATA_ROOT'), false);
+});
+
 test('bootFull prefers setup snapshot runtime values before other persisted config sources', async () => {
     const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const memoryFs = createMemoryFs({
@@ -3608,6 +3984,51 @@ test('startEcosystem uses persisted setup snapshot selection when setupCompleted
     ]);
 });
 
+test('startEcosystem uses persisted minimal selection when the setup snapshot explicitly selects no services', async () => {
+    const snapshotPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            selected: [],
+            selectionMode: 'minimal',
+            values: {},
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        dockerInstance: {
+            ping: async () => {
+                throw new Error('docker unavailable during cold start');
+            },
+        },
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-vault': {name: 'noona-vault'},
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    const result = await warden.startEcosystem({setupCompleted: false});
+
+    assert.equal(result.mode, 'minimal');
+    assert.equal(result.setupCompleted, false);
+    assert.deepEqual(started, ['noona-sage', 'noona-moon']);
+});
+
 test('bootMinimal checks startup image updates when AUTO_UPDATES is enabled', async () => {
     const warden = buildWarden({
         services: {
@@ -3721,8 +4142,24 @@ test('Moon WEBGUI_PORT override updates service config and minimal boot health t
         services: {
             addon: {},
             core: {
-                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}],
+                },
                 'noona-sage': {name: 'noona-sage', image: 'sage'},
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
             },
         },
         env: {HOST_SERVICE_URL: 'http://localhost'},
@@ -3774,8 +4211,24 @@ test('Moon MOON_EXTERNAL_URL override publishes external hostServiceUrl metadata
         services: {
             addon: {},
             core: {
-                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}],
+                },
                 'noona-sage': {name: 'noona-sage', image: 'sage'},
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
             },
         },
         env: {HOST_SERVICE_URL: 'http://localhost'},
@@ -3796,6 +4249,44 @@ test('Moon MOON_EXTERNAL_URL override publishes external hostServiceUrl metadata
     assert.equal(moonService?.hostServiceUrl, 'https://moon.example.com/');
 });
 
+test('Moon SAGE_BASE_URL override persists runtime config and returns it in service config', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}, {key: 'SAGE_BASE_URL'}],
+                },
+                'noona-sage': {name: 'noona-sage', image: 'sage'},
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        env: {HOST_SERVICE_URL: 'http://localhost'},
+        hostDockerSockets: [],
+    });
+
+    await warden.updateServiceConfig('noona-moon', {
+        env: {SAGE_BASE_URL: 'https://sage.example.com'},
+    });
+
+    const moonConfig = warden.getServiceConfig('noona-moon');
+    assert.equal(moonConfig.env.SAGE_BASE_URL, 'https://sage.example.com');
+    assert.deepEqual(moonConfig.runtimeConfig.env, {SAGE_BASE_URL: 'https://sage.example.com'});
+});
+
 test('managed noona-kavita inherits the current Moon URL for Noona login defaults', async () => {
     const warden = buildWarden({
         services: {
@@ -3814,7 +4305,23 @@ test('managed noona-kavita inherits the current Moon URL for Noona login default
                 },
             },
             core: {
-                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
             },
         },
         env: {HOST_SERVICE_URL: 'http://localhost'},
@@ -3868,6 +4375,17 @@ test('updating Moon external URL restarts managed noona-kavita so Kavita login r
                     image: 'moon',
                     port: 3000,
                     internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
                 },
             },
         },
@@ -3917,7 +4435,23 @@ test('blank managed noona-kavita Noona overrides are treated as unset', async ()
                 },
             },
             core: {
-                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}, {key: 'MOON_EXTERNAL_URL'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
             },
         },
         env: {HOST_SERVICE_URL: 'http://localhost'},
@@ -3949,7 +4483,13 @@ test('updateServiceConfig persists service runtime overrides to noona_settings',
         services: {
             addon: {},
             core: {
-                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
             },
         },
         settings: {
@@ -3981,8 +4521,165 @@ test('updateServiceConfig persists service runtime overrides to noona_settings',
     assert.match(update.$set.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test('updateServiceConfig preserves masked sensitive values and rejects managed credential changes', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'SERVICE_NAME=noona-portal',
+                        'VAULT_API_TOKEN=vault-token',
+                        'DISCORD_BOT_TOKEN=portal-token',
+                    ],
+                    envConfig: [
+                        {key: 'SERVICE_NAME', defaultValue: 'noona-portal', readOnly: true, serverManaged: true},
+                        {
+                            key: 'VAULT_API_TOKEN',
+                            defaultValue: 'vault-token',
+                            readOnly: true,
+                            sensitive: true,
+                            serverManaged: true
+                        },
+                        {key: 'DISCORD_BOT_TOKEN', defaultValue: 'portal-token', sensitive: true},
+                    ],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const preserved = await warden.updateServiceConfig('noona-portal', {
+        env: {
+            DISCORD_BOT_TOKEN: '********',
+        },
+    });
+
+    assert.deepEqual(preserved.service.runtimeConfig.env, {
+        DISCORD_BOT_TOKEN: 'portal-token',
+    });
+
+    await assert.rejects(
+        async () => {
+            await warden.updateServiceConfig('noona-portal', {
+                env: {
+                    VAULT_API_TOKEN: 'rotated-token',
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                },
+            });
+        },
+        /VAULT_API_TOKEN is managed by Warden and cannot be changed/,
+    );
+});
+
+test('updateServiceConfig with restart returns partial success when restart fails after save', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    env: ['WEBGUI_PORT=3000'],
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.restartService = async () => {
+        throw new Error('docker restart failed');
+    };
+
+    const result = await warden.updateServiceConfig('noona-moon', {
+        env: {WEBGUI_PORT: '3010'},
+        restart: true,
+    });
+
+    assert.equal(result.saved, true);
+    assert.equal(result.restarted, false);
+    assert.equal(result.pendingRestart, true);
+    assert.match(result.warnings[0], /Saved noona-moon, but restart failed: docker restart failed/);
+    assert.equal(result.service.runtimeConfig.env.WEBGUI_PORT, '3010');
+    assert.equal(result.service.env.WEBGUI_PORT, '3010');
+});
+
+test('installServices rejects managed environment overrides', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    env: [
+                        'SERVICE_NAME=noona-portal',
+                        'VAULT_API_TOKEN=vault-token',
+                    ],
+                    envConfig: [
+                        {key: 'SERVICE_NAME', defaultValue: 'noona-portal', readOnly: true, serverManaged: true},
+                        {
+                            key: 'VAULT_API_TOKEN',
+                            defaultValue: 'vault-token',
+                            readOnly: true,
+                            sensitive: true,
+                            serverManaged: true
+                        },
+                    ],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const results = await warden.installServices([
+        {
+            name: 'noona-portal',
+            env: {
+                VAULT_API_TOKEN: 'rotated-token',
+            },
+        },
+    ]);
+
+    const portalResult = results.find((entry) => entry?.name === 'noona-portal');
+    assert.deepEqual(portalResult, {
+        name: 'noona-portal',
+        status: 'error',
+        error: 'VAULT_API_TOKEN is managed by Warden and cannot be changed.',
+    });
+});
+
 test('saveSetupConfig writes setup snapshot to disk and applies runtime env overrides', async () => {
     const memoryFs = createMemoryFs();
+    const stopCalls = [];
+    const startCalls = [];
     const warden = buildWarden({
         fs: memoryFs,
         env: {NOONA_DATA_ROOT: '/srv/noona'},
@@ -3997,11 +4694,33 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
                         'DISCORD_BOT_TOKEN=',
                         'KAVITA_API_KEY=',
                     ],
+                    envConfig: [
+                        {key: 'DISCORD_BOT_TOKEN', sensitive: true},
+                        {key: 'KAVITA_API_KEY', sensitive: true},
+                    ],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
                 },
             },
         },
         hostDockerSockets: [],
     });
+    warden.stopEcosystem = async (options = {}) => {
+        stopCalls.push(options);
+        return [{service: 'noona-portal', stopped: true, removed: false}];
+    };
+    warden.startEcosystem = async (options = {}) => {
+        startCalls.push(options);
+        return {mode: 'full', setupCompleted: true};
+    };
 
     const payload = {
         version: 2,
@@ -4022,16 +4741,29 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
 
     assert.equal(result.exists, true);
     assert.equal(result.path, expectedPath);
-    assert.deepEqual(result.selected, ['noona-portal']);
-    assert.equal(result.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
-    assert.equal(result.snapshot.values['noona-portal'].KAVITA_API_KEY, 'kavita-api');
+    assert.deepEqual(result.selected, ['noona-portal', 'noona-raven']);
+    assert.equal(result.saved, true);
+    assert.equal(result.restarted, true);
+    assert.equal(result.rolledBack, false);
+    assert.equal(result.snapshot.version, 3);
+    assert.equal(result.snapshot.storageRoot, path.normalize('/srv/noona'));
+    assert.equal(result.snapshot.discord.botToken, 'portal-token');
+    assert.equal(result.snapshot.kavita.apiKey, 'kavita-api');
+    assert.equal(typeof result.snapshot.savedAt, 'string');
     assert.ok(memoryFs.files.has(path.normalize(expectedPath)));
     assert.ok(memoryFs.files.has(path.normalize(legacyRootPath)));
     assert.ok(memoryFs.files.has(path.normalize(legacyPath)));
+    assert.deepEqual(stopCalls, [{trackedOnly: false, remove: false}]);
+    assert.deepEqual(startCalls, [{
+        forceFull: true,
+        setupCompleted: true,
+        services: ['noona-moon', 'noona-sage', 'noona-portal', 'noona-raven'],
+    }]);
 
     const loadedSnapshot = warden.getSetupConfig();
     assert.equal(loadedSnapshot.exists, true);
     assert.equal(loadedSnapshot.path, expectedPath);
+    assert.equal(loadedSnapshot.snapshot.discord.botToken, 'portal-token');
     assert.equal(loadedSnapshot.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
 
     const portalConfig = warden.getServiceConfig('noona-portal');
@@ -4044,6 +4776,463 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
     const runtimeSnapshot = JSON.parse(memoryFs.files.get(path.normalize(runtimeSnapshotPath)));
     assert.equal(runtimeSnapshot.services['noona-portal'].env.DISCORD_BOT_TOKEN, 'portal-token');
     assert.equal(runtimeSnapshot.services['noona-portal'].env.KAVITA_API_KEY, 'kavita-api');
+});
+
+test('saveSetupConfig rejects snapshot storage roots outside the canonical Noona root', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
+                'noona-sage': {
+                    name: 'noona-sage',
+                    envConfig: [],
+                },
+                'noona-portal': {
+                    name: 'noona-portal',
+                    envConfig: [{key: 'DISCORD_BOT_TOKEN'}],
+                },
+                'noona-raven': {
+                    name: 'noona-raven',
+                    envConfig: [],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    await assert.rejects(
+        async () => {
+            await warden.saveSetupConfig({
+                selected: ['noona-portal'],
+                storageRoot: '/tmp/outside',
+                values: {
+                    'noona-portal': {
+                        DISCORD_BOT_TOKEN: 'portal-token',
+                    },
+                },
+            });
+        },
+        /storageRoot must stay within Warden's managed Noona data root/,
+    );
+});
+
+test('saveSetupConfig ignores legacy platform selections and keeps the derived setup profile stable', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    envConfig: [{key: 'DISCORD_BOT_TOKEN'}],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.saveSetupConfig({
+        version: 2,
+        selected: ['noona-moon', 'noona-sage', 'noona-portal'],
+        values: {
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'portal-token',
+            },
+        },
+    }, {apply: false});
+
+    assert.deepEqual(result.selected, ['noona-portal', 'noona-raven']);
+    assert.equal(result.snapshot.discord.botToken, 'portal-token');
+    assert.equal(result.snapshot.kavita.mode, 'external');
+});
+
+test('saveSetupConfig imports legacy NOONA_DATA_ROOT into storageRoot without persisting noona-vault runtime overrides', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.saveSetupConfig({
+        version: 2,
+        selected: ['noona-moon', 'noona-sage', 'noona-portal', 'noona-kavita'],
+        values: {
+            'noona-vault': {
+                NOONA_DATA_ROOT: '/srv/noona',
+            },
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'portal-token',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'kavita-api',
+            },
+            'noona-kavita': {
+                KAVITA_ADMIN_USERNAME: 'admin',
+                KAVITA_ADMIN_EMAIL: 'admin@example.com',
+                KAVITA_ADMIN_PASSWORD: 'admin-pass',
+            },
+        },
+    }, {apply: false});
+
+    const persistedSnapshot = warden.getSetupConfig({refresh: true}).snapshot;
+
+    assert.equal(persistedSnapshot.storageRoot, path.normalize('/srv/noona'));
+    assert.deepEqual(result.selected, ['noona-kavita', 'noona-portal', 'noona-raven']);
+    assert.equal(persistedSnapshot.values['noona-vault'], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedSnapshot.values['noona-raven'] ?? {}, 'NOONA_DATA_ROOT'), false);
+});
+
+test('saveSetupConfig rejects read-only and server-managed env keys', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    env: ['VAULT_API_TOKEN=vault-token'],
+                    envConfig: [
+                        {key: 'VAULT_API_TOKEN', readOnly: true, serverManaged: true, sensitive: true},
+                    ],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    await assert.rejects(
+        async () => {
+            await warden.saveSetupConfig({
+                selected: ['noona-portal'],
+                values: {
+                    'noona-portal': {
+                        VAULT_API_TOKEN: 'rotated-token',
+                    },
+                },
+            });
+        },
+        /VAULT_API_TOKEN is managed by Warden and cannot be changed/,
+    );
+});
+
+test('saveSetupConfig rejects invalid SERVER_IP values', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {addon: {}, core: {}},
+        hostDockerSockets: [],
+    });
+
+    await assert.rejects(
+        async () => {
+            await warden.saveSetupConfig({
+                selected: [],
+                values: {
+                    'noona-warden': {
+                        SERVER_IP: 'http://192.168.1.25/not-allowed',
+                    },
+                },
+            });
+        },
+        /SERVER_IP must be a valid hostname, IP address, or http\(s\) URL without a path/,
+    );
+});
+
+test('saveSetupConfig rejects effective ecosystem host port collisions', async () => {
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    env: ['WEBGUI_PORT=3000'],
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
+                'noona-portal': {
+                    name: 'noona-portal',
+                    image: 'portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    envConfig: [{key: 'DISCORD_BOT_TOKEN'}],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    await assert.rejects(
+        async () => {
+            await warden.saveSetupConfig({
+                selected: ['noona-portal'],
+                values: {
+                    'noona-moon': {
+                        WEBGUI_PORT: '3003',
+                    },
+                },
+            });
+        },
+        /Host port collision detected: noona-moon and noona-portal both use port 3003/,
+    );
+});
+
+test('saveSetupConfig restarts using the imported service selection', async () => {
+    const startCalls = [];
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': {name: 'noona-sage', port: 3004, internalPort: 3004},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    env: ['WEBGUI_PORT=3000'],
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
+                'noona-portal': {
+                    name: 'noona-portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    envConfig: [{key: 'DISCORD_BOT_TOKEN'}]
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+    warden.stopEcosystem = async () => [];
+    warden.startEcosystem = async (options = {}) => {
+        startCalls.push(options);
+        return {mode: 'full', setupCompleted: true};
+    };
+
+    await warden.saveSetupConfig({
+        selected: ['noona-portal'],
+        values: {
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'portal-token',
+            },
+        },
+    });
+
+    assert.deepEqual(startCalls, [{
+        forceFull: true,
+        setupCompleted: true,
+        services: ['noona-moon', 'noona-sage', 'noona-portal', 'noona-raven'],
+    }]);
+});
+
+test('saveSetupConfig supports persist-only snapshots without restarting the ecosystem', async () => {
+    const startCalls = [];
+    const stopCalls = [];
+    const warden = buildWarden({
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-sage': {name: 'noona-sage', port: 3004, internalPort: 3004},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000, envConfig: [{key: 'WEBGUI_PORT'}]},
+                'noona-portal': {
+                    name: 'noona-portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    envConfig: [{key: 'DISCORD_BOT_TOKEN'}]
+                },
+                'noona-raven': {
+                    name: 'noona-raven',
+                    port: 3006,
+                    internalPort: 3006,
+                    envConfig: [],
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+    warden.stopEcosystem = async (options = {}) => {
+        stopCalls.push(options);
+        return [];
+    };
+    warden.startEcosystem = async (options = {}) => {
+        startCalls.push(options);
+        return {mode: 'full', setupCompleted: true};
+    };
+
+    const result = await warden.saveSetupConfig({
+        version: 3,
+        storageRoot: '/srv/noona',
+        kavita: {
+            mode: 'external',
+            baseUrl: 'https://kavita.example',
+            apiKey: 'kavita-api',
+            sharedLibraryPath: '/mnt/manga',
+            account: {
+                username: '',
+                email: '',
+                password: '',
+            },
+        },
+        komf: {
+            mode: 'external',
+            baseUrl: '',
+            applicationYml: '',
+        },
+        discord: {
+            botToken: 'portal-token',
+            clientId: 'client-id',
+            clientSecret: 'client-secret',
+            guildId: 'guild-id',
+        },
+    }, {apply: false});
+
+    assert.equal(result.selectionMode, 'selected');
+    assert.equal(result.restarted, false);
+    assert.equal(result.persistOnly, true);
+    assert.deepEqual(result.selected, ['noona-portal', 'noona-raven']);
+    assert.deepEqual(stopCalls, []);
+    assert.deepEqual(startCalls, []);
+});
+
+test('saveSetupConfig applies public v3 snapshots with the real service descriptors without persisting storageRoot as a runtime override', async () => {
+    const memoryFs = createMemoryFs();
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+    warden.stopEcosystem = async () => [];
+    warden.startEcosystem = async () => ({mode: 'full', setupCompleted: true});
+
+    const result = await warden.saveSetupConfig({
+        version: 3,
+        storageRoot: '/srv/noona',
+        kavita: {
+            mode: 'external',
+            baseUrl: 'https://kavita.example',
+            apiKey: 'kavita-api',
+            sharedLibraryPath: '/mnt/manga',
+            account: {
+                username: '',
+                email: '',
+                password: '',
+            },
+        },
+        komf: {
+            mode: 'managed',
+            baseUrl: '',
+            applicationYml: 'server:\n  port: 8085\n',
+        },
+        discord: {
+            botToken: 'portal-token',
+            clientId: 'client-id',
+            clientSecret: 'client-secret',
+            guildId: 'guild-id',
+        },
+    });
+
+    const persistedSnapshot = warden.getSetupConfig({refresh: true}).snapshot;
+    assert.equal(persistedSnapshot.values['noona-vault'], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedSnapshot.values['noona-raven'] ?? {}, 'NOONA_DATA_ROOT'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedSnapshot.values['noona-komf'] ?? {}, 'NOONA_DATA_ROOT'), false);
+
+    const runtimeSnapshotPath = path.join('/srv/noona', 'warden', 'service-runtime-config.json');
+    const runtimeSnapshot = JSON.parse(memoryFs.files.get(path.normalize(runtimeSnapshotPath)));
+    const runtimeServices = runtimeSnapshot?.services ?? {};
+    assert.equal(runtimeServices['noona-vault'], undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(runtimeServices['noona-raven']?.env ?? {}, 'NOONA_DATA_ROOT'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(runtimeServices['noona-komf']?.env ?? {}, 'NOONA_DATA_ROOT'), false);
+});
+
+test('saveSetupConfig rolls back persisted snapshot and runtime state when restart fails', async () => {
+    const memoryFs = createMemoryFs();
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {
+                    name: 'noona-portal',
+                    port: 3003,
+                    internalPort: 3003,
+                    envConfig: [{key: 'DISCORD_BOT_TOKEN'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    await warden.saveSetupConfig({
+        selected: ['noona-portal'],
+        values: {
+            'noona-portal': {
+                DISCORD_BOT_TOKEN: 'old-token',
+            },
+        },
+    }, {apply: false});
+
+    warden.stopEcosystem = async () => [];
+    warden.startEcosystem = async () => {
+        throw new Error('restart failed');
+    };
+
+    await assert.rejects(
+        async () => {
+            await warden.saveSetupConfig({
+                selected: ['noona-portal'],
+                values: {
+                    'noona-portal': {
+                        DISCORD_BOT_TOKEN: 'new-token',
+                    },
+                },
+            });
+        },
+        /Failed to apply setup config snapshot/,
+    );
+
+    assert.equal(
+        warden.getSetupConfig().snapshot.discord.botToken,
+        'old-token',
+    );
+    assert.equal(
+        warden.getServiceConfig('noona-portal').runtimeConfig.env.DISCORD_BOT_TOKEN,
+        'old-token',
+    );
 });
 
 test('getSetupConfig falls back to the legacy root setup snapshot path when the new WardenM file is missing', () => {
@@ -4166,7 +5355,13 @@ test('updateServiceConfig removes persisted service runtime overrides when clear
         services: {
             addon: {},
             core: {
-                'noona-moon': {name: 'noona-moon', image: 'moon', port: 3000, internalPort: 3000},
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
             },
         },
         settings: {
@@ -4782,7 +5977,7 @@ test('init falls back to alternate docker socket when default ping fails', async
     await warden.init();
 
     assert.deepEqual(dockerFactoryCalls, ['/remote/docker.sock']);
-    assert.deepEqual(ensureClients, [successfulDocker]);
+    assert.deepEqual(ensureClients, [successfulDocker, successfulDocker]);
     assert.deepEqual(attachClients, [successfulDocker]);
     assert.deepEqual(containerExistsClients, [successfulDocker, successfulDocker, successfulDocker, successfulDocker]);
     assert.deepEqual(pullClients, [successfulDocker, successfulDocker]);
@@ -4911,6 +6106,7 @@ test('factoryResetEcosystem removes noona containers/images and restarts in clea
     };
 
     const result = await warden.factoryResetEcosystem({
+        confirm: 'FACTORY_RESET',
         deleteDockers: true,
         deleteRavenDownloads: false,
     });
@@ -4950,6 +6146,7 @@ test('factoryResetEcosystem marks Raven cleanup successful when no Raven mounts 
     warden.startEcosystem = async () => ({mode: 'minimal', setupCompleted: false});
 
     const result = await warden.factoryResetEcosystem({
+        confirm: 'FACTORY_RESET',
         deleteDockers: false,
         deleteRavenDownloads: true,
     });
@@ -4971,7 +6168,21 @@ test('factoryResetEcosystem clears persisted boot snapshots and runtime override
         services: {
             addon: {},
             core: {
-                'noona-sage': {name: 'noona-sage', image: noonaImage('noona-sage')},
+                'noona-sage': {
+                    name: 'noona-sage',
+                    image: noonaImage('noona-sage'),
+                    envConfig: [{key: 'DEBUG'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                    },
+                    delete: async () => {
+                    },
+                },
             },
         },
         wizardState: {
@@ -5006,7 +6217,7 @@ test('factoryResetEcosystem clears persisted boot snapshots and runtime override
                 DEBUG: 'true',
             },
         },
-    });
+    }, {apply: false});
 
     assert.equal(warden.getSetupConfig({refresh: true}).exists, true);
     assert.equal(warden.getServiceConfig('noona-sage').runtimeConfig.env.DEBUG, 'true');
@@ -5019,6 +6230,7 @@ test('factoryResetEcosystem clears persisted boot snapshots and runtime override
     };
 
     const result = await warden.factoryResetEcosystem({
+        confirm: 'FACTORY_RESET',
         deleteDockers: false,
         deleteRavenDownloads: false,
     });

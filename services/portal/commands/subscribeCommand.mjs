@@ -1,3 +1,12 @@
+/**
+ * @fileoverview Defines the `/subscribe` Discord flow for release notifications.
+ * Related files:
+ * - commands/index.mjs
+ * - commands/utils.mjs
+ * - tests/discordCommands.test.mjs
+ * Times this file has been edited: 2
+ */
+
 import {ApplicationCommandOptionType, MessageFlags} from 'discord.js';
 import {errMSG} from '../../../utilities/etc/logger.mjs';
 import {resolveDiscordId, respondWithError} from './utils.mjs';
@@ -224,6 +233,12 @@ const buildSubscriptionUpdateQuery = (entry = {}) => {
     return fallbackQuery;
 };
 
+/**
+ * Creates subscribe command.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createSubscribeCommand = ({
                                            raven,
                                            vault,

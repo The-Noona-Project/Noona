@@ -75,27 +75,29 @@ test('normalizeEnvKey helper formats service names for env lookup', () => {
     assert.equal(normalizeEnvKey('noona-portal'), 'NOONA_PORTAL_VAULT_TOKEN');
 });
 
-test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async () => {
+test('managed descriptors only inject Vault tokens into services that talk to Vault', async () => {
     const { generatedTokenCache } = __testables__;
     generatedTokenCache.clear();
 
-    const services = [
+    const servicesWithVaultAccess = [
         'noona-sage',
-        'noona-moon',
-        'noona-oracle',
         'noona-raven',
         'noona-portal',
+    ];
+    const servicesWithoutVaultAccess = [
+        'noona-moon',
+        'noona-oracle',
         'noona-vault',
     ];
 
-    for (const name of services) {
+    for (const name of [...servicesWithVaultAccess, ...servicesWithoutVaultAccess]) {
         generatedTokenCache.set(name, `${name}-cached-token`);
     }
 
     const module = await import('../docker/noonaDockers.mjs?test=setup');
     const { default: noonaDockers } = module;
 
-    for (const name of services) {
+    for (const name of servicesWithVaultAccess) {
         const service = noonaDockers[name];
         assert.ok(service, `Service ${name} should exist in setup wizard definition.`);
 
@@ -109,6 +111,16 @@ test('setup wizard uses generated Vault tokens in VAULT_API_TOKEN fields', async
         if (field) {
             assert.equal(field.defaultValue, token);
         }
+    }
+
+    for (const name of servicesWithoutVaultAccess) {
+        const service = noonaDockers[name];
+        assert.ok(service, `Service ${name} should exist in setup wizard definition.`);
+        assert.equal(
+            service.env.some((entry) => entry.startsWith('VAULT_API_TOKEN=')),
+            false,
+            `Service ${name} should not receive a direct Vault token.`,
+        );
     }
 });
 
@@ -124,20 +136,24 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         ['PORTAL_JOIN_DEFAULT_LIBRARIES', '*'],
         ['KAVITA_EXTERNAL_URL', ''],
         ['PORTAL_REDIS_NAMESPACE', 'portal:onboarding'],
+        ['PORTAL_DM_QUEUE_NAMESPACE', 'portal:discord:dm'],
         ['PORTAL_TOKEN_TTL', '900'],
         ['PORTAL_HTTP_TIMEOUT', '10000'],
     ];
 
     const requiredExpectations = [
-        ['VAULT_BASE_URL', 'http://noona-vault:3005'],
+        ['VAULT_BASE_URL', 'https://noona-vault:3005'],
+    ];
+    const serverManagedExpectations = [
+        ['VAULT_CA_CERT_PATH', '/var/lib/noona/vault-tls/ca-cert.pem'],
     ];
 
     const optionalDiscordExpectations = [
         'DISCORD_GUILD_ROLE_ID',
         'DISCORD_DEFAULT_ROLE_ID',
+        'DISCORD_SUPERUSER_ID',
         'REQUIRED_GUILD_ID',
         'REQUIRED_ROLE_DING',
-        'REQUIRED_ROLE_JOIN',
         'REQUIRED_ROLE_SCAN',
         'REQUIRED_ROLE_SEARCH',
         'REQUIRED_ROLE_RECOMMEND',
@@ -176,6 +192,14 @@ test('noona-portal descriptor exposes Redis and HTTP defaults', async () => {
         assert.equal(field.required, false, `${key} should be optional in setup UI.`);
     }
 
+    for (const [key, value] of serverManagedExpectations) {
+        assert.ok(portal.env.includes(`${key}=${value}`), `${key} should be exported with default ${value}.`);
+        const field = portal.envConfig.find((entry) => entry.key === key);
+        assert.ok(field, `Portal envConfig should include ${key}.`);
+        assert.equal(field.readOnly, true, `${key} should be read-only.`);
+        assert.equal(field.serverManaged, true, `${key} should be server managed.`);
+    }
+
     assert.equal(
         portal.env.some((entry) => entry.startsWith('VAULT_ACCESS_TOKEN=')),
         false,
@@ -212,7 +236,7 @@ test('noona-portal health check points to /health endpoint', async () => {
     );
 });
 
-test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health defaults', async () => {
+test('noona-moon descriptor exposes WEBGUI_PORT, MOON_EXTERNAL_URL, and SAGE_BASE_URL runtime fields', async () => {
     const previousWebGuiPort = process.env.WEBGUI_PORT;
     process.env.WEBGUI_PORT = '3010';
 
@@ -234,6 +258,10 @@ test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health 
             moon.env.includes('MOON_EXTERNAL_URL='),
             'Moon env array should include MOON_EXTERNAL_URL for external link overrides.',
         );
+        assert.ok(
+            moon.env.includes('SAGE_BASE_URL='),
+            'Moon env array should include SAGE_BASE_URL for custom Sage routing overrides.',
+        );
 
         const field = moon.envConfig.find((entry) => entry.key === 'WEBGUI_PORT');
         assert.ok(field, 'Moon envConfig should include WEBGUI_PORT.');
@@ -243,6 +271,10 @@ test('noona-moon descriptor exposes WEBGUI_PORT and uses it for host and health 
         assert.ok(externalField, 'Moon envConfig should include MOON_EXTERNAL_URL.');
         assert.equal(externalField.defaultValue, '');
         assert.equal(externalField.required, false);
+        const sageField = moon.envConfig.find((entry) => entry.key === 'SAGE_BASE_URL');
+        assert.ok(sageField, 'Moon envConfig should include SAGE_BASE_URL.');
+        assert.equal(sageField.defaultValue, '');
+        assert.equal(sageField.required, false);
     } finally {
         if (previousWebGuiPort === undefined) {
             delete process.env.WEBGUI_PORT;
@@ -277,8 +309,8 @@ test('service descriptors use SERVER_IP for host URLs and pass it through to man
         assert.ok(kavita.env.includes('SERVER_IP=192.168.1.25'));
 
         assert.equal(moon.hostServiceUrl, 'http://192.168.1.25:3000');
-        assert.equal(redis.hostServiceUrl, 'http://192.168.1.25:8001');
-        assert.equal(mongo.hostServiceUrl, 'mongodb://192.168.1.25:27017');
+        assert.equal(redis.hostServiceUrl, null);
+        assert.equal(mongo.hostServiceUrl, null);
         assert.equal(kavita.hostServiceUrl, 'http://192.168.1.25:5000');
     } finally {
         if (previousServerIp === undefined) {
@@ -302,7 +334,7 @@ test('noona-raven descriptor provides default Vault URL configuration', async ()
     const raven = noonaDockers['noona-raven'];
     assert.ok(raven, 'Raven service descriptor should be defined.');
 
-    const expectedDefault = 'http://noona-vault:3005';
+    const expectedDefault = 'https://noona-vault:3005';
     assert.ok(
         raven.env.includes(`VAULT_URL=${expectedDefault}`),
         'Raven env should include VAULT_URL with the default Vault endpoint.',
@@ -313,7 +345,7 @@ test('noona-raven descriptor provides default Vault URL configuration', async ()
     assert.equal(field.defaultValue, expectedDefault, 'VAULT_URL default should match the container env.');
     assert.equal(
         field.warning,
-        'Change only if Vault is reachable for Raven at a non-default address inside the Docker network.',
+        'Change only if Vault is reachable for Raven at a different trusted internal HTTPS address inside the Docker network.',
         'VAULT_URL envConfig should explain when to adjust the value.',
     );
 });
@@ -329,9 +361,12 @@ test('noona-vault descriptor exposes storage connection environment fields', asy
         'VAULT_DATA_FOLDER=vault',
         'VAULT_REDIS_HOST_MOUNT_PATH=',
         'VAULT_MONGO_HOST_MOUNT_PATH=',
-        'MONGO_URI=mongodb://root:example@noona-mongo:27017/admin?authSource=admin',
         'REDIS_HOST=noona-redis',
         'REDIS_PORT=6379',
+        'VAULT_TLS_ENABLED=true',
+        'VAULT_CA_CERT_PATH=/var/lib/noona/vault-tls/ca-cert.pem',
+        'VAULT_TLS_CERT_PATH=/var/lib/noona/vault-tls/vault-cert.pem',
+        'VAULT_TLS_KEY_PATH=/var/lib/noona/vault-tls/vault-key.pem',
     ]);
 
     for (const entry of expectedEnv) {
@@ -343,13 +378,24 @@ test('noona-vault descriptor exposes storage connection environment fields', asy
 
     const configByKey = new Map(vault.envConfig.map((field) => [field.key, field]));
 
+    const mongoUriEntry = vault.env.find((entry) => entry.startsWith('MONGO_URI='));
+    assert.ok(mongoUriEntry, 'Vault env should include MONGO_URI.');
+    assert.match(
+        mongoUriEntry,
+        /^MONGO_URI=mongodb:\/\/root:[^@]+@noona-mongo:27017\/admin\?authSource=admin$/,
+        'Vault Mongo URI should use the generated managed credentials.',
+    );
+
     for (const [key, value] of [
         ['VAULT_DATA_FOLDER', 'vault'],
         ['VAULT_REDIS_HOST_MOUNT_PATH', ''],
         ['VAULT_MONGO_HOST_MOUNT_PATH', ''],
-        ['MONGO_URI', 'mongodb://root:example@noona-mongo:27017/admin?authSource=admin'],
         ['REDIS_HOST', 'noona-redis'],
         ['REDIS_PORT', '6379'],
+        ['VAULT_TLS_ENABLED', 'true'],
+        ['VAULT_CA_CERT_PATH', '/var/lib/noona/vault-tls/ca-cert.pem'],
+        ['VAULT_TLS_CERT_PATH', '/var/lib/noona/vault-tls/vault-cert.pem'],
+        ['VAULT_TLS_KEY_PATH', '/var/lib/noona/vault-tls/vault-key.pem'],
     ]) {
         assert.ok(configByKey.has(key), `Vault envConfig should include ${key}.`);
         assert.equal(configByKey.get(key).defaultValue, value, `${key} default should match implicit behavior.`);

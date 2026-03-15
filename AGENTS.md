@@ -1,61 +1,30 @@
-# Repository Agent Guidelines
+# Repository Agent Guide
 
-This repository contains Noona Stack 2.2. Follow these rules when editing.
+Read this before editing Noona.
 
-## Core Rules
+## Audience Split
 
-- Keep changes scoped to the requested task.
-- Preserve unrelated user changes; do not revert work you did not make.
-- Check for nested `AGENTS.md` files before editing a service directory.
-- Update docs when runtime behavior, endpoints, config, or workflows change.
+- Public and self-hoster docs live in the root and service `README.md` files.
+- Server admin docs live in [ServerAdmin.md](ServerAdmin.md).
+- AI contributor detail lives in `AGENTS.md` files and [docs/agents/README.md](docs/agents/README.md).
 
-## Repository Map
+## Hard Rules
 
-- [Root README](README.md)
-- [dockerfiles/](dockerfiles/)
-- [services/](services/)
-- [utilities/](utilities/)
-- [docs/](docs/)
-- [scripts/](scripts/)
+- Keep changes scoped to the request.
+- Preserve user changes you did not make.
+- Read the closest service `AGENTS.md` before editing under `services/`.
+- Keep public README files user-focused. Move implementation detail into `docs/agents/`.
+- If runtime behavior, setup flow, storage layout, roles, or admin workflow changes, update the nearest public README
+  and [ServerAdmin.md](ServerAdmin.md) in the same change.
+- If invariants, file ownership, or internal workflows change, update the matching file under `docs/agents/`.
+- When adding or moving major docs, keep links in this file and [README.md](README.md) current.
 
-## Service Guides (Open Before Editing)
+## Start Here
 
-| Service | Agent Guide                                            | README                                                 |
-|---------|--------------------------------------------------------|--------------------------------------------------------|
-| Warden  | [services/warden/AGENTS.md](services/warden/AGENTS.md) | [services/warden/readme.md](services/warden/readme.md) |
-| Moon    | [services/moon/AGENTS.md](services/moon/AGENTS.md)     | [services/moon/README.md](services/moon/README.md)     |
-| Portal  | [services/portal/AGENTS.md](services/portal/AGENTS.md) | [services/portal/README.md](services/portal/README.md) |
-| Sage    | [services/sage/AGENTS.md](services/sage/AGENTS.md)     | [services/sage/README.md](services/sage/README.md)     |
-| Raven   | [services/raven/AGENTS.md](services/raven/AGENTS.md)   | [services/raven/readme.md](services/raven/readme.md)   |
-| Vault   | [services/vault/AGENTS.md](services/vault/AGENTS.md)   | [services/vault/readme.md](services/vault/readme.md)   |
-| Kavita  | [services/kavita/AGENTS.md](services/kavita/AGENTS.md) | [services/kavita/README.md](services/kavita/README.md) |
-| Komf    | [services/komf/AGENTS.md](services/komf/AGENTS.md)     | [services/komf/README.md](services/komf/README.md)     |
-
-## Documentation Rules
-
-- README update rule: if behavior changes, update the nearest README in the same change.
-- README navigation rule: include a short `## Quick Navigation` section with markdown links to related files/folders (
-  entrypoint, core modules, tests, and adjacent docs).
-- Cross-link rule: when adding or moving major docs, update [README.md](README.md) and this file so links stay accurate
-  on GitHub.
-- Use markdown links for paths in docs (`[label](relative/path)`), not plain text path dumps.
-
-## Recommended Workflow
-
-1. Read the closest service `AGENTS.md` and README.
-2. Implement the change in the correct service directory.
-3. Add or update tests for changed behavior.
-4. Update README links/notes for touched workflows.
-5. Run relevant tests before finalizing.
-
-## Tooling & Shell Usage
-
-- Prefer the bundled bash helpers (`bash -lc`) when invoking shell commands; always set the `workdir` parameter.
-- Use `rg`/`rg --files` for searches; fall back only if unavailable.
-- Avoid PowerShell-specific commands.
-
-## Testing Expectations
-
-- Prefer service-local test commands from each service README.
-- Keep test coverage aligned with new route contracts, config parsing, and integration points.
-- If tests are skipped, document why.
+- [Public repo README](README.md)
+- [Server admin guide](ServerAdmin.md)
+- [AI docs index](docs/agents/README.md)
+- [Warden AI docs](docs/agents/warden/README.md)
+- [Moon AI docs](docs/agents/moon/README.md)
+- [Portal AI docs](docs/agents/portal/README.md)
+- [Sage AI docs](docs/agents/sage/README.md)

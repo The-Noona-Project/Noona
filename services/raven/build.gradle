@@ -1,5 +1,3 @@
-import org.gradle.api.tasks.testing.Test
-
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.5.3'
@@ -56,6 +54,7 @@ dependencies {
     implementation 'commons-io:commons-io:2.15.1'
     implementation 'org.apache.commons:commons-lang3:3.18.0'
     implementation 'com.google.guava:guava:33.2.0-jre'
+    implementation 'net.java.dev.jna:jna:5.17.0'
 
     // ───── Selenium & WebDriverManager ─────
     implementation 'org.seleniumhq.selenium:selenium-java:4.16.1'
@@ -70,8 +69,18 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+def liveScrapeSignal = project.findProperty('liveScrape') ?: System.getenv('RAVEN_LIVE_SCRAPE') ?: ''
+def liveScrapeEnabled = (liveScrapeSignal ==~ /(?i)(true|1|yes)/)
+
 tasks.withType(Test).configureEach {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        if (!liveScrapeEnabled) {
+            excludeTags 'live'
+        }
+    }
+    testLogging {
+        showStandardStreams = liveScrapeEnabled
+    }
 }
 
 tasks.named('build') {

@@ -5,6 +5,7 @@ import {useRouter} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Row, SmartLink, Spinner, Text} from "@once-ui-system/core";
 import {AuthGate} from "./AuthGate";
 import {SetupModeGate} from "./SetupModeGate";
+import {interpretRavenQueueResponse} from "./downloadQueueResults.mjs";
 import styles from "./DownloadsPage.module.scss";
 
 type RavenSearchOption = {
@@ -19,6 +20,12 @@ type RavenSearchOption = {
 type RavenSearchResponse = {
     searchId?: string | null;
     options?: RavenSearchOption[] | null;
+};
+
+type RavenQueueResponse = {
+    status?: string | null;
+    message?: string | null;
+    error?: string | null;
 };
 
 type ResolvedSearchOption = {
@@ -240,9 +247,14 @@ export function DownloadsAddPage({initialQuery = ""}: DownloadsAddPageProps) {
                         body: JSON.stringify({searchId, optionIndex}),
                     });
 
-                    const json = (await res.json().catch(() => null)) as unknown;
-                    if (!res.ok) {
-                        throw new Error(parseErrorMessage(json, `Queue failed (HTTP ${res.status}).`));
+                    const json = (await res.json().catch(() => null)) as RavenQueueResponse | null;
+                    const queueResult = interpretRavenQueueResponse({
+                        httpStatus: res.status,
+                        payload: json,
+                        fallbackMessage: parseErrorMessage(json, `Queue failed (HTTP ${res.status}).`),
+                    });
+                    if (!queueResult.accepted) {
+                        throw new Error(queueResult.message);
                     }
                     successCount += 1;
                 } catch (error_) {

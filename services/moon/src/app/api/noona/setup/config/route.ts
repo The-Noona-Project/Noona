@@ -1,11 +1,11 @@
 import {NextResponse} from "next/server";
-import {jsonError, wardenJson} from "../../_backend";
+import {jsonError, sageJson} from "../../_backend";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
     try {
-        const {status, payload} = await wardenJson("/api/setup/config");
+        const {status, payload} = await sageJson("/api/setup/config");
         return NextResponse.json(payload, {status});
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     }
 
     try {
-        const {status, payload} = await wardenJson("/api/setup/config", {
+        const {status, payload} = await sageJson("/api/setup/config", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(body),

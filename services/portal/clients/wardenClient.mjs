@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Wraps the narrow Warden status APIs Portal uses for presence and install discovery.
+ * Related files:
+ * - app/portalRuntime.mjs
+ * Times this file has been edited: 3
+ */
+
 const DEFAULT_TIMEOUT_MS = 10000;
 
 const normalizeUrl = (candidate) => {
@@ -41,9 +48,16 @@ const createAbortController = (timeoutMs = DEFAULT_TIMEOUT_MS) => {
     };
 };
 
+/**
+ * Creates portal warden client.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createPortalWardenClient = ({
                                              baseUrl,
                                              baseUrls = [],
+                                             token = null,
                                              fetchImpl = fetch,
                                              timeoutMs = DEFAULT_TIMEOUT_MS,
                                              env = process.env,
@@ -88,6 +102,9 @@ export const createPortalWardenClient = ({
                     method: 'GET',
                     headers: {
                         Accept: 'application/json',
+                        ...(typeof token === 'string' && token.trim()
+                            ? {Authorization: `Bearer ${token.trim()}`}
+                            : {}),
                     },
                     signal: controller.signal,
                 });

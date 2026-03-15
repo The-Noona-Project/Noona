@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Covers recommendation DM delivery, timeline sync, and polling behavior.
+ * Related files:
+ * - discord/recommendationNotifier.mjs
+ * Times this file has been edited: 7
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -163,6 +170,175 @@ test('recommendation notifier DMs completion with Kavita link once title is avai
     assert.equal(recommendations[0]?.notifications?.completionDmMessageId, 'dm-1');
     assert.equal(recommendations[0]?.notifications?.completionKavitaUrl, 'http://noona-kavita:5000/library/4/series/17');
     assert.ok(typeof recommendations[0]?.completedAt === 'string');
+});
+
+test('recommendation notifier applies deferred metadata after Raven import is ready', async () => {
+    const recommendations = [
+        {
+            _id: 'rec-deferred-metadata-1',
+            status: 'approved',
+            title: 'Solo Leveling',
+            href: 'https://source.example/solo-leveling',
+            metadataSelection: {
+                status: 'pending',
+                query: 'Solo Leveling',
+                title: 'Solo Leveling',
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                coverImageUrl: 'https://covers.example/solo-leveling.jpg',
+                adultContent: true,
+            },
+            notifications: {
+                approvalDmSentAt: '2026-03-07T00:00:00.000Z',
+            },
+        },
+    ];
+    const identifyCalls = [];
+    const coverCalls = [];
+    const seriesDetailsCalls = [];
+    const updateTitleCalls = [];
+    const volumeMapCalls = [];
+
+    const notifier = createRecommendationNotifier({
+        discordClient: {},
+        vaultClient: {
+            findRecommendations: async () => recommendations.map((entry) => ({...entry})),
+            updateRecommendation: async ({query, update} = {}) => {
+                const index = recommendations.findIndex((entry) => matchesQuery(entry, query));
+                if (index < 0) {
+                    return {status: 'ok', matched: 0, modified: 0};
+                }
+
+                recommendations[index] = applyUpdate(recommendations[index], update);
+                return {status: 'ok', matched: 1, modified: 1};
+            },
+        },
+        ravenClient: {
+            getLibrary: async () => [
+                {
+                    uuid: 'title-uuid-7',
+                    title: 'Solo Leveling',
+                    sourceUrl: 'https://source.example/solo-leveling',
+                },
+            ],
+            updateTitle: async (uuid, payload) => {
+                updateTitleCalls.push({uuid, payload});
+                return {
+                    uuid,
+                    coverUrl: payload?.coverUrl,
+                };
+            },
+            applyTitleVolumeMap: async (uuid, payload) => {
+                volumeMapCalls.push({uuid, payload});
+                return {
+                    title: {uuid},
+                    renameSummary: {
+                        attempted: true,
+                        renamed: 2,
+                        skippedCollisions: 0,
+                        alreadyMatched: 0,
+                    },
+                };
+            },
+        },
+        kavitaClient: {
+            searchTitles: async () => ({
+                series: [
+                    {
+                        libraryId: 4,
+                        seriesId: 17,
+                        name: 'Solo Leveling',
+                    },
+                ],
+            }),
+            setSeriesCover: async (payload) => {
+                coverCalls.push(payload);
+                return {ok: true};
+            },
+        },
+        komfClient: {
+            identifySeriesMetadata: async (payload) => {
+                identifyCalls.push(payload);
+                return {ok: true};
+            },
+            getSeriesMetadataDetails: async (payload) => {
+                seriesDetailsCalls.push(payload);
+                return {
+                    provider: 'mal',
+                    providerSeriesId: '15180124327',
+                    books: [
+                        {
+                            providerBookId: 'book-1',
+                            volumeNumber: 1,
+                            startChapter: 1,
+                            endChapter: 5,
+                        },
+                        {
+                            providerBookId: 'book-2',
+                            volumeNumber: 2,
+                            chapters: [6],
+                        },
+                    ],
+                };
+            },
+        },
+        pollMs: 60000,
+        logger: {},
+    });
+
+    notifier.start();
+    await notifier.refresh();
+    notifier.stop();
+
+    assert.deepEqual(identifyCalls, [
+        {
+            seriesId: 17,
+            libraryId: 4,
+            provider: 'mal',
+            providerSeriesId: '15180124327',
+        },
+    ]);
+    assert.deepEqual(seriesDetailsCalls, [
+        {
+            provider: 'mal',
+            providerSeriesId: '15180124327',
+            libraryId: 4,
+        },
+    ]);
+    assert.deepEqual(updateTitleCalls, [
+        {
+            uuid: 'title-uuid-7',
+            payload: {
+                coverUrl: 'https://covers.example/solo-leveling.jpg',
+            },
+        },
+    ]);
+    assert.deepEqual(volumeMapCalls, [
+        {
+            uuid: 'title-uuid-7',
+            payload: {
+                provider: 'mal',
+                providerSeriesId: '15180124327',
+                chapterVolumeMap: {'1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 2},
+                autoRename: true,
+            },
+        },
+    ]);
+    assert.deepEqual(coverCalls, [
+        {
+            seriesId: 17,
+            url: 'https://covers.example/solo-leveling.jpg',
+            lockCover: true,
+        },
+    ]);
+    assert.equal(recommendations[0]?.metadataSelection?.status, 'applied');
+    assert.equal(recommendations[0]?.metadataSelection?.appliedSeriesId, 17);
+    assert.equal(recommendations[0]?.metadataSelection?.appliedLibraryId, 4);
+    assert.equal(recommendations[0]?.metadataSelection?.titleUuid, 'title-uuid-7');
+    assert.equal(recommendations[0]?.metadataSelection?.adultContent, true);
+    assert.ok(Array.isArray(recommendations[0]?.timeline));
+    assert.ok(recommendations[0].timeline.some((event) => /saved metadata selection/i.test(event?.body ?? '')));
+    assert.ok(recommendations[0].timeline.some((event) => /chapter-to-volume map/i.test(event?.body ?? '')));
 });
 
 test('recommendation notifier prefers configured external Kavita URL for completion DMs', async () => {

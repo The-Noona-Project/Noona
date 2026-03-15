@@ -106,6 +106,13 @@ const parseResponsePayload = async (response) => {
     }
 }
 
+const extractQueueMessage = (payload, fallback) => {
+    if (payload && typeof payload === 'object' && typeof payload.message === 'string' && payload.message.trim()) {
+        return payload.message.trim()
+    }
+    return fallback
+}
+
 export const createRavenClient = ({
     serviceName = process.env.SERVICE_NAME || 'noona-sage',
     logger = {},
@@ -190,6 +197,14 @@ export const createRavenClient = ({
 
         async checkLibraryForNewChapters() {
             const response = await fetchFromRaven('/v1/library/checkForNew', {
+                method: 'POST',
+                headers: {Accept: 'application/json'},
+            })
+            return await parseResponsePayload(response)
+        },
+
+        async checkAvailableLibraryImports() {
+            const response = await fetchFromRaven('/v1/library/imports/check', {
                 method: 'POST',
                 headers: {Accept: 'application/json'},
             })
@@ -360,12 +375,26 @@ export const createRavenClient = ({
                 throw new Error('Search query must be a non-empty string.')
             }
 
-            const encodedQuery = encodeURIComponent(query)
-            const response = await fetchFromRaven(`/v1/download/search/${encodedQuery}`)
+            const response = await fetchFromRaven('/v1/download/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({query}),
+            })
             return await parseResponsePayload(response)
         },
 
-        async queueDownload({ searchId, optionIndex } = {}) {
+        async getTitleDetails(sourceUrl) {
+            const normalized = typeof sourceUrl === 'string' ? sourceUrl.trim() : ''
+            if (!normalized) {
+                throw new Error('sourceUrl is required.')
+            }
+
+            const encodedSourceUrl = encodeURIComponent(normalized)
+            const response = await fetchFromRaven(`/v1/download/title-details?url=${encodedSourceUrl}`)
+            return await parseResponsePayload(response)
+        },
+
+        async queueDownloadDetailed({searchId, optionIndex} = {}) {
             if (!searchId || typeof searchId !== 'string') {
                 throw new Error('searchId must be provided.')
             }
@@ -375,11 +404,28 @@ export const createRavenClient = ({
                 throw new Error('optionIndex must be a number.')
             }
 
-            const encodedSearchId = encodeURIComponent(searchId)
             const response = await fetchFromRaven(
-                `/v1/download/select/${encodedSearchId}/${normalizedIndex}`,
+                '/v1/download/select',
+                {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                    body: JSON.stringify({searchId, optionIndex: normalizedIndex}),
+                },
+                {acceptStatuses: [400, 409, 410]},
             )
-            return await parseResponsePayload(response)
+            return {
+                status: response.status,
+                payload: await parseResponsePayload(response),
+            }
+        },
+
+        async queueDownload({searchId, optionIndex} = {}) {
+            const result = await this.queueDownloadDetailed({searchId, optionIndex})
+            if (result.status === 202) {
+                return result.payload
+            }
+
+            throw new Error(extractQueueMessage(result.payload, `Queue failed (HTTP ${result.status}).`))
         },
 
         async getDownloadStatus() {

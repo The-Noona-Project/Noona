@@ -1,5 +1,19 @@
+/**
+ * @fileoverview Defines the `/ding` Discord health-check command.
+ * Related files:
+ * - commands/index.mjs
+ * - discord/interactionRouter.mjs
+ * - tests/discordCommands.test.mjs
+ * Times this file has been edited: 3
+ */
+
 import {MessageFlags} from 'discord.js';
 
+/**
+ * Creates ding command.
+ *
+ * @returns {*} The function result.
+ */
 export const createDingCommand = () => ({
     definition: {
         name: 'ding',

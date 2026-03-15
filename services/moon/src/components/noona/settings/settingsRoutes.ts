@@ -74,15 +74,15 @@ export const TAB_LABELS: Record<SettingsTabId, string> = {
 };
 
 export const VIEW_LABELS: Record<SettingsViewId, string> = {
-    overview: "General",
-    filesystem: "FileSystem",
+    overview: "Overview",
+    filesystem: "Storage folders",
     database: "Database",
-    downloader: "Downloader",
-    updater: "Noona Updater",
+    downloader: "Download rules, workers & VPN",
+    updater: "Updates",
     discord: "Discord",
     kavita: "Kavita",
     komf: "Komf",
-    users: "Users",
+    users: "Users & roles",
 };
 
 export const SETTINGS_LANDING_HREF = "/settings/general";
@@ -147,13 +147,13 @@ export const getSettingsHrefForTab = (tab: SettingsTabId): string => {
 export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
     {
         id: "general",
-        label: "General",
+        label: "System",
         items: [
             {
                 id: "overview",
                 label: "Overview",
                 href: getSettingsHrefForView("overview"),
-                description: "Loaded profile, service links, and ecosystem controls.",
+                description: "Check service status, links, and core system actions.",
             },
         ],
     },
@@ -163,15 +163,15 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
         items: [
             {
                 id: "filesystem",
-                label: "FileSystem",
+                label: "Storage folders",
                 href: getSettingsHrefForView("filesystem"),
-                description: "Folder tree, storage root, and shared mounts.",
+                description: "Review storage paths, shared mounts, and folder layout.",
             },
             {
                 id: "database",
                 label: "Database",
                 href: getSettingsHrefForView("database"),
-                description: "Mongo URI, collection viewer, and reset tooling.",
+                description: "Inspect database access, collections, and reset tools.",
             },
         ],
     },
@@ -181,33 +181,33 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
         items: [
             {
                 id: "downloader",
-                label: "Downloader",
+                label: "Download rules, workers & VPN",
                 href: getSettingsHrefForView("downloader"),
-                description: "Raven worker controls, speed limits, and naming.",
+                description: "Adjust naming, worker limits, and VPN behavior for downloads.",
             },
             {
                 id: "updater",
-                label: "Noona Updater",
+                label: "Updates",
                 href: getSettingsHrefForView("updater"),
-                description: "Managed Docker checks, update actions, and auto-update policy.",
+                description: "Check for service updates and apply managed image changes.",
             },
         ],
     },
     {
         id: "external",
-        label: "External",
+        label: "Integrations",
         items: [
             {
                 id: "discord",
                 label: "Discord",
                 href: getSettingsHrefForView("discord"),
-                description: "Portal Discord bot credentials, validation, and command roles.",
+                description: "Change Discord bot credentials, onboarding, and command access.",
             },
             {
                 id: "kavita",
                 label: "Kavita",
                 href: getSettingsHrefForView("kavita"),
-                description: "Kavita account defaults and Portal bridge settings.",
+                description: "Manage Kavita defaults and Portal integration settings.",
             },
             {
                 id: "komf",
@@ -219,13 +219,13 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
     },
     {
         id: "users",
-        label: "Users",
+        label: "People",
         items: [
             {
                 id: "users",
-                label: "User Management",
+                label: "Users & roles",
                 href: SETTINGS_USER_MANAGEMENT_HREF,
-                description: "Manage Discord-linked Moon accounts and default permissions.",
+                description: "Manage Moon accounts, roles, and default permissions.",
             },
         ],
     },
@@ -265,8 +265,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "general",
             view: "overview",
             tab: "general",
-            title: "General",
-            description: "Loaded profile, service links, and ecosystem controls.",
+            title: "Overview",
+            description: "Check service status, links, and core system actions.",
         });
     }
 
@@ -282,8 +282,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "general",
             view: "overview",
             tab: "general",
-            title: "General",
-            description: "Loaded profile, service links, and ecosystem controls.",
+            title: "Overview",
+            description: "Check service status, links, and core system actions.",
         });
     }
 
@@ -294,8 +294,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 navSection: "storage",
                 view: "filesystem",
                 tab: "vault",
-                title: "Storage FileSystem",
-                description: "Folder tree, storage root, and shared mount paths.",
+                title: "Storage folders",
+                description: "Review storage paths, shared mounts, and folder layout.",
             });
         }
         if (secondSegment === "database") {
@@ -304,8 +304,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 navSection: "storage",
                 view: "database",
                 tab: "vault",
-                title: "Storage Database",
-                description: "Mongo URI, collection viewer, and reset controls.",
+                title: "Database",
+                description: "Inspect database access, collections, and reset tools.",
             });
         }
         return null;
@@ -318,8 +318,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 navSection: "downloads",
                 view: "downloader",
                 tab: "raven",
-                title: "Downloads Downloader",
-                description: "Raven worker controls, speed limits, and naming.",
+                title: "Download rules, workers & VPN",
+                description: "Adjust naming, worker limits, and VPN behavior for downloads.",
             });
         }
         if (secondSegment === "updater") {
@@ -328,8 +328,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 navSection: "downloads",
                 view: "updater",
                 tab: "warden",
-                title: "Downloads Noona Updater",
-                description: "Managed Docker checks, update actions, and auto-update policy.",
+                title: "Updates",
+                description: "Check for service updates and apply managed image changes.",
             });
         }
         return null;
@@ -343,8 +343,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 view: "discord",
                 tab: "portal",
                 portalSubtab: "discord",
-                title: "External Discord",
-                description: "Portal Discord bot credentials, validation, and command roles.",
+                title: "Discord",
+                description: "Change Discord bot credentials, onboarding, and command access.",
             });
         }
         if (secondSegment === "kavita") {
@@ -354,8 +354,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 view: "kavita",
                 tab: "portal",
                 portalSubtab: "kavita",
-                title: "External Kavita",
-                description: "Kavita account defaults and Portal bridge settings.",
+                title: "Kavita",
+                description: "Manage Kavita defaults and Portal integration settings.",
             });
         }
         if (secondSegment === "komf") {
@@ -365,7 +365,7 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 view: "komf",
                 tab: "portal",
                 portalSubtab: "komf",
-                title: "External Komf",
+                title: "Komf",
                 description: "Komf application.yml and runtime settings.",
             });
         }
@@ -378,8 +378,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "users",
             view: "users",
             tab: "general",
-            title: "User Management",
-            description: "Manage Discord-linked Moon accounts and default permissions for new users.",
+            title: "Users & roles",
+            description: "Manage Moon accounts, roles, and default permissions.",
         });
     }
 
@@ -389,8 +389,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "general",
             view: "overview",
             tab: firstSegment === "moon" ? "moon" : "sage",
-            title: "General",
-            description: "Loaded profile, service links, and ecosystem controls.",
+            title: "Overview",
+            description: "Check service status, links, and core system actions.",
         });
     }
 
@@ -400,8 +400,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "downloads",
             view: "downloader",
             tab: "raven",
-            title: "Downloads Downloader",
-            description: "Raven worker controls, speed limits, and naming.",
+            title: "Download rules, workers & VPN",
+            description: "Adjust naming, worker limits, and VPN behavior for downloads.",
         });
     }
 
@@ -411,8 +411,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "storage",
             view: "database",
             tab: "vault",
-            title: "Storage Database",
-            description: "Mongo URI, collection viewer, and reset controls.",
+            title: "Database",
+            description: "Inspect database access, collections, and reset tools.",
         });
     }
 
@@ -422,8 +422,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
             navSection: "downloads",
             view: "updater",
             tab: "warden",
-            title: "Downloads Noona Updater",
-            description: "Managed Docker checks, update actions, and auto-update policy.",
+            title: "Updates",
+            description: "Check for service updates and apply managed image changes.",
         });
     }
 
@@ -435,8 +435,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 view: "discord",
                 tab: "portal",
                 portalSubtab: "discord",
-                title: "External Discord",
-                description: "Portal Discord bot credentials, validation, and command roles.",
+                title: "Discord",
+                description: "Change Discord bot credentials, onboarding, and command access.",
             });
         }
         if (secondSegment === "kavita") {
@@ -446,8 +446,8 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 view: "kavita",
                 tab: "portal",
                 portalSubtab: "kavita",
-                title: "External Kavita",
-                description: "Kavita account defaults and Portal bridge settings.",
+                title: "Kavita",
+                description: "Manage Kavita defaults and Portal integration settings.",
             });
         }
         if (secondSegment === "komf") {
@@ -457,7 +457,7 @@ export const parseSettingsSlug = (slug: string[] | undefined): SettingsRouteSele
                 view: "komf",
                 tab: "portal",
                 portalSubtab: "komf",
-                title: "External Komf",
+                title: "Komf",
                 description: "Komf application.yml and runtime settings.",
             });
         }

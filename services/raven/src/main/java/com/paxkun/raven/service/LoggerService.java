@@ -1,3 +1,12 @@
+/**
+ * Manages Raven logging, debug state, and filesystem roots.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/controller/DebugController.java
+ * - src/main/java/com/paxkun/raven/controller/DownloadController.java
+ * - src/main/java/com/paxkun/raven/controller/VpnController.java
+ * - src/main/java/com/paxkun/raven/service/download/SourceFinder.java
+ * Times this file has been edited: 9
+ */
 package com.paxkun.raven.service;
 
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +26,10 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
+/**
+ * Manages Raven logging, debug state, and filesystem roots.
+ */
+
 @Slf4j
 @Service
 public class LoggerService implements InitializingBean {
@@ -33,6 +46,10 @@ public class LoggerService implements InitializingBean {
     private Path logsPath;
     private BufferedWriter writer;
     private volatile boolean debugEnabled = parseDebugFlag(System.getenv("DEBUG"));
+
+    /**
+     * Handles after properties set.
+     */
 
     @Override
     public void afterPropertiesSet() {
@@ -239,13 +256,35 @@ public class LoggerService implements InitializingBean {
         System.out.print(logLine);
     }
 
+    /**
+     * Handles info.
+     *
+     * @param tag The tag.
+     * @param message The message to store.
+     */
+
     public void info(String tag, String message) {
         write("INFO", tag, message);
     }
 
+    /**
+     * Handles warn.
+     *
+     * @param tag The tag.
+     * @param message The message to store.
+     */
+
     public void warn(String tag, String message) {
         write("WARN", tag, message);
     }
+
+    /**
+     * Handles error.
+     *
+     * @param tag The tag.
+     * @param message The message to store.
+     * @param throwable The throwable.
+     */
 
     public void error(String tag, String message, Throwable throwable) {
         write("ERROR", tag, message + " | Exception: " + throwable.getMessage());
@@ -264,18 +303,37 @@ public class LoggerService implements InitializingBean {
         return TRUTHY_DEBUG_VALUES.contains(normalized);
     }
 
+    /**
+     * Handles debug.
+     *
+     * @param tag The tag.
+     * @param message The message to store.
+     */
+
     public void debug(String tag, String message) {
         if (debugEnabled) {
             write("DEBUG", tag, message);
         }
     }
 
+    /**
+     * Indicates whether debug enabled.
+     *
+     * @return True when the condition is satisfied.
+     */
+
     public boolean isDebugEnabled() {
         return debugEnabled;
     }
 
-    public Path getDownloadsRoot() {
-        return downloadsRoot;
+    /**
+     * Updates debug enabled.
+     *
+     * @param debugEnabled The debug enabled.
+     */
+
+    public void setDebugEnabled(boolean debugEnabled) {
+        this.debugEnabled = debugEnabled;
     }
 
     private void logSystemEnvironment() {
@@ -295,7 +353,13 @@ public class LoggerService implements InitializingBean {
         return System.getenv("KAVITA_DATA_MOUNT");
     }
 
-    public void setDebugEnabled(boolean debugEnabled) {
-        this.debugEnabled = debugEnabled;
+    /**
+     * Returns downloads root.
+     *
+     * @return The resulting Path.
+     */
+
+    public Path getDownloadsRoot() {
+        return downloadsRoot;
     }
 }

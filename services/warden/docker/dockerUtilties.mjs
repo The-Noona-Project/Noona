@@ -377,6 +377,51 @@ const normalizeDeviceMappings = (value) => {
     return devices.length > 0 ? devices : undefined;
 };
 
+const resolveServiceNetworks = (service, networkName) => {
+    const configuredNetworks = Array.isArray(service?.networks) ? service.networks : [];
+    const candidates = configuredNetworks.length > 0 ? configuredNetworks : [networkName];
+
+    return Array.from(
+        new Set(
+            candidates
+                .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+                .filter(Boolean),
+        ),
+    );
+};
+
+const toDockerDurationNs = (value) => {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        return undefined;
+    }
+
+    return parsed * 1_000_000;
+};
+
+const normalizeDockerHealthcheck = (healthCheck) => {
+    if (!healthCheck || typeof healthCheck !== 'object' || healthCheck.type !== 'docker') {
+        return undefined;
+    }
+
+    const test = Array.isArray(healthCheck.test)
+        ? healthCheck.test.map((entry) => String(entry))
+        : null;
+    if (!test || test.length === 0) {
+        return undefined;
+    }
+
+    return {
+        Test: test,
+        Interval: toDockerDurationNs(healthCheck.intervalMs),
+        Timeout: toDockerDurationNs(healthCheck.timeoutMs),
+        StartPeriod: toDockerDurationNs(healthCheck.startPeriodMs),
+        Retries: Number.isFinite(Number(healthCheck.retries))
+            ? Math.max(1, Math.floor(Number(healthCheck.retries)))
+            : undefined,
+    };
+};
+
 /**
  * Create and start a Docker container for the given service and optionally stream its logs.
  *
@@ -410,6 +455,9 @@ export async function runContainerWithLogs(
     const ports = service.ports || {};
     const capAdd = Array.isArray(service.capAdd) && service.capAdd.length > 0 ? service.capAdd : undefined;
     const devices = normalizeDeviceMappings(service.devices);
+    const serviceNetworks = resolveServiceNetworks(service, networkName);
+    const primaryNetwork = serviceNetworks[0];
+    const healthcheck = normalizeDockerHealthcheck(service.healthCheck);
 
     const debugValue = (DEBUG || '').toString().toLowerCase();
     const shouldStreamLogs = ['true', '1', 'yes', 'super'].includes(debugValue);
@@ -425,17 +473,31 @@ export async function runContainerWithLogs(
             RestartPolicy: service.restartPolicy || undefined,
             CapAdd: capAdd,
             Devices: devices,
+            NetworkMode: primaryNetwork,
         },
         User: service.user || undefined,
+        Healthcheck: healthcheck,
         NetworkingConfig: {
             EndpointsConfig: {
-                [networkName]: {},
+                [primaryNetwork]: {},
             },
         },
     });
 
     trackedContainers.add(service.name);
     await container.start();
+
+    for (const extraNetwork of serviceNetworks.slice(1)) {
+        try {
+            await dockerInstance.getNetwork(extraNetwork).connect({Container: container.id || service.name});
+        } catch (error) {
+            const statusCode = Number.parseInt(String(error?.statusCode ?? error?.status ?? ''), 10);
+            const message = error instanceof Error ? error.message : String(error);
+            if (statusCode !== 409 && !/already exists|already connected/i.test(message)) {
+                throw error;
+            }
+        }
+    }
 
     try {
         const logs = await container.logs({
@@ -496,4 +558,41 @@ export async function waitForHealthyStatus(name, url, tries = 20, delay = 1000) 
     }
 
     throw new Error(`[dockerUtil] ❌ ${name} did not become healthy in time`);
+}
+
+export async function waitForContainerHealthy(name, options = {}) {
+    const {
+        dockerInstance = docker,
+        tries = 20,
+        delay = 1000,
+    } = options;
+
+    for (let attempt = 0; attempt < tries; attempt += 1) {
+        try {
+            const inspection = await dockerInstance.getContainer(name).inspect();
+            const state = inspection?.State || {};
+            const running = state.Running === true;
+            const healthStatus = typeof state?.Health?.Status === 'string'
+                ? state.Health.Status.trim().toLowerCase()
+                : '';
+
+            if (running && healthStatus === 'healthy') {
+                debugMSG(`[dockerUtil] ${name} is healthy after ${attempt + 1} tries`);
+                return inspection;
+            }
+
+            if (!running) {
+                debugMSG(`[dockerUtil] Waiting for ${name} to start... attempt ${attempt + 1}`);
+            } else {
+                debugMSG(`[dockerUtil] Waiting for ${name} Docker health (${healthStatus || 'starting'})... attempt ${attempt + 1}`);
+            }
+        } catch (error) {
+            debugMSG(`[dockerUtil] Waiting for ${name} Docker health... attempt ${attempt + 1}`);
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        process.stdout.write('.');
+    }
+
+    throw new Error(`[dockerUtil] ${name} did not report a healthy Docker status in time`);
 }

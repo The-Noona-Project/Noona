@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Builds and polls Portal's Discord presence from Warden and Raven activity.
+ * Related files:
+ * - clients/wardenClient.mjs
+ * - clients/ravenClient.mjs
+ * - tests/presenceUpdater.test.mjs
+ * - app/portalRuntime.mjs
+ * Times this file has been edited: 3
+ */
+
 import {ActivityType} from 'discord.js';
 
 const ACTIVE_WARDEN_STATUSES = new Set([
@@ -90,6 +100,12 @@ const resolveRavenDownloadActivity = (ravenSummary) => {
     return null;
 };
 
+/**
+ * Builds a Discord presence snapshot from Warden and Raven activity.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const resolveDiscordPresenceSnapshot = ({serviceActivity = null, ravenSummary = null} = {}) => {
     const serviceLabel = formatServiceLabel(serviceActivity?.label) || formatServiceLabel(serviceActivity?.name);
     if (serviceLabel) {
@@ -160,6 +176,12 @@ const loadActiveServiceActivity = async (wardenClient) => {
     return null;
 };
 
+/**
+ * Creates discord presence updater.
+ *
+ * @param {object} options - Named function inputs.
+ * @returns {*} The function result.
+ */
 export const createDiscordPresenceUpdater = ({
                                                  client,
                                                  ravenClient,

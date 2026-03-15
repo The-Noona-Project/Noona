@@ -1,3 +1,12 @@
+/**
+ * Coordinates Raven settings behavior.
+ * Related files:
+ * - src/main/java/com/paxkun/raven/service/LoggerService.java
+ * - src/main/java/com/paxkun/raven/service/VaultService.java
+ * - src/main/java/com/paxkun/raven/service/DownloadService.java
+ * - src/main/java/com/paxkun/raven/service/VPNServices.java
+ * Times this file has been edited: 7
+ */
 package com.paxkun.raven.service.settings;
 
 import com.paxkun.raven.service.LoggerService;
@@ -33,6 +42,12 @@ public class SettingsService {
     private volatile long lastWorkerWarningAtMs;
     private volatile long lastVpnWarningAtMs;
 
+    /**
+     * Returns download naming settings.
+     *
+     * @return The resulting DownloadNamingSettings.
+     */
+
     public synchronized DownloadNamingSettings getDownloadNamingSettings() {
         long now = System.currentTimeMillis();
         DownloadNamingSettings current = cachedNaming;
@@ -46,6 +61,13 @@ public class SettingsService {
         return loaded;
     }
 
+    /**
+     * Returns download worker settings.
+     *
+     * @param threadCount The thread count.
+     * @return The resulting DownloadWorkerSettings.
+     */
+
     public synchronized DownloadWorkerSettings getDownloadWorkerSettings(int threadCount) {
         long now = System.currentTimeMillis();
         DownloadWorkerSettings current = cachedWorkerSettings;
@@ -58,6 +80,12 @@ public class SettingsService {
         cachedWorkerSettingsAtMs = now;
         return loaded;
     }
+
+    /**
+     * Returns download vpn settings.
+     *
+     * @return The resulting DownloadVpnSettings.
+     */
 
     public synchronized DownloadVpnSettings getDownloadVpnSettings() {
         long now = System.currentTimeMillis();
@@ -151,7 +179,7 @@ public class SettingsService {
         }
 
         if (out.getChapterTemplate() == null || out.getChapterTemplate().isBlank()) {
-            out.setChapterTemplate("Chapter {chapter} [Pages {pages} {domain} - Noona].cbz");
+            out.setChapterTemplate("{title} c{chapter} (v{volume}) [Noona].cbz");
         }
 
         if (out.getPageTemplate() == null || out.getPageTemplate().isBlank()) {
@@ -163,7 +191,11 @@ public class SettingsService {
         }
 
         if (out.getChapterPad() == null || out.getChapterPad() < 1) {
-            out.setChapterPad(4);
+            out.setChapterPad(3);
+        }
+
+        if (out.getVolumePad() == null || out.getVolumePad() < 1) {
+            out.setVolumePad(2);
         }
 
         return out;
@@ -175,16 +207,24 @@ public class SettingsService {
 
         int normalizedThreadCount = Math.max(1, threadCount);
         List<Integer> nextRateLimits = new java.util.ArrayList<>();
+        List<Integer> nextCpuCoreIds = new java.util.ArrayList<>();
         List<Integer> currentRateLimits = out.getThreadRateLimitsKbps();
+        List<Integer> currentCpuCoreIds = out.getCpuCoreIds();
 
         for (int index = 0; index < normalizedThreadCount; index++) {
             Integer current = currentRateLimits != null && index < currentRateLimits.size()
                     ? currentRateLimits.get(index)
                     : 0;
             nextRateLimits.add(current != null && current > 0 ? current : 0);
+
+            Integer cpuCoreId = currentCpuCoreIds != null && index < currentCpuCoreIds.size()
+                    ? currentCpuCoreIds.get(index)
+                    : -1;
+            nextCpuCoreIds.add(cpuCoreId != null && cpuCoreId >= 0 ? cpuCoreId : -1);
         }
 
         out.setThreadRateLimitsKbps(nextRateLimits);
+        out.setCpuCoreIds(nextCpuCoreIds);
         return out;
     }
 
@@ -200,6 +240,10 @@ public class SettingsService {
 
         if (out.getEnabled() == null) {
             out.setEnabled(false);
+        }
+
+        if (out.getOnlyDownloadWhenVpnOn() == null) {
+            out.setOnlyDownloadWhenVpnOn(false);
         }
 
         if (out.getAutoRotate() == null) {
