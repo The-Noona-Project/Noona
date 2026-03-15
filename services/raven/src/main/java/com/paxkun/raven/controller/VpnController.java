@@ -69,7 +69,10 @@ public class VpnController {
         String sanitizedTrigger = sanitizeForLog(trigger);
         logger.info("VPN_CONTROLLER", "Rotate-now request received | trigger=" + sanitizedTrigger);
         VpnRotationResult result = vpnServices.rotateNow(sanitizedTrigger);
-        return ResponseEntity.accepted().body(result);
+        if (result.ok()) {
+            return ResponseEntity.accepted().body(result);
+        }
+        return ResponseEntity.ok(result);
     }
 
     @PostMapping("/test-login")
@@ -82,6 +85,9 @@ public class VpnController {
         String sanitizedRegion = sanitizeForLog(region);
         logger.info("VPN_CONTROLLER", "Test-login request received | trigger=" + sanitizedTrigger + " | region=" + sanitizedRegion);
         VpnLoginTestResult result = vpnServices.testLogin(sanitizedTrigger, region, username, password);
+        if (result.ok()) {
+            return ResponseEntity.accepted().body(result);
+        }
         return ResponseEntity.ok(result);
     }
 

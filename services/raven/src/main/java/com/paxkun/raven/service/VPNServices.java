@@ -177,7 +177,53 @@ public class VPNServices {
      */
 
     public VpnRotationResult rotateNow(String triggeredBy) {
-        return rotateNowInternal(Optional.ofNullable(triggeredBy).filter(s -> !s.isBlank()).orElse("manual"));
+        String sanitizedTrigger = Optional.ofNullable(triggeredBy).filter(s -> !s.isBlank()).orElse("manual");
+        if (rotationInProgress.get()) {
+            return new VpnRotationResult(
+                    false,
+                    "A VPN rotation is already in progress.",
+                    currentPublicIp,
+                    currentPublicIp,
+                    currentRegion,
+                    0,
+                    0,
+                    sanitizedTrigger,
+                    Instant.now().toString()
+            );
+        }
+        if (loginTestInProgress.get()) {
+            return new VpnRotationResult(
+                    false,
+                    "Cannot rotate while a VPN login test is in progress.",
+                    currentPublicIp,
+                    currentPublicIp,
+                    currentRegion,
+                    0,
+                    0,
+                    sanitizedTrigger,
+                    Instant.now().toString()
+            );
+        }
+
+        scheduler.execute(() -> {
+            try {
+                rotateNowInternal(sanitizedTrigger);
+            } catch (Exception e) {
+                logger.error(VPN_TAG, "Background VPN rotation failed: " + e.getMessage());
+            }
+        });
+
+        return new VpnRotationResult(
+                true,
+                "VPN rotation started in background.",
+                currentPublicIp,
+                currentPublicIp,
+                currentRegion,
+                0,
+                0,
+                sanitizedTrigger,
+                Instant.now().toString()
+        );
     }
 
     /**
@@ -197,11 +243,13 @@ public class VPNServices {
             String requestedPassword
     ) {
         String sanitizedTrigger = Optional.ofNullable(triggeredBy).filter(value -> !value.isBlank()).orElse("manual");
+        String region = resolveRequestedRegion(requestedRegion, settingsService.getDownloadVpnSettings());
+
         if (rotationInProgress.get()) {
             return new VpnLoginTestResult(
                     false,
                     "Cannot test VPN login while a rotation is in progress.",
-                    resolveRequestedRegion(requestedRegion, settingsService.getDownloadVpnSettings()),
+                    region,
                     "",
                     "",
                     Instant.now().toString()
@@ -211,27 +259,52 @@ public class VPNServices {
             return new VpnLoginTestResult(
                     false,
                     "Cannot test VPN login while Raven VPN is already connected.",
-                    resolveRequestedRegion(requestedRegion, settingsService.getDownloadVpnSettings()),
+                    region,
                     "",
                     "",
                     Instant.now().toString()
             );
         }
-        if (!loginTestInProgress.compareAndSet(false, true)) {
+        if (loginTestInProgress.get()) {
             return new VpnLoginTestResult(
                     false,
                     "A VPN login test is already in progress.",
-                    resolveRequestedRegion(requestedRegion, settingsService.getDownloadVpnSettings()),
+                    region,
                     "",
                     "",
                     Instant.now().toString()
             );
         }
 
+        scheduler.execute(() -> {
+            try {
+                testLoginInternal(sanitizedTrigger, requestedRegion, requestedUsername, requestedPassword);
+            } catch (Exception e) {
+                logger.error(VPN_TAG, "Background VPN login test failed: " + e.getMessage());
+            }
+        });
+
+        return new VpnLoginTestResult(
+                true,
+                "VPN login test started in background.",
+                region,
+                "",
+                "",
+                Instant.now().toString()
+        );
+    }
+
+    private void testLoginInternal(
+            String triggeredBy,
+            String requestedRegion,
+            String requestedUsername,
+            String requestedPassword
+    ) {
+        if (!loginTestInProgress.compareAndSet(false, true)) {
+            return;
+        }
+
         String region = DEFAULT_REGION;
-        String endpoint = "";
-        String reportedIp = "";
-        List<String> preservedLocalRoutes = List.of();
         try {
             DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
             String provider = Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER);
@@ -247,36 +320,19 @@ public class VPNServices {
             }
 
             Path profilePath = resolveProfilePath(region);
-            endpoint = parseRemoteEndpoint(profilePath);
-            preservedLocalRoutes = captureLocalRouteSpecs();
-            reportedIp = probeOpenVpnLogin(profilePath, username, password, preservedLocalRoutes);
+            List<String> preservedLocalRoutes = captureLocalRouteSpecs();
+            probeOpenVpnLogin(profilePath, username, password, preservedLocalRoutes);
 
-            String successMessage = "PIA login succeeded for region " + region + ".";
-            logger.info(VPN_TAG, "PIA login test succeeded | trigger=" + sanitizeForLog(sanitizedTrigger)
+            logger.info(VPN_TAG, "PIA login test succeeded | trigger=" + sanitizeForLog(triggeredBy)
                     + " | region=" + sanitizeForLog(region)
                     + " | preservedLocalRoutes=" + preservedLocalRoutes.size());
-            return new VpnLoginTestResult(
-                    true,
-                    successMessage,
-                    region,
-                    endpoint,
-                    reportedIp,
-                    Instant.now().toString()
-            );
+            clearRuntimeError();
         } catch (Exception e) {
             String safeMessage = sanitizeForLog(e.getMessage());
-            logger.warn(VPN_TAG, "⚠️ PIA login test failed | trigger=" + sanitizeForLog(sanitizedTrigger)
+            setRuntimeError("Login test failed: " + safeMessage);
+            logger.warn(VPN_TAG, "⚠️ PIA login test failed | trigger=" + sanitizeForLog(triggeredBy)
                     + " | region=" + sanitizeForLog(region)
                     + " | reason=" + safeMessage);
-            return new VpnLoginTestResult(
-                    false,
-                    Optional.ofNullable(e.getMessage()).filter(message -> !message.isBlank())
-                            .orElse("Unable to validate PIA login."),
-                    region,
-                    endpoint,
-                    reportedIp,
-                    Instant.now().toString()
-            );
         } finally {
             loginTestInProgress.set(false);
         }
@@ -291,9 +347,10 @@ public class VPNServices {
             if (!enabled) {
                 nextRotationAtMs = 0L;
                 nextRotationAtIso = null;
-                if (isOpenVpnRunning()) {
+                if (isOpenVpnRunning() || !"disabled".equalsIgnoreCase(connectionState)) {
                     disconnectOpenVpn();
                     connectionState = "disabled";
+                    currentPublicIp = null;
                 }
                 return;
             }
@@ -301,6 +358,10 @@ public class VPNServices {
             if (!DEFAULT_PROVIDER.equalsIgnoreCase(Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER))) {
                 setRuntimeError("Unsupported VPN provider configured for Raven.");
                 return;
+            }
+
+            if (enabled && currentPublicIp == null) {
+                currentPublicIp = resolvePublicIp();
             }
 
             if (!autoRotate) {

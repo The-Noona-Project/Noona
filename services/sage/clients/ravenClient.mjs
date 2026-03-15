@@ -46,6 +46,9 @@ const resolveDefaultRavenUrls = (env = process.env) => {
         'http://host.docker.internal:8080',
         'http://127.0.0.1:8080',
         'http://localhost:8080',
+        'http://host.docker.internal:3002',
+        'http://127.0.0.1:3002',
+        'http://localhost:3002',
     )
 
     const normalized = candidates

@@ -22,6 +22,7 @@ data class KomfConfig(
 data class KomgaConfigDto(
     val baseUri: String,
     val komgaUser: String,
+    val komgaPassword: String?,
     val eventListener: EventListenerConfigDto,
     val metadataUpdate: MetadataUpdateConfigDto,
 )
@@ -29,6 +30,7 @@ data class KomgaConfigDto(
 @Serializable
 data class KavitaConfigDto(
     val baseUri: String,
+    val apiKey: String?,
     val eventListener: EventListenerConfigDto,
     val metadataUpdate: MetadataUpdateConfigDto,
 )
