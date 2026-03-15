@@ -80,3 +80,57 @@ test('getSetupConfig preserves terminal upstream HTTP errors after the retry win
             error.message === 'Warden still booting',
     )
 })
+
+test('updateServiceConfig preserves upstream status and payload for Warden validation failures', async () => {
+    const client = createSetupClient({
+        baseUrl: 'http://noona-warden:4001',
+        fetchImpl: async (url) => {
+            const requestUrl = new URL(url)
+            if (requestUrl.pathname === '/api/services/noona-moon/config') {
+                return jsonResponse(400, {
+                    error: 'SERVICE_NAME is managed by Warden and cannot be changed.',
+                    key: 'SERVICE_NAME',
+                })
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`)
+        },
+        serviceName: 'test-sage',
+    })
+
+    await assert.rejects(
+        client.updateServiceConfig('noona-moon', {env: {SERVICE_NAME: 'noona-moon'}}),
+        (error) =>
+            error instanceof WardenUpstreamHttpError
+            && error.status === 400
+            && error.message === 'SERVICE_NAME is managed by Warden and cannot be changed.'
+            && error.payload?.key === 'SERVICE_NAME',
+    )
+})
+
+test('restartService preserves upstream status and payload for Warden restart conflicts', async () => {
+    const client = createSetupClient({
+        baseUrl: 'http://noona-warden:4001',
+        fetchImpl: async (url) => {
+            const requestUrl = new URL(url)
+            if (requestUrl.pathname === '/api/services/noona-moon/restart') {
+                return jsonResponse(409, {
+                    message: 'Restart already queued for noona-moon.',
+                    service: 'noona-moon',
+                })
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`)
+        },
+        serviceName: 'test-sage',
+    })
+
+    await assert.rejects(
+        client.restartService('noona-moon'),
+        (error) =>
+            error instanceof WardenUpstreamHttpError
+            && error.status === 409
+            && error.message === 'Restart already queued for noona-moon.'
+            && error.payload?.service === 'noona-moon',
+    )
+})

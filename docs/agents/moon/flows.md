@@ -63,6 +63,10 @@
   `kavita`, `komf`, and `users`.
 - The settings page handles ecosystem actions, service updates, service config edits, user management, Vault views,
   and download tuning through Moon API routes that forward into Sage.
+- Admin service-config saves must stay narrow.
+  Moon should only send editable keys that are explicitly modeled in Warden's `envConfig` (`readOnly !== true` and
+  `serverManaged !== true`), while preserving masked secret placeholders and intentional blank clears.
+  Do not round-trip the full redacted `env` snapshot back into Sage or Warden.
 - `updateAllImages()` writes reboot-monitor session state into `sessionStorage` and redirects to `/rebooting`.
 - The reboot monitor page watches both target services and core recovery services such as Warden, Redis, Vault, Moon,
   and Sage until the stack is stable enough to return to settings.

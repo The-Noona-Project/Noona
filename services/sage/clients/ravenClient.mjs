@@ -189,6 +189,31 @@ export const createRavenClient = ({
         throw new Error(`All Raven endpoints failed: ${errors.join(' | ')}`)
     }
 
+    const getVpnRegionsDetailed = async () => {
+        const response = await fetchFromRaven('/v1/vpn/regions')
+        const payload = await parseResponsePayload(response)
+
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+            return {
+                provider:
+                    typeof payload.provider === 'string' && payload.provider.trim()
+                        ? payload.provider.trim()
+                        : null,
+                regions: Array.isArray(payload.regions) ? payload.regions : [],
+                error:
+                    typeof payload.error === 'string' && payload.error.trim()
+                        ? payload.error.trim()
+                        : null,
+            }
+        }
+
+        return {
+            provider: null,
+            regions: [],
+            error: null,
+        }
+    }
+
     return {
         async getLibrary() {
             const response = await fetchFromRaven('/v1/library/getall')
@@ -454,13 +479,12 @@ export const createRavenClient = ({
             const response = await fetchFromRaven('/v1/vpn/status')
             return await parseResponsePayload(response)
         },
+        async getVpnRegionsDetailed() {
+            return await getVpnRegionsDetailed()
+        },
         async getVpnRegions() {
-            const response = await fetchFromRaven('/v1/vpn/regions')
-            const payload = await parseResponsePayload(response)
-            if (payload && typeof payload === 'object' && Array.isArray(payload.regions)) {
-                return payload.regions
-            }
-            return []
+            const payload = await getVpnRegionsDetailed()
+            return payload.regions
         },
         async rotateVpnNow(triggeredBy = 'manual') {
             const response = await fetchFromRaven('/v1/vpn/rotate', {

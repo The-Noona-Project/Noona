@@ -146,5 +146,8 @@
 
 - Caller mistakes should throw or return `SetupValidationError` and surface as `400`.
 - Upstream outages, unexpected responses, or persistence failures generally surface as `502`.
+- Warden-backed setup-config and settings routes are narrower:
+  if Warden returned an HTTP status and JSON body, Sage should preserve that status and payload instead of collapsing
+  it into a generic `502`.
 - Keep browser-facing errors concise and token-safe.
   Route handlers should not leak raw upstream headers, stack traces, or auth material.

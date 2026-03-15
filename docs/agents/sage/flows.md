@@ -88,6 +88,9 @@
 - VPN test-login preserves the stored password when the caller sends the masked placeholder `********`.
 - Service config, restart, image update, and ecosystem lifecycle endpoints proxy back into Warden through
   `setupClient`.
+- Warden-backed settings routes preserve upstream HTTP status and JSON payloads when Warden replied.
+  Moon should only see a Sage-generated `502` here when the Sage-to-Warden hop itself failed, not when Warden already
+  returned a concrete validation, conflict, or not-found response.
 - Vault wipes and factory reset are intentionally two-phase:
   confirm identity or password, wipe or ask Warden to wipe, then queue or request an ecosystem restart rather than
   trying to rebuild state inline inside Sage.

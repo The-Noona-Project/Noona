@@ -354,7 +354,10 @@ const createSetupClient = ({
             const response = await fetchFromWarden(
                 `/api/services?includeInstalled=${includeInstalled ? 'true' : 'false'}`,
                 undefined,
-                {coldStartRetry: true},
+                {
+                    preserveHttpError: true,
+                    coldStartRetry: true,
+                },
             )
 
             const payload = await response.json()
@@ -517,7 +520,9 @@ const createSetupClient = ({
                 throw new SetupValidationError('Service name must be a non-empty string.')
             }
 
-            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/config`)
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/config`, undefined, {
+                preserveHttpError: true,
+            })
             return await response.json().catch(() => ({}))
         },
         async updateServiceConfig(name, updates = {}) {
@@ -534,7 +539,7 @@ const createSetupClient = ({
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(updates ?? {}),
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
         },
@@ -550,12 +555,14 @@ const createSetupClient = ({
 
             const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/restart`, {
                 method: 'POST',
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
         },
         async listServiceUpdates() {
-            const response = await fetchFromWarden('/api/services/updates')
+            const response = await fetchFromWarden('/api/services/updates', undefined, {
+                preserveHttpError: true,
+            })
             const payload = await response.json().catch(() => ({}))
             return Array.isArray(payload?.updates) ? payload.updates : []
         },
@@ -565,7 +572,7 @@ const createSetupClient = ({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body),
-            })
+            }, {preserveHttpError: true})
 
             const payload = await response.json().catch(() => ({}))
             return Array.isArray(payload?.updates) ? payload.updates : []
@@ -584,7 +591,7 @@ const createSetupClient = ({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(options ?? {}),
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
         },
@@ -593,7 +600,7 @@ const createSetupClient = ({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(options ?? {}),
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
         },
@@ -602,7 +609,7 @@ const createSetupClient = ({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(options ?? {}),
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
         },
@@ -611,7 +618,7 @@ const createSetupClient = ({
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(options ?? {}),
-            })
+            }, {preserveHttpError: true})
 
             return await response.json().catch(() => ({}))
         },

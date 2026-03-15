@@ -34,6 +34,7 @@ import {
 import editorStyles from "./ConfigEditor.module.scss";
 import settingsStyles from "./SettingsPage.module.scss";
 import {
+    buildServiceConfigUpdatePayload,
     getSettingsHrefForPortalSubtab,
     getSettingsHrefForView,
     KomfApplicationEditor,
@@ -73,6 +74,7 @@ type EnvConfigField = {
     warning?: string | null;
     required?: boolean;
     readOnly?: boolean;
+    serverManaged?: boolean;
 };
 
 type ServiceConfig = {
@@ -1009,6 +1011,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [vpnRotating, setVpnRotating] = useState(false);
     const [vpnTesting, setVpnTesting] = useState(false);
     const [vpnError, setVpnError] = useState<string | null>(null);
+    const [vpnRegionsDiagnostic, setVpnRegionsDiagnostic] = useState<string | null>(null);
     const [vpnMessage, setVpnMessage] = useState<string | null>(null);
     const [vpnEnabled, setVpnEnabled] = useState(false);
     const [vpnOnlyDownloadWhenOn, setVpnOnlyDownloadWhenOn] = useState(false);
@@ -1707,10 +1710,16 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
         patchEditor(serviceName, {saving: true, error: null, message: null});
         try {
+            const payload = buildServiceConfigUpdatePayload({
+                envConfig: Array.isArray(editor.config?.envConfig) ? editor.config.envConfig : [],
+                envDraft: editor.envDraft,
+                hostPort: parsedPort,
+                restart: shouldRestart,
+            });
             const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/config`, {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({env: editor.envDraft, hostPort: parsedPort, restart: shouldRestart}),
+                body: JSON.stringify(payload),
             });
             const json = await res.json().catch(() => null);
             if (!res.ok) {
@@ -1951,6 +1960,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     };
 
     const loadVpnRegions = async () => {
+        setVpnRegionsDiagnostic(null);
         try {
             const res = await fetch("/api/noona/settings/downloads/vpn/regions", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as {
@@ -1958,15 +1968,19 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 error?: string
             } | null;
             if (!res.ok) {
-                setVpnError(parseError(json, `Failed to load VPN regions (HTTP ${res.status}).`));
+                setVpnRegions([]);
+                setVpnRegionsDiagnostic(parseError(json, `Failed to load VPN regions (HTTP ${res.status}).`));
                 return;
             }
 
             const parsed = Array.isArray(json?.regions) ? json.regions : [];
+            const diagnostic = normalizeString(json?.error).trim();
             setVpnRegions(parsed);
+            setVpnRegionsDiagnostic(diagnostic || null);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
-            setVpnError(msg);
+            setVpnRegions([]);
+            setVpnRegionsDiagnostic(msg);
         }
     };
 
@@ -4413,6 +4427,8 @@ export function SettingsPage({selection}: SettingsPageProps) {
             if (!key || key === KOMF_APPLICATION_YML_KEY || field.readOnly === true) return false;
             return !isUrlLikeField(key) && !isPathLikeField(key) && !/KAVITA_API_KEY/i.test(key);
         });
+        const vpnStatusError = normalizeString(vpnStatus?.lastError).trim();
+        const vpnRegionsError = normalizeString(vpnRegionsDiagnostic).trim();
 
         return (
             <Column fillWidth gap="16">
@@ -4662,6 +4678,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             </Row>
                         </Row>
                         {vpnError && <Text onBackground="danger-strong" variant="body-default-xs">{vpnError}</Text>}
+                        {vpnStatusError && (
+                            <Text onBackground="danger-strong" variant="body-default-xs">{vpnStatusError}</Text>
+                        )}
+                        {vpnRegionsError && vpnRegionsError !== vpnStatusError && (
+                            <Text onBackground="danger-strong" variant="body-default-xs">{vpnRegionsError}</Text>
+                        )}
                         {vpnMessage && <Text onBackground="neutral-weak" variant="body-default-xs">{vpnMessage}</Text>}
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch

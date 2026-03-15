@@ -7122,6 +7122,195 @@ test('settings Discord onboarding message route stays admin-gated after setup co
     })
 })
 
+test('settings service catalog and update routes preserve Warden upstream errors', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async listServices() {
+                throw new WardenUpstreamHttpError({
+                    status: 500,
+                    payload: {
+                        error: 'Warden catalog unavailable.',
+                        source: 'warden',
+                    },
+                })
+            },
+            async listServiceUpdates() {
+                throw new WardenUpstreamHttpError({
+                    status: 404,
+                    payload: {
+                        error: 'No managed update catalog is available.',
+                    },
+                })
+            },
+            async checkServiceUpdates() {
+                throw new WardenUpstreamHttpError({
+                    status: 503,
+                    payload: {
+                        error: 'Update check is warming up.',
+                        retryable: true,
+                    },
+                })
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const headers = {Authorization: `Bearer ${token}`}
+
+    const catalogResponse = await fetch(`${baseUrl}/api/settings/services`, {headers})
+    assert.equal(catalogResponse.status, 500)
+    assert.deepEqual(await catalogResponse.json(), {
+        error: 'Warden catalog unavailable.',
+        source: 'warden',
+    })
+
+    const listUpdatesResponse = await fetch(`${baseUrl}/api/settings/services/updates`, {headers})
+    assert.equal(listUpdatesResponse.status, 404)
+    assert.deepEqual(await listUpdatesResponse.json(), {
+        error: 'No managed update catalog is available.',
+    })
+
+    const checkUpdatesResponse = await fetch(`${baseUrl}/api/settings/services/updates/check`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({services: ['noona-moon']}),
+    })
+    assert.equal(checkUpdatesResponse.status, 503)
+    assert.deepEqual(await checkUpdatesResponse.json(), {
+        error: 'Update check is warming up.',
+        retryable: true,
+    })
+})
+
+test('settings Warden-backed config, restart, and ecosystem routes preserve upstream errors', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async getServiceConfig() {
+                throw new WardenUpstreamHttpError({
+                    status: 404,
+                    payload: {
+                        error: 'Service missing-service is not installed.',
+                    },
+                })
+            },
+            async updateServiceConfig() {
+                throw new WardenUpstreamHttpError({
+                    status: 400,
+                    payload: {
+                        error: 'SERVICE_NAME is managed by Warden and cannot be changed.',
+                        key: 'SERVICE_NAME',
+                    },
+                })
+            },
+            async restartService() {
+                throw new WardenUpstreamHttpError({
+                    status: 409,
+                    payload: {
+                        error: 'Restart already queued for noona-moon.',
+                        service: 'noona-moon',
+                    },
+                })
+            },
+            async updateServiceImage() {
+                throw new WardenUpstreamHttpError({
+                    status: 500,
+                    payload: {
+                        error: 'Image update failed to start.',
+                    },
+                })
+            },
+            async restartEcosystem() {
+                throw new WardenUpstreamHttpError({
+                    status: 503,
+                    payload: {
+                        error: 'Ecosystem restart is unavailable while Warden is booting.',
+                        retryable: true,
+                    },
+                })
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const headers = {Authorization: `Bearer ${token}`}
+
+    const getConfigResponse = await fetch(`${baseUrl}/api/settings/services/missing-service/config`, {headers})
+    assert.equal(getConfigResponse.status, 404)
+    assert.deepEqual(await getConfigResponse.json(), {
+        error: 'Service missing-service is not installed.',
+    })
+
+    const updateConfigResponse = await fetch(`${baseUrl}/api/settings/services/noona-moon/config`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({
+            env: {
+                SERVICE_NAME: 'noona-moon',
+            },
+        }),
+    })
+    assert.equal(updateConfigResponse.status, 400)
+    assert.deepEqual(await updateConfigResponse.json(), {
+        error: 'SERVICE_NAME is managed by Warden and cannot be changed.',
+        key: 'SERVICE_NAME',
+    })
+
+    const restartServiceResponse = await fetch(`${baseUrl}/api/settings/services/noona-moon/restart`, {
+        method: 'POST',
+        headers,
+    })
+    assert.equal(restartServiceResponse.status, 409)
+    assert.deepEqual(await restartServiceResponse.json(), {
+        error: 'Restart already queued for noona-moon.',
+        service: 'noona-moon',
+    })
+
+    const updateImageResponse = await fetch(`${baseUrl}/api/settings/services/noona-moon/update-image`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({}),
+    })
+    assert.equal(updateImageResponse.status, 500)
+    assert.deepEqual(await updateImageResponse.json(), {
+        error: 'Image update failed to start.',
+    })
+
+    const restartEcosystemResponse = await fetch(`${baseUrl}/api/settings/ecosystem/restart`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({}),
+    })
+    assert.equal(restartEcosystemResponse.status, 503)
+    assert.deepEqual(await restartEcosystemResponse.json(), {
+        error: 'Ecosystem restart is unavailable while Warden is booting.',
+        retryable: true,
+    })
+})
+
 test('settings download worker routes read and update per-thread rate limits', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
@@ -7472,6 +7661,39 @@ test('settings VPN test-login falls back to persisted credentials when form valu
     assert.equal(loginTestCalls[0].region, 'us_texas')
     assert.equal(loginTestCalls[0].piaUsername, 'saved-user')
     assert.equal(loginTestCalls[0].piaPassword, 'saved-secret')
+})
+
+test('settings VPN regions route surfaces Raven runtime diagnostics when profiles are unavailable', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async getVpnRegions() {
+                return []
+            },
+            async getVpnStatus() {
+                return {
+                    lastError: 'PIA OpenVPN profile archive did not contain any .ovpn files.',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const regionsRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/regions`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(regionsRes.status, 200)
+    const regionsPayload = await regionsRes.json()
+    assert.equal(regionsPayload.provider, 'pia')
+    assert.deepEqual(regionsPayload.regions, [])
+    assert.equal(regionsPayload.error, 'PIA OpenVPN profile archive did not contain any .ovpn files.')
 })
 
 test('settings debug routes read and update live debug mode', async (t) => {

@@ -271,6 +271,16 @@ Downloads, Kavita, or metadata flows fail after a reboot:
 - Raven now keeps fractional chapters such as `101.1` and `101.5` as separate chapters during queueing and sync, so
   seeing those alongside `101` is expected behavior rather than a duplicate-collapse bug
 
+PIA regions stay blank or Raven VPN shows no IP:
+
+- open Moon at `Admin -> System -> Downloader` and read the VPN error shown under the PIA section before changing
+  Docker capabilities or tunnel device settings
+- Raven now keeps the last known-good PIA profiles on disk after a bad upstream refresh, so an empty region list plus a
+  concrete profile error usually points to PIA profile refresh or archive-layout problems rather than the first
+  OpenVPN tunnel step
+- if the error mentions missing `.ovpn` profiles or a failed profile refresh, retry the region reload after upstream
+  connectivity is healthy; a later successful refresh or rotation clears the stale profile error automatically
+
 Managed service logging fails or host log folders stay empty:
 
 - confirm the expected host log folder exists under `NOONA_DATA_ROOT` such as `moon/logs`, `portal/logs`,

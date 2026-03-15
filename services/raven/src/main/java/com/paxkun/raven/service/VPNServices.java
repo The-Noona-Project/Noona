@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
- * Times this file has been edited: 4
+ * Times this file has been edited: 5
  */
 package com.paxkun.raven.service;
 
@@ -28,7 +28,6 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -81,6 +80,7 @@ public class VPNServices {
     private final AtomicBoolean rotationInProgress = new AtomicBoolean(false);
     private final AtomicBoolean loginTestInProgress = new AtomicBoolean(false);
     private final Object openVpnLock = new Object();
+    private final Object profileRefreshLock = new Object();
     @Value("${raven.vpn.pia.openvpnZipUrl:${RAVEN_PIA_OPENVPN_ZIP_URL:https://www.privateinternetaccess.com/openvpn/openvpn-ip.zip}}")
     private String piaOpenVpnZipUrl;
     @Value("${raven.vpn.connectTimeoutSeconds:${RAVEN_VPN_CONNECT_TIMEOUT_SECONDS:90}}")
@@ -97,6 +97,7 @@ public class VPNServices {
     private volatile long nextRotationAtMs = 0L;
     private volatile String connectionState = "idle";
     private volatile String lastError;
+    private volatile boolean profileErrorActive;
 
     private volatile List<VpnRegionOption> cachedRegions = List.of();
     private volatile long cachedRegionsAtMs = 0L;
@@ -162,7 +163,8 @@ public class VPNServices {
         try {
             return loadRegions();
         } catch (Exception e) {
-            logger.warn(VPN_TAG, "⚠️ Failed to load PIA regions: " + e.getMessage());
+            recordProfileFailure(buildProfileErrorMessage(e, false));
+            logger.warn(VPN_TAG, "Failed to load PIA regions: " + sanitizeForLog(e.getMessage()));
             return List.of();
         }
     }
@@ -297,7 +299,7 @@ public class VPNServices {
             }
 
             if (!DEFAULT_PROVIDER.equalsIgnoreCase(Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER))) {
-                lastError = "Unsupported VPN provider configured for Raven.";
+                setRuntimeError("Unsupported VPN provider configured for Raven.");
                 return;
             }
 
@@ -327,7 +329,7 @@ public class VPNServices {
             nextRotationAtMs = nextAt;
             nextRotationAtIso = Instant.ofEpochMilli(nextAt).toString();
         } catch (Exception e) {
-            lastError = e.getMessage();
+            setRuntimeError(e.getMessage());
             logger.warn(VPN_TAG, "⚠️ VPN scheduler tick failed: " + e.getMessage());
         }
     }
@@ -392,7 +394,7 @@ public class VPNServices {
             currentRegion = targetRegion;
             currentPublicIp = resolvePublicIp();
             connectionState = "connected";
-            lastError = null;
+            clearRuntimeError();
             lastRotationAtIso = Instant.now().toString();
             logger.info(VPN_TAG, "Re-applied " + preservedLocalRoutes.size() + " local route(s) after VPN connect.");
 
@@ -416,7 +418,7 @@ public class VPNServices {
                     lastRotationAtIso
             );
         } catch (Exception e) {
-            lastError = e.getMessage();
+            setRuntimeError(e.getMessage());
             connectionState = "error";
             logger.warn(VPN_TAG, "⚠️ VPN rotation failed: " + sanitizeForLog(e.getMessage()));
             downloadService.endMaintenancePause("VPN rotation failed");
@@ -552,6 +554,12 @@ public class VPNServices {
         }
     }
 
+    /**
+     * Loads the available PIA regions from the discovered profile files.
+     *
+     * @return The discovered region options.
+     * @throws IOException When the profile directory cannot be prepared or read.
+     */
     private List<VpnRegionOption> loadRegions() throws IOException {
         long now = System.currentTimeMillis();
         if (!cachedRegions.isEmpty() && now - cachedRegionsAtMs < PROFILE_REFRESH_TTL.toMillis()) {
@@ -559,14 +567,16 @@ public class VPNServices {
         }
 
         Path configRoot = ensurePiaProfiles();
+        LinkedHashMap<String, Path> profilesByRegion = new LinkedHashMap<>();
+        for (Path entry : discoverProfileFiles(configRoot)) {
+            profilesByRegion.putIfAbsent(extractRegionId(entry), entry);
+        }
+
         List<VpnRegionOption> options = new ArrayList<>();
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(configRoot, "*.ovpn")) {
-            for (Path entry : stream) {
-                String fileName = entry.getFileName().toString();
-                String regionId = fileName.substring(0, fileName.length() - ".ovpn".length());
-                String endpoint = parseRemoteEndpoint(entry);
-                options.add(new VpnRegionOption(regionId, prettifyRegionLabel(regionId), endpoint));
-            }
+        for (Map.Entry<String, Path> entry : profilesByRegion.entrySet()) {
+            String regionId = entry.getKey();
+            String endpoint = parseRemoteEndpoint(entry.getValue());
+            options.add(new VpnRegionOption(regionId, prettifyRegionLabel(regionId), endpoint));
         }
         options.sort(Comparator.comparing(VpnRegionOption::label, String.CASE_INSENSITIVE_ORDER));
 
@@ -575,36 +585,75 @@ public class VPNServices {
         return cachedRegions;
     }
 
+    /**
+     * Ensures the on-disk PIA profile tree exists and refreshes it when the cached archive is stale.
+     *
+     * @return The profile root directory.
+     * @throws IOException When no usable PIA profiles are available.
+     */
     private Path ensurePiaProfiles() throws IOException {
         Path vpnRoot = resolveVpnRoot();
         Path archivePath = vpnRoot.resolve("openvpn-ip.zip");
         Path configRoot = vpnRoot.resolve("profiles");
         Files.createDirectories(vpnRoot);
 
-        boolean refreshArchive = shouldRefreshArchive(archivePath, configRoot);
-        if (refreshArchive) {
-            downloadArchive(archivePath);
-            extractArchive(archivePath, configRoot);
+        synchronized (profileRefreshLock) {
+            boolean refreshArchive = shouldRefreshArchive(archivePath, configRoot);
+            if (refreshArchive) {
+                try {
+                    refreshPiaProfilesAtomically(vpnRoot, archivePath, configRoot);
+                    clearProfileFailure();
+                    cachedRegions = List.of();
+                    cachedRegionsAtMs = 0L;
+                } catch (IOException e) {
+                    List<Path> preservedProfiles = discoverProfileFiles(configRoot);
+                    boolean usingFallbackProfiles = !preservedProfiles.isEmpty();
+                    String message = buildProfileErrorMessage(e, usingFallbackProfiles);
+                    recordProfileFailure(message);
+                    if (!usingFallbackProfiles) {
+                        throw new IOException(message, e);
+                    }
+                }
+            }
+
+            List<Path> profiles = discoverProfileFiles(configRoot);
+            if (profiles.isEmpty()) {
+                String message = "PIA OpenVPN profiles are unavailable. Refresh the Raven VPN profiles and try again.";
+                recordProfileFailure(message);
+                throw new IOException(message);
+            }
         }
 
         return configRoot;
     }
 
+    /**
+     * Determines whether the cached PIA profile archive should be refreshed.
+     *
+     * @param archivePath The cached archive path.
+     * @param configRoot  The extracted profile root.
+     * @return {@code true} when Raven should download a fresh archive.
+     * @throws IOException When the existing profile tree cannot be inspected.
+     */
     private boolean shouldRefreshArchive(Path archivePath, Path configRoot) throws IOException {
-        if (!Files.exists(archivePath) || !Files.exists(configRoot)) {
+        if (!Files.exists(archivePath)) {
             return true;
         }
 
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(configRoot, "*.ovpn")) {
-            if (!stream.iterator().hasNext()) {
-                return true;
-            }
+        if (discoverProfileFiles(configRoot).isEmpty()) {
+            return true;
         }
 
         long modifiedAt = Files.getLastModifiedTime(archivePath).toMillis();
         return System.currentTimeMillis() - modifiedAt > PROFILE_REFRESH_TTL.toMillis();
     }
 
+    /**
+     * Downloads the upstream PIA OpenVPN archive into the supplied path.
+     *
+     * @param archivePath The target archive path.
+     * @throws IOException When the download fails.
+     */
     private void downloadArchive(Path archivePath) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(piaOpenVpnZipUrl).openConnection();
         connection.setConnectTimeout(15_000);
@@ -624,20 +673,14 @@ public class VPNServices {
         }
     }
 
+    /**
+     * Extracts a downloaded PIA archive into the supplied directory.
+     *
+     * @param archivePath The downloaded archive.
+     * @param configRoot The extraction target directory.
+     * @throws IOException When extraction fails.
+     */
     private void extractArchive(Path archivePath, Path configRoot) throws IOException {
-        if (Files.exists(configRoot)) {
-            try (var walk = Files.walk(configRoot)) {
-                walk.sorted(Comparator.reverseOrder())
-                        .filter(path -> !path.equals(configRoot))
-                        .forEach(path -> {
-                            try {
-                                Files.deleteIfExists(path);
-                            } catch (IOException ignored) {
-                                // best-effort cleanup
-                            }
-                        });
-            }
-        }
         Files.createDirectories(configRoot);
 
         try (ZipInputStream zipInputStream = new ZipInputStream(Files.newInputStream(archivePath))) {
@@ -662,6 +705,213 @@ public class VPNServices {
                 Files.copy(zipInputStream, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 zipInputStream.closeEntry();
             }
+        }
+    }
+
+    /**
+     * Refreshes the cached PIA profiles into a temporary directory and swaps them into place only after validation.
+     *
+     * @param vpnRoot     The VPN provider root directory.
+     * @param archivePath The cached archive path.
+     * @param configRoot  The extracted profile root.
+     * @throws IOException When the refreshed archive cannot be downloaded, extracted, or validated.
+     */
+    private void refreshPiaProfilesAtomically(Path vpnRoot, Path archivePath, Path configRoot) throws IOException {
+        Path tempArchive = Files.createTempFile(vpnRoot, "pia-openvpn-", ".zip");
+        Path tempConfigRoot = Files.createTempDirectory(vpnRoot, "pia-profiles-");
+        Path backupConfigRoot = null;
+        boolean swappedProfiles = false;
+
+        try {
+            downloadArchive(tempArchive);
+            extractArchive(tempArchive, tempConfigRoot);
+
+            if (discoverProfileFiles(tempConfigRoot).isEmpty()) {
+                throw new IOException("PIA OpenVPN profile archive did not contain any .ovpn files.");
+            }
+
+            if (Files.exists(configRoot)) {
+                backupConfigRoot = vpnRoot.resolve("profiles-backup-" + UUID.randomUUID());
+                movePath(configRoot, backupConfigRoot);
+            }
+
+            movePath(tempConfigRoot, configRoot);
+            swappedProfiles = true;
+
+            try {
+                movePath(tempArchive, archivePath);
+            } catch (IOException e) {
+                logger.warn(VPN_TAG, "Failed to replace cached PIA archive: " + sanitizeForLog(e.getMessage()));
+            }
+        } catch (IOException e) {
+            if (swappedProfiles) {
+                cleanupPath(configRoot);
+            }
+            if (!swappedProfiles && backupConfigRoot != null && Files.exists(backupConfigRoot) && Files.exists(configRoot)) {
+                cleanupPath(configRoot);
+            }
+            if (backupConfigRoot != null && Files.exists(backupConfigRoot) && !Files.exists(configRoot)) {
+                movePath(backupConfigRoot, configRoot);
+            }
+            throw e;
+        } finally {
+            if (backupConfigRoot != null && Files.exists(backupConfigRoot)) {
+                cleanupPath(backupConfigRoot);
+            }
+            cleanupPath(tempConfigRoot);
+            cleanupPath(tempArchive);
+        }
+    }
+
+    /**
+     * Discovers `.ovpn` profile files recursively under the supplied root.
+     *
+     * @param configRoot The extracted profile root.
+     * @return The discovered profile files sorted by relative path.
+     * @throws IOException When the directory tree cannot be walked.
+     */
+    private List<Path> discoverProfileFiles(Path configRoot) throws IOException {
+        if (configRoot == null || !Files.exists(configRoot)) {
+            return List.of();
+        }
+
+        try (var walk = Files.walk(configRoot)) {
+            return walk.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ovpn"))
+                    .sorted(Comparator.comparing(
+                            path -> configRoot.relativize(path).toString(),
+                            String.CASE_INSENSITIVE_ORDER
+                    ))
+                    .toList();
+        }
+    }
+
+    /**
+     * Extracts a normalized Raven region id from the supplied profile path.
+     *
+     * @param profilePath The discovered profile file.
+     * @return The normalized region id.
+     */
+    private String extractRegionId(Path profilePath) {
+        String fileName = profilePath.getFileName().toString();
+        String withoutExtension = fileName.substring(0, fileName.length() - ".ovpn".length());
+        return withoutExtension.trim().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Builds a user-facing profile refresh error message.
+     *
+     * @param error                 The original failure.
+     * @param usingFallbackProfiles Whether Raven kept previously extracted profiles.
+     * @return The message surfaced through Raven runtime status.
+     */
+    private String buildProfileErrorMessage(Exception error, boolean usingFallbackProfiles) {
+        String detail = Optional.ofNullable(error)
+                .map(Throwable::getMessage)
+                .filter(message -> !message.isBlank())
+                .orElse("Unable to refresh PIA OpenVPN profiles.");
+        String message = detail.startsWith("PIA ") ? detail : "PIA OpenVPN profile refresh failed: " + detail;
+        if (usingFallbackProfiles) {
+            return message + " Keeping last known-good PIA profiles.";
+        }
+        return message;
+    }
+
+    /**
+     * Stores a runtime error that originated from profile discovery or refresh.
+     *
+     * @param message The user-facing error message.
+     */
+    private void recordProfileFailure(String message) {
+        lastError = Optional.ofNullable(message).filter(value -> !value.isBlank())
+                .orElse("PIA OpenVPN profiles are unavailable.");
+        profileErrorActive = true;
+    }
+
+    /**
+     * Stores a non-profile runtime error.
+     *
+     * @param message The user-facing error message.
+     */
+    private void setRuntimeError(String message) {
+        lastError = message;
+        profileErrorActive = false;
+    }
+
+    /**
+     * Clears Raven's runtime error state after a successful refresh or rotation.
+     */
+    private void clearRuntimeError() {
+        lastError = null;
+        profileErrorActive = false;
+    }
+
+    /**
+     * Clears any stale profile-specific error once Raven has completed a successful profile refresh.
+     */
+    private void clearProfileFailure() {
+        if (profileErrorActive) {
+            clearRuntimeError();
+        }
+    }
+
+    /**
+     * Moves a file or directory into place, preferring atomic replacement when the filesystem supports it.
+     *
+     * @param source The source path.
+     * @param target The destination path.
+     * @throws IOException When the move fails.
+     */
+    private void movePath(Path source, Path target) throws IOException {
+        if (source == null || target == null || !Files.exists(source)) {
+            return;
+        }
+
+        Path parent = target.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+
+        try {
+            Files.move(
+                    source,
+                    target,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+            );
+        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+            Files.move(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Removes a temporary file or directory tree without surfacing cleanup failures to callers.
+     *
+     * @param path The temporary path to remove.
+     */
+    private void cleanupPath(Path path) {
+        if (path == null || !Files.exists(path)) {
+            return;
+        }
+
+        try {
+            if (!Files.isDirectory(path)) {
+                Files.deleteIfExists(path);
+                return;
+            }
+
+            try (var walk = Files.walk(path)) {
+                walk.sorted(Comparator.reverseOrder())
+                        .forEach(entry -> {
+                            try {
+                                Files.deleteIfExists(entry);
+                            } catch (IOException ignored) {
+                                // best-effort cleanup of temporary VPN paths
+                            }
+                        });
+            }
+        } catch (IOException e) {
+            logger.debug(VPN_TAG, "Failed to clean up VPN path: " + sanitizeForLog(e.getMessage()));
         }
     }
 
@@ -880,13 +1130,22 @@ public class VPNServices {
         }
     }
 
+    /**
+     * Resolves the PIA profile path for a region id by scanning the extracted profile tree recursively.
+     *
+     * @param region The requested region id.
+     * @return The matching profile path.
+     * @throws IOException When the profile tree cannot be prepared.
+     */
     private Path resolveProfilePath(String region) throws IOException {
         Path configRoot = ensurePiaProfiles();
-        Path configPath = configRoot.resolve(region + ".ovpn");
-        if (!Files.exists(configPath)) {
-            throw new IllegalStateException("PIA region profile not found: " + region);
+        String normalizedRegion = Optional.ofNullable(region).orElse("").trim().toLowerCase(Locale.ROOT);
+        for (Path profilePath : discoverProfileFiles(configRoot)) {
+            if (normalizedRegion.equals(extractRegionId(profilePath))) {
+                return profilePath;
+            }
         }
-        return configPath;
+        throw new IllegalStateException("PIA region profile not found: " + normalizedRegion);
     }
 
     private String resolveRequestedRegion(String requestedRegion, DownloadVpnSettings settings) {

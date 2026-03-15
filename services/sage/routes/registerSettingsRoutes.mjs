@@ -1,6 +1,21 @@
 // services/sage/routes/registerSettingsRoutes.mjs
 
+import {WardenUpstreamHttpError} from '../app/createSetupClient.mjs'
 import {SetupValidationError} from '../lib/errors.mjs'
+
+const sendSetupClientUpstreamError = (res, error) => {
+    if (!(error instanceof WardenUpstreamHttpError)) {
+        return false
+    }
+
+    const payload =
+        error.payload && typeof error.payload === 'object' && !Array.isArray(error.payload)
+            ? error.payload
+            : {error: error.message}
+
+    res.status(Number.isInteger(error.status) ? error.status : 502).json(payload)
+    return true
+}
 
 export function registerSettingsRoutes(context = {}) {
     const {
@@ -349,16 +364,42 @@ export function registerSettingsRoutes(context = {}) {
 
     app.get('/api/settings/downloads/vpn/regions', async (_req, res) => {
         try {
-            if (!ravenClient?.getVpnRegions) {
+            if (!ravenClient?.getVpnRegions && !ravenClient?.getVpnRegionsDetailed) {
                 res.json({provider: DEFAULT_DOWNLOAD_VPN_SETTINGS.provider, regions: []})
                 return
             }
 
-            const regions = await ravenClient.getVpnRegions()
-            res.json({
-                provider: DEFAULT_DOWNLOAD_VPN_SETTINGS.provider,
+            let provider = DEFAULT_DOWNLOAD_VPN_SETTINGS.provider
+            let regions = []
+            let diagnostic = ''
+
+            if (typeof ravenClient?.getVpnRegionsDetailed === 'function') {
+                const payload = await ravenClient.getVpnRegionsDetailed()
+                provider = normalizeString(payload?.provider).trim() || provider
+                regions = Array.isArray(payload?.regions) ? payload.regions : []
+                diagnostic = normalizeString(payload?.error).trim()
+            } else {
+                const payload = await ravenClient.getVpnRegions()
+                regions = Array.isArray(payload) ? payload : []
+            }
+
+            if (regions.length === 0 && !diagnostic && typeof ravenClient?.getVpnStatus === 'function') {
+                try {
+                    const status = await ravenClient.getVpnStatus()
+                    diagnostic = normalizeString(status?.lastError).trim()
+                } catch (error) {
+                    logger.warn(`[${serviceName}] Failed to fetch Raven VPN status for region diagnostics: ${error.message}`)
+                }
+            }
+
+            const payload = {
+                provider,
                 regions: Array.isArray(regions) ? regions : [],
-            })
+            }
+            if (diagnostic) {
+                payload.error = diagnostic
+            }
+            res.json(payload)
         } catch (error) {
             logger.error(`[${serviceName}] Failed to fetch VPN regions: ${error.message}`)
             res.status(502).json({error: 'Unable to load VPN regions.'})
@@ -431,6 +472,10 @@ export function registerSettingsRoutes(context = {}) {
             res.json({services: Array.isArray(services) ? services : []})
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load service settings catalog: ${error.message}`)
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             res.status(502).json({error: 'Unable to load service settings.'})
         }
     })
@@ -441,6 +486,10 @@ export function registerSettingsRoutes(context = {}) {
             res.json({updates: Array.isArray(updates) ? updates : []})
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to list service updates: ${error.message}`)
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             res.status(502).json({error: 'Unable to load service updates.'})
         }
     })
@@ -453,6 +502,10 @@ export function registerSettingsRoutes(context = {}) {
             res.json({updates: Array.isArray(updates) ? updates : []})
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to check service updates: ${error.message}`)
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             res.status(502).json({error: 'Unable to check service updates.'})
         }
     })
@@ -468,6 +521,10 @@ export function registerSettingsRoutes(context = {}) {
             const config = await setupClient.getServiceConfig(name)
             res.json(config ?? {})
         } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             const message = error instanceof SetupValidationError ? error.message : 'Unable to load service config.'
             const status = error instanceof SetupValidationError ? 400 : 502
             logger.error(`[${serviceName}] ⚠️ Failed to load service config for ${name}: ${error.message}`)
@@ -486,6 +543,10 @@ export function registerSettingsRoutes(context = {}) {
             const result = await setupClient.updateServiceConfig(name, req.body ?? {})
             res.json(result ?? {})
         } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             const message = error instanceof SetupValidationError ? error.message : 'Unable to update service config.'
             const status = error instanceof SetupValidationError ? 400 : 502
             logger.error(`[${serviceName}] ⚠️ Failed to update service config for ${name}: ${error.message}`)
@@ -504,6 +565,10 @@ export function registerSettingsRoutes(context = {}) {
             const result = await setupClient.restartService(name)
             res.json(result ?? {})
         } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             const message = error instanceof SetupValidationError ? error.message : 'Unable to restart service.'
             const status = error instanceof SetupValidationError ? 400 : 502
             logger.error(`[${serviceName}] ⚠️ Failed to restart service ${name}: ${error.message}`)
@@ -522,6 +587,10 @@ export function registerSettingsRoutes(context = {}) {
             const result = await setupClient.updateServiceImage(name, req.body ?? {})
             res.json(result ?? {})
         } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             const message = error instanceof SetupValidationError ? error.message : 'Unable to update service image.'
             const status = error instanceof SetupValidationError ? 400 : 502
             logger.error(`[${serviceName}] ⚠️ Failed to update service image for ${name}: ${error.message}`)
@@ -535,6 +604,10 @@ export function registerSettingsRoutes(context = {}) {
             res.json(result ?? {})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to start ecosystem: ${error.message}`)
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             res.status(502).json({error: 'Unable to start ecosystem.'})
         }
     })
@@ -545,6 +618,10 @@ export function registerSettingsRoutes(context = {}) {
             res.json(result ?? {})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to stop ecosystem: ${error.message}`)
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             res.status(502).json({error: 'Unable to stop ecosystem.'})
         }
     })
@@ -555,6 +632,10 @@ export function registerSettingsRoutes(context = {}) {
             res.json(result ?? {})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to restart ecosystem: ${error.message}`)
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             res.status(502).json({error: 'Unable to restart ecosystem.'})
         }
     })
