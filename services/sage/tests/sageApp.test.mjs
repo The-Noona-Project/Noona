@@ -4869,6 +4869,7 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
             password: 'Password123!',
         },
         allowRegister: true,
+        candidateApiKeys: [],
     })
 
     assert.equal(updateCalls.length, 3)
@@ -5019,6 +5020,120 @@ test('POST /api/setup/services/noona-kavita/service-key asks for the real passwo
     })
 })
 
+test('POST /api/setup/services/noona-kavita/service-key ignores masked Warden config keys and reuses the stored managed key', async (t) => {
+    const managedCalls = []
+    const updateCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: {
+            mongo: {
+                async findOne() {
+                    return {
+                        key: 'setup.managedKavitaServiceAccount',
+                        value: {
+                            apiKey: 'stored-service-key',
+                            account: {
+                                username: 'reader-admin',
+                                email: 'reader-admin@example.com',
+                            },
+                        },
+                    }
+                },
+                async update() {
+                    return {status: 'ok', matched: 1, modified: 1}
+                },
+            },
+        },
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {
+                        env: {
+                            KAVITA_ADMIN_USERNAME: 'reader-admin',
+                            KAVITA_ADMIN_EMAIL: 'reader-admin@example.com',
+                            KAVITA_ADMIN_PASSWORD: '********',
+                        },
+                    }
+                }
+
+                if (name === 'noona-portal') {
+                    return {
+                        env: {
+                            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                            KAVITA_API_KEY: '********',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'stored-service-key',
+                    account: null,
+                    mode: 'stored',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'stored-service-key')
+    assert.equal(payload.mode, 'stored')
+    assert.deepEqual(managedCalls, [{
+        account: null,
+        allowRegister: false,
+        candidateApiKeys: [{
+            key: 'stored-service-key',
+            source: 'stored',
+            pluginName: 'noona-sage',
+        }],
+    }])
+    assert.deepEqual(updateCalls, [[
+        'noona-portal',
+        {
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'stored-service-key',
+            },
+            restart: true,
+        },
+    ]])
+})
+
 test('POST /api/setup/services/noona-kavita/service-key reuses an existing service key when one is already configured', async (t) => {
     const managedCalls = []
     const updateCalls = []
@@ -5068,12 +5183,12 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
             },
         },
         managedKavitaSetupClient: {
-            async ensureServiceApiKey() {
-                managedCalls.push('called')
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
                 return {
-                    apiKey: 'should-not-run',
+                    apiKey: 'existing-service-key',
                     account: null,
-                    mode: 'register',
+                    mode: 'existing',
                 }
             },
         },
@@ -5092,7 +5207,15 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
     const payload = await response.json()
     assert.equal(payload.apiKey, 'existing-service-key')
     assert.equal(payload.mode, 'existing')
-    assert.deepEqual(managedCalls, [])
+    assert.deepEqual(managedCalls, [{
+        account: null,
+        allowRegister: true,
+        candidateApiKeys: [{
+            key: 'existing-service-key',
+            source: 'existing',
+            pluginName: 'noona-portal',
+        }],
+    }])
     assert.deepEqual(updateCalls, [
         [
             'noona-portal',
@@ -5189,7 +5312,211 @@ test('POST /api/setup/services/noona-kavita/service-key falls back to managed no
             password: 'Password123!',
         },
         allowRegister: true,
+        candidateApiKeys: [],
     })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key keeps going when Vault warm-up blocks the stored-settings lookup', async (t) => {
+    const updateCalls = []
+    const managedCalls = []
+    const storedSettingsLookups = []
+    const warmupError = new Error(
+        "All Vault endpoints failed: https://noona-vault:3005 (Unable to read Vault CA certificate at /var/lib/noona/vault-tls/ca-cert.pem: ENOENT: no such file or directory, open '/var/lib/noona/vault-tls/ca-cert.pem')",
+    )
+    warmupError.code = 'ENOENT'
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: {
+            mongo: {
+                async findOne(collectionName, query = {}) {
+                    storedSettingsLookups.push([collectionName, query])
+                    throw warmupError
+                },
+                async update() {
+                    return {status: 'ok', matched: 0, modified: 0}
+                },
+            },
+        },
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {env: {}}
+                }
+
+                if (name === 'noona-portal') {
+                    return {
+                        env: {
+                            KAVITA_BASE_URL: '',
+                            KAVITA_API_KEY: '',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: null,
+                    mode: 'login',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'managed-kavita-key')
+    assert.equal(payload.mode, 'login')
+    assert.deepEqual(storedSettingsLookups, [[
+        'noona_settings',
+        {key: 'setup.managedKavitaServiceAccount'},
+    ]])
+    assert.deepEqual(managedCalls, [{
+        account: null,
+        allowRegister: true,
+        candidateApiKeys: [],
+    }])
+    assert.deepEqual(updateCalls, [[
+        'noona-portal',
+        {
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ]])
+})
+
+test('POST /api/setup/services/noona-kavita/service-key treats Vault settings persistence as best effort after provisioning succeeds', async (t) => {
+    const updateCalls = []
+    let writeAttempts = 0
+    const warmupError = new Error(
+        "Unable to read Vault CA certificate at /var/lib/noona/vault-tls/ca-cert.pem: ENOENT: no such file or directory, open '/var/lib/noona/vault-tls/ca-cert.pem'",
+    )
+    warmupError.code = 'ENOENT'
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: {
+            mongo: {
+                async findOne() {
+                    return null
+                },
+                async update() {
+                    writeAttempts += 1
+                    throw warmupError
+                },
+            },
+        },
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {env: {}}
+                }
+
+                if (name === 'noona-raven') {
+                    return {
+                        env: {
+                            KAVITA_LIBRARY_ROOT: '',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: {
+                        username: 'reader-admin',
+                        email: 'reader-admin@example.com',
+                        password: 'Password123!',
+                    },
+                    mode: 'register',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-raven']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'managed-kavita-key')
+    assert.equal(writeAttempts, 1)
+    assert.deepEqual(updateCalls, [[
+        'noona-raven',
+        {
+            env: {
+                KAVITA_LIBRARY_ROOT: '/manga',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ]])
 })
 
 test('GET /api/setup/services/:name/health proxies health payloads', async (t) => {

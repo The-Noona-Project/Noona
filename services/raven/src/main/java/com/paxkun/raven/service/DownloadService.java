@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
- * Times this file has been edited: 33
+ * Times this file has been edited: 34
  */
 package com.paxkun.raven.service;
 
@@ -2083,7 +2083,7 @@ public class DownloadService {
 
     public List<Map<String, Object>> getActiveWorkers() {
         List<Map<String, Object>> workers = new ArrayList<>();
-        List<DownloadProgress> activeTasks = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
+        List<DownloadProgress> activeTasks = new ArrayList<>(loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES)));
         Map<String, DownloadProgress> activeByTaskId = new HashMap<>();
         for (DownloadProgress progress : activeTasks) {
             if (progress.getTaskId() != null && !progress.getTaskId().isBlank()) {

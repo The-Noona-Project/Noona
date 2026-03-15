@@ -978,7 +978,7 @@ test('installServices publishes wizard state transitions', async () => {
     assert.deepEqual(completion, { type: 'complete', hasErrors: false });
 });
 
-test('installServices gives Portal both managed networks while Mongo, Redis, and Vault keep their current wiring', async () => {
+test('installServices keeps Portal on the control network while Vault bridges the private data network', async () => {
     const started = [];
     const warden = buildWarden({
         services: {
@@ -1023,7 +1023,7 @@ test('installServices gives Portal both managed networks while Mongo, Redis, and
     );
     assert.deepEqual(
         started.find((entry) => entry.name === 'noona-portal')?.networks,
-        ['noona-control-test', 'noona-data-test'],
+        ['noona-control-test'],
     );
 });
 
@@ -1811,6 +1811,14 @@ test('installServices provisions managed Kavita API keys before starting portal 
                 };
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                };
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`);
         },
         hostDockerSockets: [],
@@ -1836,7 +1844,200 @@ test('installServices provisions managed Kavita API keys before starting portal 
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
     assert.deepEqual(
         fetchCalls.map((entry) => entry.pathname),
-        ['/api/Account/login', '/api/Account/register', '/api/Account/login', '/api/Account/auth-keys'],
+        [
+            '/api/Account/login',
+            '/api/Account/register',
+            '/api/Account/login',
+            '/api/Account/auth-keys',
+            '/api/plugin/authenticate',
+        ],
+    );
+});
+
+test('installServices keeps managed Kavita startup moving when Vault warm-up blocks runtime config persistence', async () => {
+    const started = [];
+    const warnings = [];
+    const fetchCalls = [];
+    let loginAttempts = 0;
+    const memoryFs = createMemoryFs();
+    const warmupError = new Error(
+        "All Vault endpoints failed: https://noona-vault:3005 (Unable to read Vault CA certificate at /srv/noona/vault/tls/ca-cert.pem: ENOENT: no such file or directory, open '/srv/noona/vault/tls/ca-cert.pem')",
+    );
+    warmupError.code = 'ENOENT';
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async (service, _network, tracked, _debug, options) => {
+            tracked.add(service.name);
+            started.push({
+                name: service.name,
+                env: [...(service.env || [])],
+            });
+            options?.onLog?.('container started', {});
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const services = {
+        addon: {
+            'noona-mongo': {name: 'noona-mongo', image: 'mongo', port: 27017},
+            'noona-redis': {name: 'noona-redis', image: 'redis', port: 6379},
+            'noona-kavita': {
+                name: 'noona-kavita',
+                image: noonaImage('noona-kavita'),
+                port: 5000,
+                internalPort: 5000,
+                health: 'http://noona-kavita:5000/api/Health',
+                env: [
+                    'KAVITA_ADMIN_USERNAME=reader-admin',
+                    'KAVITA_ADMIN_EMAIL=reader-admin@example.com',
+                    'KAVITA_ADMIN_PASSWORD=Password123!',
+                ],
+            },
+            'noona-komf': {
+                name: 'noona-komf',
+                image: 'sndxr/komf:latest',
+                port: 8085,
+                env: [
+                    'KOMF_KAVITA_BASE_URI=http://noona-kavita:5000',
+                    'KOMF_KAVITA_API_KEY=',
+                ],
+            },
+        },
+        core: {
+            'noona-vault': {name: 'noona-vault', image: 'vault', port: 3005},
+            'noona-raven': {name: 'noona-raven', image: 'raven'},
+            'noona-portal': {
+                name: 'noona-portal',
+                image: 'portal',
+                port: 3003,
+                env: [
+                    'KAVITA_BASE_URL=http://noona-kavita:5000',
+                    'KAVITA_API_KEY=',
+                    'VAULT_BASE_URL=https://noona-vault:3005',
+                    'VAULT_API_TOKEN=vault-token',
+                    'DISCORD_BOT_TOKEN=discord-token',
+                    'DISCORD_CLIENT_ID=discord-client',
+                    'DISCORD_GUILD_ID=discord-guild',
+                ],
+            },
+        },
+    };
+
+    const warden = buildWarden({
+        dockerUtils,
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        logger: {
+            log: () => {
+            },
+            warn: (message) => warnings.push(String(message)),
+        },
+        services,
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                        throw warmupError;
+                    },
+                    delete: async () => {
+                        throw warmupError;
+                    },
+                },
+            },
+        },
+        dockerInstance: createStubDocker({
+            listContainers: async () => [],
+        }),
+        fetchImpl: async (url, options = {}) => {
+            const requestUrl = new URL(url);
+            fetchCalls.push(requestUrl.pathname);
+
+            if (requestUrl.pathname === '/api/Account/login') {
+                loginAttempts += 1;
+                if (loginAttempts === 1) {
+                    return {
+                        ok: false,
+                        status: 401,
+                        text: async () => JSON.stringify({error: 'Unauthorized'}),
+                    };
+                }
+
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({token: 'managed-jwt-token'}),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/register') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 7, username: 'reader-admin'}),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/Account/auth-keys') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 9, key: 'managed-api-key', name: 'Noona Managed Services'},
+                    ]),
+                };
+            }
+
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                };
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`);
+        },
+        hostDockerSockets: [],
+    });
+
+    await warden.installServices([
+        {name: 'noona-portal'},
+        {name: 'noona-kavita'},
+        {name: 'noona-komf'},
+    ]);
+
+    assert.deepEqual(
+        started.map((entry) => entry.name),
+        ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-kavita', 'noona-komf', 'noona-portal'],
+    );
+    assert.deepEqual(fetchCalls, [
+        '/api/Account/login',
+        '/api/Account/register',
+        '/api/Account/login',
+        '/api/Account/auth-keys',
+        '/api/plugin/authenticate',
+    ]);
+
+    const portalStart = started.find((entry) => entry.name === 'noona-portal');
+    const komfStart = started.find((entry) => entry.name === 'noona-komf');
+    assert.ok(portalStart.env.includes('KAVITA_API_KEY=managed-api-key'));
+    assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
+
+    const runtimeSnapshotPath = path.join('/srv/noona', 'warden', 'service-runtime-config.json');
+    assert.equal(memoryFs.files.has(path.normalize(runtimeSnapshotPath)), true);
+    const runtimeSnapshot = JSON.parse(memoryFs.files.get(path.normalize(runtimeSnapshotPath)));
+    assert.equal(runtimeSnapshot.services['noona-portal'].env.KAVITA_API_KEY, 'managed-api-key');
+    assert.equal(runtimeSnapshot.services['noona-komf'].env.KOMF_KAVITA_API_KEY, 'managed-api-key');
+    assert.ok(
+        warnings.some((message) =>
+            message.includes('local snapshot fallback while Vault settings warm up'),
+        ),
     );
 });
 
@@ -2871,6 +3072,14 @@ test('bootFull provisions managed Kavita API keys before starting dependent serv
                 };
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                };
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`);
         },
         hostDockerSockets: [],
@@ -2904,7 +3113,7 @@ test('bootFull provisions managed Kavita API keys before starting dependent serv
 
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=managed-api-key'));
     assert.ok(komfStart.env.includes('KOMF_KAVITA_API_KEY=managed-api-key'));
-    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/auth-keys']);
+    assert.deepEqual(fetchCalls, ['/api/Account/login', '/api/Account/auth-keys', '/api/plugin/authenticate']);
 });
 
 test('bootFull continues startup when managed Kavita credentials are missing during restore', async () => {
@@ -2987,7 +3196,7 @@ test('bootFull continues startup when managed Kavita credentials are missing dur
     );
 });
 
-test('bootFull recovers managed Portal Kavita API key from existing container env during restore', async () => {
+test('bootFull validates recovered managed Portal Kavita API keys from existing container env during restore', async () => {
     const fetchCalls = [];
     const dockerInstance = createStubDocker({
         listContainers: async () => [
@@ -3043,9 +3252,19 @@ test('bootFull recovers managed Portal Kavita API key from existing container en
                 },
             },
         },
-        fetchImpl: async () => {
-            fetchCalls.push('called');
-            throw new Error('Managed Kavita HTTP provisioning should not run when key is recovered from container env.');
+        fetchImpl: async (url) => {
+            const requestUrl = new URL(url);
+            fetchCalls.push(requestUrl.pathname);
+
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                };
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`);
         },
         dockerInstance,
         hostDockerSockets: [],
@@ -3077,7 +3296,7 @@ test('bootFull recovers managed Portal Kavita API key from existing container en
     const portalStart = started.find((entry) => entry.name === 'noona-portal');
     assert.ok(portalStart, 'Portal should be started');
     assert.ok(portalStart.env.includes('KAVITA_API_KEY=recovered-api-key'));
-    assert.deepEqual(fetchCalls, []);
+    assert.deepEqual(fetchCalls, ['/api/plugin/authenticate']);
 });
 
 test('bootFull reloads persisted service configs from noona_settings before starting managed services', async () => {
@@ -4521,6 +4740,56 @@ test('updateServiceConfig persists service runtime overrides to noona_settings',
     assert.match(update.$set.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test('updateServiceConfig falls back to the local runtime snapshot when Vault settings are still warming up', async () => {
+    const memoryFs = createMemoryFs();
+    const warmupError = new Error(
+        "All Vault endpoints failed: https://noona-vault:3005 (Unable to read Vault CA certificate at /srv/noona/vault/tls/ca-cert.pem: ENOENT: no such file or directory, open '/srv/noona/vault/tls/ca-cert.pem')",
+    );
+    warmupError.code = 'ENOENT';
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    port: 3000,
+                    internalPort: 3000,
+                    envConfig: [{key: 'WEBGUI_PORT'}],
+                },
+            },
+        },
+        settings: {
+            client: {
+                mongo: {
+                    update: async () => {
+                        throw warmupError;
+                    },
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const result = await warden.updateServiceConfig('noona-moon', {
+        env: {WEBGUI_PORT: '3010'},
+        hostPort: 3010,
+    });
+
+    assert.equal(result.saved, true);
+    assert.equal(result.restarted, false);
+    assert.equal(result.service.runtimeConfig.env.WEBGUI_PORT, '3010');
+    assert.equal(result.service.runtimeConfig.hostPort, 3010);
+
+    const runtimeSnapshotPath = path.join('/srv/noona', 'warden', 'service-runtime-config.json');
+    assert.equal(memoryFs.files.has(path.normalize(runtimeSnapshotPath)), true);
+    const runtimeSnapshot = JSON.parse(memoryFs.files.get(path.normalize(runtimeSnapshotPath)));
+    assert.equal(runtimeSnapshot.services['noona-moon'].env.WEBGUI_PORT, '3010');
+    assert.equal(runtimeSnapshot.services['noona-moon'].hostPort, 3010);
+});
+
 test('updateServiceConfig preserves masked sensitive values and rejects managed credential changes', async () => {
     const warden = buildWarden({
         services: {
@@ -4699,6 +4968,10 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
                         {key: 'KAVITA_API_KEY', sensitive: true},
                     ],
                 },
+                'noona-raven': {
+                    name: 'noona-raven',
+                    envConfig: [],
+                },
             },
         },
         settings: {
@@ -4751,8 +5024,9 @@ test('saveSetupConfig writes setup snapshot to disk and applies runtime env over
     assert.equal(result.snapshot.kavita.apiKey, 'kavita-api');
     assert.equal(typeof result.snapshot.savedAt, 'string');
     assert.ok(memoryFs.files.has(path.normalize(expectedPath)));
-    assert.ok(memoryFs.files.has(path.normalize(legacyRootPath)));
-    assert.ok(memoryFs.files.has(path.normalize(legacyPath)));
+    assert.equal(memoryFs.files.has(path.normalize(legacyRootPath)), false);
+    assert.equal(memoryFs.files.has(path.normalize(legacyPath)), false);
+    assert.deepEqual(result.mirroredPaths, []);
     assert.deepEqual(stopCalls, [{trackedOnly: false, remove: false}]);
     assert.deepEqual(startCalls, [{
         forceFull: true,
@@ -4830,6 +5104,10 @@ test('saveSetupConfig ignores legacy platform selections and keeps the derived s
                 'noona-portal': {
                     name: 'noona-portal',
                     envConfig: [{key: 'DISCORD_BOT_TOKEN'}],
+                },
+                'noona-raven': {
+                    name: 'noona-raven',
+                    envConfig: [],
                 },
             },
         },
@@ -5235,7 +5513,8 @@ test('saveSetupConfig rolls back persisted snapshot and runtime state when resta
     );
 });
 
-test('getSetupConfig falls back to the legacy root setup snapshot path when the new WardenM file is missing', () => {
+test('getSetupConfig migrates the legacy root setup snapshot path into the WardenM file', () => {
+    const canonicalPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const legacyRootPath = path.join('/srv/noona', 'noona-settings.json');
     const memoryFs = createMemoryFs({
         [legacyRootPath]: JSON.stringify({
@@ -5264,11 +5543,14 @@ test('getSetupConfig falls back to the legacy root setup snapshot path when the 
     const loadedSnapshot = warden.getSetupConfig();
 
     assert.equal(loadedSnapshot.exists, true);
-    assert.equal(loadedSnapshot.path, legacyRootPath);
-    assert.equal(loadedSnapshot.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
+    assert.equal(loadedSnapshot.path, canonicalPath);
+    assert.equal(loadedSnapshot.snapshot.discord.botToken, 'portal-token');
+    assert.equal(memoryFs.files.has(canonicalPath), true);
+    assert.equal(memoryFs.files.has(legacyRootPath), false);
 });
 
-test('getSetupConfig falls back to the legacy Warden snapshot path when newer setup files are missing', () => {
+test('getSetupConfig migrates the legacy Warden snapshot path into the WardenM file', () => {
+    const canonicalPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
     const legacyPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
     const memoryFs = createMemoryFs({
         [legacyPath]: JSON.stringify({
@@ -5297,8 +5579,65 @@ test('getSetupConfig falls back to the legacy Warden snapshot path when newer se
     const loadedSnapshot = warden.getSetupConfig();
 
     assert.equal(loadedSnapshot.exists, true);
-    assert.equal(loadedSnapshot.path, legacyPath);
-    assert.equal(loadedSnapshot.snapshot.values['noona-portal'].DISCORD_BOT_TOKEN, 'portal-token');
+    assert.equal(loadedSnapshot.path, canonicalPath);
+    assert.equal(loadedSnapshot.snapshot.discord.botToken, 'portal-token');
+    assert.equal(memoryFs.files.has(canonicalPath), true);
+    assert.equal(memoryFs.files.has(legacyPath), false);
+});
+
+test('getSetupConfig keeps the canonical WardenM snapshot and removes legacy duplicates when both exist', () => {
+    const canonicalPath = path.join('/srv/noona', 'wardenm', 'noona-settings.json');
+    const legacyRootPath = path.join('/srv/noona', 'noona-settings.json');
+    const legacyPath = path.join('/srv/noona', 'warden', 'setup-wizard-state.json');
+    const memoryFs = createMemoryFs({
+        [canonicalPath]: JSON.stringify({
+            version: 3,
+            storageRoot: '/srv/noona',
+            discord: {
+                botToken: 'canonical-token',
+            },
+        }),
+        [legacyRootPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            storageRoot: '/srv/noona',
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'legacy-root-token',
+                },
+            },
+        }),
+        [legacyPath]: JSON.stringify({
+            version: 2,
+            selected: ['noona-portal'],
+            storageRoot: '/srv/noona',
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'legacy-warden-token',
+                },
+            },
+        }),
+    });
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: '/srv/noona'},
+        services: {
+            addon: {},
+            core: {
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const loadedSnapshot = warden.getSetupConfig();
+
+    assert.equal(loadedSnapshot.exists, true);
+    assert.equal(loadedSnapshot.path, canonicalPath);
+    assert.equal(loadedSnapshot.snapshot.discord.botToken, 'canonical-token');
+    assert.equal(memoryFs.files.has(canonicalPath), true);
+    assert.equal(memoryFs.files.has(legacyRootPath), false);
+    assert.equal(memoryFs.files.has(legacyPath), false);
 });
 
 test('updateServiceConfig on noona-warden persists SERVER_IP and AUTO_UPDATES and rewrites host-facing URLs', async () => {

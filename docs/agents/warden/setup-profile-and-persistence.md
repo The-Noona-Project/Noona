@@ -74,6 +74,8 @@ Current derived rules:
 - Portal and Raven are always selected in a normal managed setup profile
 - managed Kavita adds `noona-kavita`
 - managed Komf adds `noona-komf`
+- when both managed Kavita and managed Komf are selected, install ordering still forces `noona-kavita` ahead of
+  `noona-komf`
 - `storageRoot` stays top-level setup metadata and is not mirrored into per-service runtime overrides
 - Kavita and Komf managed/external modes rewrite the correct downstream env fields
 - setup save and restore paths only persist derived env keys that belong to the editable runtime schema
@@ -82,18 +84,26 @@ If the public profile changes, update the derivation rules too.
 
 ## Snapshot Paths
 
-`createWarden.mjs` reads and writes the setup snapshot in multiple locations.
+`createWarden.mjs` keeps one canonical persisted setup snapshot and only reads legacy paths for migration.
 
 Canonical path:
 
 - `<NOONA_DATA_ROOT>/wardenm/noona-settings.json`
 
-Mirrors kept for compatibility:
+Legacy migration inputs:
 
 - `<NOONA_DATA_ROOT>/noona-settings.json`
 - `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json`
 
-Warden reads these in order and writes all of them on save.
+Warden reads in this order:
+
+1. `<NOONA_DATA_ROOT>/wardenm/noona-settings.json`
+2. `<NOONA_DATA_ROOT>/noona-settings.json`
+3. `<NOONA_DATA_ROOT>/warden/setup-wizard-state.json`
+
+If only a legacy file exists, Warden rewrites it into the canonical `wardenm` path and then best-effort deletes the
+old duplicate file(s). If the canonical file already exists, Warden keeps it and best-effort removes any leftover
+legacy duplicates.
 
 ## Runtime Config Snapshot
 
@@ -105,6 +115,13 @@ Path:
 
 This snapshot contains per-service env overrides and host-port overrides that survive restarts and help cold-boot
 recovery.
+
+Warm-up nuance:
+
+- Warden still writes this local snapshot when Vault-backed settings persistence is failing only because managed Vault
+  trust or bootstrap is still warming up
+- the in-memory runtime override stays authoritative for the current process, and the local file preserves it for the
+  next boot until the settings store is reachable again
 
 ## Runtime Config Restore Precedence
 

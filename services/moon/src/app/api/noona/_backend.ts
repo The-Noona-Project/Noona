@@ -90,6 +90,7 @@ const fetchFirstOk = async (
         onSuccess?: (baseUrl: string) => void;
         acceptServerErrorResponse?: boolean;
         failureHint?: string;
+        failureHintMode?: "always" | "transport-only";
     } = {},
 ): Promise<Response> => {
     const orderedBaseUrls = prioritizeBaseUrls(baseUrls, options.preferredBaseUrl ?? null);
@@ -135,6 +136,7 @@ const fetchFirstOk = async (
 
     const message = buildBackendFailureMessage(path, errors, {
         guidance: options.failureHint,
+        guidanceMode: options.failureHintMode === "transport-only" ? "transport-only" : undefined,
     });
     logError(`[Moon API] ${message}`);
     throw new Error(message);
@@ -175,6 +177,7 @@ export const sageJson = async (
         {
             preferredBaseUrl: preferredSageBaseUrl,
             failureHint: SAGE_BACKEND_FAILURE_GUIDANCE,
+            failureHintMode: "transport-only",
             onSuccess: (baseUrl) => {
                 preferredSageBaseUrl = baseUrl;
             },
@@ -199,6 +202,7 @@ export const sageResponse = async (
             preferredBaseUrl: preferredSageBaseUrl,
             acceptServerErrorResponse: options.acceptServerErrorResponse === true,
             failureHint: SAGE_BACKEND_FAILURE_GUIDANCE,
+            failureHintMode: "transport-only",
             onSuccess: (baseUrl) => {
                 preferredSageBaseUrl = baseUrl;
             },

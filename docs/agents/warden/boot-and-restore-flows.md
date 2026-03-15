@@ -9,7 +9,8 @@
   `noona-mongo`, `noona-redis`, `noona-vault`
 - Managed network placement is fixed to:
   `noona-mongo` and `noona-redis` on `noona-data-network` only,
-  `noona-vault` and `noona-portal` on both `noona-network` and `noona-data-network`
+  `noona-vault` on both `noona-network` and `noona-data-network`,
+  `noona-portal` on `noona-network` only and reaching shared data through Vault
 - Default full boot order is:
   `noona-mongo -> noona-redis -> noona-vault -> noona-sage -> noona-moon -> noona-kavita -> noona-raven -> noona-komf -> noona-portal -> noona-oracle`
 
@@ -24,6 +25,12 @@
 5. if not completed, check whether installed managed services imply a restore path
 6. boot full when setup is complete, `DEBUG=super`, or installed managed services exist
 7. otherwise boot minimal
+
+Containerized attach behavior is now strict:
+
+- if Warden is expected to be running as `noona-warden` inside Docker and that container cannot be found, bootstrap
+  fails with a self-attach error instead of silently skipping network attachment
+- host-process behavior only applies when `WARDEN_RUN_OUTSIDE_DOCKER=true`
 
 ## Full Boot Staging
 
@@ -40,6 +47,10 @@ When persisted runtime config has not finished loading yet:
 
 This staging exists so Vault-backed config and managed Kavita access are available before Portal and Komf are recreated.
 
+`startWardenServer.mjs` exposes `/health` before `warden.init()` completes, but the payload now carries `ready`,
+`startedAt`, optional `initializedAt`, and any fatal init error. Sage and Moon use that distinction to tolerate normal
+cold-start races without treating the process as fully ready too early.
+
 ## Vault TLS During Boot
 
 - When Warden is itself running inside a Linux container, it verifies that `NOONA_DATA_ROOT` is bind-mounted into the
@@ -55,8 +66,11 @@ This staging exists so Vault-backed config and managed Kavita access are availab
 - Boot and install flows treat `noona-kavita` specially.
 - After managed Kavita starts, Warden can provision or recover its API key and inject that into dependent services such
   as Portal and Komf.
-- During restore boot, Warden prefers login-only recovery and existing container env values before attempting more
-  invasive provisioning.
+- During restore boot, Warden prefers validated existing keys first:
+  recovered Portal or Komf container keys become provisioning candidates, but Warden does not write them back into
+  runtime env until Kavita accepts them through `api/plugin/authenticate`.
+- `noona-komf` explicitly depends on `noona-kavita` when managed Kavita is selected so Komf does not start before its
+  validated managed key exists.
 
 ## Managed Log Folders During Boot
 

@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
     __testables__,
+    buildTrustedFetchOptionsForUrl,
     ensureTrustedCaForUrl,
+    loadTrustedCaBundleForUrl,
     splitPemCertificates,
 } from '../etc/tlsTrust.mjs';
 
@@ -58,4 +60,71 @@ test('ensureTrustedCaForUrl loads the configured CA exactly once', () => {
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].length, 1);
+});
+
+test('loadTrustedCaBundleForUrl returns the parsed PEM bundle for HTTPS endpoints', () => {
+    __testables__.trustedCaCache.clear();
+
+    const bundle = loadTrustedCaBundleForUrl('https://noona-vault:3005', {
+        env: {VAULT_CA_CERT_PATH: '/srv/noona/vault/tls/ca-cert.pem'},
+        fsModule: {
+            readFileSync: () => SAMPLE_PEM,
+        },
+    });
+
+    assert.equal(bundle.caPath, '/srv/noona/vault/tls/ca-cert.pem');
+    assert.equal(bundle.certificates.length, 1);
+    assert.match(bundle.pemBundle, /BEGIN CERTIFICATE/);
+});
+
+test('buildTrustedFetchOptionsForUrl falls back to a per-request agent when runtime CA mutation is unavailable', () => {
+    __testables__.trustedCaCache.clear();
+
+    const trust = buildTrustedFetchOptionsForUrl('https://noona-vault:3005', {
+        env: {VAULT_CA_CERT_PATH: '/srv/noona/vault/tls/ca-cert.pem'},
+        fsModule: {
+            readFileSync: () => SAMPLE_PEM,
+        },
+        tlsModule: {},
+        agentFactory: ({ca, caPath, certificates}) => ({
+            kind: 'agent',
+            ca,
+            caPath,
+            certificates,
+        }),
+    });
+
+    assert.equal(trust.mode, 'agent');
+    assert.deepEqual(trust.fetchOptions.agent, {
+        kind: 'agent',
+        ca: SAMPLE_PEM.trimEnd() + '\n',
+        caPath: '/srv/noona/vault/tls/ca-cert.pem',
+        certificates: [SAMPLE_PEM.trimEnd() + '\n'],
+    });
+});
+
+test('buildTrustedFetchOptionsForUrl can build a dispatcher-style fetch override when provided', () => {
+    __testables__.trustedCaCache.clear();
+
+    const trust = buildTrustedFetchOptionsForUrl('https://noona-vault:3005', {
+        env: {VAULT_CA_CERT_PATH: '/srv/noona/vault/tls/ca-cert.pem'},
+        fsModule: {
+            readFileSync: () => SAMPLE_PEM,
+        },
+        tlsModule: {},
+        dispatcherFactory: ({ca, caPath}) => ({
+            kind: 'dispatcher',
+            connect: {ca},
+            caPath,
+        }),
+    });
+
+    assert.equal(trust.mode, 'dispatcher');
+    assert.deepEqual(trust.fetchOptions.dispatcher, {
+        kind: 'dispatcher',
+        connect: {
+            ca: SAMPLE_PEM.trimEnd() + '\n',
+        },
+        caPath: '/srv/noona/vault/tls/ca-cert.pem',
+    });
 });

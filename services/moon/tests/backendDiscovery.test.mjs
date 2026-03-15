@@ -28,6 +28,7 @@ test("buildBackendFailureMessage keeps the Sage proxy failure actionable and tok
         "http://127.0.0.1:3004 (ECONNREFUSED)",
     ], {
         guidance: SAGE_BACKEND_FAILURE_GUIDANCE,
+        guidanceMode: "transport-only",
     });
 
     assert.match(message, /^All backends failed for \/api\/settings\/services\/noona-moon\/config:/);
@@ -35,4 +36,18 @@ test("buildBackendFailureMessage keeps the Sage proxy failure actionable and tok
     assert.match(message, /share noona-network/i);
     assert.match(message, /set noona-moon SAGE_BASE_URL/i);
     assert.doesNotMatch(message, /Authorization|Bearer|token=/i);
+});
+
+test("buildBackendFailureMessage omits unreachable-Sage guidance after any backend returned HTTP 5xx", () => {
+    const message = buildBackendFailureMessage("/api/setup/services/noona-kavita/service-key", [
+        "http://noona-sage:3004 (HTTP 502: Unable to provision the managed Kavita API key.)",
+        "http://127.0.0.1:3004 (fetch failed)",
+    ], {
+        guidance: SAGE_BACKEND_FAILURE_GUIDANCE,
+        guidanceMode: "transport-only",
+    });
+
+    assert.match(message, /HTTP 502: Unable to provision the managed Kavita API key\./);
+    assert.doesNotMatch(message, /Moon could not reach Sage/i);
+    assert.doesNotMatch(message, /share noona-network/i);
 });

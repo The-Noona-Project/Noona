@@ -32,6 +32,8 @@ Portal actions.
 - Managed Sage-to-Vault traffic is expected to use internal HTTPS plus explicit CA trust material.
   Packet/settings calls should fail closed on trust errors, while wizard-state storage may still keep its local
   fallback for first-run continuity.
+  Managed Kavita setup is the exception on the setup surface: the optional stored-settings read or mirror may defer
+  during Vault CA warm-up so provisioning can still complete.
 - Sage seeds several admin settings in Vault on first successful admin persistence.
   Naming templates, onboarding message, default permissions, debug, worker settings, and VPN settings all originate in
   [../../../services/sage/app/createSageApp.mjs](../../../services/sage/app/createSageApp.mjs).

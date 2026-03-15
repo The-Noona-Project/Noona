@@ -19,9 +19,20 @@ recommendations, and the day-to-day admin UI.
 ## What Moon Does
 
 - guides admins through first-run setup
+- retries transient Warden-backed setup catalog failures during first boot so the wizard can survive normal
+  control-plane
+  warm-up instead of failing on the first `502`
 - loads uploaded Noona setup JSON files into the wizard for review before admins explicitly save or install changes
 - keeps masked setup secrets safe for save or download round-trips, while live setup actions can still ask admins to
   re-enter the managed Kavita password when only the masked placeholder is available
+- saves the setup snapshot before direct install so Warden can derive the managed service plan from persisted setup
+  state
+- keeps the managed Kavita and Discord live preflight on the summary path, where the running services are available for
+  browser-facing validation and handoff
+- opens the setup summary with one-shot warnings when those post-install live sync calls fail after the stack is already
+  installed, instead of trapping admins on the install tab
+- treats Sage `HTTP 5xx` responses as real upstream failures in setup and settings flows instead of always collapsing
+  them into a generic "Moon could not reach Sage" connectivity warning
 - keeps `storageRoot` as top-level setup metadata instead of mirroring raw `NOONA_DATA_ROOT` overrides into saved setup
   JSON
 - provides the main settings and operations UI

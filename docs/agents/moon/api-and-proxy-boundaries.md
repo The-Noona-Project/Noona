@@ -90,6 +90,9 @@ Important behavior:
 - `jsonError(message, status)` defaults to `502`.
 - When Sage candidates are exhausted, Moon now tells operators to check `noona-sage` health and `noona-network`, and
   points custom deployments at `SAGE_BASE_URL` instead of only listing raw fallback URLs.
+- Moon only adds that unreachable-Sage guidance when every candidate failed at the transport or discovery layer.
+  If any Sage backend returned an HTTP response such as `502`, Moon now preserves that upstream failure summary without
+  claiming Sage was unreachable.
 - Some routes intentionally raise timeouts:
   factory reset currently uses a five-minute Sage timeout window.
 - Portal metadata routes can opt into returning `5xx` payloads directly so the UI can show the backend's structured

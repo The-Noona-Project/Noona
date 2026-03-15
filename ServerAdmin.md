@@ -60,12 +60,16 @@ before running the script.
 - Warden health: `http://localhost:4001/health`
 - Moon: `http://localhost:3000`
 - Mongo and Redis are intentionally not published on host ports
-- Vault is an internal service and is reached by the rest of the stack over Warden-managed HTTPS
+- Vault is an internal service and is reached by the rest of the stack over Warden-managed HTTPS on `noona-network`
+- `noona-vault` is the only managed bridge onto the private `noona-data-network`
 - If you override Portal service config, keep `PORTAL_REDIS_NAMESPACE` and `PORTAL_DM_QUEUE_NAMESPACE` under `portal:`
   so Vault will authorize those Redis-backed Portal keys
 
 Warden brings up the bootstrap services that Moon needs for setup. If Moon does not appear after Warden starts, check
 `docker ps` and `docker logs noona-warden`.
+Warden's health payload now includes readiness metadata.
+If `/health` responds with `ready: false`, the API process is up but bootstrap is still in progress, so brief setup
+catalog or install-preview retries are expected during first boot.
 
 ## 3. Complete First-Run Setup In Moon
 
@@ -86,6 +90,12 @@ the storage path and any secrets, then use the explicit save or install actions 
 Saved setup JSON keeps `storageRoot` as top-level setup metadata.
 Masked secrets are still safe for setup save and download round-trips, but managed Kavita provisioning may ask you to
 re-enter the Kavita admin password before continuing when only the masked placeholder is available.
+Moon saves the setup snapshot before direct install so Warden can derive and apply the managed service plan from that
+persisted profile.
+The managed Kavita plus Discord live preflight stays on the setup summary path, where those running services are
+available for browser-facing validation and handoff.
+If those live post-install sync calls fail after the stack is already installed, Moon now opens the summary anyway and
+shows one-shot warnings there instead of trapping you on the install tab.
 Warden derives the managed service storage wiring internally instead of persisting raw `NOONA_DATA_ROOT` overrides per
 service.
 
@@ -141,14 +151,25 @@ Important paths under the storage root:
 - `kavita/`: managed Kavita config
 - `komf/`: managed Komf config
 
+If you still have older `noona-settings.json` or `warden/setup-wizard-state.json` files from an earlier install,
+Warden migrates them into `wardenm/noona-settings.json` and removes the duplicates when it can.
+
 During first-run, before Warden has created `vault/tls/ca-cert.pem`, Sage's setup wizard state may temporarily stay on
 its local fallback cache instead of writing through Vault.
 Once Vault is installed and that CA file exists, wizard-state persistence resumes over the managed internal HTTPS path.
+Managed Kavita API key provisioning can still continue during this warm-up window, but Sage may defer mirroring the
+managed service-account snapshot into Vault-backed settings until Vault trust is ready.
+Warden also keeps writing `warden/service-runtime-config.json` during that window, so managed runtime env changes can
+survive the warm-up even when the Vault-backed settings write has to wait.
+Other Vault-backed service traffic now stays HTTPS-only as well; packet clients use the managed CA bundle directly and
+do not fall back to plain HTTP during this warm-up window.
 
 If Warden runs in a Linux container, mount `NOONA_DATA_ROOT` into that container at the same absolute path as the host
 so setup snapshots and runtime files stay visible on the host.
 If that same-path bind mount is missing, Warden now blocks Vault startup with an explicit `NOONA_DATA_ROOT` bind-mount
 error instead of letting Vault fail later with missing TLS files.
+Likewise, if Warden is expected to be running as the `noona-warden` container on `noona-network` and cannot find that
+container during bootstrap, it now treats that as a real startup error instead of silently skipping the attach.
 
 ## Updates, Restarts, Backups, And Factory Reset
 
@@ -205,12 +226,16 @@ Moon does not load:
 
 - check `docker ps`
 - confirm Warden health at `http://localhost:4001/health`
+- if Warden responds but `ready: false`, wait for bootstrap to finish or inspect `docker logs noona-warden` for the
+  first failing startup dependency
 - inspect `docker logs noona-warden`
 
 Moon settings or service links fail with a Sage backend error:
 
 - confirm `noona-sage` is running and healthy
 - confirm `noona-moon` and `noona-sage` are both attached to `noona-network`
+- if Moon shows a Sage `HTTP 5xx` summary, treat it as a reachable Sage or upstream failure rather than a network-path
+  issue and inspect the Sage logs before changing Moon `SAGE_BASE_URL`
 - if Moon is running in a custom or split topology, open `Admin -> System -> Overview`, set Moon `SAGE_BASE_URL` to a
   reachable Sage URL, then save and restart Moon
 
@@ -241,6 +266,8 @@ Downloads, Kavita, or metadata flows fail after a reboot:
 
 - confirm the storage root persisted across the reboot
 - check service health and logs from Moon or Warden before changing settings by hand
+- if managed Kavita is enabled, expect Portal and Komf to reuse only validated Kavita plugin keys; stale recovered keys
+  will now be replaced during setup or restore instead of being silently reused
 - Raven now keeps fractional chapters such as `101.1` and `101.5` as separate chapters during queueing and sync, so
   seeing those alongside `101` is expected behavior rather than a duplicate-collapse bug
 

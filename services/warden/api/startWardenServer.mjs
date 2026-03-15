@@ -28,6 +28,17 @@ const resolveLogger = (overrides = {}) => ({
     ...overrides,
 });
 
+const buildReadinessPayload = (readinessState = {}) => {
+    const ready = readinessState?.ready === true;
+    return {
+        status: ready ? 'ok' : 'starting',
+        ready,
+        startedAt: readinessState?.startedAt ?? null,
+        initializedAt: readinessState?.initializedAt ?? null,
+        error: readinessState?.error ?? null,
+    };
+};
+
 const sendJson = (res, statusCode, payload) => {
     res.writeHead(statusCode, {
         ...DEFAULT_HEADERS,
@@ -508,6 +519,7 @@ export const startWardenServer = ({
                                       port: portOption,
                                       host,
                                       env = process.env,
+                                      readinessState = {},
                                       logger: loggerOverrides,
                                   } = {}) => {
     if (!warden) {
@@ -545,7 +557,7 @@ export const startWardenServer = ({
         }
 
         if (isPublicRoute(req.method, url.pathname)) {
-            sendJson(res, 200, {status: 'ok'});
+            sendJson(res, 200, buildReadinessPayload(readinessState));
             return;
         }
 

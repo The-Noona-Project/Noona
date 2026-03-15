@@ -3,11 +3,13 @@
  * Related files:
  * - app/portalRuntime.mjs
  * - tests/vaultClient.test.mjs
- * Times this file has been edited: 6
+ * Times this file has been edited: 7
  */
 
+import nodeFetch from 'node-fetch';
+
 import {errMSG, log} from '../../../utilities/etc/logger.mjs';
-import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs';
+import {buildTrustedFetchOptionsForUrl} from '../../../utilities/etc/tlsTrust.mjs';
 
 const DEFAULT_TIMEOUT = 10000;
 const DEFAULT_RECOMMENDATIONS_COLLECTION = 'portal_recommendations';
@@ -81,9 +83,9 @@ export const createVaultClient = ({
                                       baseUrl,
                                       token,
                                       timeoutMs = DEFAULT_TIMEOUT,
-                                      fetchImpl = fetch,
+                                      fetchImpl = nodeFetch,
                                       env = process.env,
-                                      trustVaultUrl = ensureTrustedCaForUrl,
+                                      trustVaultUrl = buildTrustedFetchOptionsForUrl,
                                   } = {}) => {
     if (!baseUrl) {
         throw new Error('Vault base URL is required.');
@@ -101,7 +103,11 @@ export const createVaultClient = ({
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const {controller, cleanup} = createAbortController(timeoutMs);
             try {
-                trustVaultUrl(url, {env});
+                const trustResult = trustVaultUrl(url, {env}) ?? null;
+                const trustedFetchOptions =
+                    trustResult?.fetchOptions && typeof trustResult.fetchOptions === 'object'
+                        ? trustResult.fetchOptions
+                        : {};
                 const response = await fetchImpl(url, {
                     method,
                     headers: {
@@ -112,6 +118,7 @@ export const createVaultClient = ({
                     },
                     body: body == null ? undefined : JSON.stringify(body),
                     signal: controller.signal,
+                    ...trustedFetchOptions,
                 });
 
                 const payload = await parseResponse(response);

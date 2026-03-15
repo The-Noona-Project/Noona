@@ -476,8 +476,7 @@ export function registerServiceManagementApi(context = {}) {
         );
     };
 
-    const recoverManagedKavitaEnvFromContainer = async (name, {
-        fallbackBaseUrl,
+    const recoverManagedKavitaCandidateFromContainer = async (name, {
         dockerClient = null,
     } = {}) => {
         if (name !== MANAGED_KAVITA_PORTAL_SERVICE_NAME && name !== MANAGED_KAVITA_KOMF_SERVICE_NAME) {
@@ -549,18 +548,11 @@ export function registerServiceManagementApi(context = {}) {
                 continue;
             }
 
-            const recoveredBaseUrlRaw = name === MANAGED_KAVITA_PORTAL_SERVICE_NAME
-                ? envMap.KAVITA_BASE_URL
-                : envMap.KOMF_KAVITA_BASE_URI;
-            const recoveredBaseUrl = normalizeString(recoveredBaseUrlRaw) || normalizeString(fallbackBaseUrl);
-            const nextEnv = buildManagedKavitaServiceEnv(name, {
-                baseUrl: recoveredBaseUrl,
-                apiKey: recoveredApiKey,
-            });
-
-            if (nextEnv) {
-                return nextEnv;
-            }
+            return {
+                key: recoveredApiKey,
+                source: 'recovered-container',
+                pluginName: name,
+            };
         }
 
         return null;
@@ -585,6 +577,7 @@ export function registerServiceManagementApi(context = {}) {
         const installOverridesByName =
             options?.installOverridesByName instanceof Map ? options.installOverridesByName : null;
         const targetServices = Array.isArray(options?.targetServices) ? options.targetServices : [];
+        const candidateApiKeys = [];
         let configuredServices = Array.from(
             new Set(
                 targetServices.filter((candidate) =>
@@ -620,45 +613,15 @@ export function registerServiceManagementApi(context = {}) {
             }
 
             for (const targetName of configuredServices) {
-                const recoveredEnv = await recoverManagedKavitaEnvFromContainer(targetName, {
-                    fallbackBaseUrl: baseUrl,
+                const recoveredCandidate = await recoverManagedKavitaCandidateFromContainer(targetName, {
                     dockerClient,
                 });
-                if (!recoveredEnv) {
+                if (!recoveredCandidate) {
                     continue;
                 }
 
-                await mergeManagedServiceRuntimeEnv(targetName, recoveredEnv, {installOverridesByName});
-                appendHistoryEntry(targetName, {
-                    type: 'status',
-                    status: 'configured',
-                    message: 'Recovered managed Kavita API key from existing container',
-                    detail: normalizeString(
-                        targetName === MANAGED_KAVITA_PORTAL_SERVICE_NAME
-                            ? recoveredEnv.KAVITA_BASE_URL
-                            : recoveredEnv.KOMF_KAVITA_BASE_URI,
-                    ) || normalizeString(baseUrl),
-                    clearError: true,
-                });
+                candidateApiKeys.push(recoveredCandidate);
             }
-
-            configuredServices = Array.from(
-                new Set(
-                    targetServices.filter((candidate) =>
-                        serviceNeedsManagedKavitaProvisioning(candidate, {
-                            envOverrides: installOverridesByName?.get(candidate) || null,
-                        }),
-                    ),
-                ),
-            );
-        }
-
-        if (configuredServices.length === 0) {
-            return {
-                configuredServices: [],
-                skipped: false,
-                reason: 'managed-kavita-targets-prepared',
-            };
         }
 
         appendHistoryEntry(MANAGED_KAVITA_SERVICE_NAME, {
@@ -702,6 +665,7 @@ export function registerServiceManagementApi(context = {}) {
             const provisioning = await client.ensureServiceApiKey({
                 account,
                 allowRegister,
+                candidateApiKeys,
             });
             const normalizedBaseUrl = client.getBaseUrl().replace(/\/$/, '');
             const managedApiKey = normalizeString(provisioning?.apiKey);
@@ -736,7 +700,10 @@ export function registerServiceManagementApi(context = {}) {
                 appendHistoryEntry(targetName, {
                     type: 'status',
                     status: 'configured',
-                    message: 'Managed Kavita API key prepared for startup',
+                    message:
+                        provisioning?.mode === 'recovered-container'
+                            ? 'Recovered managed Kavita API key from existing container'
+                            : 'Managed Kavita API key prepared for startup',
                     detail: normalizedBaseUrl,
                     clearError: true,
                 });
@@ -1475,6 +1442,13 @@ export function registerServiceManagementApi(context = {}) {
             const dependencies = [...(dependencyGraph.get(name) || [])];
             if (
                 name === MANAGED_KAVITA_PORTAL_SERVICE_NAME &&
+                requestedNames.has(MANAGED_KAVITA_SERVICE_NAME) &&
+                !dependencies.includes(MANAGED_KAVITA_SERVICE_NAME)
+            ) {
+                dependencies.push(MANAGED_KAVITA_SERVICE_NAME);
+            }
+            if (
+                name === MANAGED_KAVITA_KOMF_SERVICE_NAME &&
                 requestedNames.has(MANAGED_KAVITA_SERVICE_NAME) &&
                 !dependencies.includes(MANAGED_KAVITA_SERVICE_NAME)
             ) {

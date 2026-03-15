@@ -63,6 +63,9 @@
 - If `VAULT_CA_CERT_PATH` is missing or unreadable before managed Vault TLS exists, the wizard-state client skips the
   Vault fetch, logs the trust fallback once, and keeps using the local snapshot until
   `<NOONA_DATA_ROOT>/vault/tls/ca-cert.pem` is ready.
+- That fallback is intentionally narrower than the general Vault packet client.
+  Wizard state may wait for managed TLS, but regular Vault packets still stay HTTPS-only and use per-request CA trust
+  when the runtime cannot update global defaults dynamically.
 - This exception is only for wizard-state continuity.
   Packet/settings Vault clients should still fail closed on real trust errors after install.
 - `createWizardStatePublisher()` maps service names into wizard steps so install progress can update the wizard

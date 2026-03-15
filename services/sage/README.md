@@ -26,6 +26,8 @@ Raven-facing browser actions.
 - talks to Vault through the stack's trusted internal HTTPS path in managed installs
 - keeps wizard-state on a local fallback until Warden has created the managed Vault CA bundle, then resumes Vault-backed
   persistence
+- keeps managed Kavita API-key provisioning running during that same Vault TLS warm-up window, even if Sage must defer
+  mirroring the stored service-account snapshot into Vault-backed settings
 - preserves Raven's real queue status and message for Moon instead of flattening every queue response into a generic
   success
 - normalizes backend failures into UI-friendly responses

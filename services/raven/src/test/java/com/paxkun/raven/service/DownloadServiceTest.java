@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/download/QueueDownloadResult.java
  * - src/main/java/com/paxkun/raven/service/download/SearchTitle.java
  * - src/main/java/com/paxkun/raven/service/download/SourceFinder.java
- * Times this file has been edited: 15
+ * Times this file has been edited: 16
  */
 package com.paxkun.raven.service;
 
@@ -38,9 +38,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
 
 /**
  * Covers download service behavior.
@@ -120,6 +120,13 @@ class DownloadServiceTest {
                 null,
                 "idle"
         ));
+    }
+
+    @Test
+    void getActiveWorkersHandlesImmutablePersistedTaskLists() {
+        when(vaultService.findMany(eq("raven_download_tasks"), anyMap())).thenReturn(List.of());
+
+        assertThat(downloadService.getActiveWorkers()).isEmpty();
     }
 
     @Test

@@ -4,6 +4,9 @@
 
 - The setup wizard loads four things in parallel:
   the installable service catalog, storage layout, persisted setup snapshot, and setup status.
+- The catalog fetch is cold-start tolerant.
+  Moon retries transient `502`, `503`, and `504` responses from `/api/noona/services` for a short bounded window so
+  Warden warm-up does not strand the wizard on the first load.
 - Moon hydrates its local wizard state from the persisted v3 snapshot through
   [../../../services/moon/src/components/noona/setupProfile.mjs](../../../services/moon/src/components/noona/setupProfile.mjs).
 - The flow stays task-based:
@@ -25,6 +28,11 @@
 - `openSetupSummary()` in the wizard does three critical things before navigation:
   provision the managed Kavita service key when needed, save Discord OAuth config with retries, and persist the latest
   setup snapshot.
+- Once install is already complete, those live Kavita or Discord sync calls downgrade to one-shot summary warnings.
+  Snapshot persistence still blocks, but post-install sync failures no longer strand the user on the install tab.
+- `install()` does not run the live Kavita or Discord preflight.
+  It validates the form, persists the final snapshot, and lets Warden handle managed Kavita provisioning during the
+  install lifecycle after `noona-kavita` is running.
 - The summary page loads live services, persisted config, auth status, and setup status together.
 - Discord OAuth on the summary page has two Moon-facing modes:
   `test` to validate the callback path and `bootstrap` to create the first admin.

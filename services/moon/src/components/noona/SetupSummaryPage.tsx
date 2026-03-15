@@ -4,6 +4,7 @@ import {useEffect, useMemo, useState} from "react";
 import {useRouter, useSearchParams} from "next/navigation";
 import {Badge, Button, Card, Column, Heading, Input, Line, Row, Spinner, Text} from "@once-ui-system/core";
 import {deriveSetupProfileSelection, shouldShowSetupDebugDetails} from "./setupProfile.mjs";
+import {consumeSetupSummarySession} from "./setupSummarySession.mjs";
 
 type ServiceEntry = {
     name?: string | null;
@@ -101,6 +102,7 @@ export function SetupSummaryPage() {
     const [finalizing, setFinalizing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [message, setMessage] = useState<string | null>(null);
+    const [summaryWarnings, setSummaryWarnings] = useState<string[]>([]);
 
     const showDebug = shouldShowSetupDebugDetails(debugEnabled);
     const authoritativeSelected = selected.length > 0 ? selected : querySelected;
@@ -134,6 +136,7 @@ export function SetupSummaryPage() {
             setLoading(true);
             setError(null);
             setReturnTo(`${window.location.pathname}${window.location.search}`);
+            setSummaryWarnings(consumeSetupSummarySession()?.warnings ?? []);
 
             try {
                 const [servicesRes, configRes, authRes, setupConfigRes, statusRes] = await Promise.all([
@@ -297,6 +300,24 @@ export function SetupSummaryPage() {
                         <Column gap="16">
                             {error && <Text onBackground="danger-strong">{error}</Text>}
                             {message && <Text onBackground="neutral-weak">{message}</Text>}
+                            {summaryWarnings.length > 0 && (
+                                <Card fillWidth background="surface" border="warning-alpha-weak" padding="m" radius="l">
+                                    <Column gap="8">
+                                        <Badge background="warning-alpha-weak" onBackground="warning-strong">
+                                            Setup warnings
+                                        </Badge>
+                                        {summaryWarnings.map((warning) => (
+                                            <Text
+                                                key={warning}
+                                                onBackground="warning-strong"
+                                                variant="body-default-xs"
+                                            >
+                                                {warning}
+                                            </Text>
+                                        ))}
+                                    </Column>
+                                </Card>
+                            )}
 
                             <Card fillWidth background="surface" border="neutral-alpha-weak" padding="m" radius="l">
                                 <Column gap="12">

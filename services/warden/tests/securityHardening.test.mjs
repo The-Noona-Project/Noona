@@ -40,12 +40,15 @@ test('managed Vault and data services use isolated network attachments at runtim
     await warden.restartService('noona-vault');
     await warden.restartService('noona-mongo');
     await warden.restartService('noona-redis');
+    await warden.restartService('noona-portal');
 
     const vault = startedServices.find((service) => service.name === 'noona-vault');
     const mongo = startedServices.find((service) => service.name === 'noona-mongo');
     const redis = startedServices.find((service) => service.name === 'noona-redis');
+    const portal = startedServices.find((service) => service.name === 'noona-portal');
 
     assert.deepEqual(vault.networks, ['noona-network', 'noona-data-network']);
     assert.deepEqual(mongo.networks, ['noona-data-network']);
     assert.deepEqual(redis.networks, ['noona-data-network']);
+    assert.deepEqual(portal.networks, ['noona-network']);
 });

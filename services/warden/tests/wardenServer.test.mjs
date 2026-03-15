@@ -52,6 +52,76 @@ const wardenFetch = (baseUrl, path, options = {}, token = SAGE_TOKEN) => fetch(`
     },
 });
 
+test('GET /health reports readiness metadata before init completes', async (t) => {
+    const readinessState = {
+        ready: false,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: null,
+        error: null,
+    };
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server} = startWardenServer({
+        warden,
+        env: TEST_ENV,
+        port: 0,
+        readinessState,
+    });
+
+    await once(server, 'listening');
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        status: 'starting',
+        ready: false,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: null,
+        error: null,
+    });
+});
+
+test('GET /health reports ready after bootstrap completes', async (t) => {
+    const readinessState = {
+        ready: true,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: '2026-03-14T00:00:05.000Z',
+        error: null,
+    };
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server} = startWardenServer({
+        warden,
+        env: TEST_ENV,
+        port: 0,
+        readinessState,
+    });
+
+    await once(server, 'listening');
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        status: 'ok',
+        ready: true,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: '2026-03-14T00:00:05.000Z',
+        error: null,
+    });
+});
+
 test('GET /api/services returns installable services by default', async (t) => {
     const calls = [];
     const warden = {

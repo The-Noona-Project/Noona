@@ -4,9 +4,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    pullImageIfNeeded,
-    normalizeDockerProgressEvent,
+    attachSelfToNetwork,
     formatDockerProgressMessage,
+    isWardenHostProcessMode,
+    normalizeDockerProgressEvent,
+    pullImageIfNeeded,
     runContainerWithLogs,
     waitForContainerHealthy,
 } from '../docker/dockerUtilties.mjs';
@@ -34,6 +36,61 @@ test('normalizeDockerProgressEvent preserves layer metadata and formats message'
 test('formatDockerProgressMessage omits empty parts', () => {
     const message = formatDockerProgressMessage({ layerId: 'layer-b', status: 'Waiting' });
     assert.equal(message, '[layer-b] Waiting');
+});
+
+test('isWardenHostProcessMode only enables explicit host-process configuration', () => {
+    assert.equal(isWardenHostProcessMode({WARDEN_RUN_OUTSIDE_DOCKER: 'true'}), true);
+    assert.equal(isWardenHostProcessMode({WARDEN_RUN_OUTSIDE_DOCKER: '1'}), true);
+    assert.equal(isWardenHostProcessMode({WARDEN_RUN_OUTSIDE_DOCKER: 'false'}), false);
+    assert.equal(isWardenHostProcessMode({}), false);
+});
+
+test('attachSelfToNetwork throws when containerized Warden cannot find its own container', async () => {
+    const dockerInstance = {
+        getContainer() {
+            return {
+                async inspect() {
+                    const error = new Error('missing');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            };
+        },
+    };
+
+    await assert.rejects(
+        attachSelfToNetwork(dockerInstance, 'noona-network', {
+            env: {
+                HOSTNAME: 'missing-warden',
+                SERVICE_NAME: 'noona-warden',
+            },
+        }),
+        /WARDEN_RUN_OUTSIDE_DOCKER=true/,
+    );
+});
+
+test('attachSelfToNetwork skips self-attach when host-process mode is explicit', async () => {
+    const dockerInstance = {
+        getContainer() {
+            return {
+                async inspect() {
+                    const error = new Error('missing');
+                    error.statusCode = 404;
+                    throw error;
+                },
+            };
+        },
+    };
+
+    await assert.doesNotReject(
+        attachSelfToNetwork(dockerInstance, 'noona-network', {
+            env: {
+                HOSTNAME: 'missing-warden',
+                SERVICE_NAME: 'noona-warden',
+                WARDEN_RUN_OUTSIDE_DOCKER: 'true',
+            },
+        }),
+    );
 });
 
 test('pullImageIfNeeded emits layer-aware progress payloads', async () => {

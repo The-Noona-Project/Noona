@@ -13,7 +13,13 @@ export function bootstrapWarden({
 } = {}) {
     const warden = createWardenImpl();
     const apiPort = Number.parseInt(env.WARDEN_API_PORT ?? '4001', 10);
-    const { server: apiServer } = startWardenServerImpl({ warden, port: apiPort });
+    const readinessState = {
+        ready: false,
+        startedAt: new Date().toISOString(),
+        initializedAt: null,
+        error: null,
+    };
+    const {server: apiServer} = startWardenServerImpl({warden, port: apiPort, readinessState});
 
     const closeApiServer = () => {
         if (apiServer?.listening) {
@@ -37,6 +43,8 @@ export function bootstrapWarden({
 
     const handleFatalError = (error) => {
         const message = error instanceof Error ? error.message : String(error);
+        readinessState.ready = false;
+        readinessState.error = message;
         errWriter?.(`[Warden Init] ❌ Fatal: ${message}`);
         closeApiServer();
         return shutdownAndExit(1);
@@ -56,12 +64,16 @@ export function bootstrapWarden({
 
     const initPromise = Promise.resolve(warden.init())
         .then(() => {
+            readinessState.ready = true;
+            readinessState.initializedAt = new Date().toISOString();
+            readinessState.error = null;
             setIntervalImpl?.(() => process.stdout.write('.'), 60000);
         })
         .catch(handleFatalError);
 
     return {
         apiServer,
+        readinessState,
         warden,
         closeApiServer,
         handleFatalError,

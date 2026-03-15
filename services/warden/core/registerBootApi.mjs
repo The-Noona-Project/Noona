@@ -7,6 +7,7 @@ export function registerBootApi(context = {}) {
         buildEffectiveServiceDescriptor,
         dataNetworkName,
         dockerUtils,
+        env = process.env,
         ensureDockerConnection,
         isPersistedServiceRuntimeConfigLoaded,
         loadPersistedServiceRuntimeConfig,
@@ -402,7 +403,7 @@ export function registerBootApi(context = {}) {
         const dockerClient = await ensureDockerConnection();
         await dockerUtils.ensureNetwork(dockerClient, networkName);
         await dockerUtils.ensureNetwork(dockerClient, dataNetworkName);
-        await dockerUtils.attachSelfToNetwork(dockerClient, networkName);
+        await dockerUtils.attachSelfToNetwork(dockerClient, networkName, {env});
 
         const setupCompleted = await api.isSetupCompleted();
         const detectedServices = setupCompleted || SUPER_MODE
