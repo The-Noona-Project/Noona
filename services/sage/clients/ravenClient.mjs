@@ -116,6 +116,8 @@ const extractQueueMessage = (payload, fallback) => {
     return fallback
 }
 
+const VPN_ACTION_ACCEPT_STATUSES = [400, 409, 502]
+
 export const createRavenClient = ({
     serviceName = process.env.SERVICE_NAME || 'noona-sage',
     logger = {},
@@ -190,6 +192,14 @@ export const createRavenClient = ({
 
         cachedCandidates = null
         throw new Error(`All Raven endpoints failed: ${errors.join(' | ')}`)
+    }
+
+    const fetchRavenAction = async (path, options, {acceptStatuses = []} = {}) => {
+        const response = await fetchFromRaven(path, options, {acceptStatuses})
+        return {
+            status: response.status,
+            payload: await parseResponsePayload(response),
+        }
     }
 
     const getVpnRegionsDetailed = async () => {
@@ -490,20 +500,27 @@ export const createRavenClient = ({
             return payload.regions
         },
         async rotateVpnNow(triggeredBy = 'manual') {
-            const response = await fetchFromRaven('/v1/vpn/rotate', {
+            const {payload} = await fetchRavenAction('/v1/vpn/rotate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json', Accept: 'application/json'},
                 body: JSON.stringify({triggeredBy}),
-            })
-            return await parseResponsePayload(response)
+            }, {acceptStatuses: VPN_ACTION_ACCEPT_STATUSES})
+            return payload
+        },
+        async rotateVpnNowDetailed(triggeredBy = 'manual') {
+            return await fetchRavenAction('/v1/vpn/rotate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({triggeredBy}),
+            }, {acceptStatuses: VPN_ACTION_ACCEPT_STATUSES})
         },
         async testVpnLogin({
-                               triggeredBy = 'manual',
-                               region = '',
-                               piaUsername = '',
-                               piaPassword = '',
-                           } = {}) {
-            const response = await fetchFromRaven('/v1/vpn/test-login', {
+                                 triggeredBy = 'manual',
+                                 region = '',
+                                 piaUsername = '',
+                                piaPassword = '',
+                            } = {}) {
+            const {payload} = await fetchRavenAction('/v1/vpn/test-login', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json', Accept: 'application/json'},
                 body: JSON.stringify({
@@ -512,8 +529,25 @@ export const createRavenClient = ({
                     piaUsername,
                     piaPassword,
                 }),
-            })
-            return await parseResponsePayload(response)
+            }, {acceptStatuses: VPN_ACTION_ACCEPT_STATUSES})
+            return payload
+        },
+        async testVpnLoginDetailed({
+                                        triggeredBy = 'manual',
+                                        region = '',
+                                       piaUsername = '',
+                                       piaPassword = '',
+                                   } = {}) {
+            return await fetchRavenAction('/v1/vpn/test-login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+                body: JSON.stringify({
+                    triggeredBy,
+                    region,
+                    piaUsername,
+                    piaPassword,
+                }),
+            }, {acceptStatuses: VPN_ACTION_ACCEPT_STATUSES})
         },
         async setDebug(enabled) {
             const response = await fetchFromRaven('/v1/debug', {

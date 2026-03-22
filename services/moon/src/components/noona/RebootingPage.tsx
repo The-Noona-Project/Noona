@@ -15,6 +15,7 @@ import {
     readRebootMonitorSession,
     writeRebootMonitorSession,
 } from "./rebootMonitorSession";
+import {describeReturnTarget, summarizeMonitorMessage} from "./rebootMonitorUi.mjs";
 
 type MonitorPhase = "preparing" | "updating" | "waiting" | "verifying" | "complete" | "failed";
 type ServiceState = {
@@ -53,12 +54,13 @@ const normalizeReturnTo = (v: string | null) => s(v).startsWith("/") ? s(v) : RE
 const label = (name: string) => LABELS[name] || name.replace(/^noona-/, "").replace(/-/g, " ");
 const parseApiError = (payload: any, fallback: string) => s(payload?.error) || fallback;
 const shouldPause = (message: string) => /failed to fetch|networkerror|load failed|all backends failed|fetch failed|http 50[234]|unauthorized/i.test(message);
-const badge = (step: ServiceState["step"]) =>
-    step === "healthy" ? ["Healthy", "success-alpha-weak"] as const :
-        step === "failed" ? ["Error", "danger-alpha-weak"] as const :
-            step === "waiting" ? ["Waiting", "warning-alpha-weak"] as const :
-                step === "updating" || step === "requesting" || step === "updated" ? ["Working", "brand-alpha-weak"] as const :
-                    [step === "monitoring" ? "Watching" : "Queued", "neutral-alpha-weak"] as const;
+const badge = (entry: ServiceState | undefined) =>
+    entry?.health?.success === true ? ["Healthy", "success-alpha-weak"] as const :
+        entry?.health?.supported === false && entry?.health?.running === true ? ["Running", "success-alpha-weak"] as const :
+            entry?.step === "failed" ? ["Error", "danger-alpha-weak"] as const :
+                entry?.step === "waiting" ? ["Waiting", "warning-alpha-weak"] as const :
+                    entry?.step === "updating" || entry?.step === "requesting" || entry?.step === "updated" ? ["Working", "brand-alpha-weak"] as const :
+                        [entry?.step === "monitoring" ? "Watching" : "Queued", "neutral-alpha-weak"] as const;
 
 const isStable = (entry: ServiceState | undefined, operation: string) => {
     if (!entry || !entry.target) return true;
@@ -410,99 +412,329 @@ export function RebootingPage({operationParam, servicesParam, returnToParam}: Pr
     const failures = targetServices.filter((name) => states[name]?.step === "failed").length;
     const progress = phase === "complete" ? 100 : Math.max(8, Math.min(100, Math.round((Math.min(currentIndex, actionCount) / Math.max(actionCount, 1)) * 64 + (healthyTargets / Math.max(targetServices.length, 1)) * 24 + (phase === "verifying" ? 12 : phase === "waiting" ? 14 : 8))));
     const queueTitle = operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Update Queue" : "Lifecycle Target";
+    const returnTargetLabel = describeReturnTarget(returnTo);
+    const nextTargetService = targetServices.find((name) => !isStable(states[name], operation)) || null;
+    const headlineDetail = summarizeMonitorMessage(phaseDetail, {
+        fallback: "Preparing lifecycle monitor...",
+        htmlFallback: "Received an unexpected HTML response while monitoring Noona.",
+    });
     const render = (name: string) => {
         const entry = states[name];
-        const [text, tone] = badge(entry?.step || "queued");
-        return <Card key={name} fillWidth background="surface"
-                     border={entry?.step === "failed" ? "danger-alpha-weak" : entry?.health?.success ? "success-alpha-weak" : "neutral-alpha-weak"}
-                     padding="l" radius="l"><Column gap="8"><Row horizontal="between" vertical="center" gap="12"
-                                                                 style={{flexWrap: "wrap"}}><Heading as="h3"
-                                                                                                     variant="heading-strong-m">{label(name)}</Heading><Row
-            gap="8"><Badge background={tone} onBackground="neutral-strong">{text}</Badge><Badge
-            background={entry?.health?.success ? "success-alpha-weak" : entry?.health?.supported === false && entry?.health?.running ? "success-alpha-weak" : "neutral-alpha-weak"}
-            onBackground="neutral-strong">{entry?.health?.success ? "Healthy" : entry?.health?.supported === false ? (entry?.health?.running ? "Running" : "No probe") : "Checking"}</Badge></Row></Row><Text
-            variant="body-default-s">{entry?.detail || "Waiting for lifecycle monitoring."}</Text><Text
-            onBackground="neutral-weak"
-            variant="body-default-xs">{entry?.health?.detail || "Waiting for the next health probe."}{entry?.health?.status ? ` Status: ${entry.health.status}.` : ""}{entry?.health?.checkedAt ? ` Last checked at ${new Date(entry.health.checkedAt).toLocaleTimeString()}.` : ""}</Text></Column></Card>;
+        const [text, tone] = badge(entry);
+        const probeSummary = summarizeMonitorMessage(entry?.health?.detail, {
+            fallback:
+                entry?.health?.supported === false
+                    ? (entry?.health?.running ? "Running without a dedicated health probe." : "No dedicated health probe is configured.")
+                    : "Waiting for the next health probe.",
+            htmlFallback:
+                entry?.health?.success === true
+                    ? "Health endpoint responded successfully."
+                    : "Received an HTML page instead of a dedicated health response.",
+        });
+        const activitySummary = summarizeMonitorMessage(entry?.detail, {
+            fallback: "Waiting for lifecycle monitoring.",
+            htmlFallback: "Received an unexpected HTML response while tracking this service.",
+        });
+        const probeBadgeText = entry?.health?.success
+            ? "Healthy"
+            : entry?.health?.supported === false
+                ? (entry?.health?.running ? "No probe" : "Unsupported")
+                : "Checking";
+        const borderTone = entry?.step === "failed"
+            ? "danger-alpha-weak"
+            : entry?.health?.success || (entry?.health?.supported === false && entry?.health?.running)
+                ? "success-alpha-weak"
+                : entry?.step === "waiting"
+                    ? "warning-alpha-weak"
+                    : "neutral-alpha-weak";
+
+        return (
+            <Card
+                key={name}
+                fillWidth
+                background="surface"
+                border={borderTone}
+                padding="l"
+                radius="l"
+            >
+                <Column gap={10}>
+                    <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
+                        <Column gap={4}>
+                            <Heading as="h3" variant="heading-strong-m">{label(name)}</Heading>
+                            <Text variant="label-default-xs" onBackground="neutral-weak">
+                                {entry?.target ? "Selected for this operation" : "Required for recovery"}
+                            </Text>
+                        </Column>
+                        <Row gap="8" style={{flexWrap: "wrap"}}>
+                            <Badge background={tone} onBackground="neutral-strong">{text}</Badge>
+                            <Badge
+                                background={
+                                    entry?.health?.success || (entry?.health?.supported === false && entry?.health?.running)
+                                        ? "success-alpha-weak"
+                                        : "neutral-alpha-weak"
+                                }
+                                onBackground="neutral-strong"
+                            >
+                                {probeBadgeText}
+                            </Badge>
+                        </Row>
+                    </Row>
+
+                    <Text variant="body-default-s">{activitySummary}</Text>
+                    <Text onBackground="neutral-weak" variant="body-default-xs">{probeSummary}</Text>
+
+                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                        <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                            {entry?.health?.status ? `Probe: ${entry.health.status}` : "Probe pending"}
+                        </Badge>
+                        {entry?.health?.checkedAt ? (
+                            <Badge background="neutral-alpha-weak" onBackground="neutral-strong">
+                                {`Checked ${new Date(entry.health.checkedAt).toLocaleTimeString()}`}
+                            </Badge>
+                        ) : null}
+                    </Row>
+                </Column>
+            </Card>
+        );
     };
 
-    return <Column fillWidth horizontal="center" gap="20" paddingY="24"><Card fillWidth background="surface"
-                                                                              border={phase === "failed" ? "danger-alpha-weak" : phase === "complete" ? "success-alpha-weak" : "neutral-alpha-weak"}
-                                                                              padding="l" radius="l"
-                                                                              style={{maxWidth: "96rem"}}><Column
-        gap="20"><Column gap="8"><Row gap="8" vertical="center" style={{flexWrap: "wrap"}}><Badge
-        background={phase === "complete" ? "success-alpha-weak" : phase === "failed" ? "danger-alpha-weak" : "brand-alpha-weak"}
-        onBackground="neutral-strong">{phase === "complete" ? "Stable" : phase === "failed" ? "Needs attention" : "Monitoring"}</Badge><Heading
-        variant="display-strong-s">{operation === "ecosystem-restart" ? "Restarting ecosystem" : operation === "ecosystem-start" || operation === "boot-start" ? "Starting ecosystem" : "Rebooting"}</Heading></Row><Text
-        variant="body-default-l" onBackground="neutral-weak">{phaseDetail}</Text></Column><Column gap="8"><Row
-        horizontal="between" vertical="center"><Text variant="body-default-s">Progress</Text><Text
-        variant="body-default-xs" onBackground="neutral-weak">{progress}%</Text></Row><Row fillWidth
-                                                                                           background="neutral-alpha-weak"
-                                                                                           radius="m" style={{
-        height: "0.85rem",
-        overflow: "hidden"
-    }}><Row
-        background={phase === "failed" ? "danger-alpha-medium" : phase === "complete" ? "success-alpha-medium" : "brand-alpha-medium"}
-        style={{height: "100%", width: `${progress}%`, transition: "width 320ms ease"}}/></Row></Column><Row gap="12"
-                                                                                                             style={{
-                                                                                                                 display: "grid",
-                                                                                                                 gridTemplateColumns: "repeat(auto-fit, minmax(11rem, 1fr))"
-                                                                                                             }}><Card
-        background="surface" border="neutral-alpha-weak" padding="m" radius="l"><Column gap="4"><Text
-        onBackground="neutral-weak"
-        variant="label-default-xs">{operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Updated" : "Operation"}</Text><Heading
-        as="h3" variant="heading-strong-m">{`${Math.min(currentIndex, actionCount)}/${actionCount}`}</Heading><Text
-        onBackground="neutral-weak"
-        variant="body-default-xs">{operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Queue progress." : requestStarted ? "Lifecycle request sent." : "Lifecycle request pending."}</Text></Column></Card><Card
-        background="surface" border="neutral-alpha-weak" padding="m" radius="l"><Column gap="4"><Text
-        onBackground="neutral-weak" variant="label-default-xs">Healthy</Text><Heading as="h3"
-                                                                                      variant="heading-strong-m">{`${healthyTargets}/${targetServices.length}`}</Heading><Text
-        onBackground="neutral-weak" variant="body-default-xs">Target services reporting stable
-        health.</Text></Column></Card><Card background="surface"
-                                            border={failures > 0 ? "warning-alpha-weak" : "neutral-alpha-weak"}
-                                            padding="m" radius="l"><Column gap="4"><Text onBackground="neutral-weak"
-                                                                                         variant="label-default-xs">Failures</Text><Heading
-        as="h3" variant="heading-strong-m">{String(failures)}</Heading><Text onBackground="neutral-weak"
-                                                                             variant="body-default-xs">Targets that
-        reported action errors.</Text></Column></Card><Card background="surface" border="neutral-alpha-weak" padding="m"
-                                                            radius="l"><Column gap="4"><Text onBackground="neutral-weak"
-                                                                                             variant="label-default-xs">Last
-        contact</Text><Heading as="h3"
-                               variant="heading-strong-m">{lastReachableAt ? new Date(lastReachableAt).toLocaleTimeString() : "Not yet"}</Heading><Text
-        onBackground="neutral-weak" variant="body-default-xs">Last successful stack probe.</Text></Column></Card><Card
-        background="surface" border="neutral-alpha-weak" padding="m" radius="l"><Column gap="4"><Text
-        onBackground="neutral-weak" variant="label-default-xs">Stability</Text><Heading as="h3"
-                                                                                        variant="heading-strong-m">{`${stableCount}/${STABILITY_POLLS_REQUIRED}`}</Heading><Text
-        onBackground="neutral-weak" variant="body-default-xs">Consecutive healthy polls required.</Text></Column></Card></Row>{pageError &&
-        <Text onBackground="danger-strong" variant="body-default-s">{pageError}</Text>}<Row gap="12"
-                                                                                            style={{flexWrap: "wrap"}}><Button
-        variant="secondary" onClick={() => {
-        clearRebootMonitorSession();
-        window.location.assign(returnTo);
-    }}>{phase === "complete" ? "Continue" : "Back"}</Button><Button variant="secondary"
-                                                                    onClick={() => window.location.reload()}>Reload
-        page</Button><Button variant="primary" disabled={phase === "failed" || phase === "complete"} onClick={() => {
-        void probeNow();
-    }}>Probe now</Button></Row></Column></Card><Row fillWidth gap="20" style={{
-        width: "100%",
-        maxWidth: "96rem",
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(24rem, 1fr))"
-    }}><Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l"><Column gap="12"><Row
-        horizontal="between" vertical="center" style={{flexWrap: "wrap"}}><Heading as="h2" variant="heading-strong-l">Required
-        services</Heading><Badge background="neutral-alpha-weak"
-                                 onBackground="neutral-strong">{requiredServices.length} services</Badge></Row><Text
-        onBackground="neutral-weak" variant="body-default-s">Warden, Sage, and Moon must recover first. Mongo, Redis,
-        and Vault are also required when they are part of the requested lifecycle target.</Text><Column
-        gap="12">{requiredServices.map(render)}</Column></Column></Card><Card fillWidth background="surface"
-                                                                              border="neutral-alpha-weak" padding="l"
-                                                                              radius="l"><Column gap="12"><Row
-        horizontal="between" vertical="center" style={{flexWrap: "wrap"}}><Heading as="h2"
-                                                                                   variant="heading-strong-l">{queueTitle}</Heading><Badge
-        background="neutral-alpha-weak"
-        onBackground="neutral-strong">{secondaryServices.length} services</Badge></Row><Text onBackground="neutral-weak"
-                                                                                             variant="body-default-s">{operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Targeted services are updated one at a time, then health probes wait for a stable stack." : "These selected services still need to return alongside the required control plane."}</Text>{secondaryServices.length > 0 ?
-        <Column gap="12">{secondaryServices.map(render)}</Column> :
-        <Text onBackground="neutral-weak" variant="body-default-xs">All requested targets are already represented in the
-            required-services panel.</Text>}</Column></Card></Row></Column>;
+    return (
+        <Column fillWidth horizontal="center" gap="20" paddingY="24" paddingX="20" style={{width: "100%"}}>
+            <Card
+                fillWidth
+                background="surface"
+                border={phase === "failed" ? "danger-alpha-weak" : phase === "complete" ? "success-alpha-weak" : "neutral-alpha-weak"}
+                padding="l"
+                radius="l"
+                style={{
+                    maxWidth: "88rem",
+                    background: "linear-gradient(135deg, rgba(10,18,40,0.96) 0%, rgba(18,34,72,0.92) 58%, rgba(34,64,122,0.88) 100%)",
+                }}
+            >
+                <Column gap="20">
+                    <Row
+                        gap="20"
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(20rem, 1fr))",
+                            alignItems: "stretch",
+                        }}
+                    >
+                        <Column gap={10}>
+                            <Row gap="8" vertical="center" style={{flexWrap: "wrap"}}>
+                                <Badge
+                                    background={phase === "complete" ? "success-alpha-weak" : phase === "failed" ? "danger-alpha-weak" : "brand-alpha-weak"}
+                                    onBackground="neutral-strong"
+                                >
+                                    {phase === "complete" ? "Stable" : phase === "failed" ? "Needs attention" : "Monitoring"}
+                                </Badge>
+                                <Heading variant="display-strong-s">
+                                    {operation === "ecosystem-restart"
+                                        ? "Restarting ecosystem"
+                                        : operation === "ecosystem-start" || operation === "boot-start"
+                                            ? "Starting ecosystem"
+                                            : "Rebooting"}
+                                </Heading>
+                            </Row>
+                            <Text variant="body-default-l" onBackground="neutral-weak">{headlineDetail}</Text>
+                            <Text variant="body-default-s" onBackground="neutral-weak">
+                                Moon will keep polling until the selected services and required control plane are
+                                stable, then return you to {returnTargetLabel}.
+                            </Text>
+                        </Column>
+
+                        <Card background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                            <Column gap="12">
+                                <Text variant="label-default-s" onBackground="neutral-weak">Monitor target</Text>
+                                <Heading as="h2" variant="heading-strong-l">{returnTargetLabel}</Heading>
+                                <Text variant="body-default-s" onBackground="neutral-weak">
+                                    {nextTargetService
+                                        ? `${label(nextTargetService)} is the next service we still need to see recover.`
+                                        : phase === "complete"
+                                            ? "All requested services are stable and ready to continue."
+                                            : "The lifecycle request is in flight and waiting for service recovery."}
+                                </Text>
+                                <Row
+                                    gap="12"
+                                    style={{
+                                        display: "grid",
+                                        gridTemplateColumns: "repeat(auto-fit, minmax(9rem, 1fr))",
+                                    }}
+                                >
+                                    <Card background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                                        <Column gap={4}>
+                                            <Text onBackground="neutral-weak" variant="label-default-xs">Targets</Text>
+                                            <Heading as="h3"
+                                                     variant="heading-strong-m">{String(targetServices.length)}</Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">Services in this
+                                                monitor.</Text>
+                                        </Column>
+                                    </Card>
+                                    <Card background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                                        <Column gap={4}>
+                                            <Text onBackground="neutral-weak" variant="label-default-xs">Required</Text>
+                                            <Heading as="h3"
+                                                     variant="heading-strong-m">{String(requiredServices.length)}</Heading>
+                                            <Text onBackground="neutral-weak" variant="body-default-xs">Control-plane
+                                                services watched.</Text>
+                                        </Column>
+                                    </Card>
+                                </Row>
+                            </Column>
+                        </Card>
+                    </Row>
+
+                    <Column gap="8">
+                        <Row horizontal="between" vertical="center">
+                            <Text variant="body-default-s">Progress</Text>
+                            <Text variant="body-default-xs" onBackground="neutral-weak">{progress}%</Text>
+                        </Row>
+                        <Row fillWidth background="neutral-alpha-weak" radius="m"
+                             style={{height: "0.85rem", overflow: "hidden"}}>
+                            <Row
+                                background={phase === "failed" ? "danger-alpha-medium" : phase === "complete" ? "success-alpha-medium" : "brand-alpha-medium"}
+                                style={{height: "100%", width: `${progress}%`, transition: "width 320ms ease"}}
+                            />
+                        </Row>
+                    </Column>
+
+                    <Row
+                        gap="12"
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(11rem, 1fr))",
+                        }}
+                    >
+                        <Card background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                            <Column gap={4}>
+                                <Text onBackground="neutral-weak" variant="label-default-xs">
+                                    {operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Updated" : "Operation"}
+                                </Text>
+                                <Heading as="h3"
+                                         variant="heading-strong-m">{`${Math.min(currentIndex, actionCount)}/${actionCount}`}</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">
+                                    {operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES
+                                        ? "Queue progress."
+                                        : requestStarted
+                                            ? "Lifecycle request sent."
+                                            : "Lifecycle request pending."}
+                                </Text>
+                            </Column>
+                        </Card>
+                        <Card background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                            <Column gap={4}>
+                                <Text onBackground="neutral-weak" variant="label-default-xs">Stable</Text>
+                                <Heading as="h3"
+                                         variant="heading-strong-m">{`${healthyTargets}/${targetServices.length}`}</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">Target services confirmed
+                                    ready.</Text>
+                            </Column>
+                        </Card>
+                        <Card background="surface" border={failures > 0 ? "warning-alpha-weak" : "neutral-alpha-weak"}
+                              padding="m" radius="l">
+                            <Column gap={4}>
+                                <Text onBackground="neutral-weak" variant="label-default-xs">Failures</Text>
+                                <Heading as="h3" variant="heading-strong-m">{String(failures)}</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">Targets that reported action
+                                    errors.</Text>
+                            </Column>
+                        </Card>
+                        <Card background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                            <Column gap={4}>
+                                <Text onBackground="neutral-weak" variant="label-default-xs">Last contact</Text>
+                                <Heading as="h3" variant="heading-strong-m">
+                                    {lastReachableAt ? new Date(lastReachableAt).toLocaleTimeString() : "Not yet"}
+                                </Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">Last successful stack
+                                    probe.</Text>
+                            </Column>
+                        </Card>
+                        <Card background="surface" border="neutral-alpha-weak" padding="m" radius="l">
+                            <Column gap={4}>
+                                <Text onBackground="neutral-weak" variant="label-default-xs">Stability</Text>
+                                <Heading as="h3"
+                                         variant="heading-strong-m">{`${stableCount}/${STABILITY_POLLS_REQUIRED}`}</Heading>
+                                <Text onBackground="neutral-weak" variant="body-default-xs">Consecutive healthy polls
+                                    required.</Text>
+                            </Column>
+                        </Card>
+                    </Row>
+
+                    {pageError ? (
+                        <Text onBackground="danger-strong" variant="body-default-s">
+                            {summarizeMonitorMessage(pageError, {
+                                fallback: "Noona reported an unexpected monitor error.",
+                                htmlFallback: "Noona returned an HTML error page instead of a structured monitor error.",
+                            })}
+                        </Text>
+                    ) : null}
+
+                    <Row gap="12" style={{flexWrap: "wrap"}}>
+                        <Button variant="secondary" onClick={() => {
+                            clearRebootMonitorSession();
+                            window.location.assign(returnTo);
+                        }}>
+                            {phase === "complete" ? "Continue" : "Back"}
+                        </Button>
+                        <Button variant="secondary" onClick={() => window.location.reload()}>
+                            Reload page
+                        </Button>
+                        <Button variant="primary" disabled={phase === "failed" || phase === "complete"} onClick={() => {
+                            void probeNow();
+                        }}>
+                            Probe now
+                        </Button>
+                    </Row>
+                </Column>
+            </Card>
+
+            <Row
+                fillWidth
+                gap="20"
+                style={{
+                    width: "100%",
+                    maxWidth: "88rem",
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(22rem, 1fr))",
+                }}
+            >
+                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">Required services</Heading>
+                            <Badge background="neutral-alpha-weak"
+                                   onBackground="neutral-strong">{requiredServices.length} services</Badge>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-s">
+                            Warden, Sage, and Moon must recover first. Mongo, Redis, and Vault are also required when
+                            they are part of the requested lifecycle target.
+                        </Text>
+                        <Column gap="12">{requiredServices.map(render)}</Column>
+                    </Column>
+                </Card>
+
+                <Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l">
+                    <Column gap="12">
+                        <Row horizontal="between" vertical="center" style={{flexWrap: "wrap"}}>
+                            <Heading as="h2" variant="heading-strong-l">{queueTitle}</Heading>
+                            <Badge background="neutral-alpha-weak"
+                                   onBackground="neutral-strong">{secondaryServices.length} services</Badge>
+                        </Row>
+                        <Text onBackground="neutral-weak" variant="body-default-s">
+                            {operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES
+                                ? "Targeted services are updated one at a time, then health probes wait for a stable stack."
+                                : "These selected services still need to return alongside the required control plane."}
+                        </Text>
+                        {secondaryServices.length > 0 ? (
+                            <Column gap="12">{secondaryServices.map(render)}</Column>
+                        ) : (
+                            <Text onBackground="neutral-weak" variant="body-default-xs">
+                                All requested targets are already represented in the required-services panel.
+                            </Text>
+                        )}
+                    </Column>
+                </Card>
+            </Row>
+        </Column>
+    );
 }

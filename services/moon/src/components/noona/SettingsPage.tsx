@@ -56,6 +56,14 @@ import {
     TAB_LABELS,
 } from "./settings";
 import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
+import {
+    formatVpnRotationOutcomeMessage,
+    formatVpnLoginOutcomeMessage,
+    isVpnRuntimeBusy,
+    resolveVpnMessageAfterRefresh,
+    shouldDisableVpnControls,
+    waitForVpnRuntimeToSettle,
+} from "./vpnSettingsFlow.mjs";
 import {normalizeSetupStatus} from "./setupStatus.mjs";
 
 type ServiceCatalogEntry = {
@@ -2046,40 +2054,61 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
-    const loadVpnSettings = async () => {
-        setVpnLoading(true);
+    const applyVpnSettingsSnapshot = (
+        json: DownloadVpnSettings | null,
+        {preserveMessage = false}: { preserveMessage?: boolean } = {},
+    ) => {
+        setVpnMessage((current) => resolveVpnMessageAfterRefresh(current, preserveMessage));
+        setVpnEnabled(json?.enabled === true);
+        setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
+        setVpnAutoRotate(json?.autoRotate !== false);
+        setVpnRotateEveryMinutes(
+            String(
+                Number.isFinite(Number(json?.rotateEveryMinutes)) && Number(json?.rotateEveryMinutes) > 0
+                    ? Math.floor(Number(json?.rotateEveryMinutes))
+                    : Number(DEFAULT_VPN_ROTATE_MINUTES),
+            ),
+        );
+        setVpnRegion(normalizeString(json?.region).trim() || DEFAULT_VPN_REGION);
+        setVpnUsername(normalizeString(json?.piaUsername).trim());
+        setVpnPassword("");
+        setVpnPasswordConfigured(json?.passwordConfigured === true);
+        setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+        setVpnStatus(json?.status ?? null);
+        if (Array.isArray(json?.regions)) {
+            setVpnRegions(json?.regions ?? []);
+        }
+
+        return json;
+    };
+
+    const refreshVpnSettings = async ({preserveMessage = false}: { preserveMessage?: boolean } = {}) => {
         setVpnError(null);
-        setVpnMessage(null);
         try {
             const res = await fetch("/api/noona/settings/downloads/vpn", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as DownloadVpnSettings | null;
             if (!res.ok) {
                 setVpnError(parseError(json, `Failed to load VPN settings (HTTP ${res.status}).`));
-                return;
+                return null;
             }
 
-            setVpnEnabled(json?.enabled === true);
-            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
-            setVpnAutoRotate(json?.autoRotate !== false);
-            setVpnRotateEveryMinutes(
-                String(
-                    Number.isFinite(Number(json?.rotateEveryMinutes)) && Number(json?.rotateEveryMinutes) > 0
-                        ? Math.floor(Number(json?.rotateEveryMinutes))
-                        : Number(DEFAULT_VPN_ROTATE_MINUTES),
-                ),
-            );
-            setVpnRegion(normalizeString(json?.region).trim() || DEFAULT_VPN_REGION);
-            setVpnUsername(normalizeString(json?.piaUsername).trim());
-            setVpnPassword("");
-            setVpnPasswordConfigured(json?.passwordConfigured === true);
-            setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
-            setVpnStatus(json?.status ?? null);
-            if (Array.isArray(json?.regions)) {
-                setVpnRegions(json?.regions ?? []);
-            }
+            return applyVpnSettingsSnapshot(json, {preserveMessage});
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
+            return null;
+        }
+    };
+
+    const loadVpnSettings = async ({preserveMessage = false}: { preserveMessage?: boolean } = {}) => {
+        setVpnLoading(true);
+        setVpnError(null);
+        if (!preserveMessage) {
+            setVpnMessage(null);
+        }
+
+        try {
+            return await refreshVpnSettings({preserveMessage});
         } finally {
             setVpnLoading(false);
         }
@@ -2131,7 +2160,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setVpnPassword("");
             setVpnPasswordConfigured(json?.passwordConfigured === true || vpnPasswordConfigured);
             setVpnMessage("VPN settings saved.");
-            await Promise.all([loadVpnRegions(), loadVpnSettings()]);
+            await Promise.all([loadVpnRegions(), loadVpnSettings({preserveMessage: true})]);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -2164,8 +2193,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 return;
             }
 
-            setVpnMessage(normalizeString(json?.message).trim() || "VPN endpoint rotated.");
-            await loadVpnSettings();
+            const finalVpnSettings = await waitForVpnRuntimeToSettle({
+                refresh: () => refreshVpnSettings({preserveMessage: true}),
+                isBusy: (snapshot) => isVpnRuntimeBusy(snapshot?.status),
+            });
+            setVpnMessage(
+                formatVpnRotationOutcomeMessage(finalVpnSettings?.status ?? null, "VPN rotation complete."),
+            );
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -2200,14 +2234,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 return;
             }
 
-            const message = normalizeString(json?.message).trim() || "PIA login test succeeded.";
-            const region = normalizeString(json?.region).trim();
-            const endpoint = normalizeString(json?.endpoint).trim();
-            const reportedIp = normalizeString(json?.reportedIp).trim();
-            const locationDetail = endpoint ? `${region || vpnRegion} (${endpoint})` : (region || "");
-            const ipDetail = reportedIp ? `IP ${reportedIp}` : "";
-            const detail = [locationDetail, ipDetail].filter(Boolean).join(" | ");
-            setVpnMessage(detail ? `${message} ${detail}` : message);
+            setVpnMessage(formatVpnLoginOutcomeMessage({
+                message: normalizeString(json?.message).trim(),
+                region: json?.region,
+                endpoint: json?.endpoint,
+                reportedIp: json?.reportedIp,
+            }, vpnRegion));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -4497,6 +4529,14 @@ export function SettingsPage({selection}: SettingsPageProps) {
         });
         const vpnStatusError = normalizeString(vpnStatus?.lastError).trim();
         const vpnRegionsError = normalizeString(vpnRegionsDiagnostic).trim();
+        const vpnControlsLocked = shouldDisableVpnControls({
+            status: vpnStatus,
+            loading: vpnLoading,
+            saving: vpnSaving,
+            rotating: vpnRotating,
+            testing: vpnTesting,
+        });
+        const vpnRotateDisabled = vpnControlsLocked || !vpnEnabled;
 
         return (
             <Column fillWidth gap="16">
@@ -4717,28 +4757,28 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             <Row gap="8" style={{flexWrap: "wrap"}}>
                                 <Button
                                     variant="secondary"
-                                    disabled={vpnLoading || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     onClick={() => void Promise.all([loadVpnRegions(), loadVpnSettings()])}
                                 >
                                     {vpnLoading ? "Reloading..." : "Reload"}
                                 </Button>
                                 <Button
                                     variant="secondary"
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     onClick={() => void testVpnLogin()}
                                 >
                                     {vpnTesting ? "Testing..." : "Test login"}
                                 </Button>
                                 <Button
                                     variant="secondary"
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting || !vpnEnabled}
+                                    disabled={vpnRotateDisabled}
                                     onClick={() => void rotateVpnNow()}
                                 >
                                     {vpnRotating ? "Rotating..." : "Rotate now"}
                                 </Button>
                                 <Button
                                     variant="primary"
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     onClick={() => void saveVpnSettings()}
                                 >
                                     {vpnSaving ? "Saving..." : "Save VPN"}
@@ -4756,7 +4796,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
                                 isChecked={vpnEnabled}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                disabled={vpnControlsLocked}
                                 ariaLabel="Toggle Raven VPN"
                                 onToggle={() => setVpnEnabled((prev) => !prev)}
                             />
@@ -4765,7 +4805,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
                                 isChecked={vpnOnlyDownloadWhenOn}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                disabled={vpnControlsLocked}
                                 ariaLabel="Only download when Raven VPN is connected"
                                 onToggle={() => setVpnOnlyDownloadWhenOn((prev) => !prev)}
                             />
@@ -4774,7 +4814,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
                                 isChecked={vpnAutoRotate}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting || !vpnEnabled}
+                                disabled={vpnControlsLocked || !vpnEnabled}
                                 ariaLabel="Toggle Raven VPN auto-rotation"
                                 onToggle={() => setVpnAutoRotate((prev) => !prev)}
                             />
@@ -4787,7 +4827,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 label="Rotate every (minutes)"
                                 type="number"
                                 value={vpnRotateEveryMinutes}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                disabled={vpnControlsLocked}
                                 onChange={(event) => setVpnRotateEveryMinutes(event.target.value)}
                             />
                             <Column fillWidth gap="8" style={{minWidth: "18rem"}}>
@@ -4795,7 +4835,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 <select
                                     value={vpnRegion}
                                     onChange={(event) => setVpnRegion(event.target.value)}
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     aria-label="Select PIA region"
                                     style={{
                                         width: "100%",
@@ -4839,7 +4879,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             label="PIA Username"
                             type="text"
                             value={vpnUsername}
-                            disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                            disabled={vpnControlsLocked}
                             onChange={(event) => setVpnUsername(event.target.value)}
                         />
                         <Input
@@ -4848,7 +4888,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             label={vpnPasswordConfigured ? "PIA Password (leave blank to keep stored value)" : "PIA Password"}
                             type="password"
                             value={vpnPassword}
-                            disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                            disabled={vpnControlsLocked}
                             onChange={(event) => setVpnPassword(event.target.value)}
                         />
                     </Column>

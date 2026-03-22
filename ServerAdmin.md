@@ -106,6 +106,8 @@ service.
 Once setup is complete, later Warden restarts intentionally land on Moon's public `/bootScreen` when the saved
 ecosystem is not already running.
 Use `Start ecosystem` there to trigger the same lifecycle order Warden uses for full startup.
+That boot screen now shows the required recovery services, the saved target services, and the page Moon will return to
+after the stack stabilizes.
 
 ## 4. First Admin And Discord Notes
 
@@ -191,6 +193,8 @@ Restarts:
 - Use Moon `Admin -> System -> Overview` for ecosystem start, stop, and restart actions.
 - Start and restart now open Moon's shared `/rebooting` monitor and wait for required services to recover before
   returning.
+- Services that are running but do not expose a dedicated health endpoint now show as `No probe` in that monitor
+  instead of surfacing as hard boot failures.
 - Seeing `/bootScreen` after a host or Warden reboot is expected when setup is complete but the saved ecosystem has not
   been started yet.
 - Restart the Warden container itself when you update Warden or need to recover the control plane.
@@ -289,9 +293,18 @@ PIA regions stay blank or Raven VPN shows no IP:
 
 - open Moon at `Admin -> System -> Downloader` and read the VPN error shown under the PIA section before changing
   Docker capabilities or tunnel device settings
+- while Raven is rotating, Moon disables the VPN controls until the runtime settles; wait for the rotation to finish
+  before retrying the action
+- VPN login tests now return their final result directly, so a success or failure message from Moon is the real probe
+  outcome rather than a background-start notice
 - Raven now keeps the last known-good PIA profiles on disk after a bad upstream refresh, so an empty region list plus a
   concrete profile error usually points to PIA profile refresh or archive-layout problems rather than the first
   OpenVPN tunnel step
+- VPN settings only accept the `pia` provider.
+  Sage rejects any other provider before the settings document is saved, so unsupported providers should be treated as
+  a configuration error rather than a Raven runtime problem.
+- `Rotate now` still starts the VPN change in the background, but `Test login` waits for the actual probe result before
+  returning.
 - if the error mentions missing `.ovpn` profiles or a failed profile refresh, retry the region reload after upstream
   connectivity is healthy; a later successful refresh or rotation clears the stale profile error automatically
 

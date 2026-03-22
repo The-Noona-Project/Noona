@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
- * Times this file has been edited: 35
+ * Times this file has been edited: 36
  */
 package com.paxkun.raven.service;
 
@@ -687,6 +687,20 @@ public class DownloadService {
     }
 
     /**
+     * Resumes paused or interrupted downloads for the provided titles only.
+     *
+     * @param titleNames The titles Raven should resume.
+     * @return The number of resumed tasks.
+     */
+    public int resumePausedDownloads(Collection<String> titleNames) {
+        return resumeDownloadsForTitles(
+                titleNames,
+                List.of("paused", "interrupted"),
+                "Resumed after Raven VPN rotation."
+        );
+    }
+
+    /**
      * Resumes downloads with the provided statuses.
      *
      * @param statuses The statuses to resume.
@@ -695,13 +709,68 @@ public class DownloadService {
      */
 
     public int resumeDownloadsWithStatuses(List<String> statuses, String message) {
-        List<DownloadProgress> tasks = new ArrayList<>(loadPersistedTasks(statuses));
-        if (tasks.isEmpty()) {
+        return resumeTasks(loadPersistedTasks(statuses), message);
+    }
+
+    /**
+     * Resumes downloads for the provided titles when their persisted status matches the supplied list.
+     *
+     * @param titleNames The titles Raven should consider.
+     * @param statuses   The persisted statuses to resume.
+     * @param message    The message to set on resumed tasks.
+     * @return The count of resumed tasks.
+     */
+    public int resumeDownloadsForTitles(Collection<String> titleNames, List<String> statuses, String message) {
+        if (titleNames == null || titleNames.isEmpty()) {
             return 0;
         }
-        tasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
-        int resumed = 0;
+
+        LinkedHashSet<String> normalizedTitles = new LinkedHashSet<>();
+        for (String titleName : titleNames) {
+            if (titleName != null && !titleName.isBlank()) {
+                normalizedTitles.add(titleName);
+            }
+        }
+        if (normalizedTitles.isEmpty()) {
+            return 0;
+        }
+
+        List<DownloadProgress> tasks = new ArrayList<>();
+        for (String titleName : normalizedTitles) {
+            tasks.addAll(loadPersistedTasks(statuses, titleName));
+        }
+        return resumeTasks(tasks, message);
+    }
+
+    /**
+     * Resumes persisted tasks using the supplied message.
+     *
+     * @param tasks   The tasks Raven should resume.
+     * @param message The message to set on resumed tasks.
+     * @return The count of resumed tasks.
+     */
+    private int resumeTasks(Collection<DownloadProgress> tasks, String message) {
+        if (tasks == null || tasks.isEmpty()) {
+            return 0;
+        }
+
+        List<DownloadProgress> resumeCandidates = new ArrayList<>();
+        LinkedHashSet<String> seenTaskIds = new LinkedHashSet<>();
         for (DownloadProgress progress : tasks) {
+            if (progress == null || progress.getTaskId() == null || progress.getTaskId().isBlank()) {
+                continue;
+            }
+            if (seenTaskIds.add(progress.getTaskId())) {
+                resumeCandidates.add(progress);
+            }
+        }
+        if (resumeCandidates.isEmpty()) {
+            return 0;
+        }
+
+        resumeCandidates.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+        int resumed = 0;
+        for (DownloadProgress progress : resumeCandidates) {
             String titleName = progress.getTitle();
             if (titleName == null || titleName.isBlank() || isTaskActive(titleName)) {
                 continue;
@@ -3398,6 +3467,17 @@ public class DownloadService {
 
         public int getAffectedTasks() {
             return pausedImmediately.size() + pausingAfterCurrentChapter.size();
+        }
+
+        /**
+         * Returns the distinct titles affected by the pause request.
+         *
+         * @return The affected titles in first-seen order.
+         */
+        public List<String> affectedTitles() {
+            LinkedHashSet<String> titles = new LinkedHashSet<>(pausedImmediately);
+            titles.addAll(pausingAfterCurrentChapter);
+            return List.copyOf(titles);
         }
     }
 }

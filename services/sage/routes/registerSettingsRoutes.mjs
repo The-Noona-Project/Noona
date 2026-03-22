@@ -17,6 +17,17 @@ const sendSetupClientUpstreamError = (res, error) => {
     return true
 }
 
+const resolveActionResult = async (action, fallbackStatus, payloadFactory) => {
+    const result = await action()
+    if (result && typeof result === 'object' && 'status' in result && 'payload' in result) {
+        return result
+    }
+
+    const payload = result ?? payloadFactory()
+    const status = payload && typeof payload === 'object' && payload.ok === false ? 200 : fallbackStatus
+    return {status, payload}
+}
+
 export function registerSettingsRoutes(context = {}) {
     const {
         app,
@@ -356,7 +367,7 @@ export function registerSettingsRoutes(context = {}) {
             res.json(sanitizeDownloadVpnSettingsForResponse(settings))
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unable to update VPN settings.'
-            const status = message.includes('required') ? 400 : 502
+            const status = error instanceof SetupValidationError || message.includes('required') ? 400 : 502
             logger.error(`[${serviceName}] Failed to update VPN settings: ${message}`)
             res.status(status).json({error: message})
         }
@@ -416,8 +427,18 @@ export function registerSettingsRoutes(context = {}) {
             const triggeredBy = typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
                 ? req.body.triggeredBy.trim()
                 : 'manual'
-            const result = await ravenClient.rotateVpnNow(triggeredBy)
-            res.status(202).json(result ?? {ok: false, error: 'Raven VPN rotation did not return a payload.'})
+            const result = typeof ravenClient?.rotateVpnNowDetailed === 'function'
+                ? await ravenClient.rotateVpnNowDetailed(triggeredBy)
+                : await resolveActionResult(
+                    () => ravenClient.rotateVpnNow(triggeredBy),
+                    202,
+                    () => ({ok: false, error: 'Raven VPN rotation did not return a payload.'}),
+                )
+            const payload = result?.payload ?? null
+            const status = Number.isInteger(result?.status)
+                ? result.status
+                : (payload && typeof payload === 'object' && payload.ok === false ? 200 : 202)
+            res.status(status).json(payload ?? {ok: false, error: 'Raven VPN rotation did not return a payload.'})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to trigger VPN rotation: ${error.message}`)
             res.status(502).json({error: 'Unable to trigger VPN rotation.'})
@@ -449,17 +470,35 @@ export function registerSettingsRoutes(context = {}) {
                 return
             }
 
-            const result = await ravenClient.testVpnLogin({
-                triggeredBy:
-                    typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
-                        ? req.body.triggeredBy.trim()
-                        : 'manual',
-                region: requestRegion || savedRegion,
-                piaUsername: resolvedPiaUsername,
-                piaPassword: resolvedPiaPassword,
-            })
+            const result = typeof ravenClient?.testVpnLoginDetailed === 'function'
+                ? await ravenClient.testVpnLoginDetailed({
+                    triggeredBy:
+                        typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
+                            ? req.body.triggeredBy.trim()
+                            : 'manual',
+                    region: requestRegion || savedRegion,
+                    piaUsername: resolvedPiaUsername,
+                    piaPassword: resolvedPiaPassword,
+                })
+                : await resolveActionResult(
+                    () => ravenClient.testVpnLogin({
+                        triggeredBy:
+                            typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
+                                ? req.body.triggeredBy.trim()
+                                : 'manual',
+                        region: requestRegion || savedRegion,
+                        piaUsername: resolvedPiaUsername,
+                        piaPassword: resolvedPiaPassword,
+                    }),
+                    200,
+                    () => ({ok: false, message: 'Raven VPN login test did not return a payload.'}),
+                )
 
-            res.status(200).json(result ?? {ok: false, message: 'Raven VPN login test did not return a payload.'})
+            const payload = result?.payload ?? null
+            const status = Number.isInteger(result?.status)
+                ? result.status
+                : 200
+            res.status(status).json(payload ?? {ok: false, message: 'Raven VPN login test did not return a payload.'})
         } catch (error) {
             logger.error(`[${serviceName}] Failed to test VPN login: ${error.message}`)
             res.status(502).json({error: 'Unable to test VPN login.'})

@@ -81,6 +81,13 @@ five areas: HTTP contracts, download orchestration, library/manifests, runtime w
   `101.0` may normalize to `101`, but `101.1` must never collapse into `101`.
 - Bulk alphabetic browse for Portal's DM admin flow currently comes from WeebCentral `search/data` with explicit
   `included_type`, `adult`, `limit`, and `offset` parameters.
+- Manual VPN rotate is an async-accepted action.
+  Raven reserves `rotationInProgress`, validates the enabled PIA settings up front, and only then returns `202`.
+- VPN login-test is a final-result action.
+  Raven performs the probe synchronously and returns the completed `VpnLoginTestResult` payload instead of a queued-job
+  acknowledgement.
+- VPN rotation may only resume the downloads it paused for that rotation.
+  Do not call the global "resume every paused or interrupted task" path from VPN rotation cleanup.
 
 ## Update Triggers
 

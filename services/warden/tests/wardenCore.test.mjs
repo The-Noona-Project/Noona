@@ -2902,8 +2902,12 @@ test('getServiceHealth returns Raven health and records wizard detail', async ()
     const result = await warden.getServiceHealth('noona-raven');
     assert.deepEqual(fetchCalls, ['http://noona-raven:8080/ready']);
     assert.deepEqual(result, {
+        service: 'noona-raven',
+        success: true,
+        supported: true,
         status: 'healthy',
         detail: 'Raven is good',
+        body: {status: 'healthy', message: 'Raven is good'},
         url: 'http://noona-raven:8080/ready',
     });
 
@@ -2947,16 +2951,80 @@ test('getServiceHealth aggregates failures and records Raven error', async () =>
     });
 
     await assert.rejects(() => warden.getServiceHealth('noona-raven'), /failed:http:\/\/noona-raven:8080\/ready/);
-    assert.deepEqual(fetchCalls, [
-        'http://localhost:8080/health',
-        'http://noona-raven:8080/ready',
-    ]);
+    assert.deepEqual(fetchCalls, ['http://noona-raven:8080/ready']);
 
     assert.equal(wizardCalls.length, 1);
     const [detail, options] = wizardCalls[0];
     assert.equal(detail.health.status, 'error');
     assert.match(detail.health.message, /failed:http:\/\/noona-raven:8080\/ready/);
     assert.equal(options.status, 'error');
+});
+
+test('getServiceHealth reports unsupported when a service has no dedicated health endpoint', async () => {
+    const warden = buildWarden({
+        services: {
+            addon: {
+                'noona-komf': {
+                    name: 'noona-komf',
+                    image: 'komf',
+                    port: 8085,
+                    hostServiceUrl: 'http://localhost:8085',
+                    health: null,
+                },
+            },
+            core: {},
+        },
+        hostDockerSockets: [],
+        fetchImpl: async () => {
+            throw new Error('fetchImpl should not be called for unsupported health checks');
+        },
+    });
+
+    const result = await warden.getServiceHealth('noona-komf');
+    assert.deepEqual(result, {
+        service: 'noona-komf',
+        success: false,
+        supported: false,
+        status: 'unsupported',
+        detail: 'Komf does not expose a dedicated health endpoint.',
+    });
+});
+
+test('getServiceHealth collapses successful HTML probes into a generic health detail', async () => {
+    const fetchCalls = [];
+    const warden = buildWarden({
+        services: {
+            addon: {},
+            core: {
+                'noona-moon': {
+                    name: 'noona-moon',
+                    image: 'moon',
+                    health: 'http://noona-moon:3000/',
+                },
+            },
+        },
+        hostDockerSockets: [],
+        fetchImpl: async (url) => {
+            fetchCalls.push(url);
+            return {
+                ok: true,
+                status: 200,
+                text: async () => '<!doctype html><html><head><title>Noona</title></head><body>ok</body></html>',
+            };
+        },
+    });
+
+    const result = await warden.getServiceHealth('noona-moon');
+    assert.deepEqual(fetchCalls, ['http://noona-moon:3000/']);
+    assert.deepEqual(result, {
+        service: 'noona-moon',
+        success: true,
+        supported: true,
+        status: 'healthy',
+        detail: 'Health check succeeded.',
+        body: null,
+        url: 'http://noona-moon:3000/',
+    });
 });
 
 test('bootFull launches services in super boot order with correct health URLs', async () => {

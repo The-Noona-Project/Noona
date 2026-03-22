@@ -137,6 +137,9 @@ If `AUTO_UPDATES` is enabled, Warden checks Sage and Moon images before minimal 
 - `running` means that container is currently up.
 - Boot, reboot, and manual-start readiness must not rely on `installed` alone because stopped containers still count as
   installed.
+- `getServiceHealth()` now returns a structured payload with `success`, `supported`, `status`, and `detail`.
+  Services without a dedicated health endpoint should return `supported: false` instead of being treated as failed
+  probes, while root-page HTML responses should collapse to a generic success detail rather than surfacing raw markup.
 
 ## Start / Stop / Restart
 

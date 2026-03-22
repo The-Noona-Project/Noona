@@ -920,6 +920,63 @@ test('POST /api/services/:name/test delegates to warden testService', async (t) 
     assert.deepEqual(calls, [['noona-portal', { method: 'GET' }]]);
 });
 
+test('GET /api/services/:name/health delegates to warden getServiceHealth', async (t) => {
+    const calls = [];
+    const warden = {
+        async getServiceHealth(name) {
+            calls.push(name);
+            return {service: name, success: true, supported: true, status: 'healthy', detail: 'ok'};
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services/noona-portal/health');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'noona-portal',
+        success: true,
+        supported: true,
+        status: 'healthy',
+        detail: 'ok',
+    });
+    assert.deepEqual(calls, ['noona-portal']);
+});
+
+test('GET /api/services/:name/health returns unsupported payloads without coercing them into errors', async (t) => {
+    const warden = {
+        async getServiceHealth(name) {
+            return {
+                service: name,
+                success: false,
+                supported: false,
+                status: 'unsupported',
+                detail: 'Komf does not expose a dedicated health endpoint.',
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services/noona-komf/health');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'noona-komf',
+        success: false,
+        supported: false,
+        status: 'unsupported',
+        detail: 'Komf does not expose a dedicated health endpoint.',
+    });
+});
+
 test('POST /api/services/:name/test returns error when unsupported', async (t) => {
     const warden = {
         async testService() {

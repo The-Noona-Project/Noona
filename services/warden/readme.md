@@ -27,6 +27,8 @@ exposes the management APIs that the rest of Noona uses.
   an interrupted install
 - normalizes older setup JSON uploads for Moon review without persisting them until an explicit save or install
 - tracks install progress, service health, and logs
+- returns structured service-health payloads with `success` / `supported` metadata so Moon and Sage can distinguish a
+  real failed probe from a running service that simply does not expose a dedicated health endpoint
 - reports `installed` and `running` separately in the service catalog so callers can tell the difference between a
   present stopped container and a live service
 - exposes `/health` readiness metadata so callers can tell the difference between "Warden is listening" and "bootstrap

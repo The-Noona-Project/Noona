@@ -88,7 +88,11 @@
   Raven, and Vault.
 - Download naming, worker settings, VPN config, and Discord onboarding message all persist into the settings
   collection, not into Warden snapshots.
-- VPN test-login preserves the stored password when the caller sends the masked placeholder `********`.
+- VPN settings writes reject any provider other than `pia`.
+- VPN test-login preserves the stored password when the caller sends the masked placeholder `********`, then returns
+  Raven's final probe result instead of a queued-job acknowledgement.
+- VPN rotate still behaves as an async-accepted action, but Sage now preserves Raven's returned success or failure
+  status instead of always flattening it into `202`.
 - Service config, restart, image update, and ecosystem lifecycle endpoints proxy back into Warden through
   `setupClient`.
 - Warden-backed settings routes preserve upstream HTTP status and JSON payloads when Warden replied.

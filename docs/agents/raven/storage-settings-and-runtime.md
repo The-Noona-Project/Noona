@@ -73,6 +73,10 @@
 - Failed refreshes keep the last known-good extracted profiles instead of wiping `downloads/vpn/pia/profiles`.
 - Profile refresh and discovery failures are recorded in `VpnRuntimeStatus.lastError` and stay there until a later
   successful profile refresh or VPN rotation clears them.
+- Manual rotate remains an async-accepted action, but Raven validates the enabled PIA settings before returning `ok`.
+- Login-test is synchronous and returns the completed probe payload.
+- `VpnRuntimeStatus.connected` is only true once Raven reached a completed VPN connection state.
+  While OpenVPN is still `connecting`, Raven reports the configured region instead of treating the tunnel as connected.
 
 ## Kavita Sync Inputs
 

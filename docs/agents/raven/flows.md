@@ -59,10 +59,16 @@
 
 - `VPNServices` manages PIA region lists, login tests, active OpenVPN state, and scheduled rotation.
 - `POST /v1/vpn/rotate` triggers the manual path.
+  Raven reserves `rotationInProgress`, validates enabled PIA settings immediately, and only then returns the async
+  accepted response.
 - Rotation enables Raven maintenance pause, requests pause for active downloads, waits for in-flight work to drain,
-  reconnects OpenVPN, restores preserved local routes, then resumes paused downloads.
+  reconnects OpenVPN, restores preserved local routes, then resumes only the titles paused by that rotation.
+- If rotation fails after OpenVPN connected, Raven disconnects the tunnel, restores preserved local routes, clears
+  maintenance pause, and only then resumes the rotation-owned downloads.
 - `POST /v1/vpn/test-login` is a lighter probe path that validates credentials and region connectivity without taking
   over Raven's long-running VPN session.
+  The login test now returns the final probe result synchronously and restores preserved local routes on both success
+  and failure paths.
 
 ## Debug And Status Flow
 

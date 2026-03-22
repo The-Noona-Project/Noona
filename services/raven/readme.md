@@ -30,6 +30,9 @@ state, and keeps the managed library in sync.
 - supports import checks and metadata-related library repair flows
 - refreshes cached PIA OpenVPN profiles atomically and keeps the last known-good profiles when an upstream archive
   refresh fails
+- accepts manual `Rotate now` requests only after Raven has reserved the rotation and validated the active PIA
+  settings, then completes the tunnel change in the background
+- returns the final `Test login` probe result directly instead of only acknowledging a background job
 - stores its shared settings and task state through Vault's internal service API in managed installs
 
 ## Who It Is For
@@ -44,6 +47,7 @@ state, and keeps the managed library in sync.
   entries
 - when tuning worker, naming, or VPN-related settings
 - when Moon shows a Raven VPN profile refresh or discovery error under the PIA settings card
+- when Moon reports that a VPN rotation is still settling or a login test failed with a final probe result
 - when checking that downloaded content actually landed on disk
 
 ## How It Fits Into Noona

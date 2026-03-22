@@ -149,5 +149,8 @@
 - Warden-backed setup-config and settings routes are narrower:
   if Warden returned an HTTP status and JSON body, Sage should preserve that status and payload instead of collapsing
   it into a generic `502`.
+- VPN settings writes should reject unsupported providers with `400`.
+- VPN rotate and VPN login-test should preserve Raven's returned status and payload rather than flattening every
+  response into a generic success.
 - Keep browser-facing errors concise and token-safe.
   Route handlers should not leak raw upstream headers, stack traces, or auth material.

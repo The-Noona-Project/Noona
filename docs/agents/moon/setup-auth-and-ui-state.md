@@ -138,9 +138,15 @@
   and `ecosystem-restart`.
 - Boot-screen start, signed-in ecosystem start, signed-in ecosystem restart, and update-all should all write the same
   monitor session shape before navigating into `/rebooting`.
+- The boot screen is intentionally a short startup brief.
+  It should show the required recovery services, the saved target services, and the return destination before the
+  lifecycle request is sent.
 - Required services are operation-aware but not hard-coded to only the old control-plane update flow.
   `noona-warden`, `noona-sage`, and `noona-moon` are always required, while `noona-mongo`, `noona-redis`, and
   `noona-vault` become required only when the requested lifecycle target includes them.
+- Reboot monitor cards should stay concise.
+  Services with `supported === false` should read as running/no-probe states when the catalog says the container is up,
+  and raw HTML probe payloads should be collapsed into generic friendly copy instead of rendered verbatim.
 - Reboot monitor ordering is still intentional.
   Update-service queues use the priority ordering from `rebootMonitorSession.ts`, while non-update lifecycle targets
   preserve the requested service order.

@@ -67,9 +67,18 @@
   Moon should only send editable keys that are explicitly modeled in Warden's `envConfig` (`readOnly !== true` and
   `serverManaged !== true`), while preserving masked secret placeholders and intentional blank clears.
   Do not round-trip the full redacted `env` snapshot back into Sage or Warden.
+- The Downloader PIA VPN card keeps its controls disabled while Raven reports `rotating` or `connecting`.
+  Manual rotation now polls the live VPN settings until the runtime settles, and follow-up refreshes preserve success
+  messages so save/rotate confirmations do not disappear immediately.
+- VPN login tests are treated as final-result actions.
+  Moon waits for the completed response, then shows the returned result rather than any intermediate start
+  acknowledgement.
 - `updateAllImages()` writes reboot-monitor session state into `sessionStorage` and redirects to `/rebooting`.
 - The reboot monitor page watches both target services and core recovery services such as Warden, Redis, Vault, Moon,
   and Sage until the stack is stable enough to return to settings.
+- Reboot-monitor health cards are intentionally summarized.
+  Do not surface raw HTML success pages or treat `supported: false` services as hard failures when the service catalog
+  already says the container is running.
 - Admin docs matter here.
   If task labels, route names, or the update-monitor flow change, update the public Moon README and
   [../../../ServerAdmin.md](../../../ServerAdmin.md).

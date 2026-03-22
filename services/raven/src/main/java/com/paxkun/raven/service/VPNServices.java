@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
- * Times this file has been edited: 5
+ * Times this file has been edited: 7
  */
 package com.paxkun.raven.service;
 
@@ -137,13 +137,15 @@ public class VPNServices {
 
     public VpnRuntimeStatus getStatus() {
         DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+        String configuredRegion = resolveConfiguredRegion(settings);
+        boolean connected = "connected".equalsIgnoreCase(connectionState) && isOpenVpnRunning();
         return new VpnRuntimeStatus(
                 Boolean.TRUE.equals(settings.getEnabled()),
                 Boolean.TRUE.equals(settings.getAutoRotate()),
                 rotationInProgress.get(),
-                isOpenVpnRunning(),
+                connected,
                 Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER),
-                Optional.ofNullable(settings.getRegion()).orElse(DEFAULT_REGION),
+                connected ? Optional.ofNullable(currentRegion).filter(region -> !region.isBlank()).orElse(configuredRegion) : configuredRegion,
                 normalizeRotateInterval(settings.getRotateEveryMinutes()),
                 currentPublicIp,
                 lastRotationAtIso,
@@ -178,7 +180,7 @@ public class VPNServices {
 
     public VpnRotationResult rotateNow(String triggeredBy) {
         String sanitizedTrigger = Optional.ofNullable(triggeredBy).filter(s -> !s.isBlank()).orElse("manual");
-        if (rotationInProgress.get()) {
+        if (!rotationInProgress.compareAndSet(false, true)) {
             return new VpnRotationResult(
                     false,
                     "A VPN rotation is already in progress.",
@@ -191,13 +193,36 @@ public class VPNServices {
                     Instant.now().toString()
             );
         }
-        if (loginTestInProgress.get()) {
+        String configuredRegion = currentRegion;
+        try {
+            if (loginTestInProgress.get()) {
+                return new VpnRotationResult(
+                        false,
+                        "Cannot rotate while a VPN login test is in progress.",
+                        currentPublicIp,
+                        currentPublicIp,
+                        currentRegion,
+                        0,
+                        0,
+                        sanitizedTrigger,
+                        Instant.now().toString()
+                );
+            }
+
+            DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+            configuredRegion = resolveConfiguredRegion(settings);
+            validateEnabledVpnSettings(settings);
+        } catch (Exception e) {
+            rotationInProgress.set(false);
+            String message = Optional.ofNullable(e.getMessage()).filter(value -> !value.isBlank())
+                    .orElse("Unable to validate Raven VPN settings.");
+            setRuntimeError(message);
             return new VpnRotationResult(
                     false,
-                    "Cannot rotate while a VPN login test is in progress.",
+                    message,
                     currentPublicIp,
                     currentPublicIp,
-                    currentRegion,
+                    configuredRegion,
                     0,
                     0,
                     sanitizedTrigger,
@@ -205,20 +230,37 @@ public class VPNServices {
             );
         }
 
-        scheduler.execute(() -> {
-            try {
-                rotateNowInternal(sanitizedTrigger);
-            } catch (Exception e) {
-                logger.error(VPN_TAG, "Background VPN rotation failed: " + e.getMessage());
-            }
-        });
+        try {
+            scheduler.execute(() -> {
+                try {
+                    rotateNowInternal(sanitizedTrigger, true);
+                } catch (Exception e) {
+                    logger.error(VPN_TAG, "Background VPN rotation failed: " + e.getMessage());
+                }
+            });
+        } catch (RuntimeException e) {
+            rotationInProgress.set(false);
+            String message = "Unable to queue Raven VPN rotation: " + sanitizeForLog(e.getMessage());
+            setRuntimeError(message);
+            return new VpnRotationResult(
+                    false,
+                    message,
+                    currentPublicIp,
+                    currentPublicIp,
+                    configuredRegion,
+                    0,
+                    0,
+                    sanitizedTrigger,
+                    Instant.now().toString()
+            );
+        }
 
         return new VpnRotationResult(
                 true,
                 "VPN rotation started in background.",
                 currentPublicIp,
                 currentPublicIp,
-                currentRegion,
+                configuredRegion,
                 0,
                 0,
                 sanitizedTrigger,
@@ -245,27 +287,7 @@ public class VPNServices {
         String sanitizedTrigger = Optional.ofNullable(triggeredBy).filter(value -> !value.isBlank()).orElse("manual");
         String region = resolveRequestedRegion(requestedRegion, settingsService.getDownloadVpnSettings());
 
-        if (rotationInProgress.get()) {
-            return new VpnLoginTestResult(
-                    false,
-                    "Cannot test VPN login while a rotation is in progress.",
-                    region,
-                    "",
-                    "",
-                    Instant.now().toString()
-            );
-        }
-        if (isOpenVpnRunning()) {
-            return new VpnLoginTestResult(
-                    false,
-                    "Cannot test VPN login while Raven VPN is already connected.",
-                    region,
-                    "",
-                    "",
-                    Instant.now().toString()
-            );
-        }
-        if (loginTestInProgress.get()) {
+        if (!loginTestInProgress.compareAndSet(false, true)) {
             return new VpnLoginTestResult(
                     false,
                     "A VPN login test is already in progress.",
@@ -275,36 +297,54 @@ public class VPNServices {
                     Instant.now().toString()
             );
         }
-
-        scheduler.execute(() -> {
-            try {
-                testLoginInternal(sanitizedTrigger, requestedRegion, requestedUsername, requestedPassword);
-            } catch (Exception e) {
-                logger.error(VPN_TAG, "Background VPN login test failed: " + e.getMessage());
+        try {
+            if (rotationInProgress.get()) {
+                return new VpnLoginTestResult(
+                        false,
+                        "Cannot test VPN login while a rotation is in progress.",
+                        region,
+                        "",
+                        "",
+                        Instant.now().toString()
+                );
             }
-        });
-
-        return new VpnLoginTestResult(
-                true,
-                "VPN login test started in background.",
-                region,
-                "",
-                "",
-                Instant.now().toString()
-        );
+            if (isOpenVpnRunning()) {
+                return new VpnLoginTestResult(
+                        false,
+                        "Cannot test VPN login while Raven VPN is already active.",
+                        region,
+                        "",
+                        "",
+                        Instant.now().toString()
+                );
+            }
+            return testLoginInternal(sanitizedTrigger, requestedRegion, requestedUsername, requestedPassword);
+        } finally {
+            loginTestInProgress.set(false);
+        }
     }
 
-    private void testLoginInternal(
+    /**
+     * Executes a synchronous VPN login test and returns the final probe result.
+     *
+     * @param triggeredBy       The source that requested the test.
+     * @param requestedRegion   The requested region override.
+     * @param requestedUsername The requested PIA username.
+     * @param requestedPassword The requested PIA password.
+     * @return The resulting VPN login test payload.
+     */
+    private VpnLoginTestResult testLoginInternal(
             String triggeredBy,
             String requestedRegion,
             String requestedUsername,
             String requestedPassword
     ) {
-        if (!loginTestInProgress.compareAndSet(false, true)) {
-            return;
-        }
-
         String region = DEFAULT_REGION;
+        String endpoint = "";
+        String reportedIp = "";
+        VpnLoginTestResult result;
+        List<String> preservedLocalRoutes = List.of();
+        boolean shouldRestoreRoutes = false;
         try {
             DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
             String provider = Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER);
@@ -320,22 +360,63 @@ public class VPNServices {
             }
 
             Path profilePath = resolveProfilePath(region);
-            List<String> preservedLocalRoutes = captureLocalRouteSpecs();
-            probeOpenVpnLogin(profilePath, username, password, preservedLocalRoutes);
+            endpoint = parseRemoteEndpoint(profilePath);
+            preservedLocalRoutes = captureLocalRouteSpecs();
+            shouldRestoreRoutes = true;
+            reportedIp = probeOpenVpnLogin(profilePath, username, password);
 
             logger.info(VPN_TAG, "PIA login test succeeded | trigger=" + sanitizeForLog(triggeredBy)
                     + " | region=" + sanitizeForLog(region)
                     + " | preservedLocalRoutes=" + preservedLocalRoutes.size());
             clearRuntimeError();
+            result = new VpnLoginTestResult(
+                    true,
+                    "PIA login succeeded for region " + region + ".",
+                    region,
+                    endpoint,
+                    reportedIp,
+                    Instant.now().toString()
+            );
         } catch (Exception e) {
-            String safeMessage = sanitizeForLog(e.getMessage());
-            setRuntimeError("Login test failed: " + safeMessage);
+            String safeMessage = Optional.ofNullable(e.getMessage())
+                    .filter(message -> !message.isBlank())
+                    .map(this::sanitizeForLog)
+                    .orElse("PIA login test failed.");
+            String failureMessage = "Login test failed: " + safeMessage;
+            setRuntimeError(failureMessage);
             logger.warn(VPN_TAG, "⚠️ PIA login test failed | trigger=" + sanitizeForLog(triggeredBy)
                     + " | region=" + sanitizeForLog(region)
                     + " | reason=" + safeMessage);
-        } finally {
-            loginTestInProgress.set(false);
+            result = new VpnLoginTestResult(
+                    false,
+                    failureMessage,
+                    region,
+                    endpoint,
+                    "",
+                    Instant.now().toString()
+            );
         }
+        if (shouldRestoreRoutes) {
+            try {
+                restoreLocalRouteSpecs(preservedLocalRoutes);
+            } catch (IOException restoreError) {
+                String restoreMessage = "Login test failed: Failed to restore local routes after VPN login test: "
+                        + sanitizeForLog(restoreError.getMessage());
+                logger.warn(VPN_TAG, "Failed to restore local routes after login test | region="
+                        + sanitizeForLog(region)
+                        + " | reason=" + sanitizeForLog(restoreError.getMessage()));
+                setRuntimeError(restoreMessage);
+                result = new VpnLoginTestResult(
+                        false,
+                        result.ok() ? restoreMessage : result.message() + " " + restoreMessage,
+                        region,
+                        endpoint,
+                        result.ok() ? reportedIp : result.reportedIp(),
+                        Instant.now().toString()
+                );
+            }
+        }
+        return result;
     }
 
     private void runScheduleTick() {
@@ -395,7 +476,24 @@ public class VPNServices {
         }
     }
 
+    /**
+     * Executes a VPN rotation using the current Raven settings, reserving the in-progress flag on demand.
+     *
+     * @param triggeredBy The source that requested the rotation.
+     * @return The resulting rotation payload.
+     */
     private VpnRotationResult rotateNowInternal(String triggeredBy) {
+        return rotateNowInternal(triggeredBy, false);
+    }
+
+    /**
+     * Executes a VPN rotation using the current Raven settings and optionally reuses an existing reservation.
+     *
+     * @param triggeredBy     The source that requested the rotation.
+     * @param reservationHeld Whether the caller already reserved {@code rotationInProgress}.
+     * @return The resulting rotation payload.
+     */
+    private VpnRotationResult rotateNowInternal(String triggeredBy, boolean reservationHeld) {
         if (loginTestInProgress.get()) {
             return new VpnRotationResult(
                     false,
@@ -410,7 +508,7 @@ public class VPNServices {
             );
         }
 
-        if (!rotationInProgress.compareAndSet(false, true)) {
+        if (!reservationHeld && !rotationInProgress.compareAndSet(false, true)) {
             return new VpnRotationResult(
                     false,
                     "A VPN rotation is already in progress.",
@@ -429,17 +527,17 @@ public class VPNServices {
         String previousIp = currentPublicIp;
         String activeRegion = currentRegion;
         List<String> preservedLocalRoutes = List.of();
+        boolean maintenancePauseActive = false;
+        boolean openVpnConnected = false;
         try {
             DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
             validateEnabledVpnSettings(settings);
 
-            String targetRegion = Optional.ofNullable(settings.getRegion())
-                    .filter(region -> !region.isBlank())
-                    .map(region -> region.trim().toLowerCase(Locale.ROOT))
-                    .orElse(DEFAULT_REGION);
+            String targetRegion = resolveConfiguredRegion(settings);
             activeRegion = targetRegion;
 
             downloadService.beginMaintenancePause("VPN rotation");
+            maintenancePauseActive = true;
             pauseResult = downloadService.requestPauseActiveDownloads();
 
             boolean drained = downloadService.waitForNoActiveDownloads(Duration.ofMinutes(Math.max(1, pauseTimeoutMinutes)));
@@ -450,17 +548,20 @@ public class VPNServices {
             disconnectOpenVpn();
             preservedLocalRoutes = captureLocalRouteSpecs();
             connectOpenVpn(targetRegion, settings.getPiaUsername(), settings.getPiaPassword());
+            openVpnConnected = true;
             restoreLocalRouteSpecs(preservedLocalRoutes);
 
             currentRegion = targetRegion;
+            currentPublicIp = null;
             currentPublicIp = resolvePublicIp();
             connectionState = "connected";
             clearRuntimeError();
             lastRotationAtIso = Instant.now().toString();
             logger.info(VPN_TAG, "Re-applied " + preservedLocalRoutes.size() + " local route(s) after VPN connect.");
 
-            resumedTasks = downloadService.resumePausedDownloads();
+            resumedTasks = downloadService.resumePausedDownloads(pauseResult.affectedTitles());
             downloadService.endMaintenancePause("VPN rotation complete");
+            maintenancePauseActive = false;
 
             int intervalMinutes = normalizeRotateInterval(settings.getRotateEveryMinutes());
             long nextAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(intervalMinutes);
@@ -479,14 +580,29 @@ public class VPNServices {
                     lastRotationAtIso
             );
         } catch (Exception e) {
-            setRuntimeError(e.getMessage());
-            connectionState = "error";
+            String failureMessage = Optional.ofNullable(e.getMessage())
+                    .filter(message -> !message.isBlank())
+                    .map(this::sanitizeForLog)
+                    .orElse("VPN rotation failed.");
             logger.warn(VPN_TAG, "⚠️ VPN rotation failed: " + sanitizeForLog(e.getMessage()));
-            downloadService.endMaintenancePause("VPN rotation failed");
-            resumedTasks = downloadService.resumePausedDownloads();
+            if (openVpnConnected || !preservedLocalRoutes.isEmpty()) {
+                String cleanupMessage = cleanupFailedRotation(preservedLocalRoutes);
+                if (cleanupMessage != null && !cleanupMessage.isBlank()) {
+                    failureMessage = failureMessage + " " + cleanupMessage;
+                }
+            }
+            currentPublicIp = null;
+            currentPublicIp = resolvePublicIp();
+            setRuntimeError(failureMessage);
+            connectionState = "error";
+            if (maintenancePauseActive) {
+                downloadService.endMaintenancePause("VPN rotation failed");
+                maintenancePauseActive = false;
+            }
+            resumedTasks = downloadService.resumePausedDownloads(pauseResult.affectedTitles());
             return new VpnRotationResult(
                     false,
-                    e.getMessage(),
+                    failureMessage,
                     previousIp,
                     currentPublicIp,
                     activeRegion,
@@ -497,6 +613,25 @@ public class VPNServices {
             );
         } finally {
             rotationInProgress.set(false);
+        }
+    }
+
+    /**
+     * Disconnects the current VPN process and restores preserved local routes after a failed rotation attempt.
+     *
+     * @param preservedLocalRoutes The local routes captured before Raven connected OpenVPN.
+     * @return An appended cleanup failure message, or {@code null} when cleanup succeeded.
+     */
+    private String cleanupFailedRotation(List<String> preservedLocalRoutes) {
+        disconnectOpenVpn();
+        try {
+            restoreLocalRouteSpecs(preservedLocalRoutes);
+            return null;
+        } catch (IOException restoreError) {
+            logger.warn(VPN_TAG, "Failed to restore local routes after rotation failure | reason="
+                    + sanitizeForLog(restoreError.getMessage()));
+            return "Failed to restore local routes after VPN rotation: "
+                    + sanitizeForLog(restoreError.getMessage());
         }
     }
 
@@ -1038,7 +1173,16 @@ public class VPNServices {
                 + (preview.isBlank() ? "" : " Logs: " + preview));
     }
 
-    private String probeOpenVpnLogin(Path configPath, String username, String password, List<String> preservedLocalRoutes) throws IOException {
+    /**
+     * Starts a temporary OpenVPN session to validate the supplied PIA credentials.
+     *
+     * @param configPath The region profile path.
+     * @param username   The supplied PIA username.
+     * @param password   The supplied PIA password.
+     * @return The observed public IP reported while the probe session is connected.
+     * @throws IOException When the probe process cannot start or complete successfully.
+     */
+    private String probeOpenVpnLogin(Path configPath, String username, String password) throws IOException {
         Path authPath = resolveVpnRoot().resolve("pia-auth-test.txt");
         writeAuthFile(authPath, username, password);
 
@@ -1068,7 +1212,6 @@ public class VPNServices {
             long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(Math.max(15, connectTimeoutSeconds));
             while (System.currentTimeMillis() < deadline) {
                 if (connected.get()) {
-                    restoreLocalRouteSpecs(preservedLocalRoutes);
                     String reportedIp = resolvePublicIpFromJsonEndpoint(LOGIN_TEST_PUBLIC_IP_URL);
                     stopOpenVpnProcess(activeProcess);
                     return reportedIp;
@@ -1214,7 +1357,18 @@ public class VPNServices {
         if (!requested.isBlank()) {
             return requested;
         }
-        return Optional.ofNullable(settings.getRegion())
+        return resolveConfiguredRegion(settings);
+    }
+
+    /**
+     * Resolves the normalized configured region from the stored Raven VPN settings.
+     *
+     * @param settings The stored Raven VPN settings snapshot.
+     * @return The normalized configured region id.
+     */
+    private String resolveConfiguredRegion(DownloadVpnSettings settings) {
+        return Optional.ofNullable(settings)
+                .map(DownloadVpnSettings::getRegion)
                 .map(value -> value.trim().toLowerCase(Locale.ROOT))
                 .filter(value -> !value.isBlank())
                 .orElse(DEFAULT_REGION);

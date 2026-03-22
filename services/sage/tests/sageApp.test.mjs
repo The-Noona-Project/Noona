@@ -103,8 +103,14 @@ const createRavenStub = (overrides = {}) => ({
     async rotateVpnNow() {
         throw new Error('rotateVpnNow should not be called')
     },
+    async rotateVpnNowDetailed() {
+        throw new Error('rotateVpnNowDetailed should not be called')
+    },
     async testVpnLogin() {
         throw new Error('testVpnLogin should not be called')
+    },
+    async testVpnLoginDetailed() {
+        throw new Error('testVpnLoginDetailed should not be called')
     },
     ...overrides,
 })
@@ -7761,7 +7767,41 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     assert.equal(stored.rotateEveryMinutes, 45)
 })
 
-test('settings VPN routes proxy region list and rotate action to Raven', async (t) => {
+test('settings VPN routes reject unsupported providers', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub(),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putRes = await fetch(`${baseUrl}/api/settings/downloads/vpn`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            provider: 'wireguard',
+            enabled: true,
+            piaUsername: 'new-user',
+            piaPassword: 'new-secret',
+        }),
+    })
+
+    assert.equal(putRes.status, 400)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.error, 'Only the pia VPN provider is supported.')
+    assert.equal(vault.settingDocs.length, 0)
+})
+
+test('settings VPN routes proxy region list and preserve Raven action status', async (t) => {
     const vault = createVaultAuthStub()
     const rotateCalls = []
     const loginTestCalls = []
@@ -7776,22 +7816,28 @@ test('settings VPN routes proxy region list and rotate action to Raven', async (
                     {id: 'us_texas', label: 'Us Texas', endpoint: '203.0.113.22'},
                 ]
             },
-            async rotateVpnNow(triggeredBy) {
+            async rotateVpnNowDetailed(triggeredBy) {
                 rotateCalls.push(triggeredBy)
                 return {
-                    ok: true,
-                    message: 'VPN rotation complete.',
-                    region: 'us_california',
+                    status: 202,
+                    payload: {
+                        ok: true,
+                        message: 'VPN rotation complete.',
+                        region: 'us_california',
+                    },
                 }
             },
-            async testVpnLogin(payload) {
+            async testVpnLoginDetailed(payload) {
                 loginTestCalls.push(payload)
                 return {
-                    ok: true,
-                    message: 'PIA login succeeded for region us_california.',
-                    region: 'us_california',
-                    endpoint: '212.56.53.84',
-                    reportedIp: '198.51.100.42',
+                    status: 200,
+                    payload: {
+                        ok: true,
+                        message: 'PIA login succeeded for region us_california.',
+                        region: 'us_california',
+                        endpoint: '212.56.53.84',
+                        reportedIp: '198.51.100.42',
+                    },
                 }
             },
         }),
@@ -7850,6 +7896,46 @@ test('settings VPN routes proxy region list and rotate action to Raven', async (
     assert.equal(loginTestCalls[0].piaPassword, 'pia-secret')
 })
 
+test('settings VPN rotate route preserves Raven failure status', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async rotateVpnNowDetailed(triggeredBy) {
+                return {
+                    status: 409,
+                    payload: {
+                        ok: false,
+                        message: `Cannot rotate while a VPN login test is in progress. (${triggeredBy})`,
+                        error: 'Cannot rotate while a VPN login test is in progress.',
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const rotateRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/rotate`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({triggeredBy: 'moon-settings'}),
+    })
+
+    assert.equal(rotateRes.status, 409)
+    const rotatePayload = await rotateRes.json()
+    assert.equal(rotatePayload.ok, false)
+    assert.match(rotatePayload.message, /Cannot rotate while a VPN login test is in progress/)
+})
+
 test('settings VPN test-login falls back to persisted credentials when form values are blank', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
@@ -7870,14 +7956,17 @@ test('settings VPN test-login falls back to persisted credentials when form valu
         serviceName: 'test-sage',
         vaultClient: vault.client,
         ravenClient: createRavenStub({
-            async testVpnLogin(payload) {
+            async testVpnLoginDetailed(payload) {
                 loginTestCalls.push(payload)
                 return {
-                    ok: true,
-                    message: 'PIA login succeeded for region us_texas.',
-                    region: payload.region,
-                    endpoint: '203.0.113.22',
-                    reportedIp: '198.51.100.42',
+                    status: 200,
+                    payload: {
+                        ok: true,
+                        message: 'PIA login succeeded for region us_texas.',
+                        region: payload.region,
+                        endpoint: '203.0.113.22',
+                        reportedIp: '198.51.100.42',
+                    },
                 }
             },
         }),

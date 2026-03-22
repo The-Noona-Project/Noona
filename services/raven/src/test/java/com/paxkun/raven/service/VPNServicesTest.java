@@ -5,12 +5,13 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRotationResult.java
  * - src/main/java/com/paxkun/raven/service/VPNServices.java
- * Times this file has been edited: 4
+ * Times this file has been edited: 5
  */
 package com.paxkun.raven.service;
 
 import com.paxkun.raven.service.settings.DownloadVpnSettings;
 import com.paxkun.raven.service.settings.SettingsService;
+import com.paxkun.raven.service.vpn.VpnLoginTestResult;
 import com.paxkun.raven.service.vpn.VpnRegionOption;
 import com.paxkun.raven.service.vpn.VpnRotationResult;
 import com.sun.net.httpserver.HttpServer;
@@ -23,6 +24,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.io.IOException;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -35,6 +37,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -120,34 +128,73 @@ class VPNServicesTest {
     }
 
     @Test
-    void rotateNowRestoresLocalRoutesBeforeResumingDownloads() throws Exception {
+    void rotateNowRejectsDuplicateManualRequestsBeforeSecondQueue() throws Exception {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
         List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(new DownloadVpnSettings(
-                "downloads.vpn",
-                "pia",
-                true,
-                false,
-                false,
-                30,
-                "us_california",
-                "pia-user",
-                "pia-secret"
-        ));
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
-        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
-        when(downloadService.resumePausedDownloads()).thenReturn(1);
+        when(downloadService.waitForNoActiveDownloads(any())).thenAnswer(invocation -> {
+            Thread.sleep(200L);
+            return true;
+        });
+        when(downloadService.resumePausedDownloads(eq(List.of("Solo Leveling")))).thenReturn(1);
         doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
         doNothing().when(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
         doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
         doReturn("198.51.100.12").when(vpnServices).resolvePublicIp();
 
+        VpnRotationResult first = vpnServices.rotateNow("manual");
+        VpnRotationResult second = vpnServices.rotateNow("manual");
+
+        assertThat(first.ok()).isTrue();
+        assertThat(first.message()).isEqualTo("VPN rotation started in background.");
+        assertThat(second.ok()).isFalse();
+        assertThat(second.message()).isEqualTo("A VPN rotation is already in progress.");
+
+        waitForCondition("Timed out waiting for background rotation to finish.", () -> !vpnServices.getStatus().isRotating());
+        verify(downloadService, times(1)).requestPauseActiveDownloads();
+        vpnServices.stop();
+    }
+
+    @Test
+    void rotateNowFailsValidationBeforeQueueingBackgroundWork() {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        when(settingsService.getDownloadVpnSettings()).thenReturn(defaultVpnSettings());
+
         VpnRotationResult result = vpnServices.rotateNow("manual");
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.message()).isEqualTo("VPN is disabled in Raven settings.");
+        verify(downloadService, never()).beginMaintenancePause(anyString());
+        verify(downloadService, never()).requestPauseActiveDownloads();
+    }
+
+    @Test
+    void rotateNowInternalRestoresLocalRoutesBeforeResumingOnlyAffectedTitles() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+        DownloadService.PauseRequestResult pauseResult = new DownloadService.PauseRequestResult(
+                List.of("Solo Leveling"),
+                List.of("Trigun")
+        );
+
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(pauseResult);
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
+        when(downloadService.resumePausedDownloads(eq(List.of("Solo Leveling", "Trigun")))).thenReturn(2);
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doNothing().when(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
+        doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        doReturn("198.51.100.12").when(vpnServices).resolvePublicIp();
+
+        VpnRotationResult result = ReflectionTestUtils.invokeMethod(vpnServices, "rotateNowInternal", "manual", false);
 
         assertThat(result.ok()).isTrue();
         assertThat(result.currentIp()).isEqualTo("198.51.100.12");
+        assertThat(result.resumedTasks()).isEqualTo(2);
 
         InOrder inOrder = inOrder(vpnServices, downloadService);
         inOrder.verify(downloadService).beginMaintenancePause("VPN rotation");
@@ -156,7 +203,130 @@ class VPNServicesTest {
         inOrder.verify(vpnServices).captureLocalRouteSpecs();
         inOrder.verify(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
         inOrder.verify(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
-        inOrder.verify(downloadService).resumePausedDownloads();
+        inOrder.verify(downloadService).resumePausedDownloads(eq(List.of("Solo Leveling", "Trigun")));
+        verify(downloadService, never()).resumePausedDownloads();
+    }
+
+    @Test
+    void rotateNowInternalDisconnectsAndResumesOnlyAffectedTitlesWhenRouteRestoreFails() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+        Process openVpnProcess = mock(Process.class);
+        AtomicBoolean processAlive = new AtomicBoolean(true);
+
+        when(openVpnProcess.isAlive()).thenAnswer(invocation -> processAlive.get());
+        doAnswer(invocation -> {
+            processAlive.set(false);
+            return null;
+        }).when(openVpnProcess).destroy();
+        when(openVpnProcess.waitFor(anyLong(), any(TimeUnit.class))).thenAnswer(invocation -> {
+            processAlive.set(false);
+            return true;
+        });
+
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
+        when(downloadService.resumePausedDownloads(eq(List.of("Solo Leveling")))).thenReturn(1);
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doAnswer(invocation -> {
+            ReflectionTestUtils.setField(vpnServices, "openVpnProcess", openVpnProcess);
+            ReflectionTestUtils.setField(vpnServices, "connectionState", "connected");
+            return null;
+        }).when(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
+        doThrow(new IOException("route restore failed"))
+                .doNothing()
+                .when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        doReturn("198.51.100.30").when(vpnServices).resolvePublicIp();
+
+        VpnRotationResult result = ReflectionTestUtils.invokeMethod(vpnServices, "rotateNowInternal", "manual", false);
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.message()).contains("route restore failed");
+        assertThat(vpnServices.getStatus().isConnected()).isFalse();
+        verify(downloadService).resumePausedDownloads(eq(List.of("Solo Leveling")));
+        verify(downloadService, never()).resumePausedDownloads();
+        verify(openVpnProcess, atLeastOnce()).destroy();
+    }
+
+    @Test
+    void testLoginRejectsDuplicateRequestsWhileAnotherProbeIsRunning() throws Exception {
+        when(loggerService.getDownloadsRoot()).thenReturn(tempDir);
+        writeCachedProfile("us_california", "198.51.100.10");
+
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+        doAnswer(invocation -> {
+            Thread.sleep(300L);
+            return preservedRoutes;
+        }).when(vpnServices).captureLocalRouteSpecs();
+        doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+
+        Path fakeOpenVpn = writeFakeOpenVpnCommand("""
+                @echo off
+                echo AUTH_FAILED
+                exit /b 1
+                """);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<VpnLoginTestResult> firstAttempt = executor.submit(
+                    () -> vpnServices.testLogin("manual", "us_california", "pia-user", "pia-secret")
+            );
+
+            AtomicBoolean inProgress = (AtomicBoolean) ReflectionTestUtils.getField(vpnServices, "loginTestInProgress");
+            assertThat(inProgress).isNotNull();
+            waitForCondition("Timed out waiting for Raven VPN login test reservation.", inProgress::get);
+
+            VpnLoginTestResult duplicate = vpnServices.testLogin("manual", "us_california", "pia-user", "pia-secret");
+
+            assertThat(duplicate.ok()).isFalse();
+            assertThat(duplicate.message()).isEqualTo("A VPN login test is already in progress.");
+            assertThat(firstAttempt.get(10, TimeUnit.SECONDS).ok()).isFalse();
+        } finally {
+            executor.shutdownNow();
+            Files.deleteIfExists(fakeOpenVpn);
+        }
+    }
+
+    @Test
+    void testLoginRestoresLocalRoutesWhenProbeFails() throws Exception {
+        when(loggerService.getDownloadsRoot()).thenReturn(tempDir);
+        writeCachedProfile("us_california", "198.51.100.10");
+
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+
+        Path fakeOpenVpn = writeFakeOpenVpnCommand("""
+                @echo off
+                echo AUTH_FAILED
+                exit /b 1
+                """);
+        try {
+            VpnLoginTestResult result = vpnServices.testLogin("manual", "us_california", "pia-user", "pia-secret");
+
+            assertThat(result.ok()).isFalse();
+            assertThat(result.message()).contains("Login test failed");
+            verify(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        } finally {
+            Files.deleteIfExists(fakeOpenVpn);
+        }
+    }
+
+    @Test
+    void getStatusUsesConfiguredRegionWhileOpenVpnIsStillConnecting() throws Exception {
+        VPNServices vpnServices = new VPNServices(settingsService, downloadService, loggerService);
+        Process openVpnProcess = mock(Process.class);
+
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_texas"));
+        ReflectionTestUtils.setField(vpnServices, "openVpnProcess", openVpnProcess);
+        ReflectionTestUtils.setField(vpnServices, "connectionState", "connecting");
+        ReflectionTestUtils.setField(vpnServices, "currentRegion", "us_california");
+
+        assertThat(vpnServices.getStatus().isConnected()).isFalse();
+        assertThat(vpnServices.getStatus().getRegion()).isEqualTo("us_texas");
     }
 
     @Test
@@ -306,6 +476,75 @@ class VPNServicesTest {
                 "",
                 ""
         );
+    }
+
+    /**
+     * Creates an enabled Raven VPN settings snapshot with credentials for rotation and login tests.
+     *
+     * @param region The configured Raven VPN region.
+     * @return The enabled VPN settings snapshot.
+     */
+    private DownloadVpnSettings enabledVpnSettings(String region) {
+        return new DownloadVpnSettings(
+                "downloads.vpn",
+                "pia",
+                true,
+                false,
+                false,
+                30,
+                region,
+                "pia-user",
+                "pia-secret"
+        );
+    }
+
+    /**
+     * Writes a cached archive marker plus a matching profile so Raven resolves the requested region without refreshing.
+     *
+     * @param region   The region id Raven should resolve.
+     * @param endpoint The remote endpoint to embed in the profile.
+     * @throws Exception When the cache marker or profile cannot be written.
+     */
+    private void writeCachedProfile(String region, String endpoint) throws Exception {
+        Path archivePath = tempDir.resolve("vpn").resolve("pia").resolve("openvpn-ip.zip");
+        Files.createDirectories(archivePath.getParent());
+        Files.writeString(archivePath, "cached", StandardCharsets.UTF_8);
+        Path profilePath = tempDir.resolve("vpn").resolve("pia").resolve("profiles").resolve(region + ".ovpn");
+        writeProfile(profilePath, endpoint);
+    }
+
+    /**
+     * Writes a temporary fake OpenVPN command into the Gradle working directory so probe tests stay deterministic.
+     *
+     * @param scriptBody The Windows batch script contents.
+     * @return The created command path.
+     * @throws Exception When the command file cannot be written.
+     */
+    private Path writeFakeOpenVpnCommand(String scriptBody) throws Exception {
+        Path commandPath = Path.of("openvpn.cmd").toAbsolutePath();
+        Files.writeString(
+                commandPath,
+                scriptBody.replace("\n", "\r\n"),
+                StandardCharsets.UTF_8
+        );
+        return commandPath;
+    }
+
+    /**
+     * Polls a condition until it becomes true or the test times out.
+     *
+     * @param failureMessage The failure message to surface on timeout.
+     * @param condition      The condition to evaluate.
+     * @throws InterruptedException When the wait is interrupted.
+     */
+    private void waitForCondition(String failureMessage, BooleanSupplier condition) throws InterruptedException {
+        for (int attempt = 0; attempt < 50; attempt++) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(100L);
+        }
+        throw new AssertionError(failureMessage);
     }
 
     /**
