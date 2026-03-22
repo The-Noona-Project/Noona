@@ -2,1145 +2,507 @@
 
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Badge, Button, Card, Column, Heading, Row, Text} from "@once-ui-system/core";
-import styles from "./RebootingPage.module.scss";
+import {
+    normalizeRebootMonitorOperation,
+    REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
+    resolveRebootMonitorMonitoredServices,
+    resolveRebootMonitorRequest,
+    resolveRebootMonitorRequiredServices,
+} from "./rebootMonitorOperations.mjs";
 import {
     buildRebootMonitorTargetKey,
     clearRebootMonitorSession,
-    prioritizeRebootMonitorServices,
     readRebootMonitorSession,
     writeRebootMonitorSession,
 } from "./rebootMonitorSession";
 
-type ServiceCatalogEntry = {
-    name?: string | null;
-    description?: string | null;
-    installed?: boolean | null;
-};
-
-type ServiceCatalogResponse = {
-    services?: ServiceCatalogEntry[] | null;
-    error?: string;
-};
-
-type ServiceHealthResponse = {
-    success?: boolean | null;
-    supported?: boolean | null;
-    status?: string | number | null;
-    detail?: string | null;
-    error?: string | null;
-    body?: unknown;
-};
-
 type MonitorPhase = "preparing" | "updating" | "waiting" | "verifying" | "complete" | "failed";
-type ServiceStep = "monitoring" | "queued" | "updating" | "current" | "updated" | "waiting" | "healthy" | "failed";
-type BadgeBackground =
-    | "neutral-alpha-weak"
-    | "brand-alpha-weak"
-    | "warning-alpha-weak"
-    | "success-alpha-weak"
-    | "danger-alpha-weak";
-type ProgressBackground = "brand-alpha-medium" | "success-alpha-medium" | "danger-alpha-medium";
-type SectionTone = "neutral" | "success" | "warning";
-
-type HealthSnapshot = {
-    success: boolean | null;
-    supported: boolean | null;
-    detail: string;
-    status: string;
-    checkedAt: number | null;
-};
-
-type ServiceMonitorEntry = {
+type ServiceState = {
     service: string;
     target: boolean;
-    step: ServiceStep;
+    step: "queued" | "monitoring" | "updating" | "requesting" | "waiting" | "healthy" | "current" | "updated" | "failed";
     detail: string;
-    updated: boolean;
-    restarted: boolean;
-    error: string | null;
     attempts: number;
-    health: HealthSnapshot | null;
+    error: string | null;
+    health?: {
+        success: boolean | null;
+        supported: boolean | null;
+        running: boolean | null;
+        detail: string;
+        status: string;
+        checkedAt: number | null
+    };
 };
 
-const POLL_INTERVAL_MS = 2500;
-const REBOOT_TIMEOUT_MS = 12 * 60 * 1000;
-const STABILITY_POLLS_REQUIRED = 2;
+type Props = { operationParam?: string | null; servicesParam?: string | null; returnToParam?: string | null };
+
 const RETURN_TO_DEFAULT = "/settings/warden";
-const CORE_SERVICES = ["noona-warden", "noona-redis", "noona-vault", "noona-moon", "noona-sage"] as const;
-const CORE_SERVICE_SET = new Set<string>(CORE_SERVICES);
-const DETAIL_PREVIEW_LIMIT = 180;
-const SERVICE_LABELS: Record<string, string> = {
-    "noona-warden": "Warden",
-    "noona-moon": "Moon",
-    "noona-sage": "Sage",
-    "noona-vault": "Vault",
-    "noona-redis": "Redis",
-    "noona-mongo": "Mongo",
-    "noona-portal": "Portal",
-    "noona-raven": "Raven",
-    "noona-kavita": "Kavita",
-    "noona-komf": "Komf",
-};
-const SERVICE_DESCRIPTIONS: Record<string, string> = {
-    "noona-warden": "Orchestrator and health source for the managed stack.",
-    "noona-vault": "Shared storage and settings layer.",
-    "noona-redis": "Session and live-state store required while Sage validates admin requests.",
-    "noona-moon": "Primary web console. If this disappears, the monitor waits for the UI to return.",
-    "noona-sage": "Auth, setup, and settings proxy layer.",
-    "noona-mongo": "Document database for Noona state.",
-    "noona-portal": "Discord bridge and metadata helpers.",
-    "noona-raven": "Downloader and library worker.",
-    "noona-kavita": "Reader and library server.",
-    "noona-komf": "Metadata enrichment helper.",
+const POLL_INTERVAL_MS = 2500;
+const TIMEOUT_MS = 12 * 60 * 1000;
+const STABILITY_POLLS_REQUIRED = 2;
+const LABELS: Record<string, string> = {
+    "noona-warden": "Warden", "noona-sage": "Sage", "noona-moon": "Moon", "noona-mongo": "Mongo",
+    "noona-redis": "Redis", "noona-vault": "Vault", "noona-portal": "Portal", "noona-raven": "Raven",
+    "noona-kavita": "Kavita", "noona-komf": "Komf",
 };
 
-const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
-const targetKeyFor = (services: string[], returnTo: string): string => buildRebootMonitorTargetKey(services, returnTo);
+const s = (v: unknown) => typeof v === "string" ? v.trim() : "";
+const list = (v: unknown) => Array.isArray(v) ? Array.from(new Set(v.map((x) => s(x)).filter(Boolean))) : [];
+const parseServices = (v: string | null) => list(s(v).split(","));
+const normalizeReturnTo = (v: string | null) => s(v).startsWith("/") ? s(v) : RETURN_TO_DEFAULT;
+const label = (name: string) => LABELS[name] || name.replace(/^noona-/, "").replace(/-/g, " ");
+const parseApiError = (payload: any, fallback: string) => s(payload?.error) || fallback;
+const shouldPause = (message: string) => /failed to fetch|networkerror|load failed|all backends failed|fetch failed|http 50[234]|unauthorized/i.test(message);
+const badge = (step: ServiceState["step"]) =>
+    step === "healthy" ? ["Healthy", "success-alpha-weak"] as const :
+        step === "failed" ? ["Error", "danger-alpha-weak"] as const :
+            step === "waiting" ? ["Waiting", "warning-alpha-weak"] as const :
+                step === "updating" || step === "requesting" || step === "updated" ? ["Working", "brand-alpha-weak"] as const :
+                    [step === "monitoring" ? "Watching" : "Queued", "neutral-alpha-weak"] as const;
 
-const clampPercent = (value: number): number => {
-    if (!Number.isFinite(value)) return 0;
-    return Math.max(0, Math.min(100, Math.round(value)));
-};
-
-const collapseWhitespace = (value: string): string => value.replace(/\s+/g, " ").trim();
-
-const looksLikeHtml = (value: string): boolean => {
-    const normalized = value.trim().toLowerCase();
-    return normalized.startsWith("<!doctype html")
-        || normalized.includes("<html")
-        || normalized.includes("<head")
-        || normalized.includes("<body")
-        || normalized.includes("<script");
-};
-
-const summarizeDetail = (
-    value: unknown,
-    options: { success?: boolean | null; supported?: boolean | null } = {},
-): string => {
-    const normalized = collapseWhitespace(normalizeString(value));
-    if (!normalized) {
-        if (options.supported === false) {
-            return "No health endpoint is defined for this service.";
-        }
-        return options.success === true ? "Healthy." : "Waiting for a healthy response.";
-    }
-    if (looksLikeHtml(normalized)) {
-        return options.success === true
-            ? "Service responded, but the probe returned an HTML page instead of a compact health payload."
-            : "Health probe returned an HTML page instead of a compact error response.";
-    }
-    if (normalized.length <= DETAIL_PREVIEW_LIMIT) {
-        return normalized;
-    }
-    return `${normalized.slice(0, DETAIL_PREVIEW_LIMIT - 3).trimEnd()}...`;
-};
-
-const parseServicesParam = (raw: string | null): string[] => {
-    const value = normalizeString(raw).trim();
-    if (!value) return [];
-
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const entry of value.split(",")) {
-        const trimmed = entry.trim();
-        if (!trimmed || seen.has(trimmed)) continue;
-        seen.add(trimmed);
-        out.push(trimmed);
-    }
-    return out;
-};
-
-const normalizeReturnTo = (raw: string | null): string => {
-    const value = normalizeString(raw).trim();
-    if (!value.startsWith("/")) {
-        return RETURN_TO_DEFAULT;
-    }
-    return value;
-};
-
-const parseApiError = (payload: { error?: unknown } | null | undefined, fallback: string): string => {
-    const message = typeof payload?.error === "string" ? payload.error.trim() : "";
-    return message || fallback;
-};
-
-const shouldPauseForRecovery = (message: string): boolean => {
-    const normalized = normalizeString(message).toLowerCase();
-    if (!normalized) return false;
-    return normalized.includes("failed to fetch")
-        || normalized.includes("networkerror")
-        || normalized.includes("load failed")
-        || normalized.includes("all backends failed")
-        || normalized.includes("fetch failed")
-        || normalized.includes("operation was aborted")
-        || normalized.includes("http 502")
-        || normalized.includes("http 503")
-        || normalized.includes("http 504")
-        || normalized.includes("http 401")
-        || normalized === "unauthorized."
-        || normalized === "unauthorized"
-        || normalized.includes("unable to validate session");
-};
-
-const serviceLabel = (serviceName: string): string =>
-    SERVICE_LABELS[serviceName] || serviceName.replace(/^noona-/, "").replace(/-/g, " ");
-
-const serviceDescription = (serviceName: string, catalogByName: Record<string, ServiceCatalogEntry>): string =>
-    normalizeString(catalogByName[serviceName]?.description).trim()
-    || SERVICE_DESCRIPTIONS[serviceName]
-    || "Monitoring service health.";
-
-const buildMonitorEntry = (service: string, target: boolean): ServiceMonitorEntry => ({
-    service,
-    target,
-    step: target ? "queued" : "monitoring",
-    detail: target ? "Queued for update orchestration." : "Watching service health.",
-    updated: false,
-    restarted: false,
-    error: null,
-    attempts: 0,
-    health: null,
-});
-
-const buildInitialMonitorState = (
-    monitoredServices: string[],
-    targetSet: Set<string>,
-): Record<string, ServiceMonitorEntry> => {
-    const out: Record<string, ServiceMonitorEntry> = {};
-    for (const service of monitoredServices) {
-        out[service] = buildMonitorEntry(service, targetSet.has(service));
-    }
-    return out;
-};
-
-const normalizeHealthStatus = (value: unknown): string => {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return `HTTP ${Math.floor(value)}`;
-    }
-    const text = normalizeString(value).trim();
-    return text || "Unknown";
-};
-
-const extractHealthDetail = (payload: ServiceHealthResponse | null | undefined): string => {
-    if (typeof payload?.detail === "string" && payload.detail.trim()) {
-        return summarizeDetail(payload.detail, {
-            success: payload.success,
-            supported: payload.supported,
-        });
-    }
-    if (typeof payload?.error === "string" && payload.error.trim()) {
-        return summarizeDetail(payload.error, {
-            success: payload.success,
-            supported: payload.supported,
-        });
-    }
-    if (payload?.body && typeof payload.body === "object") {
-        const record = payload.body as Record<string, unknown>;
-        const detail = normalizeString(record.message).trim() || normalizeString(record.detail).trim();
-        if (detail) {
-            return summarizeDetail(detail, {
-                success: payload.success,
-                supported: payload.supported,
-            });
-        }
-    }
-    if (typeof payload?.body === "string" && payload.body.trim()) {
-        return summarizeDetail(payload.body, {
-            success: payload.success,
-            supported: payload.supported,
-        });
-    }
-    if (payload?.success === true) {
-        return summarizeDetail("Healthy.", {success: true, supported: payload.supported});
-    }
-    if (payload?.supported === false) {
-        return summarizeDetail("No health endpoint is defined for this service.", {
-            success: payload.success,
-            supported: false,
-        });
-    }
-    return summarizeDetail("Waiting for a healthy response.", {
-        success: payload?.success,
-        supported: payload?.supported,
-    });
-};
-
-const sectionBadge = (tone: SectionTone): BadgeBackground => {
-    switch (tone) {
-        case "success":
-            return "success-alpha-weak";
-        case "warning":
-            return "warning-alpha-weak";
-        default:
-            return "neutral-alpha-weak";
-    }
-};
-
-const sectionBorder = (tone: SectionTone): BadgeBackground => {
-    switch (tone) {
-        case "success":
-            return "success-alpha-weak";
-        case "warning":
-            return "warning-alpha-weak";
-        default:
-            return "neutral-alpha-weak";
-    }
-};
-
-const isControlPlaneReady = (states: Record<string, ServiceMonitorEntry>): boolean =>
-    CORE_SERVICES.every((service) => states[service]?.health?.success === true);
-
-const isTargetStable = (entry: ServiceMonitorEntry | undefined): boolean => {
+const isStable = (entry: ServiceState | undefined, operation: string) => {
     if (!entry || !entry.target) return true;
-    if (entry.step === "failed") return true;
     if (entry.health?.success === true) return true;
-    if (entry.health?.supported === false) {
-        return entry.step === "current" || entry.step === "updated" || entry.step === "healthy";
-    }
-    return !entry.restarted && (entry.step === "current" || entry.step === "updated" || entry.step === "healthy");
+    if (entry.health?.supported === false && entry.health?.running === true) return true;
+    return normalizeRebootMonitorOperation(operation) === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES && entry.step === "failed";
 };
 
-const countTargetFailures = (states: Record<string, ServiceMonitorEntry>, services: string[]): number =>
-    services.filter((service) => states[service]?.step === "failed").length;
+const buildState = (services: string[], targets: Set<string>) => Object.fromEntries(
+    services.map((service) => [service, {
+        service,
+        target: targets.has(service),
+        step: targets.has(service) ? "queued" : "monitoring",
+        detail: targets.has(service) ? "Waiting for lifecycle orchestration." : "Watching service health.",
+        attempts: 0,
+        error: null,
+    } satisfies ServiceState]),
+);
 
-const formatTimestamp = (value: number | null): string => {
-    if (!value || !Number.isFinite(value)) return "Not yet";
-    return new Date(value).toLocaleTimeString();
-};
-
-const phaseBadgeBackground = (phase: MonitorPhase): BadgeBackground => {
-    switch (phase) {
-        case "complete":
-            return "success-alpha-weak";
-        case "failed":
-            return "danger-alpha-weak";
-        case "waiting":
-            return "warning-alpha-weak";
-        default:
-            return "brand-alpha-weak";
-    }
-};
-
-const stepBadge = (entry: ServiceMonitorEntry): { label: string; background: BadgeBackground } => {
-    switch (entry.step) {
-        case "monitoring":
-            return {label: "Watching", background: "neutral-alpha-weak"};
-        case "queued":
-            return {label: "Queued", background: "neutral-alpha-weak"};
-        case "updating":
-            return {label: "Updating", background: "brand-alpha-weak"};
-        case "current":
-            return {label: "Current", background: "neutral-alpha-weak"};
-        case "updated":
-            return {label: "Restarted", background: "brand-alpha-weak"};
-        case "waiting":
-            return {label: "Waiting", background: "warning-alpha-weak"};
-        case "healthy":
-            return {label: "Healthy", background: "success-alpha-weak"};
-        case "failed":
-            return {label: "Error", background: "danger-alpha-weak"};
-        default:
-            return {label: "Pending", background: "neutral-alpha-weak"};
-    }
-};
-
-const healthBadge = (entry: ServiceMonitorEntry): { label: string; background: BadgeBackground } => {
-    if (!entry.health) {
-        return {label: "No probe yet", background: "neutral-alpha-weak"};
-    }
-    if (entry.health.success === true) {
-        return {label: "Healthy", background: "success-alpha-weak"};
-    }
-    if (entry.health.supported === false) {
-        return {label: "No probe", background: "neutral-alpha-weak"};
-    }
-    if (entry.health.success === false) {
-        return {label: entry.target ? "Starting up" : "Unavailable", background: "warning-alpha-weak"};
-    }
-    return {label: "Checking", background: "neutral-alpha-weak"};
-};
-
-type RebootingPageProps = {
-    servicesParam?: string | null;
-    returnToParam?: string | null;
-};
-
-export function RebootingPage({servicesParam, returnToParam}: RebootingPageProps) {
-    const targetServices = useMemo(
-        () => prioritizeRebootMonitorServices(parseServicesParam(servicesParam ?? null)),
-        [servicesParam],
-    );
+export function RebootingPage({operationParam, servicesParam, returnToParam}: Props) {
+    const persisted = useMemo(() => readRebootMonitorSession(), []);
+    const operation = useMemo(() => normalizeRebootMonitorOperation(operationParam ?? persisted?.operation ?? null), [operationParam, persisted?.operation]);
+    const returnTo = useMemo(() => normalizeReturnTo(returnToParam ?? persisted?.returnTo ?? null), [persisted?.returnTo, returnToParam]);
+    const targetServices = useMemo(() => {
+        const fromQuery = parseServices(servicesParam ?? null);
+        return fromQuery.length > 0 ? fromQuery : persisted?.targetServices ?? [];
+    }, [persisted?.targetServices, servicesParam]);
+    const matched = persisted
+        && persisted.operation === operation
+        && persisted.returnTo === returnTo
+        && persisted.targetServices.join(",") === targetServices.join(",");
+    const requestMetadata = matched ? persisted?.requestMetadata ?? null : null;
+    const targetKey = useMemo(() => buildRebootMonitorTargetKey(operation, targetServices, returnTo, requestMetadata), [operation, requestMetadata, returnTo, targetServices]);
     const targetSet = useMemo(() => new Set(targetServices), [targetServices]);
-    const monitoredServices = useMemo(
-        () => [...new Set<string>([...CORE_SERVICES, ...targetServices])],
-        [targetServices],
-    );
-    const queueServices = useMemo(
-        () => targetServices.filter((service) => !CORE_SERVICE_SET.has(service)),
-        [targetServices],
-    );
-    const hasCoreTargets = useMemo(
-        () => targetServices.some((service) => CORE_SERVICE_SET.has(service)),
-        [targetServices],
-    );
-    const returnTo = useMemo(
-        () => normalizeReturnTo(returnToParam ?? null),
-        [returnToParam],
-    );
-    const targetKey = useMemo(
-        () => targetKeyFor(targetServices, returnTo),
-        [returnTo, targetServices],
-    );
+    const requiredServices = useMemo(() => resolveRebootMonitorRequiredServices(targetServices), [targetServices]);
+    const requiredSet = useMemo(() => new Set(requiredServices), [requiredServices]);
+    const monitoredServices = useMemo(() => resolveRebootMonitorMonitoredServices(targetServices), [targetServices]);
+    const secondaryServices = useMemo(() => targetServices.filter((name) => !requiredSet.has(name)), [requiredSet, targetServices]);
+    const actionCount = operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? targetServices.length : 1;
 
     const [phase, setPhase] = useState<MonitorPhase>("preparing");
-    const [phaseDetail, setPhaseDetail] = useState("Preparing reboot monitor...");
-    const [catalogByName, setCatalogByName] = useState<Record<string, ServiceCatalogEntry>>({});
-    const [serviceStates, setServiceStates] = useState<Record<string, ServiceMonitorEntry>>({});
+    const [phaseDetail, setPhaseDetail] = useState("Preparing lifecycle monitor...");
+    const [states, setStates] = useState<Record<string, ServiceState>>({});
+    const [catalog, setCatalog] = useState<Record<string, any>>({});
     const [currentIndex, setCurrentIndex] = useState(0);
     const [pageError, setPageError] = useState<string | null>(null);
     const [lastReachableAt, setLastReachableAt] = useState<number | null>(null);
-    const [stableSuccessCount, setStableSuccessCount] = useState(0);
-    const [sessionReady, setSessionReady] = useState(false);
+    const [stableCount, setStableCount] = useState(0);
+    const [requestStarted, setRequestStarted] = useState(false);
 
     const phaseRef = useRef<MonitorPhase>("preparing");
+    const statesRef = useRef<Record<string, ServiceState>>({});
     const currentIndexRef = useRef(0);
-    const stableSuccessCountRef = useRef(0);
-    const runnerActiveRef = useRef(false);
+    const stableCountRef = useRef(0);
     const startedRef = useRef(false);
-    const serviceStatesRef = useRef<Record<string, ServiceMonitorEntry>>({});
-    const monitorStartedAtRef = useRef(Date.now());
+    const requestStartedRef = useRef(false);
+    const startedAtRef = useRef(Date.now());
+    const runnerRef = useRef(false);
 
-    const setPhaseState = (nextPhase: MonitorPhase, detail?: string) => {
-        phaseRef.current = nextPhase;
-        setPhase(nextPhase);
-        if (typeof detail === "string") {
-            setPhaseDetail(detail);
-        }
-    };
-
-    const setStableState = (value: number) => {
-        stableSuccessCountRef.current = value;
-        setStableSuccessCount(value);
-    };
-
-    const patchServiceState = (
-        service: string,
-        updater: Partial<ServiceMonitorEntry> | ((current: ServiceMonitorEntry) => ServiceMonitorEntry),
-    ) => {
-        setServiceStates((prev) => {
-            const current = prev[service] ?? buildMonitorEntry(service, targetSet.has(service));
-            const nextEntry = typeof updater === "function"
-                ? updater(current)
-                : {
-                    ...current,
-                    ...updater,
-                };
-            const next = {
-                ...prev,
-                [service]: nextEntry,
-            };
-            serviceStatesRef.current = next;
-            return next;
-        });
+    const patchState = (service: string, update: Partial<ServiceState>) => setStates((prev) => {
+        const next = {...prev, [service]: {...(prev[service] || buildState([service], targetSet)[service]), ...update}};
+        statesRef.current = next;
+        return next;
+    });
+    const setPhaseState = (next: MonitorPhase, detail: string) => {
+        phaseRef.current = next;
+        setPhase(next);
+        setPhaseDetail(detail);
     };
 
     useEffect(() => {
-        const nextState = buildInitialMonitorState(monitoredServices, targetSet);
-        setCatalogByName({});
-        serviceStatesRef.current = nextState;
-        setServiceStates(nextState);
-        currentIndexRef.current = 0;
-        setCurrentIndex(0);
-        setStableState(0);
-        monitorStartedAtRef.current = Date.now();
-        runnerActiveRef.current = false;
-        startedRef.current = false;
-        setSessionReady(false);
-
-        if (targetServices.length > 0) {
-            setPageError(null);
-            setPhaseState("preparing", "Preparing reboot monitor...");
-            return;
-        }
-
-        setPageError("No services were selected for reboot monitoring.");
-        setPhaseState("failed", "No services were selected for reboot monitoring.");
-    }, [monitoredServices, targetServices, targetSet]);
-
-    useEffect(() => {
-        if (targetServices.length === 0) {
-            clearRebootMonitorSession();
-            setSessionReady(true);
-            return;
-        }
-
-        const persisted = readRebootMonitorSession();
-        if (!persisted || persisted.targetKey !== targetKey) {
-            setSessionReady(true);
-            return;
-        }
-
-        const restoredPhase = (normalizeString(persisted.phase) as MonitorPhase) || "preparing";
-        const restoredStates =
-            persisted.serviceStates && typeof persisted.serviceStates === "object"
-                ? (persisted.serviceStates as Record<string, ServiceMonitorEntry>)
-                : buildInitialMonitorState(monitoredServices, targetSet);
-        const restoredIndex = Math.max(0, Math.min(targetServices.length, Number(persisted.currentIndex) || 0));
-        const restoredStable = Math.max(0, Number(persisted.stableSuccessCount) || 0);
-        const restoredStartedAt = Number(persisted.monitorStartedAt);
-
-        phaseRef.current = restoredPhase;
-        currentIndexRef.current = restoredIndex;
-        stableSuccessCountRef.current = restoredStable;
-        monitorStartedAtRef.current = Number.isFinite(restoredStartedAt) && restoredStartedAt > 0
-            ? restoredStartedAt
-            : monitorStartedAtRef.current;
-        serviceStatesRef.current = restoredStates;
-
-        setPhase(restoredPhase);
-        setPhaseDetail(normalizeString(persisted.phaseDetail) || "Preparing reboot monitor...");
-        setServiceStates(restoredStates);
-        setCurrentIndex(restoredIndex);
-        setPageError(normalizeString(persisted.pageError) || null);
-        setLastReachableAt(
-            Number.isFinite(Number(persisted.lastReachableAt)) && Number(persisted.lastReachableAt) > 0
-                ? Number(persisted.lastReachableAt)
-                : null,
-        );
-        setStableState(restoredStable);
-        setSessionReady(true);
-    }, [monitoredServices, targetKey, targetServices, targetSet]);
+        const restored = matched ? persisted : null;
+        const next = restored?.serviceStates && typeof restored.serviceStates === "object"
+            ? restored.serviceStates as Record<string, ServiceState>
+            : buildState(monitoredServices, targetSet);
+        statesRef.current = next;
+        setStates(next);
+        currentIndexRef.current = Math.max(0, Math.min(actionCount, Number(restored?.currentIndex) || 0));
+        stableCountRef.current = Math.max(0, Number(restored?.stableSuccessCount) || 0);
+        requestStartedRef.current = restored?.requestStarted === true;
+        startedAtRef.current = Number(restored?.monitorStartedAt) > 0 ? Number(restored?.monitorStartedAt) : Date.now();
+        startedRef.current = restored?.requestStarted === true;
+        runnerRef.current = false;
+        phaseRef.current = (s(restored?.phase) as MonitorPhase) || "preparing";
+        setPhase(phaseRef.current);
+        setPhaseDetail(s(restored?.phaseDetail) || "Preparing lifecycle monitor...");
+        setCurrentIndex(currentIndexRef.current);
+        setStableCount(stableCountRef.current);
+        setRequestStarted(requestStartedRef.current);
+        setPageError(s(restored?.pageError) || (targetServices.length === 0 ? "No services were selected for lifecycle monitoring." : null));
+        setLastReachableAt(Number(restored?.lastReachableAt) > 0 ? Number(restored?.lastReachableAt) : null);
+    }, [actionCount, matched, monitoredServices, persisted, targetServices.length, targetSet]);
 
     useEffect(() => {
-        if (!sessionReady || targetServices.length === 0) {
-            return;
-        }
-
+        if (targetServices.length === 0) return;
         writeRebootMonitorSession({
-            targetServices,
-            returnTo,
-            targetKey,
-            phase,
-            phaseDetail,
-            currentIndex,
-            pageError,
-            lastReachableAt,
-            stableSuccessCount,
-            serviceStates,
-            monitorStartedAt: monitorStartedAtRef.current,
-            updatedAt: Date.now(),
+            operation, targetServices, returnTo, requestMetadata, requestStarted, targetKey, phase, phaseDetail,
+            currentIndex, pageError, lastReachableAt, stableSuccessCount: stableCount, serviceStates: states,
+            monitorStartedAt: startedAtRef.current, updatedAt: Date.now(),
         });
-    }, [
-        currentIndex,
-        lastReachableAt,
-        pageError,
-        phase,
-        phaseDetail,
-        returnTo,
-        serviceStates,
-        stableSuccessCount,
-        targetKey,
-        targetServices,
-        sessionReady,
-    ]);
+    }, [currentIndex, lastReachableAt, operation, pageError, phase, phaseDetail, requestMetadata, requestStarted, returnTo, stableCount, states, targetKey, targetServices]);
 
-    const probeNowRef = useRef<() => Promise<boolean>>(async () => false);
-    probeNowRef.current = async () => {
+    const probeNow = async () => {
         try {
-            const catalogRes = await fetch("/api/noona/services", {cache: "no-store"});
-            const catalogJson = (await catalogRes.json().catch(() => null)) as ServiceCatalogResponse | null;
-            if (!catalogRes.ok) {
-                throw new Error(parseApiError(catalogJson, `Failed to load services (HTTP ${catalogRes.status}).`));
-            }
-
-            const services = Array.isArray(catalogJson?.services) ? catalogJson.services : [];
-            const nextCatalog: Record<string, ServiceCatalogEntry> = {};
-            for (const entry of services) {
-                const name = normalizeString(entry?.name).trim();
-                if (!name) continue;
-                nextCatalog[name] = entry;
-            }
-            setCatalogByName(nextCatalog);
+            const serviceRes = await fetch("/api/noona/services", {cache: "no-store"});
+            const payload = await serviceRes.json().catch(() => null);
+            if (!serviceRes.ok) throw new Error(parseApiError(payload, `Failed to load services (HTTP ${serviceRes.status}).`));
+            const byName = Object.fromEntries((Array.isArray(payload?.services) ? payload.services : []).map((entry: any) => [s(entry?.name), entry]));
+            setCatalog(byName);
             setLastReachableAt(Date.now());
 
-            const healthResults = await Promise.all(
-                monitoredServices.filter((service) => service !== "noona-warden").map(async (service) => {
-                    try {
-                        const res = await fetch(`/api/noona/services/${encodeURIComponent(service)}/health`, {cache: "no-store"});
-                        const json = (await res.json().catch(() => null)) as ServiceHealthResponse | null;
-                        if (!res.ok) {
-                            const supported = typeof json?.supported === "boolean"
-                                ? json.supported
-                                : res.status !== 404;
-                            return {
-                                service,
-                                success: false,
-                                supported,
-                                detail: supported
-                                    ? parseApiError(json, `Health check failed (HTTP ${res.status}).`)
-                                    : "No health endpoint is defined for this service.",
-                                status: supported ? `HTTP ${res.status}` : "Not supported",
-                            };
-                        }
-
-                        return {
-                            service,
-                            success: json?.success === true,
-                            supported: json?.supported !== false,
-                            detail: extractHealthDetail(json),
-                            status: normalizeHealthStatus(json?.status),
-                        };
-                    } catch (error_) {
-                        const message = error_ instanceof Error ? error_.message : String(error_);
-                        return {
-                            service,
-                            success: null,
-                            supported: null,
-                            detail: summarizeDetail(message),
-                            status: "",
-                        };
-                    }
-                }),
-            );
-            const normalizedHealthResults = monitoredServices.includes("noona-warden")
-                ? [
-                    {
-                        service: "noona-warden",
-                        success: true,
+            const results = await Promise.all(monitoredServices.filter((name) => name !== "noona-warden").map(async (name) => {
+                const running = byName[name]?.running === true;
+                try {
+                    const res = await fetch(`/api/noona/services/${encodeURIComponent(name)}/health`, {cache: "no-store"});
+                    const json = await res.json().catch(() => null);
+                    if (!res.ok && res.status === 404) return {
+                        name,
+                        success: running,
+                        supported: false,
+                        running,
+                        detail: running ? "Running without a dedicated health endpoint." : "No health endpoint is defined.",
+                        status: running ? "Running" : "Not running"
+                    };
+                    if (!res.ok) return {
+                        name,
+                        success: false,
                         supported: true,
-                        detail: "Moon can reach Warden and load the managed service catalog.",
-                        status: "Connected",
-                    },
-                    ...healthResults,
-                ]
-                : healthResults;
-
-            setServiceStates((prev) => {
-                const next = {...prev};
-                for (const result of normalizedHealthResults) {
-                    const current = next[result.service] ?? buildMonitorEntry(result.service, targetSet.has(result.service));
-                    next[result.service] = {
-                        ...current,
-                        step: current.step !== "failed" && current.target && result.success === true
-                            ? "healthy"
-                            : current.step,
-                        health: {
-                            success: result.success,
-                            supported: result.supported,
-                            detail: result.detail,
-                            status: result.status,
-                            checkedAt: Date.now(),
-                        },
+                        running,
+                        detail: parseApiError(json, `Health check failed (HTTP ${res.status}).`),
+                        status: `HTTP ${res.status}`
+                    };
+                    const supported = json?.supported !== false;
+                    return {
+                        name,
+                        success: supported ? json?.success === true : running,
+                        supported,
+                        running,
+                        detail: s(json?.detail) || (supported ? "Waiting for a healthy response." : "Running without a dedicated health endpoint."),
+                        status: s(json?.status) || (running ? "Running" : "Unknown")
+                    };
+                } catch (error) {
+                    return {
+                        name,
+                        success: false,
+                        supported: null,
+                        running,
+                        detail: error instanceof Error ? error.message : String(error),
+                        status: running ? "Running" : "Unknown"
                     };
                 }
-                serviceStatesRef.current = next;
-                return next;
-            });
+            }));
 
+            const next = {...statesRef.current};
+            next["noona-warden"] = {
+                ...(next["noona-warden"] || buildState(["noona-warden"], targetSet)["noona-warden"]),
+                health: {
+                    success: true,
+                    supported: true,
+                    running: true,
+                    detail: "Warden is reachable through Moon.",
+                    status: "Connected",
+                    checkedAt: Date.now()
+                },
+                step: next["noona-warden"]?.target ? "healthy" : next["noona-warden"]?.step || "monitoring"
+            };
+            for (const result of results) {
+                const current = next[result.name] || buildState([result.name], targetSet)[result.name];
+                next[result.name] = {
+                    ...current,
+                    health: {...result, checkedAt: Date.now()},
+                    step: current.step !== "failed" && current.target && result.success ? "healthy" : current.step
+                };
+            }
+            statesRef.current = next;
+            setStates(next);
             return true;
         } catch {
             return false;
         }
     };
 
-    const runUpdateQueueRef = useRef<() => Promise<void>>(async () => undefined);
-    runUpdateQueueRef.current = async () => {
-        if (runnerActiveRef.current || targetServices.length === 0) {
-            return;
-        }
-
-        runnerActiveRef.current = true;
+    const runMonitorAction = async () => {
+        if (runnerRef.current || targetServices.length === 0) return;
+        runnerRef.current = true;
         try {
-            setPhaseState("updating", "Applying updates and coordinating service restarts...");
-
-            while (currentIndexRef.current < targetServices.length) {
-                const serviceName = targetServices[currentIndexRef.current];
-                const label = serviceLabel(serviceName);
-
-                patchServiceState(serviceName, (current) => ({
-                    ...current,
-                    step: "updating",
-                    detail: current.attempts > 0 ? `Retrying ${label} image update...` : `Updating ${label} image...`,
-                    attempts: current.attempts + 1,
-                    error: null,
-                }));
-                setPhaseDetail(`Updating ${label}...`);
-
-                try {
-                    const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/update-image`, {
-                        method: "POST",
-                        headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify({restart: true}),
+            if (operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES) {
+                setPhaseState("updating", "Applying updates and coordinating service restarts...");
+                while (currentIndexRef.current < targetServices.length) {
+                    const name = targetServices[currentIndexRef.current];
+                    patchState(name, {
+                        step: "updating",
+                        detail: `Updating ${label(name)}...`,
+                        attempts: (statesRef.current[name]?.attempts || 0) + 1,
+                        error: null
                     });
-                    const json = await res.json().catch(() => null);
-                    if (!res.ok) {
-                        const message = parseApiError(
-                            json as { error?: unknown } | null,
-                            `Failed to update ${serviceName} (HTTP ${res.status}).`,
-                        );
-                        if (shouldPauseForRecovery(message)) {
-                            patchServiceState(serviceName, (current) => ({
-                                ...current,
-                                step: "waiting",
-                                detail: `Lost contact while updating ${label}. Will retry once the stack is reachable again.`,
-                                error: null,
-                            }));
-                            setStableState(0);
-                            setPhaseState("waiting", `Lost contact while updating ${label}. Waiting for services to come back...`);
+                    try {
+                        const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(name)}/update-image`, {
+                            method: "POST",
+                            headers: {"Content-Type": "application/json"},
+                            body: JSON.stringify({restart: true})
+                        });
+                        const json = await res.json().catch(() => null);
+                        if (!res.ok) {
+                            const message = parseApiError(json, `Failed to update ${name}.`);
+                            if (shouldPause(message)) {
+                                patchState(name, {
+                                    step: "waiting",
+                                    detail: `Lost contact while updating ${label(name)}.`
+                                });
+                                setPhaseState("waiting", `Lost contact while updating ${label(name)}.`);
+                                return;
+                            }
+                            patchState(name, {step: "failed", detail: message, error: message});
+                        } else {
+                            patchState(name, {
+                                step: json?.updated === true || json?.restarted === true ? "updated" : "current",
+                                detail: json?.updated === true ? `${label(name)} updated.` : `${label(name)} is already current.`
+                            });
+                        }
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        if (shouldPause(message)) {
+                            patchState(name, {step: "waiting", detail: `Lost contact while updating ${label(name)}.`});
+                            setPhaseState("waiting", `Lost contact while updating ${label(name)}.`);
                             return;
                         }
-
-                        patchServiceState(serviceName, (current) => ({
-                            ...current,
-                            step: "failed",
-                            detail: message,
-                            error: message,
-                        }));
-                        currentIndexRef.current += 1;
-                        setCurrentIndex(currentIndexRef.current);
-                        continue;
+                        patchState(name, {step: "failed", detail: message, error: message});
                     }
-
-                    const payload = (json ?? {}) as { updated?: boolean; restarted?: boolean };
-                    const updated = payload.updated === true;
-                    const restarted = payload.restarted === true;
-
-                    patchServiceState(serviceName, (current) => ({
-                        ...current,
-                        step: updated || restarted ? "updated" : "current",
-                        detail: updated
-                            ? restarted
-                                ? `${label} updated. Waiting for health checks to settle.`
-                                : `${label} image updated successfully.`
-                            : `${label} is already on the latest image.`,
-                        updated,
-                        restarted,
-                        error: null,
-                    }));
-
-                    currentIndexRef.current += 1;
-                    setCurrentIndex(currentIndexRef.current);
-                } catch (error_) {
-                    const message = error_ instanceof Error ? error_.message : String(error_);
-                    if (shouldPauseForRecovery(message)) {
-                        patchServiceState(serviceName, (current) => ({
-                            ...current,
-                            step: "waiting",
-                            detail: `The web UI lost contact while updating ${label}. Will retry when Moon is reachable again.`,
-                            error: null,
-                        }));
-                        setStableState(0);
-                        setPhaseState("waiting", `Lost contact while updating ${label}. Waiting for the stack to come back...`);
-                        return;
-                    }
-
-                    patchServiceState(serviceName, (current) => ({
-                        ...current,
-                        step: "failed",
-                        detail: message,
-                        error: message,
-                    }));
                     currentIndexRef.current += 1;
                     setCurrentIndex(currentIndexRef.current);
                 }
+                setPhaseState("verifying", "Updates applied. Waiting for stable services...");
+                return;
             }
 
-            setPhaseState("verifying", "Updates applied. Running health checks and waiting for stable services...");
+            if (requestStartedRef.current) return;
+            const request = resolveRebootMonitorRequest(operation, requestMetadata ?? {});
+            if (!request) {
+                setPageError("No lifecycle request is defined for this monitor operation.");
+                setPhaseState("failed", "No lifecycle request is defined for this monitor operation.");
+                return;
+            }
+            requestStartedRef.current = true;
+            setRequestStarted(true);
+            currentIndexRef.current = 1;
+            setCurrentIndex(1);
+            setPhaseState("updating", operation === "ecosystem-restart" ? "Sending ecosystem restart request..." : "Sending ecosystem start request...");
+            targetServices.forEach((name) => patchState(name, {
+                step: "requesting",
+                detail: "Waiting for lifecycle orchestration..."
+            }));
+            try {
+                const res = await fetch(request.path, {
+                    method: request.method,
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify(request.body ?? {})
+                });
+                const json = await res.json().catch(() => null);
+                if (!res.ok) {
+                    const message = parseApiError(json, `Lifecycle request failed (HTTP ${res.status}).`);
+                    if (shouldPause(message)) {
+                        setPhaseState("waiting", "Lost contact after sending the lifecycle request.");
+                        return;
+                    }
+                    targetServices.forEach((name) => patchState(name, {
+                        step: "failed",
+                        detail: message,
+                        error: message
+                    }));
+                    setPageError(message);
+                    setPhaseState("failed", message);
+                    return;
+                }
+                targetServices.forEach((name) => patchState(name, {
+                    step: "waiting",
+                    detail: "Lifecycle request sent. Waiting for health checks..."
+                }));
+                setPhaseState("verifying", "Lifecycle request sent. Waiting for stable services...");
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (shouldPause(message)) {
+                    setPhaseState("waiting", "Lost contact after sending the lifecycle request.");
+                    return;
+                }
+                targetServices.forEach((name) => patchState(name, {step: "failed", detail: message, error: message}));
+                setPageError(message);
+                setPhaseState("failed", message);
+            }
         } finally {
-            runnerActiveRef.current = false;
+            runnerRef.current = false;
         }
     };
 
     useEffect(() => {
-        if (targetServices.length === 0 || startedRef.current) {
-            return;
+        if (targetServices.length === 0 || phaseRef.current === "complete" || phaseRef.current === "failed") return;
+        if (operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES) {
+            if (phaseRef.current !== "waiting" && currentIndexRef.current < actionCount) void runMonitorAction();
+        } else if (!startedRef.current) {
+            startedRef.current = true;
+            void runMonitorAction();
         }
-        if (currentIndexRef.current >= targetServices.length || phaseRef.current === "complete" || phaseRef.current === "failed") {
-            return;
-        }
-        if (phaseRef.current === "waiting") {
-            return;
-        }
-        startedRef.current = true;
-        void runUpdateQueueRef.current();
-    }, [targetServices]);
+    }, [actionCount, operation, targetServices]);
 
     useEffect(() => {
-        if (targetServices.length === 0) {
-            return;
-        }
-
+        if (targetServices.length === 0) return;
         let cancelled = false;
         let timer: number | null = null;
-
         const tick = async () => {
-            if (cancelled) return;
-
-            if (Date.now() - monitorStartedAtRef.current >= REBOOT_TIMEOUT_MS) {
-                setPageError("Timed out waiting for Noona to finish rebooting.");
+            if (cancelled || phaseRef.current === "complete" || phaseRef.current === "failed") return;
+            if (Date.now() - startedAtRef.current >= TIMEOUT_MS) {
+                setPageError("Timed out waiting for Noona to stabilize.");
                 setPhaseState("failed", "Timed out waiting for Noona to stabilize.");
                 return;
             }
-            if (phaseRef.current === "complete" || phaseRef.current === "failed") {
-                return;
-            }
-
-            const reachable = await probeNowRef.current();
+            const reachable = await probeNow();
             if (cancelled) return;
-
             if (!reachable) {
-                setStableState(0);
+                stableCountRef.current = 0;
+                setStableCount(0);
                 setPhaseState("waiting", "Lost contact with Moon. Waiting for the web UI to return...");
             } else {
-                const states = serviceStatesRef.current;
-                const queueComplete = currentIndexRef.current >= targetServices.length;
-                const controlPlaneReady = isControlPlaneReady(states);
-                const targetsStable = targetServices.every((service) => isTargetStable(states[service]));
-
-                if (!queueComplete) {
-                    if (phaseRef.current === "waiting" && controlPlaneReady) {
-                        setPhaseState("updating", "Control plane recovered. Resuming queued updates...");
-                        void runUpdateQueueRef.current();
-                    }
-                } else if (controlPlaneReady && targetsStable) {
-                    const nextStable = stableSuccessCountRef.current + 1;
-                    setStableState(nextStable);
-                    if (nextStable >= STABILITY_POLLS_REQUIRED) {
-                        const failureCount = countTargetFailures(states, targetServices);
-                        setPhaseState(
-                            "complete",
-                            failureCount > 0
-                                ? "Reboot finished, but some services reported update errors. Review the list below."
-                                : "Noona is back online. Health checks are stable.",
-                        );
-                    } else {
-                        setPhaseState("verifying", "Services are responding. Verifying stability...");
-                    }
+                const requiredReady = requiredServices.every((name) => isStable(statesRef.current[name], operation));
+                const targetsReady = targetServices.every((name) => isStable(statesRef.current[name], operation));
+                const actionDone = currentIndexRef.current >= actionCount;
+                if (operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES && !actionDone && phaseRef.current === "waiting" && requiredReady) {
+                    setPhaseState("updating", "Required services recovered. Resuming update queue...");
+                    void runMonitorAction();
+                } else if (requiredReady && targetsReady && actionDone) {
+                    stableCountRef.current += 1;
+                    setStableCount(stableCountRef.current);
+                    setPhaseState(stableCountRef.current >= STABILITY_POLLS_REQUIRED ? "complete" : "verifying", stableCountRef.current >= STABILITY_POLLS_REQUIRED ? "Noona is back online. Health checks are stable." : "Services are responding. Verifying stability...");
                 } else {
-                    setStableState(0);
+                    stableCountRef.current = 0;
+                    setStableCount(0);
                     setPhaseState("verifying", "Waiting for services to report healthy...");
                 }
             }
-
-            timer = window.setTimeout(() => {
-                void tick();
-            }, POLL_INTERVAL_MS);
+            timer = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
         };
-
         void tick();
         return () => {
             cancelled = true;
-            if (timer != null) {
-                window.clearTimeout(timer);
-            }
+            if (timer != null) window.clearTimeout(timer);
         };
-    }, [monitoredServices, targetServices]);
+    }, [actionCount, operation, requiredServices, targetServices]);
 
-    const healthyTargets = useMemo(
-        () => targetServices.filter((service) => isTargetStable(serviceStates[service])).length,
-        [serviceStates, targetServices],
-    );
-    const failedTargets = useMemo(
-        () => countTargetFailures(serviceStates, targetServices),
-        [serviceStates, targetServices],
-    );
-    const progressPercent = useMemo(() => {
-        if (phase === "complete") return 100;
-        if (targetServices.length === 0) return 0;
-        const updateProgress = (currentIndex / targetServices.length) * 64;
-        const healthProgress = (healthyTargets / targetServices.length) * 24;
-        const phaseFloor = phase === "preparing"
-            ? 8
-            : phase === "waiting"
-                ? 22
-                : phase === "verifying"
-                    ? 70
-                    : 16;
-        return clampPercent(Math.max(phaseFloor, 8 + updateProgress + healthProgress));
-    }, [currentIndex, healthyTargets, phase, targetServices.length]);
-    const progressBackground: ProgressBackground = phase === "failed"
-        ? "danger-alpha-medium"
-        : phase === "complete"
-            ? "success-alpha-medium"
-            : "brand-alpha-medium";
-    const controlPlaneHealthy = isControlPlaneReady(serviceStates);
-    const heroTone: SectionTone = phase === "complete"
-        ? "success"
-        : phase === "waiting" || failedTargets > 0
-            ? "warning"
-            : "neutral";
-    const queueTone: SectionTone = failedTargets > 0
-        ? "warning"
-        : currentIndex >= targetServices.length && targetServices.length > 0
-            ? "success"
-            : "neutral";
-
-    const renderMetricTile = (
-        label: string,
-        value: string,
-        detail: string,
-        tone: SectionTone = "neutral",
-    ) => (
-        <Card
-            key={label}
-            background="surface"
-            border={sectionBorder(tone)}
-            padding="m"
-            radius="l"
-            className={styles.metricTile}
-        >
-            <Column gap="4">
-                <Text onBackground="neutral-weak" variant="label-default-xs">{label}</Text>
-                <Heading as="h3" variant="heading-strong-m">{value}</Heading>
-                <Text onBackground="neutral-weak" variant="body-default-xs" className={styles.secondaryDetail}>
-                    {detail}
-                </Text>
-            </Column>
-        </Card>
-    );
-
-    const renderServiceCard = (serviceName: string) => {
-        const entry = serviceStates[serviceName] ?? buildMonitorEntry(serviceName, targetSet.has(serviceName));
-        const step = stepBadge(entry);
-        const health = healthBadge(entry);
-        const healthDetail = entry.health?.detail || "Waiting for the next probe.";
-        const healthStatus = entry.health?.status ? ` Status: ${entry.health.status}.` : "";
-
-        return (
-            <Card
-                key={serviceName}
-                fillWidth
-                background="surface"
-                border={entry.step === "failed"
-                    ? "danger-alpha-weak"
-                    : entry.health?.success === true
-                        ? "success-alpha-weak"
-                        : "neutral-alpha-weak"}
-                padding="l"
-                radius="l"
-                className={styles.serviceCard}
-            >
-                <Column gap="12">
-                    <Row horizontal="between" gap="12" className={styles.serviceHeader}>
-                        <Column gap="4" className={styles.serviceTitleBlock}>
-                            <Heading as="h3" variant="heading-strong-m">{serviceLabel(serviceName)}</Heading>
-                            <Text onBackground="neutral-weak" variant="body-default-s"
-                                  className={styles.secondaryDetail}>
-                                {serviceDescription(serviceName, catalogByName)}
-                            </Text>
-                        </Column>
-                        <Row gap="8" className={styles.badgeRow}>
-                            <Badge background={step.background} onBackground="neutral-strong">{step.label}</Badge>
-                            <Badge background={health.background} onBackground="neutral-strong">{health.label}</Badge>
-                        </Row>
-                    </Row>
-                    <Text variant="body-default-s" className={styles.primaryDetail}>{entry.detail}</Text>
-                    <Text onBackground="neutral-weak" variant="body-default-xs" className={styles.secondaryDetail}>
-                        {healthDetail}
-                        {healthStatus}
-                        {entry.health?.checkedAt ? ` Last checked at ${formatTimestamp(entry.health.checkedAt)}.` : ""}
-                    </Text>
-                </Column>
-            </Card>
-        );
+    const healthyTargets = targetServices.filter((name) => isStable(states[name], operation)).length;
+    const failures = targetServices.filter((name) => states[name]?.step === "failed").length;
+    const progress = phase === "complete" ? 100 : Math.max(8, Math.min(100, Math.round((Math.min(currentIndex, actionCount) / Math.max(actionCount, 1)) * 64 + (healthyTargets / Math.max(targetServices.length, 1)) * 24 + (phase === "verifying" ? 12 : phase === "waiting" ? 14 : 8))));
+    const queueTitle = operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Update Queue" : "Lifecycle Target";
+    const render = (name: string) => {
+        const entry = states[name];
+        const [text, tone] = badge(entry?.step || "queued");
+        return <Card key={name} fillWidth background="surface"
+                     border={entry?.step === "failed" ? "danger-alpha-weak" : entry?.health?.success ? "success-alpha-weak" : "neutral-alpha-weak"}
+                     padding="l" radius="l"><Column gap="8"><Row horizontal="between" vertical="center" gap="12"
+                                                                 style={{flexWrap: "wrap"}}><Heading as="h3"
+                                                                                                     variant="heading-strong-m">{label(name)}</Heading><Row
+            gap="8"><Badge background={tone} onBackground="neutral-strong">{text}</Badge><Badge
+            background={entry?.health?.success ? "success-alpha-weak" : entry?.health?.supported === false && entry?.health?.running ? "success-alpha-weak" : "neutral-alpha-weak"}
+            onBackground="neutral-strong">{entry?.health?.success ? "Healthy" : entry?.health?.supported === false ? (entry?.health?.running ? "Running" : "No probe") : "Checking"}</Badge></Row></Row><Text
+            variant="body-default-s">{entry?.detail || "Waiting for lifecycle monitoring."}</Text><Text
+            onBackground="neutral-weak"
+            variant="body-default-xs">{entry?.health?.detail || "Waiting for the next health probe."}{entry?.health?.status ? ` Status: ${entry.health.status}.` : ""}{entry?.health?.checkedAt ? ` Last checked at ${new Date(entry.health.checkedAt).toLocaleTimeString()}.` : ""}</Text></Column></Card>;
     };
 
-    return (
-        <Column fillWidth horizontal="center" gap="20" paddingY="24" className={styles.pageShell}>
-            <Card
-                fillWidth
-                background="surface"
-                border={phase === "failed"
-                    ? "danger-alpha-weak"
-                    : phase === "complete"
-                        ? "success-alpha-weak"
-                        : "neutral-alpha-weak"}
-                padding="l"
-                radius="l"
-                className={styles.heroCard}
-            >
-                <Row fillWidth gap="24" className={styles.heroLayout}>
-                    <Column horizontal="center" gap="12" className={styles.heroVisual}>
-                        <Row fillWidth horizontal="center" className={styles.loaderStage}>
-                            <Row className={styles.orbitShell} aria-hidden="true">
-                                <Row className={styles.ringOuter}/>
-                                <Row className={styles.ringMiddle}/>
-                                <Row className={styles.ringInner}/>
-                                <Row className={styles.core}/>
-                                <Row className={`${styles.orb} ${styles.orbOne}`}/>
-                                <Row className={`${styles.orb} ${styles.orbTwo}`}/>
-                                <Row className={`${styles.orb} ${styles.orbThree}`}/>
-                            </Row>
-                        </Row>
-                        <Badge background={phaseBadgeBackground(phase)} onBackground="neutral-strong">
-                            {phase === "complete" ? "Stable" : phase === "failed" ? "Needs attention" : "Rebooting"}
-                        </Badge>
-                    </Column>
-
-                    <Column fillWidth gap="20" className={styles.heroCopy}>
-                        <Column gap="8">
-                            <Heading variant="display-strong-s">Rebooting</Heading>
-                            <Text variant="body-default-l" onBackground="neutral-weak" wrap="balance">
-                                {phaseDetail}
-                            </Text>
-                        </Column>
-
-                        <Column gap="8">
-                            <Row horizontal="between" vertical="center" gap="12" style={{flexWrap: "wrap"}}>
-                                <Text variant="body-default-s">Progress</Text>
-                                <Text variant="body-default-xs" onBackground="neutral-weak">{progressPercent}%</Text>
-                            </Row>
-                            <Row
-                                fillWidth
-                                background="neutral-alpha-weak"
-                                radius="m"
-                                style={{height: "0.85rem", overflow: "hidden"}}
-                            >
-                                <Row
-                                    background={progressBackground}
-                                    style={{
-                                        height: "100%",
-                                        width: `${progressPercent}%`,
-                                        transition: "width 320ms ease",
-                                    }}
-                                />
-                            </Row>
-                        </Column>
-
-                        <Row fillWidth gap="12" className={styles.metricsGrid}>
-                            {renderMetricTile(
-                                "Updated",
-                                `${Math.min(currentIndex, targetServices.length)}/${targetServices.length}`,
-                                currentIndex >= targetServices.length
-                                    ? "Queue finished."
-                                    : "Image updates still in flight.",
-                                queueTone,
-                            )}
-                            {renderMetricTile(
-                                "Healthy",
-                                `${healthyTargets}/${targetServices.length}`,
-                                controlPlaneHealthy ? "Control plane is reachable." : "Waiting for stable health probes.",
-                                controlPlaneHealthy ? "success" : "neutral",
-                            )}
-                            {renderMetricTile(
-                                "Failures",
-                                String(failedTargets),
-                                failedTargets > 0 ? "At least one target needs review." : "No failed targets yet.",
-                                failedTargets > 0 ? "warning" : "neutral",
-                            )}
-                            {renderMetricTile(
-                                "Last contact",
-                                formatTimestamp(lastReachableAt),
-                                lastReachableAt ? "Last successful stack probe." : "No successful probe yet.",
-                                lastReachableAt ? "success" : heroTone,
-                            )}
-                            {renderMetricTile(
-                                "Stability",
-                                `${stableSuccessCount}/${STABILITY_POLLS_REQUIRED}`,
-                                "Consecutive healthy polls required before exit.",
-                                stableSuccessCount > 0 ? "success" : "neutral",
-                            )}
-                        </Row>
-
-                        {pageError && (
-                            <Text onBackground="danger-strong" variant="body-default-s">{pageError}</Text>
-                        )}
-
-                        <Row gap="12" className={styles.actionRow}>
-                            <Button
-                                variant="secondary"
-                                onClick={() => {
-                                    clearRebootMonitorSession();
-                                    window.location.assign(returnTo);
-                                }}
-                            >
-                                Back to settings
-                            </Button>
-                            <Button variant="secondary" onClick={() => window.location.reload()}>
-                                Reload page
-                            </Button>
-                            <Button
-                                variant="primary"
-                                disabled={phase !== "waiting" && phase !== "verifying"}
-                                onClick={() => {
-                                    void probeNowRef.current();
-                                }}
-                            >
-                                Probe now
-                            </Button>
-                        </Row>
-                    </Column>
-                </Row>
-            </Card>
-
-            <Row fillWidth gap="20" className={styles.sectionGrid}>
-                <Card
-                    fillWidth
-                    background="surface"
-                    border={sectionBorder(controlPlaneHealthy ? "success" : "neutral")}
-                    padding="l"
-                    radius="l"
-                    className={styles.sectionCard}
-                >
-                    <Column gap="12">
-                        <Row horizontal="between" vertical="center" gap="12" className={styles.sectionHeader}>
-                            <Heading as="h2" variant="heading-strong-l">Control Plane</Heading>
-                            <Badge
-                                background={sectionBadge(controlPlaneHealthy ? "success" : "neutral")}
-                                onBackground="neutral-strong"
-                            >
-                                {CORE_SERVICES.length} services
-                            </Badge>
-                        </Row>
-                        <Text onBackground="neutral-weak" variant="body-default-s">
-                            These services need to come back cleanly before the reboot monitor can resume or finish.
-                        </Text>
-                        <Column gap="12" className={styles.serviceStack}>
-                            {CORE_SERVICES.map((serviceName) => renderServiceCard(serviceName))}
-                        </Column>
-                    </Column>
-                </Card>
-
-                <Card
-                    fillWidth
-                    background="surface"
-                    border={sectionBorder(queueTone)}
-                    padding="l"
-                    radius="l"
-                    className={styles.sectionCard}
-                >
-                    <Column gap="12">
-                        <Row horizontal="between" vertical="center" gap="12" className={styles.sectionHeader}>
-                            <Heading as="h2" variant="heading-strong-l">Update Queue</Heading>
-                            <Badge background={sectionBadge(queueTone)} onBackground="neutral-strong">
-                                {queueServices.length} queued
-                            </Badge>
-                        </Row>
-                        <Text onBackground="neutral-weak" variant="body-default-s">
-                            Targeted services are updated one at a time, then health probes wait for a stable stack.
-                        </Text>
-                        {hasCoreTargets && (
-                            <Text onBackground="neutral-weak" variant="body-default-xs"
-                                  className={styles.secondaryDetail}>
-                                Core targets such as Moon, Sage, and Vault are tracked in the Control Plane panel to
-                                avoid
-                                duplicate cards.
-                            </Text>
-                        )}
-                        {queueServices.length > 0 ? (
-                            <Column gap="12" className={styles.serviceStack}>
-                                {queueServices.map((serviceName) => renderServiceCard(serviceName))}
-                            </Column>
-                        ) : (
-                            <Column gap="8" vertical="center" className={styles.queueEmpty}>
-                                <Text variant="body-default-s">No non-core services are waiting in the queue.</Text>
-                                <Text onBackground="neutral-weak" variant="body-default-xs">
-                                    The remaining monitored targets are already represented in the Control Plane panel.
-                                </Text>
-                            </Column>
-                        )}
-                    </Column>
-                </Card>
-            </Row>
-        </Column>
-    );
+    return <Column fillWidth horizontal="center" gap="20" paddingY="24"><Card fillWidth background="surface"
+                                                                              border={phase === "failed" ? "danger-alpha-weak" : phase === "complete" ? "success-alpha-weak" : "neutral-alpha-weak"}
+                                                                              padding="l" radius="l"
+                                                                              style={{maxWidth: "96rem"}}><Column
+        gap="20"><Column gap="8"><Row gap="8" vertical="center" style={{flexWrap: "wrap"}}><Badge
+        background={phase === "complete" ? "success-alpha-weak" : phase === "failed" ? "danger-alpha-weak" : "brand-alpha-weak"}
+        onBackground="neutral-strong">{phase === "complete" ? "Stable" : phase === "failed" ? "Needs attention" : "Monitoring"}</Badge><Heading
+        variant="display-strong-s">{operation === "ecosystem-restart" ? "Restarting ecosystem" : operation === "ecosystem-start" || operation === "boot-start" ? "Starting ecosystem" : "Rebooting"}</Heading></Row><Text
+        variant="body-default-l" onBackground="neutral-weak">{phaseDetail}</Text></Column><Column gap="8"><Row
+        horizontal="between" vertical="center"><Text variant="body-default-s">Progress</Text><Text
+        variant="body-default-xs" onBackground="neutral-weak">{progress}%</Text></Row><Row fillWidth
+                                                                                           background="neutral-alpha-weak"
+                                                                                           radius="m" style={{
+        height: "0.85rem",
+        overflow: "hidden"
+    }}><Row
+        background={phase === "failed" ? "danger-alpha-medium" : phase === "complete" ? "success-alpha-medium" : "brand-alpha-medium"}
+        style={{height: "100%", width: `${progress}%`, transition: "width 320ms ease"}}/></Row></Column><Row gap="12"
+                                                                                                             style={{
+                                                                                                                 display: "grid",
+                                                                                                                 gridTemplateColumns: "repeat(auto-fit, minmax(11rem, 1fr))"
+                                                                                                             }}><Card
+        background="surface" border="neutral-alpha-weak" padding="m" radius="l"><Column gap="4"><Text
+        onBackground="neutral-weak"
+        variant="label-default-xs">{operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Updated" : "Operation"}</Text><Heading
+        as="h3" variant="heading-strong-m">{`${Math.min(currentIndex, actionCount)}/${actionCount}`}</Heading><Text
+        onBackground="neutral-weak"
+        variant="body-default-xs">{operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Queue progress." : requestStarted ? "Lifecycle request sent." : "Lifecycle request pending."}</Text></Column></Card><Card
+        background="surface" border="neutral-alpha-weak" padding="m" radius="l"><Column gap="4"><Text
+        onBackground="neutral-weak" variant="label-default-xs">Healthy</Text><Heading as="h3"
+                                                                                      variant="heading-strong-m">{`${healthyTargets}/${targetServices.length}`}</Heading><Text
+        onBackground="neutral-weak" variant="body-default-xs">Target services reporting stable
+        health.</Text></Column></Card><Card background="surface"
+                                            border={failures > 0 ? "warning-alpha-weak" : "neutral-alpha-weak"}
+                                            padding="m" radius="l"><Column gap="4"><Text onBackground="neutral-weak"
+                                                                                         variant="label-default-xs">Failures</Text><Heading
+        as="h3" variant="heading-strong-m">{String(failures)}</Heading><Text onBackground="neutral-weak"
+                                                                             variant="body-default-xs">Targets that
+        reported action errors.</Text></Column></Card><Card background="surface" border="neutral-alpha-weak" padding="m"
+                                                            radius="l"><Column gap="4"><Text onBackground="neutral-weak"
+                                                                                             variant="label-default-xs">Last
+        contact</Text><Heading as="h3"
+                               variant="heading-strong-m">{lastReachableAt ? new Date(lastReachableAt).toLocaleTimeString() : "Not yet"}</Heading><Text
+        onBackground="neutral-weak" variant="body-default-xs">Last successful stack probe.</Text></Column></Card><Card
+        background="surface" border="neutral-alpha-weak" padding="m" radius="l"><Column gap="4"><Text
+        onBackground="neutral-weak" variant="label-default-xs">Stability</Text><Heading as="h3"
+                                                                                        variant="heading-strong-m">{`${stableCount}/${STABILITY_POLLS_REQUIRED}`}</Heading><Text
+        onBackground="neutral-weak" variant="body-default-xs">Consecutive healthy polls required.</Text></Column></Card></Row>{pageError &&
+        <Text onBackground="danger-strong" variant="body-default-s">{pageError}</Text>}<Row gap="12"
+                                                                                            style={{flexWrap: "wrap"}}><Button
+        variant="secondary" onClick={() => {
+        clearRebootMonitorSession();
+        window.location.assign(returnTo);
+    }}>{phase === "complete" ? "Continue" : "Back"}</Button><Button variant="secondary"
+                                                                    onClick={() => window.location.reload()}>Reload
+        page</Button><Button variant="primary" disabled={phase === "failed" || phase === "complete"} onClick={() => {
+        void probeNow();
+    }}>Probe now</Button></Row></Column></Card><Row fillWidth gap="20" style={{
+        width: "100%",
+        maxWidth: "96rem",
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(24rem, 1fr))"
+    }}><Card fillWidth background="surface" border="neutral-alpha-weak" padding="l" radius="l"><Column gap="12"><Row
+        horizontal="between" vertical="center" style={{flexWrap: "wrap"}}><Heading as="h2" variant="heading-strong-l">Required
+        services</Heading><Badge background="neutral-alpha-weak"
+                                 onBackground="neutral-strong">{requiredServices.length} services</Badge></Row><Text
+        onBackground="neutral-weak" variant="body-default-s">Warden, Sage, and Moon must recover first. Mongo, Redis,
+        and Vault are also required when they are part of the requested lifecycle target.</Text><Column
+        gap="12">{requiredServices.map(render)}</Column></Column></Card><Card fillWidth background="surface"
+                                                                              border="neutral-alpha-weak" padding="l"
+                                                                              radius="l"><Column gap="12"><Row
+        horizontal="between" vertical="center" style={{flexWrap: "wrap"}}><Heading as="h2"
+                                                                                   variant="heading-strong-l">{queueTitle}</Heading><Badge
+        background="neutral-alpha-weak"
+        onBackground="neutral-strong">{secondaryServices.length} services</Badge></Row><Text onBackground="neutral-weak"
+                                                                                             variant="body-default-s">{operation === REBOOT_MONITOR_OPERATION_UPDATE_SERVICES ? "Targeted services are updated one at a time, then health probes wait for a stable stack." : "These selected services still need to return alongside the required control plane."}</Text>{secondaryServices.length > 0 ?
+        <Column gap="12">{secondaryServices.map(render)}</Column> :
+        <Text onBackground="neutral-weak" variant="body-default-xs">All requested targets are already represented in the
+            required-services panel.</Text>}</Column></Card></Row></Column>;
 }

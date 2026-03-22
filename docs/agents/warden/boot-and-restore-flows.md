@@ -23,8 +23,13 @@
 3. attach the Warden container to the control network
 4. ask whether setup is completed
 5. if not completed, check whether installed managed services imply a restore path
-6. boot full when setup is complete, `DEBUG=super`, or installed managed services exist
-7. otherwise boot minimal
+6. boot full only when `DEBUG=super` or an incomplete setup needs restore
+7. otherwise boot minimal, including the normal post-setup path
+
+That post-setup behavior is intentional.
+After setup is complete, `init()` should only restore `noona-sage` and `noona-moon`.
+Manual full-stack startup stays on `bootFull()` / `startEcosystem()`, and Moon's `/bootScreen` uses those existing
+lifecycle helpers instead of creating a second startup path.
 
 Containerized attach behavior is now strict:
 
@@ -95,6 +100,13 @@ Selection states:
 - `selected`: boot required core services + minimal services + the selected managed services
 - `unspecified`: fall back to installed-container detection or the broad lifecycle fallback
 
+`createWarden.mjs` exposes that persisted decision through `getSetupSelectionState()`.
+The public shape is:
+`selectionMode`,
+`selectedServices`,
+`lifecycleServices`,
+and `explicit`.
+
 ## Runtime Config Restore
 
 Runtime override loading happens before or during boot and has a specific precedence:
@@ -118,8 +130,17 @@ Minimal boot starts Sage and Moon only.
 
 If `AUTO_UPDATES` is enabled, Warden checks Sage and Moon images before minimal startup.
 
+## Service Catalog State
+
+- `listServices()` now exposes both `installed` and `running`.
+- `installed` means a matching managed container exists.
+- `running` means that container is currently up.
+- Boot, reboot, and manual-start readiness must not rely on `installed` alone because stopped containers still count as
+  installed.
+
 ## Start / Stop / Restart
 
+- `bootFull()` and `startEcosystem()` are the only supported full-stack/manual-start entry points.
 - `startEcosystem()` chooses minimal vs full unless the caller forces one.
 - `stopEcosystem()` stops the resolved managed lifecycle in reverse order unless it is restricted to tracked containers
   only.

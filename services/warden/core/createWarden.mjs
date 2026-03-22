@@ -4843,6 +4843,16 @@ export function createWarden(options = {}) {
         };
     };
 
+    api.getSetupSelectionState = async function getSetupSelectionState() {
+        const selectionState = await resolvePersistedSetupSelectionState();
+        return {
+            selectionMode: selectionState.mode,
+            selectedServices: Array.isArray(selectionState.selected) ? [...selectionState.selected] : [],
+            lifecycleServices: resolveLifecycleServiceNamesForSelectionState(selectionState),
+            explicit: selectionState.explicit === true,
+        };
+    };
+
     api.clearPersistedBootState = async function clearPersistedBootStateApi() {
         return clearPersistedBootState();
     };

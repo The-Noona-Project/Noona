@@ -74,4 +74,29 @@ class RavenWorkerLauncherTest {
                 "--raven.worker.execution-mode=process"
         );
     }
+
+    @Test
+    void resolveEnvironmentCorrectlyHandlesSpringBootJarUris() throws Exception {
+        java.net.URL jarUrl = new java.net.URL("jar:file:/app/app.jar!/BOOT-INF/classes!/");
+        RavenWorkerLauncher.JavaLaunchEnvironment environment = launcher.resolveEnvironmentFromProperties(
+                "/usr/lib/jvm/java-21",
+                "/app/app.jar",
+                jarUrl
+        );
+
+        assertThat(environment.codeSourcePath()).contains("app.jar");
+        // Path.of converts it to platform specific path, so we just check it ends with app.jar or equivalent
+        assertThat(environment.codeSourcePath().toLowerCase()).endsWith("app.jar");
+    }
+
+    @Test
+    void resolveEnvironmentFallsBackToClassPathIfSingleJar() throws Exception {
+        RavenWorkerLauncher.JavaLaunchEnvironment environment = launcher.resolveEnvironmentFromProperties(
+                "/usr/lib/jvm/java-21",
+                "/app/app.jar",
+                null
+        );
+
+        assertThat(environment.codeSourcePath()).isEqualTo("/app/app.jar");
+    }
 }

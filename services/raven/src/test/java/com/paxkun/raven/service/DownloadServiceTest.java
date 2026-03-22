@@ -283,7 +283,12 @@ class DownloadServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void queueBulkDownloadFiltersByPrefixAndSkipsAlreadyActiveTitles() throws InterruptedException {
-        when(titleScraper.browseTitlesAlphabetically("Manga", false)).thenReturn(new TitleScraper.BrowseResult(List.of(
+        when(titleScraper.normalizePrefixComparableTitle(anyString())).thenAnswer(invocation -> {
+            String raw = invocation.getArgument(0);
+            if (raw == null) return null;
+            return raw.replaceAll("^[^a-zA-Z0-9]+", "").trim();
+        });
+        when(titleScraper.browseTitlesAlphabetically(eq("Manga"), eq(false), anyString())).thenReturn(new TitleScraper.BrowseResult(List.of(
                 Map.of(
                         "title", "\"Ano and the Signal\"",
                         "href", "http://example.com/ano",
@@ -887,6 +892,156 @@ class DownloadServiceTest {
                     assertThat(progress.getCpuCoreId()).isEqualTo(7);
                     assertThat(progress.getExecutionMode()).isEqualTo("process");
                 });
+    }
+
+    @Test
+    void clearAllDownloadsSetsPauseRequestedAndClearsMemoryAndVault() {
+        DownloadProgress p1 = new DownloadProgress("Title 1");
+        p1.ensureTaskId("task-1");
+        DownloadProgress p2 = new DownloadProgress("Title 2");
+        p2.ensureTaskId("task-2");
+
+        Map<String, DownloadProgress> progressMap = (Map<String, DownloadProgress>) ReflectionTestUtils.getField(downloadService, "downloadProgress");
+        progressMap.put("Title 1", p1);
+        progressMap.put("Title 2", p2);
+
+        when(vaultService.findMany(eq("raven_download_tasks"), anyMap())).thenReturn(List.of(
+                Map.of("taskId", "task-1", "title", "Title 1", "status", "queued"),
+                Map.of("taskId", "task-2", "title", "Title 2", "status", "downloading")
+        ));
+        when(vaultService.parseJson(anyMap(), eq(DownloadProgress.class))).thenAnswer(invocation -> {
+            Map<String, Object> doc = invocation.getArgument(0);
+            DownloadProgress p = new DownloadProgress((String) doc.get("title"));
+            p.ensureTaskId((String) doc.get("taskId"));
+            ReflectionTestUtils.setField(p, "status", doc.get("status"));
+            return p;
+        });
+
+        downloadService.clearAllDownloads();
+
+        assertThat(p1.isPauseRequested()).isTrue();
+        assertThat(p2.isPauseRequested()).isTrue();
+        assertThat(progressMap).isEmpty();
+        verify(vaultService).delete(eq("raven_download_tasks"), argThat(query -> {
+            Map<String, Object> taskIdQuery = (Map<String, Object>) query.get("taskId");
+            List<String> ids = (List<String>) taskIdQuery.get("$in");
+            return ids.contains("task-1") && ids.contains("task-2") && ids.size() == 2;
+        }));
+    }
+
+    @Test
+    void resumePausedDownloadsReturnsZeroWhenNoPersistedPausedOrInterruptedTasksExist() {
+        when(vaultService.findMany(eq("raven_download_tasks"), anyMap())).thenReturn(List.of());
+
+        int resumed = downloadService.resumePausedDownloads();
+
+        assertThat(resumed).isZero();
+    }
+
+    @Test
+    void resumePausedDownloadsHandlesImmutableEmptyFallbackList() {
+        when(vaultService.findMany(eq("raven_download_tasks"), anyMap())).thenThrow(new RuntimeException("vault unavailable"));
+
+        int resumed = downloadService.resumePausedDownloads();
+
+        assertThat(resumed).isZero();
+    }
+
+    @Test
+    void resumePausedDownloadsResumesInterruptedTasks() {
+        long now = System.currentTimeMillis();
+        List<Map<String, Object>> docs = List.of(
+                new HashMap<>(Map.of(
+                        "taskId", "task-interrupted",
+                        "title", "Interrupted Title",
+                        "status", "interrupted",
+                        "queuedAt", now
+                )),
+                new HashMap<>(Map.of(
+                        "taskId", "task-paused",
+                        "title", "Paused Title",
+                        "status", "paused",
+                        "queuedAt", now + 100
+                ))
+        );
+        when(vaultService.findMany(eq("raven_download_tasks"), anyMap())).thenAnswer(invocation -> {
+            Map<String, Object> query = invocation.getArgument(1);
+            Object statusQuery = query.get("status");
+            if (!(statusQuery instanceof Map<?, ?> statusMap)) {
+                return List.of();
+            }
+            Object requestedStatuses = statusMap.get("$in");
+            if (!(requestedStatuses instanceof List<?> statuses)) {
+                return List.of();
+            }
+            return statuses.contains("paused") || statuses.contains("interrupted") ? docs : List.of();
+        });
+        when(vaultService.parseJson(anyMap(), eq(DownloadProgress.class))).thenAnswer(invocation -> {
+            Map<String, Object> doc = invocation.getArgument(0);
+            DownloadProgress progress = new DownloadProgress((String) doc.get("title"));
+            progress.ensureTaskId((String) doc.get("taskId"));
+            ReflectionTestUtils.setField(progress, "status", doc.get("status"));
+            ReflectionTestUtils.setField(progress, "queuedAt", doc.get("queuedAt"));
+            return progress;
+        });
+
+        int resumed = downloadService.resumePausedDownloads();
+
+        assertThat(resumed).isEqualTo(2);
+        ArgumentCaptor<Map<String, Object>> updateCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(vaultService, atLeast(2)).update(eq("raven_download_tasks"), anyMap(), updateCaptor.capture(), eq(true));
+        List<Map<String, Object>> persistedSnapshots = updateCaptor.getAllValues().stream()
+                .map(update -> (Map<String, Object>) update.get("$set"))
+                .toList();
+        assertThat(persistedSnapshots)
+                .extracting(snapshot -> snapshot.get("title"))
+                .contains("Interrupted Title", "Paused Title");
+        assertThat(persistedSnapshots)
+                .extracting(snapshot -> snapshot.get("status"))
+                .contains("recovering");
+        assertThat(persistedSnapshots)
+                .extracting(snapshot -> snapshot.get("recoveryState"))
+                .contains("resume");
+        assertThat(persistedSnapshots)
+                .extracting(snapshot -> snapshot.get("message"))
+                .contains("Resumed after Raven VPN rotation.");
+        assertThat(persistedSnapshots)
+                .extracting(snapshot -> snapshot.get("pauseRequested"))
+                .containsOnly(false);
+    }
+
+    @Test
+    void clearDownloadHistoryClearsMemoryAndVaultHistory() {
+        DownloadProgress p1 = new DownloadProgress("Title 1");
+        p1.ensureTaskId("task-1");
+        ReflectionTestUtils.setField(p1, "status", "completed");
+        DownloadProgress p2 = new DownloadProgress("Title 2");
+        p2.ensureTaskId("task-2");
+        ReflectionTestUtils.setField(p2, "status", "interrupted");
+
+        Collection<DownloadProgress> progressHistory = (Collection<DownloadProgress>) ReflectionTestUtils.getField(downloadService, "progressHistory");
+        progressHistory.add(p1);
+
+        when(vaultService.findMany(eq("raven_download_tasks"), anyMap())).thenReturn(List.of(
+                Map.of("taskId", "task-1", "title", "Title 1", "status", "completed"),
+                Map.of("taskId", "task-2", "title", "Title 2", "status", "interrupted")
+        ));
+        when(vaultService.parseJson(anyMap(), eq(DownloadProgress.class))).thenAnswer(invocation -> {
+            Map<String, Object> doc = invocation.getArgument(0);
+            DownloadProgress p = new DownloadProgress((String) doc.get("title"));
+            p.ensureTaskId((String) doc.get("taskId"));
+            ReflectionTestUtils.setField(p, "status", doc.get("status"));
+            return p;
+        });
+
+        downloadService.clearDownloadHistory();
+
+        assertThat(progressHistory).isEmpty();
+        verify(vaultService).delete(eq("raven_download_tasks"), argThat(query -> {
+            Map<String, Object> taskIdQuery = (Map<String, Object>) query.get("taskId");
+            List<String> ids = (List<String>) taskIdQuery.get("$in");
+            return ids.contains("task-1") && ids.contains("task-2") && ids.size() == 2;
+        }));
     }
 
     private void mockPersistedWorkerTaskReads(String taskId, AtomicBoolean pauseRequested, String sourceUrl) {

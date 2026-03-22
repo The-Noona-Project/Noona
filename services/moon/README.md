@@ -27,6 +27,10 @@ recommendations, and the day-to-day admin UI.
   re-enter the managed Kavita password when only the masked placeholder is available
 - saves the setup snapshot before direct install so Warden can derive the managed service plan from persisted setup
   state
+- redirects completed-but-not-started installs to the public shellless `/bootScreen` route instead of sending them
+  back into `/setupwizard`
+- starts the saved ecosystem from `/bootScreen` through the normal Warden lifecycle path instead of using a separate
+  startup flow
 - keeps the managed Kavita and Discord live preflight on the summary path, where the running services are available for
   browser-facing validation and handoff
 - opens the setup summary with one-shot warnings when those post-install live sync calls fail after the stack is already
@@ -38,6 +42,8 @@ recommendations, and the day-to-day admin UI.
 - provides the main settings and operations UI
 - lets admins keep Moon's published URL and optional Sage backend URL in sync from the service-links view when custom
   networking requires it
+- uses the shared `/rebooting` lifecycle monitor for boot-start, signed-in ecosystem start, signed-in ecosystem
+  restart, and update-all recovery flows
 - keeps post-setup navigation task-based with `Home`, `Library`, `Downloads`, `Requests`, `Admin`, and a header
   `Add download` action when permitted
 - plays the configured background track inside the signed-in app shell and keeps `Music` controls above `Display`

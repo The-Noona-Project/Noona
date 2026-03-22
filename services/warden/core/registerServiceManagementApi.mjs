@@ -1266,20 +1266,28 @@ export function registerServiceManagementApi(context = {}) {
         const entries = await Promise.all(
             formatted.map(async (service) => {
                 let installed = false;
+                let running = false;
 
                 if (dockerClient) {
                     try {
-                        installed = await dockerUtils.containerExists(service.name, {dockerInstance: dockerClient});
+                        if (typeof getContainerPresence === 'function') {
+                            const presence = await getContainerPresence(service.name, dockerClient);
+                            installed = presence?.exists === true;
+                            running = presence?.running === true;
+                        } else {
+                            installed = await dockerUtils.containerExists(service.name, {dockerInstance: dockerClient});
+                            running = installed;
+                        }
                     } catch (error) {
                         markDockerConnectionStale(error);
                         const message = error instanceof Error ? error.message : String(error);
                         logger.warn?.(
-                            `[${serviceName}] Failed to determine install status for ${service.name}: ${message}`,
+                            `[${serviceName}] Failed to determine container state for ${service.name}: ${message}`,
                         );
                     }
                 }
 
-                return {...service, installed};
+                return {...service, installed, running};
             }),
         );
 

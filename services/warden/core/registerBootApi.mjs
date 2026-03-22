@@ -409,13 +409,11 @@ export function registerBootApi(context = {}) {
         const detectedServices = setupCompleted || SUPER_MODE
             ? []
             : await resolveInstalledLifecycleServices(dockerClient);
-        const shouldBootFull = SUPER_MODE || setupCompleted || shouldRestoreManagedLifecycle(detectedServices);
+        const shouldBootFull = SUPER_MODE || (!setupCompleted && shouldRestoreManagedLifecycle(detectedServices));
 
         if (shouldBootFull) {
             if (SUPER_MODE) {
                 logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
-            } else if (setupCompleted) {
-                logger.log('[Warden] Setup marked complete — launching configured services.');
             } else {
                 logger.log('[Warden] Detected installed managed services — restoring configured stack.');
             }

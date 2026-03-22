@@ -1,3 +1,5 @@
+import {normalizeRebootMonitorOperation} from "./rebootMonitorOperations.mjs";
+
 const REBOOT_MONITOR_SESSION_STORAGE_KEY = "noona:reboot-monitor";
 const REBOOT_MONITOR_UPDATE_PRIORITY = [
     "noona-portal",
@@ -15,9 +17,12 @@ const REBOOT_MONITOR_UPDATE_PRIORITY_INDEX = new Map<string, number>(
 );
 
 type RebootMonitorPersistedSessionInput = {
+    operation?: string;
     targetServices: string[];
     returnTo: string;
     targetKey: string;
+    requestMetadata?: Record<string, unknown> | null;
+    requestStarted?: boolean;
     phase?: string;
     phaseDetail?: string;
     currentIndex?: number;
@@ -30,9 +35,12 @@ type RebootMonitorPersistedSessionInput = {
 };
 
 export type RebootMonitorPersistedSession = {
+    operation: string;
     targetServices: string[];
     returnTo: string;
     targetKey: string;
+    requestMetadata: Record<string, unknown> | null;
+    requestStarted: boolean;
     phase: string;
     phaseDetail: string;
     currentIndex: number;
@@ -49,6 +57,10 @@ const normalizeNumber = (value: unknown): number | null => {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : null;
 };
+const normalizeRequestMetadata = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
 
 const normalizeServiceList = (value: unknown): string[] => {
     if (!Array.isArray(value)) {
@@ -81,9 +93,25 @@ export const prioritizeRebootMonitorServices = (services: string[]): string[] =>
         return left.localeCompare(right);
     });
 
-export const buildRebootMonitorTargetKey = (targetServices: string[], returnTo: string): string => {
-    const services = prioritizeRebootMonitorServices(targetServices);
-    return `${services.join(",")}::${normalizeString(returnTo) || "/settings/warden"}`;
+const orderRebootMonitorServices = (operation: string, services: string[]): string[] =>
+    normalizeRebootMonitorOperation(operation) === "update-services"
+        ? prioritizeRebootMonitorServices(services)
+        : normalizeServiceList(services);
+
+export const buildRebootMonitorTargetKey = (
+    operation: string,
+    targetServices: string[],
+    returnTo: string,
+    requestMetadata: Record<string, unknown> | null = null,
+): string => {
+    const services = orderRebootMonitorServices(operation, targetServices);
+    const requestKey = requestMetadata ? JSON.stringify(requestMetadata) : "";
+    return [
+        normalizeRebootMonitorOperation(operation),
+        services.join(","),
+        normalizeString(returnTo) || "/settings/warden",
+        requestKey,
+    ].join("::");
 };
 
 const isBrowser = (): boolean => typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
@@ -104,9 +132,13 @@ export const readRebootMonitorSession = (): RebootMonitorPersistedSession | null
             return null;
         }
 
-        const targetServices = prioritizeRebootMonitorServices(parsed.targetServices);
+        const operation = normalizeRebootMonitorOperation(parsed.operation);
+        const targetServices = orderRebootMonitorServices(operation, parsed.targetServices);
         const returnTo = normalizeString(parsed.returnTo) || "/settings/warden";
-        const targetKey = normalizeString(parsed.targetKey) || buildRebootMonitorTargetKey(targetServices, returnTo);
+        const requestMetadata = normalizeRequestMetadata(parsed.requestMetadata);
+        const targetKey =
+            normalizeString(parsed.targetKey)
+            || buildRebootMonitorTargetKey(operation, targetServices, returnTo, requestMetadata);
         if (targetServices.length === 0 || !targetKey) {
             return null;
         }
@@ -122,9 +154,12 @@ export const readRebootMonitorSession = (): RebootMonitorPersistedSession | null
                 : {};
 
         return {
+            operation,
             targetServices,
             returnTo,
             targetKey,
+            requestMetadata,
+            requestStarted: parsed.requestStarted === true,
             phase: normalizeString(parsed.phase) || "preparing",
             phaseDetail: normalizeString(parsed.phaseDetail) || "Preparing reboot monitor...",
             currentIndex: Math.max(0, Math.floor(currentIndex ?? 0)),
@@ -145,18 +180,25 @@ export const writeRebootMonitorSession = (session: RebootMonitorPersistedSession
         return;
     }
 
-    const targetServices = prioritizeRebootMonitorServices(session.targetServices);
+    const operation = normalizeRebootMonitorOperation(session.operation);
+    const targetServices = orderRebootMonitorServices(operation, session.targetServices);
     const returnTo = normalizeString(session.returnTo) || "/settings/warden";
     if (targetServices.length === 0) {
         clearRebootMonitorSession();
         return;
     }
 
-    const targetKey = normalizeString(session.targetKey) || buildRebootMonitorTargetKey(targetServices, returnTo);
+    const requestMetadata = normalizeRequestMetadata(session.requestMetadata);
+    const targetKey =
+        normalizeString(session.targetKey)
+        || buildRebootMonitorTargetKey(operation, targetServices, returnTo, requestMetadata);
     const payload: RebootMonitorPersistedSession = {
+        operation,
         targetServices,
         returnTo,
         targetKey,
+        requestMetadata,
+        requestStarted: session.requestStarted === true,
         phase: normalizeString(session.phase) || "preparing",
         phaseDetail: normalizeString(session.phaseDetail) || "Preparing reboot monitor...",
         currentIndex: Math.max(0, Math.floor(normalizeNumber(session.currentIndex) ?? 0)),

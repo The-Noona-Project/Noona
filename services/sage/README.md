@@ -28,6 +28,8 @@ Raven-facing browser actions.
   persistence
 - keeps managed Kavita API-key provisioning running during that same Vault TLS warm-up window, even if Sage must defer
   mirroring the stored service-account snapshot into Vault-backed settings
+- reuses the managed Kavita API key that Warden already injected into Portal or Komf when the setup summary only needs
+  to sync dependent services after install, instead of forcing a second Kavita admin login
 - preserves Raven's real queue status and message for Moon instead of flattening every queue response into a generic
   success
 - normalizes backend failures into UI-friendly responses

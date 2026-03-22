@@ -108,6 +108,35 @@ test('updateServiceConfig preserves upstream status and payload for Warden valid
     )
 })
 
+test('getServiceConfig can request unredacted service env for trusted summary sync flows', async () => {
+    const client = createSetupClient({
+        baseUrl: 'http://noona-warden:4001',
+        fetchImpl: async (url) => {
+            const requestUrl = new URL(url)
+            if (requestUrl.pathname === '/api/services/noona-portal/config') {
+                assert.equal(requestUrl.searchParams.get('includeSecrets'), 'true')
+                return jsonResponse(200, {
+                    env: {
+                        KAVITA_API_KEY: 'existing-service-key',
+                    },
+                })
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`)
+        },
+        serviceName: 'test-sage',
+    })
+
+    assert.deepEqual(
+        await client.getServiceConfig('noona-portal', {includeSecrets: true}),
+        {
+            env: {
+                KAVITA_API_KEY: 'existing-service-key',
+            },
+        },
+    )
+})
+
 test('restartService preserves upstream status and payload for Warden restart conflicts', async () => {
     const client = createSetupClient({
         baseUrl: 'http://noona-warden:4001',

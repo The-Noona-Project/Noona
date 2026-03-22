@@ -31,6 +31,11 @@ import {
     prioritizeRebootMonitorServices,
     writeRebootMonitorSession,
 } from "./rebootMonitorSession";
+import {
+    REBOOT_MONITOR_OPERATION_ECOSYSTEM_RESTART,
+    REBOOT_MONITOR_OPERATION_ECOSYSTEM_START,
+    REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
+} from "./rebootMonitorOperations.mjs";
 import editorStyles from "./ConfigEditor.module.scss";
 import settingsStyles from "./SettingsPage.module.scss";
 import {
@@ -51,6 +56,7 @@ import {
     TAB_LABELS,
 } from "./settings";
 import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
+import {normalizeSetupStatus} from "./setupStatus.mjs";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -1605,6 +1611,62 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setEcosystemBusy(false);
         }
     };
+    const buildLifecycleMonitorReturnTo = () => {
+        const returnToCandidate = normalizeString(selection.href).trim();
+        return returnToCandidate.startsWith("/") ? returnToCandidate : getSettingsHrefForView("overview");
+    };
+    const openLifecycleMonitor = async (
+        operation: typeof REBOOT_MONITOR_OPERATION_ECOSYSTEM_START | typeof REBOOT_MONITOR_OPERATION_ECOSYSTEM_RESTART,
+        body: Record<string, unknown> = {},
+    ) => {
+        setEcosystemBusy(true);
+        setGlobalError(null);
+        setGlobalMessage(null);
+
+        try {
+            const response = await fetch("/api/noona/setup/status", {cache: "no-store"});
+            const payload = normalizeSetupStatus(await response.json().catch(() => null));
+            if (!response.ok) {
+                throw new Error(parseError(payload, `Failed to load lifecycle target state (HTTP ${response.status}).`));
+            }
+
+            const targetServices = payload.lifecycleServices;
+            if (targetServices.length === 0) {
+                throw new Error("No saved lifecycle target is available for ecosystem monitoring.");
+            }
+
+            const returnTo = buildLifecycleMonitorReturnTo();
+            const requestMetadata = {body};
+            const targetKey = buildRebootMonitorTargetKey(operation, targetServices, returnTo, requestMetadata);
+
+            writeRebootMonitorSession({
+                operation,
+                targetServices,
+                returnTo,
+                requestMetadata,
+                targetKey,
+                phase: "preparing",
+                phaseDetail: "Preparing lifecycle monitor...",
+                currentIndex: 0,
+                stableSuccessCount: 0,
+                serviceStates: {},
+                monitorStartedAt: Date.now(),
+                updatedAt: Date.now(),
+            });
+
+            const params = new URLSearchParams({
+                operation,
+                services: targetServices.join(","),
+                returnTo,
+            });
+            window.location.assign(`/rebooting?${params.toString()}`);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setGlobalError(msg);
+        } finally {
+            setEcosystemBusy(false);
+        }
+    };
     const downloadSetupConfigSnapshot = async () => {
         setSetupConfigBusy(true);
         setSetupConfigMessage(null);
@@ -3041,9 +3103,14 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 const returnToCandidate = normalizeString(selection.href).trim();
                 const returnTo = returnToCandidate.startsWith("/") ? returnToCandidate : getSettingsHrefForView("updater");
                 writeRebootMonitorSession({
+                    operation: REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
                     targetServices: services,
                     returnTo,
-                    targetKey: buildRebootMonitorTargetKey(services, returnTo),
+                    targetKey: buildRebootMonitorTargetKey(
+                        REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
+                        services,
+                        returnTo,
+                    ),
                     phase: "preparing",
                     phaseDetail: "Preparing reboot monitor...",
                     currentIndex: 0,
@@ -3053,6 +3120,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     updatedAt: Date.now(),
                 });
                 const params = new URLSearchParams({
+                    operation: REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
                     services: services.join(","),
                     returnTo,
                 });
@@ -3067,7 +3135,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
-    const restartEcosystem = async () => await updateEcosystemState("restart");
+    const restartEcosystem = async () => await openLifecycleMonitor(REBOOT_MONITOR_OPERATION_ECOSYSTEM_RESTART);
 
     useEffect(() => {
         void loadAuthStatus();
@@ -3898,7 +3966,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     </Text>
                     <Row gap="12" style={{flexWrap: "wrap"}}>
                         <Button variant="secondary" disabled={ecosystemBusy}
-                                onClick={() => void updateEcosystemState("start")}>
+                                onClick={() => void openLifecycleMonitor(REBOOT_MONITOR_OPERATION_ECOSYSTEM_START)}>
                             {ecosystemBusy ? "Working..." : "Start ecosystem"}
                         </Button>
                         <Button variant="primary" disabled={ecosystemBusy} onClick={() => void restartEcosystem()}>

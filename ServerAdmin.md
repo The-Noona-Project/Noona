@@ -70,6 +70,9 @@ Warden brings up the bootstrap services that Moon needs for setup. If Moon does 
 Warden's health payload now includes readiness metadata.
 If `/health` responds with `ready: false`, the API process is up but bootstrap is still in progress, so brief setup
 catalog or install-preview retries are expected during first boot.
+After setup is complete, a normal Warden restart still comes back in minimal mode first.
+That means `noona-sage` and `noona-moon` are restored immediately, while the saved ecosystem waits for a manual start
+from Moon's `/bootScreen`.
 
 ## 3. Complete First-Run Setup In Moon
 
@@ -94,10 +97,15 @@ Moon saves the setup snapshot before direct install so Warden can derive and app
 persisted profile.
 The managed Kavita plus Discord live preflight stays on the setup summary path, where those running services are
 available for browser-facing validation and handoff.
+When Portal or Komf already has the managed Kavita API key from install, Sage now reuses that installed key on the
+summary sync path instead of forcing a second Kavita admin login.
 If those live post-install sync calls fail after the stack is already installed, Moon now opens the summary anyway and
 shows one-shot warnings there instead of trapping you on the install tab.
 Warden derives the managed service storage wiring internally instead of persisting raw `NOONA_DATA_ROOT` overrides per
 service.
+Once setup is complete, later Warden restarts intentionally land on Moon's public `/bootScreen` when the saved
+ecosystem is not already running.
+Use `Start ecosystem` there to trigger the same lifecycle order Warden uses for full startup.
 
 ## 4. First Admin And Discord Notes
 
@@ -181,6 +189,10 @@ Updates:
 Restarts:
 
 - Use Moon `Admin -> System -> Overview` for ecosystem start, stop, and restart actions.
+- Start and restart now open Moon's shared `/rebooting` monitor and wait for required services to recover before
+  returning.
+- Seeing `/bootScreen` after a host or Warden reboot is expected when setup is complete but the saved ecosystem has not
+  been started yet.
 - Restart the Warden container itself when you update Warden or need to recover the control plane.
 
 Backups:
@@ -265,6 +277,8 @@ Users or permissions look wrong:
 Downloads, Kavita, or metadata flows fail after a reboot:
 
 - confirm the storage root persisted across the reboot
+- if Moon redirects to `/bootScreen`, use `Start ecosystem` there before treating missing Portal, Raven, Kavita, or
+  Komf containers as a restore failure
 - check service health and logs from Moon or Warden before changing settings by hand
 - if managed Kavita is enabled, expect Portal and Komf to reuse only validated Kavita plugin keys; stale recovered keys
   will now be replaced during setup or restore instead of being silently reused

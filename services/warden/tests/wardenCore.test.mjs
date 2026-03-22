@@ -670,16 +670,13 @@ test('stopService stops compose-style containers without removing them by defaul
     });
 });
 
-test('listServices returns sorted metadata with host URLs and install state', async () => {
-    const containerChecks = [];
-    const dockerInstance = createStubDocker();
-    const dockerUtils = {
-        containerExists: async (name, options = {}) => {
-            assert.equal(options?.dockerInstance, dockerInstance);
-            containerChecks.push(name);
-            return name === 'noona-redis';
-        },
-    };
+test('listServices returns sorted metadata with host URLs plus distinct installed and running state', async () => {
+    const dockerInstance = createStubDocker({
+        listContainers: async () => ([
+            {Names: ['/stack_noona-redis_1'], State: 'exited', Status: 'Exited (0) 5 seconds ago'},
+            {Names: ['/stack_noona-sage_1'], State: 'running', Status: 'Up 5 seconds'},
+        ]),
+    });
     const warnings = [];
     const warden = buildWarden({
         dockerInstance,
@@ -697,7 +694,6 @@ test('listServices returns sorted metadata with host URLs and install state', as
                 'noona-moon': { name: 'noona-moon', image: 'moon', port: 3000 },
             },
         },
-        dockerUtils,
         env: { HOST_SERVICE_URL: 'http://localhost' },
         hostDockerSockets: [],
         logger: { warn: (message) => warnings.push(message), log: () => {} },
@@ -716,6 +712,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             health: null,
             envConfig: [],
             installed: false,
+            running: false,
             required: false,
         },
         {
@@ -728,6 +725,7 @@ test('listServices returns sorted metadata with host URLs and install state', as
             health: null,
             envConfig: [],
             installed: true,
+            running: false,
             required: true,
         },
         {
@@ -739,21 +737,24 @@ test('listServices returns sorted metadata with host URLs and install state', as
             description: null,
             health: 'http://health',
             envConfig: [],
-            installed: false,
+            installed: true,
+            running: true,
             required: false,
         },
     ]);
-    assert.deepEqual(containerChecks, ['noona-moon', 'noona-redis', 'noona-sage']);
     assert.equal(warnings.length, 0);
 
     const redis = services.find((entry) => entry.name === 'noona-redis');
     assert.equal(redis?.required, true);
+    assert.equal(redis?.installed, true);
+    assert.equal(redis?.running, false);
     assert.equal(services.find((entry) => entry.name === 'noona-moon')?.required, false);
+    assert.equal(services.find((entry) => entry.name === 'noona-sage')?.running, true);
 
     const installable = await warden.listServices({ includeInstalled: false });
     assert.deepEqual(
         installable.map((service) => service.name),
-        ['noona-moon', 'noona-sage'],
+        ['noona-moon'],
     );
 });
 
@@ -5781,7 +5782,7 @@ test('setDebug persists runtime debug overrides for managed services', async () 
     );
 });
 
-test('init boots only the persisted setup selection in lifecycle order', async () => {
+test('init stays in minimal mode after setup completes', async () => {
     const dockerUtils = {
         ensureNetwork: async () => {
         },
@@ -5845,15 +5846,11 @@ test('init boots only the persisted setup selection in lifecycle order', async (
 
     const result = await warden.init();
 
-    assert.equal(result.mode, 'full');
+    assert.equal(result.mode, 'minimal');
+    assert.equal(result.setupCompleted, true);
     assert.deepEqual(started, [
-        'noona-mongo',
-        'noona-redis',
-        'noona-vault',
         'noona-sage',
         'noona-moon',
-        'noona-raven',
-        'noona-portal',
     ]);
 });
 

@@ -418,6 +418,18 @@ const createSetupClient = ({
                 error: null,
             }))
         },
+        async getSetupSelection() {
+            const response = await fetchFromWarden('/api/setup/selection', undefined, {
+                preserveHttpError: true,
+                coldStartRetry: true,
+            })
+            return await response.json().catch(() => ({
+                selectionMode: 'unspecified',
+                selectedServices: [],
+                lifecycleServices: [],
+                explicit: false,
+            }))
+        },
         async saveSetupConfig(snapshot = {}) {
             if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
                 throw new SetupValidationError('Setup config payload must be a JSON object.')
@@ -500,7 +512,9 @@ const createSetupClient = ({
                 throw new SetupValidationError('Service name must be a non-empty string.')
             }
 
-            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/health`)
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/health`, undefined, {
+                preserveHttpError: true,
+            })
             const payload = await response.json().catch(() => ({}))
 
             if (!response.ok) {
@@ -510,7 +524,7 @@ const createSetupClient = ({
 
             return payload
         },
-        async getServiceConfig(name) {
+        async getServiceConfig(name, options = {}) {
             if (!name || typeof name !== 'string') {
                 throw new SetupValidationError('Service name must be a non-empty string.')
             }
@@ -520,7 +534,8 @@ const createSetupClient = ({
                 throw new SetupValidationError('Service name must be a non-empty string.')
             }
 
-            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/config`, undefined, {
+            const query = options?.includeSecrets === true ? '?includeSecrets=true' : ''
+            const response = await fetchFromWarden(`/api/services/${encodeURIComponent(trimmed)}/config${query}`, undefined, {
                 preserveHttpError: true,
             })
             return await response.json().catch(() => ({}))

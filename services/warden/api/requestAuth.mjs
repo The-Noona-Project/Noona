@@ -168,6 +168,10 @@ export function resolveWardenPermission(req, url, segments = []) {
         return 'read-setup-config';
     }
 
+    if (req?.method === 'GET' && url?.pathname === '/api/setup/selection') {
+        return 'read-setup-config';
+    }
+
     if (req?.method === 'POST' && url?.pathname === '/api/setup/config') {
         return 'manage-setup-config';
     }

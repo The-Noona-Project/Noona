@@ -304,6 +304,25 @@ const redactServiceConfig = (config = {}) => {
     };
 };
 
+const exposeServiceConfigSecrets = (config = {}) => {
+    const redacted = redactServiceConfig(config);
+    const env = config?.env && typeof config.env === 'object' && !Array.isArray(config.env)
+        ? config.env
+        : {};
+    const runtimeEnv = config?.runtimeConfig?.env && typeof config.runtimeConfig.env === 'object' && !Array.isArray(config.runtimeConfig.env)
+        ? config.runtimeConfig.env
+        : {};
+
+    return {
+        ...redacted,
+        env,
+        runtimeConfig: {
+            ...(redacted.runtimeConfig || {}),
+            env: runtimeEnv,
+        },
+    };
+};
+
 const redactServiceList = (services = []) =>
     (Array.isArray(services) ? services : []).map((service) => ({
         ...service,
@@ -820,6 +839,22 @@ export const startWardenServer = ({
             return;
         }
 
+        if (req.method === 'GET' && url.pathname === '/api/setup/selection') {
+            try {
+                const selection = await warden.getSetupSelectionState?.();
+                sendJson(res, 200, selection ?? {
+                    selectionMode: 'unspecified',
+                    selectedServices: [],
+                    lifecycleServices: [],
+                    explicit: false,
+                });
+            } catch (error) {
+                logger.error?.(`[Warden API] Failed to load setup selection state: ${error.message}`);
+                sendMappedError(res, error, 500, 'Unable to load setup selection state.');
+            }
+            return;
+        }
+
         if (req.method === 'POST' && url.pathname === '/api/setup/config/normalize') {
             let body = {};
 
@@ -964,6 +999,9 @@ export const startWardenServer = ({
             segments[3] === 'config'
         ) {
             const serviceName = decodeURIComponent(segments[2]);
+            const includeSecrets =
+                requesterServiceName === 'noona-sage'
+                && parseTruthyQueryValue(url.searchParams.get('includeSecrets'));
             try {
                 const config = await warden.getServiceConfig?.(serviceName);
                 if (!config) {
@@ -971,7 +1009,11 @@ export const startWardenServer = ({
                     return;
                 }
 
-                sendJson(res, 200, redactServiceConfig(config));
+                sendJson(
+                    res,
+                    200,
+                    includeSecrets ? exposeServiceConfigSecrets(config) : redactServiceConfig(config),
+                );
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to load config for ${serviceName}: ${error.message}`);
                 sendMappedError(res, error, 500, `Unable to retrieve configuration for ${serviceName}.`);
@@ -1126,7 +1168,7 @@ export const startWardenServer = ({
                 sendJson(res, 200, result ?? {});
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to start ecosystem: ${error.message}`);
-                sendJson(res, 500, {error: 'Unable to start ecosystem.'});
+                sendMappedError(res, error, 500, 'Unable to start ecosystem.');
             }
             return;
         }

@@ -3,10 +3,10 @@
  * Related files:
  * - app/portalRuntime.mjs
  * - tests/ravenClient.test.mjs
- * Times this file has been edited: 10
+ * Times this file has been edited: 11
  */
 
-const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_TIMEOUT_MS = 60000;
 
 const normalizeUrl = (candidate) => {
     if (typeof candidate !== 'string') {
@@ -65,9 +65,14 @@ const normalizeString = (value) => {
     const trimmed = value.trim();
     return trimmed || null;
 };
-const normalizeCount = (value) => {
+
+const parseNonNegativeCount = (value) => {
     const parsed = Number.parseInt(String(value ?? ''), 10);
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const normalizeCount = (value) => {
+    return parseNonNegativeCount(value) ?? 0;
 };
 
 const normalizeStringList = (value) => {
@@ -78,6 +83,33 @@ const normalizeStringList = (value) => {
     return value
         .map((entry) => normalizeString(entry))
         .filter(Boolean);
+};
+
+/**
+ * Normalizes a bulk queue count while accepting both current and legacy Raven field names.
+ *
+ * @param {object} payload - Raven bulk queue payload.
+ * @param {string} primaryKey - Current field name.
+ * @param {string} legacyKey - Legacy field name.
+ * @returns {number} Normalized non-negative count.
+ */
+const normalizeBulkCount = (payload, primaryKey, legacyKey) =>
+    parseNonNegativeCount(payload?.[primaryKey]) ?? parseNonNegativeCount(payload?.[legacyKey]) ?? 0;
+
+/**
+ * Normalizes a bulk queue string list while accepting both current and legacy Raven field names.
+ *
+ * @param {object} payload - Raven bulk queue payload.
+ * @param {string} primaryKey - Current field name.
+ * @param {string} legacyKey - Legacy field name.
+ * @returns {string[]} Normalized string list.
+ */
+const normalizeBulkStringList = (payload, primaryKey, legacyKey) => {
+    if (Array.isArray(payload?.[primaryKey])) {
+        return normalizeStringList(payload[primaryKey]);
+    }
+
+    return normalizeStringList(payload?.[legacyKey]);
 };
 
 const normalizeRelatedSeries = (value) => {
@@ -106,6 +138,14 @@ const normalizeRelatedSeries = (value) => {
         })
         .filter(Boolean);
 };
+
+/**
+ * Normalizes Raven bulk queue responses into Portal's stable external shape.
+ *
+ * @param {*} value - Raw Raven response payload.
+ * @param {object} request - Original Portal request body.
+ * @returns {object} Normalized bulk queue result.
+ */
 const normalizeBulkQueueResult = (value, request) => {
     const payload = value && typeof value === 'object' ? value : {};
     const filters = payload.filters && typeof payload.filters === 'object' ? payload.filters : {};
@@ -120,10 +160,10 @@ const normalizeBulkQueueResult = (value, request) => {
         pagesScanned: normalizeCount(payload.pagesScanned),
         matchedCount: normalizeCount(payload.matchedCount),
         queuedCount: normalizeCount(payload.queuedCount),
-        skippedActiveCount: normalizeCount(payload.skippedActiveCount),
+        skippedActiveCount: normalizeBulkCount(payload, 'skippedActiveCount', 'skippedCount'),
         failedCount: normalizeCount(payload.failedCount),
         queuedTitles: normalizeStringList(payload.queuedTitles),
-        skippedActiveTitles: normalizeStringList(payload.skippedActiveTitles),
+        skippedActiveTitles: normalizeBulkStringList(payload, 'skippedActiveTitles', 'skippedTitles'),
         failedTitles: normalizeStringList(payload.failedTitles),
     };
 };
@@ -246,6 +286,27 @@ export const createPortalRavenClient = ({
             return Array.isArray(payload) ? payload : [];
         },
         getDownloadSummary: async () => await request('/v1/download/status/summary'),
+        pauseDownloads: async () => await request('/v1/download/pause', {
+            method: 'POST',
+        }),
+        resumeDownloads: async () => await request('/v1/download/status/resume', {
+            method: 'POST',
+        }),
+        clearDownloadStatus: async (titleName) => {
+            const normalized = typeof titleName === 'string' ? titleName.trim() : '';
+            if (!normalized) {
+                throw new Error('titleName is required.');
+            }
+            return await request(`/v1/download/status/${encodeURIComponent(normalized)}`, {
+                method: 'DELETE',
+            });
+        },
+        clearAllDownloads: async () => await request('/v1/download/status', {
+            method: 'DELETE',
+        }),
+        clearDownloadHistory: async () => await request('/v1/download/status/history', {
+            method: 'DELETE',
+        }),
         getLibrary: async () => {
             const payload = await request('/v1/library/getall');
             return Array.isArray(payload) ? payload : [];
@@ -398,7 +459,7 @@ export const createPortalRavenClient = ({
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify(requestBody),
-                acceptStatuses: [409],
+                acceptStatuses: [207, 400, 409],
             });
 
             return normalizeBulkQueueResult(payload, requestBody);

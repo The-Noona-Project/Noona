@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
- * Times this file has been edited: 34
+ * Times this file has been edited: 35
  */
 package com.paxkun.raven.service;
 
@@ -152,13 +152,28 @@ public class DownloadService {
 
         if (isProcessWorkerMain()) {
             startWorkerSupervisor();
-            restorePersistedDownloadsForProcessMode();
-            dispatchQueuedProcessWorkers();
+            // Restoring downloads can be a heavy operation that blocks startup.
+            // Run it in a background thread to ensure Spring Boot starts quickly and health checks pass.
+            CompletableFuture.runAsync(() -> {
+                try {
+                    restorePersistedDownloadsForProcessMode();
+                    dispatchQueuedProcessWorkers();
+                } catch (Exception e) {
+                    logger.error("DOWNLOAD_SERVICE", "⚠️ Failed to async restore process-mode downloads", e);
+                }
+            });
             return;
         }
 
         ensureExecutor();
-        restorePersistedDownloadsForThreadMode();
+        // Offload restoration to avoid blocking Spring initialization
+        CompletableFuture.runAsync(() -> {
+            try {
+                restorePersistedDownloadsForThreadMode();
+            } catch (Exception e) {
+                logger.error("DOWNLOAD_SERVICE", "⚠️ Failed to async restore thread-mode downloads", e);
+            }
+        });
     }
 
     /**
@@ -358,7 +373,7 @@ public class DownloadService {
                         " | nsfw=" + nsfw +
                         " | titlePrefix=" + sanitizeForLog(normalizedPrefix));
 
-        TitleScraper.BrowseResult browseResult = titleScraper.browseTitlesAlphabetically(normalizedType, nsfw);
+        TitleScraper.BrowseResult browseResult = titleScraper.browseTitlesAlphabetically(normalizedType, nsfw, normalizedPrefix);
         List<Map<String, String>> matchedTitles = filterTitlesByPrefix(
                 browseResult != null ? browseResult.titles() : List.of(),
                 normalizedPrefix
@@ -384,6 +399,26 @@ public class DownloadService {
         List<String> skippedActiveTitles = new ArrayList<>();
         List<String> failedTitles = new ArrayList<>();
 
+        // Load all active tasks once to avoid redundant database calls in the loop
+        List<DownloadProgress> activeTasks = loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES));
+        Set<String> activeTitleNames = new HashSet<>();
+        for (DownloadProgress p : activeTasks) {
+            if (p.getTitle() != null) {
+                activeTitleNames.add(p.getTitle());
+            }
+        }
+        // Also add currently in-memory active downloads
+        for (String activeTitle : activeDownloads.keySet()) {
+            if (activeTitle != null) {
+                activeTitleNames.add(activeTitle);
+            }
+        }
+        for (DownloadProgress p : downloadProgress.values()) {
+            if (p != null && p.getTitle() != null && ACTIVE_TASK_STATUSES.contains(normalizeStatus(p.getStatus()))) {
+                activeTitleNames.add(p.getTitle());
+            }
+        }
+
         for (Map<String, String> selectedTitle : matchedTitles) {
             String titleName = normalizeQueueTitle(selectedTitle != null ? selectedTitle.get("title") : null);
             String titleUrl = selectedTitle != null ? selectedTitle.get("href") : null;
@@ -395,7 +430,7 @@ public class DownloadService {
                 continue;
             }
 
-            if (isTaskActive(titleName)) {
+            if (activeTitleNames.contains(titleName)) {
                 skippedActiveTitles.add(titleName);
                 logger.info("DOWNLOAD", "Skipping already active download: " + titleName);
                 continue;
@@ -405,6 +440,8 @@ public class DownloadService {
                 DownloadProgress progress = createQueuedProgress(titleName, selectedTitle, "library-download");
                 queueProgressForExecution(titleName, selectedTitle, progress);
                 queuedTitles.add(titleName);
+                // Mark as active so we don't queue it twice if matchedTitles has duplicates (unlikely but safe)
+                activeTitleNames.add(titleName);
             } catch (Exception e) {
                 failedTitles.add(titleName);
                 logger.warn(
@@ -469,18 +506,24 @@ public class DownloadService {
             return false;
         }
 
+        // Check in-memory status first (much faster than REST call to Vault)
+        DownloadProgress inMemoryProgress = downloadProgress.get(titleName);
+        if (inMemoryProgress != null && ACTIVE_TASK_STATUSES.contains(normalizeStatus(inMemoryProgress.getStatus()))) {
+            return true;
+        }
+
+        if (activeDownloads.containsKey(titleName)) {
+            return true;
+        }
+
+        // Fallback to Vault check for tasks that might be active in other workers or recently restored
         for (DownloadProgress progress : loadPersistedTasks(new ArrayList<>(ACTIVE_TASK_STATUSES))) {
             if (titleName.equals(progress.getTitle())) {
                 return true;
             }
         }
 
-        DownloadProgress progress = downloadProgress.get(titleName);
-        if (progress == null) {
-            return activeDownloads.containsKey(titleName);
-        }
-
-        return ACTIVE_TASK_STATUSES.contains(normalizeStatus(progress.getStatus()));
+        return false;
     }
 
     /**
@@ -636,22 +679,37 @@ public class DownloadService {
     /**
      * Resumes paused downloads.
      *
-     * @return The resulting count or numeric value.
+     * @return The number of resumed tasks.
      */
 
     public int resumePausedDownloads() {
-        List<DownloadProgress> pausedTasks = loadPersistedTasks(List.of("paused"));
-        pausedTasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
+        return resumeDownloadsWithStatuses(List.of("paused", "interrupted"), "Resumed after Raven VPN rotation.");
+    }
+
+    /**
+     * Resumes downloads with the provided statuses.
+     *
+     * @param statuses The statuses to resume.
+     * @param message  The message to set on resumed tasks.
+     * @return The count of resumed tasks.
+     */
+
+    public int resumeDownloadsWithStatuses(List<String> statuses, String message) {
+        List<DownloadProgress> tasks = new ArrayList<>(loadPersistedTasks(statuses));
+        if (tasks.isEmpty()) {
+            return 0;
+        }
+        tasks.sort(Comparator.comparingLong(DownloadProgress::getQueuedAt));
         int resumed = 0;
-        for (DownloadProgress progress : pausedTasks) {
+        for (DownloadProgress progress : tasks) {
             String titleName = progress.getTitle();
             if (titleName == null || titleName.isBlank() || isTaskActive(titleName)) {
                 continue;
             }
 
             progress.setPauseRequested(false);
-            progress.markRecoveredFromCache("vpn-rotation-resume");
-            progress.setMessage("Resumed after Raven VPN rotation.");
+            progress.markRecoveredFromCache("resume");
+            progress.setMessage(message);
             persistTaskSnapshot(progress);
 
             if (isProcessWorkerMain()) {
@@ -2135,14 +2193,18 @@ public class DownloadService {
     */
 
     public void clearDownloadStatus(String titleName) {
+        DownloadProgress progress = downloadProgress.get(titleName);
+        if (progress != null) {
+            progress.setPauseRequested(true);
+        }
         downloadProgress.remove(titleName);
-        progressHistory.removeIf(progress -> progress.getTitle().equals(titleName));
+        progressHistory.removeIf(p -> p.getTitle().equals(titleName));
         activeDownloads.remove(titleName);
 
         try {
-            for (DownloadProgress progress : loadPersistedTasksByTitle(titleName)) {
-                if (progress.getTaskId() != null && !progress.getTaskId().isBlank()) {
-                    vaultService.delete(TASK_COLLECTION, Map.of("taskId", progress.getTaskId()));
+            for (DownloadProgress p : loadPersistedTasksByTitle(titleName)) {
+                if (p.getTaskId() != null && !p.getTaskId().isBlank()) {
+                    vaultService.delete(TASK_COLLECTION, Map.of("taskId", p.getTaskId()));
                 }
             }
 
@@ -2155,6 +2217,107 @@ public class DownloadService {
         }
 
         logger.debug("DOWNLOAD_SERVICE", "Cleared progress entry for title=" + sanitizeForLog(titleName));
+    }
+
+    /**
+     * Clears all active and queued download statuses.
+     */
+
+    public void clearAllDownloads() {
+        Set<String> titlesToClear = new HashSet<>(downloadProgress.keySet());
+        Set<String> taskIdsToDelete = new HashSet<>();
+
+        try {
+            List<DownloadProgress> persisted = loadPersistedTasks(new ArrayList<>(RESTORABLE_TASK_STATUSES));
+            for (DownloadProgress p : persisted) {
+                if (p.getTitle() != null) {
+                    titlesToClear.add(p.getTitle());
+                }
+                if (p.getTaskId() != null && !p.getTaskId().isBlank()) {
+                    taskIdsToDelete.add(p.getTaskId());
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to load persisted tasks for clear-all: " + e.getMessage());
+        }
+
+        // 1. Mark active in-memory tasks for pause
+        for (String title : titlesToClear) {
+            DownloadProgress p = downloadProgress.get(title);
+            if (p != null) {
+                p.setPauseRequested(true);
+            }
+        }
+
+        // 2. Clear memory state
+        downloadProgress.keySet().removeAll(titlesToClear);
+        progressHistory.removeIf(p -> p.getTitle() != null && titlesToClear.contains(p.getTitle()));
+        for (String title : titlesToClear) {
+            activeDownloads.remove(title);
+        }
+
+        // 3. Delete from Vault
+        try {
+            if (!taskIdsToDelete.isEmpty()) {
+                vaultService.delete(TASK_COLLECTION, Map.of("taskId", Map.of("$in", new ArrayList<>(taskIdsToDelete))));
+            }
+            vaultService.deleteRedisValue(CURRENT_TASK_REDIS_KEY);
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to clear persisted Raven status in bulk: " + e.getMessage());
+        }
+
+        logger.info("DOWNLOAD_SERVICE", "🧹 Cleared " + titlesToClear.size() + " download task(s).");
+    }
+
+    /**
+     * Clears all finished and interrupted download statuses from history.
+     */
+
+    public void clearDownloadHistory() {
+        Set<String> titlesToClear = new HashSet<>();
+        Set<String> taskIdsToDelete = new HashSet<>();
+
+        for (DownloadProgress p : progressHistory) {
+            if (p.getTitle() != null) {
+                titlesToClear.add(p.getTitle());
+            }
+        }
+
+        try {
+            List<DownloadProgress> persisted = loadPersistedTasks(null);
+            for (DownloadProgress p : persisted) {
+                if (p.getTitle() != null && !ACTIVE_TASK_STATUSES.contains(normalizeStatus(p.getStatus()))) {
+                    titlesToClear.add(p.getTitle());
+                    if (p.getTaskId() != null && !p.getTaskId().isBlank()) {
+                        taskIdsToDelete.add(p.getTaskId());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to load persisted tasks for clear-history: " + e.getMessage());
+        }
+
+        // 1. Clear memory state
+        progressHistory.removeIf(p -> p.getTitle() != null && titlesToClear.contains(p.getTitle()));
+        // History items shouldn't be in downloadProgress or activeDownloads normally, but safety first
+        for (String title : titlesToClear) {
+            activeDownloads.remove(title);
+            DownloadProgress p = downloadProgress.get(title);
+            if (p != null && !ACTIVE_TASK_STATUSES.contains(normalizeStatus(p.getStatus()))) {
+                downloadProgress.remove(title);
+            }
+        }
+
+        // 2. Delete from Vault
+        try {
+            if (!taskIdsToDelete.isEmpty()) {
+                vaultService.delete(TASK_COLLECTION, Map.of("taskId", Map.of("$in", new ArrayList<>(taskIdsToDelete))));
+            }
+        } catch (Exception e) {
+            logger.warn("DOWNLOAD_SERVICE", "⚠️ Failed to clear persisted Raven history in bulk: " + e.getMessage());
+        }
+
+        logger.info("DOWNLOAD_SERVICE", "🧹 Cleared " + titlesToClear.size() + " download history entry(s).");
     }
 
     /**
@@ -2455,14 +2618,21 @@ public class DownloadService {
     }
 
     private List<DownloadProgress> loadPersistedTasks(Collection<String> statuses) {
+        return loadPersistedTasks(statuses, null);
+    }
+
+    private List<DownloadProgress> loadPersistedTasks(Collection<String> statuses, String titleName) {
         if (vaultService == null) {
             return List.of();
         }
 
         try {
-            Map<String, Object> query = Map.of();
+            Map<String, Object> query = new HashMap<>();
             if (statuses != null && !statuses.isEmpty()) {
-                query = Map.of("status", Map.of("$in", new ArrayList<>(statuses)));
+                query.put("status", Map.of("$in", new ArrayList<>(statuses)));
+            }
+            if (titleName != null && !titleName.isBlank()) {
+                query.put("title", titleName);
             }
 
             List<Map<String, Object>> docs = vaultService.findMany(TASK_COLLECTION, query);
@@ -2484,17 +2654,7 @@ public class DownloadService {
     }
 
     private List<DownloadProgress> loadPersistedTasksByTitle(String titleName) {
-        if (titleName == null || titleName.isBlank()) {
-            return List.of();
-        }
-
-        List<DownloadProgress> matches = new ArrayList<>();
-        for (DownloadProgress progress : loadPersistedTasks(null)) {
-            if (titleName.equals(progress.getTitle())) {
-                matches.add(progress);
-            }
-        }
-        return matches;
+        return loadPersistedTasks(null, titleName);
     }
 
     private DownloadProgress loadPersistedTaskById(String taskId) {
@@ -3123,7 +3283,7 @@ public class DownloadService {
                 continue;
             }
 
-            String comparableTitle = normalizePrefixComparableTitle(title.get("title"));
+            String comparableTitle = titleScraper.normalizePrefixComparableTitle(title.get("title"));
             if (comparableTitle == null || comparableTitle.isBlank()) {
                 continue;
             }
@@ -3136,29 +3296,6 @@ public class DownloadService {
         return matched.isEmpty() ? List.of() : List.copyOf(matched);
     }
 
-    private String normalizePrefixComparableTitle(String rawTitle) {
-        if (rawTitle == null) {
-            return null;
-        }
-
-        String trimmed = rawTitle.trim();
-        if (trimmed.isBlank()) {
-            return null;
-        }
-
-        int index = 0;
-        while (index < trimmed.length()) {
-            char candidate = trimmed.charAt(index);
-            if (Character.isWhitespace(candidate) || !Character.isLetterOrDigit(candidate)) {
-                index++;
-                continue;
-            }
-            break;
-        }
-
-        String normalized = trimmed.substring(Math.min(index, trimmed.length())).trim();
-        return normalized.isBlank() ? null : normalized;
-    }
 
     private String resolveBulkQueueStatus(
             List<String> queuedTitles,

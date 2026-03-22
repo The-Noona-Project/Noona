@@ -1,10 +1,10 @@
 import {Meta} from "@once-ui-system/core";
-import {RebootingPage} from "@/components/noona/RebootingPage";
+import {BootScreenPage} from "@/components/noona/BootScreenPage";
 import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 type SearchParamValue = string | string[] | undefined;
 
-type RebootingPageRouteProps = {
+type BootScreenPageRouteProps = {
     searchParams?: Promise<Record<string, SearchParamValue>> | Record<string, SearchParamValue>;
 };
 
@@ -17,24 +17,18 @@ const readSearchParam = (value: SearchParamValue): string | null => {
 
 export async function generateMetadata() {
     return Meta.generate({
-        title: "Noona Rebooting",
-        description: "Monitor Noona while services restart and come back online.",
+        title: "Noona Boot Screen",
+        description: "Start the saved Noona ecosystem and monitor lifecycle recovery.",
         baseURL: resolveMoonBaseUrl(),
-        path: "/rebooting",
+        path: "/bootScreen",
         image: "/favicon.ico",
     });
 }
 
-export default async function Rebooting({searchParams}: RebootingPageRouteProps) {
+export default async function BootScreen({searchParams}: BootScreenPageRouteProps) {
     const resolvedSearchParams = searchParams && typeof searchParams === "object" && "then" in searchParams
         ? await searchParams
         : (searchParams ?? {});
 
-    return (
-        <RebootingPage
-            operationParam={readSearchParam(resolvedSearchParams.operation)}
-            servicesParam={readSearchParam(resolvedSearchParams.services)}
-            returnToParam={readSearchParam(resolvedSearchParams.returnTo)}
-        />
-    );
+    return <BootScreenPage returnToParam={readSearchParam(resolvedSearchParams.returnTo)}/>;
 }

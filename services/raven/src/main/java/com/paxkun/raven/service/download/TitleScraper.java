@@ -95,18 +95,47 @@ public class TitleScraper {
         return results;
     }
 
+    public String normalizePrefixComparableTitle(String rawTitle) {
+        if (rawTitle == null) {
+            return null;
+        }
+
+        String trimmed = rawTitle.trim();
+        if (trimmed.isBlank()) {
+            return null;
+        }
+
+        int index = 0;
+        while (index < trimmed.length()) {
+            char candidate = trimmed.charAt(index);
+            if (Character.isWhitespace(candidate) || !Character.isLetterOrDigit(candidate)) {
+                index++;
+                continue;
+            }
+            break;
+        }
+
+        String normalized = trimmed.substring(Math.min(index, trimmed.length())).trim();
+        return normalized.isBlank() ? null : normalized;
+    }
+
     /**
      * Browses alphabetized titles directly from WeebCentral's advanced-search data endpoint.
      *
      * @param type         The exact included content type.
      * @param adultContent The adult-only browse flag.
+     * @param titlePrefix  An optional prefix to filter results and stop browsing early.
      * @return The collected browse result payload.
      */
-    public BrowseResult browseTitlesAlphabetically(String type, boolean adultContent) {
+    public BrowseResult browseTitlesAlphabetically(String type, boolean adultContent, String titlePrefix) {
         String normalizedType = normalizeMediaType(type);
         if (normalizedType == null) {
             return new BrowseResult(List.of(), 0);
         }
+
+        String normalizedSearchPrefix = titlePrefix != null ? titlePrefix.trim() : "";
+        String comparableSearchPrefix = normalizePrefixComparableTitle(normalizedSearchPrefix);
+        String lowerSearchPrefix = comparableSearchPrefix != null ? comparableSearchPrefix.toLowerCase(Locale.ROOT) : "";
 
         List<Map<String, String>> collected = new ArrayList<>();
         Set<String> seenHrefs = new HashSet<>();
@@ -117,7 +146,7 @@ public class TitleScraper {
         try {
             do {
                 Document doc = fetchSearchData(Map.of(
-                        "text", "",
+                        "text", normalizedSearchPrefix,
                         "sort", "Alphabet",
                         "order", "Ascending",
                         "official", "Any",
@@ -130,11 +159,29 @@ public class TitleScraper {
                 ));
                 pagesScanned++;
 
-                for (Map<String, String> parsed : parseSearchResults(doc)) {
+                List<Map<String, String>> parsedResults = parseSearchResults(doc);
+                if (parsedResults.isEmpty()) {
+                    break;
+                }
+
+                for (Map<String, String> parsed : parsedResults) {
                     String href = parsed.get("href");
                     if (href == null || href.isBlank() || !seenHrefs.add(href)) {
                         continue;
                     }
+
+                    String title = parsed.get("title");
+                    String comparableTitle = normalizePrefixComparableTitle(title);
+                    String lowerTitle = comparableTitle != null ? comparableTitle.toLowerCase(Locale.ROOT) : "";
+
+                    // If we have a prefix and we've reached titles that are alphabetically after our prefix,
+                    // we can stop browsing since results are sorted alphabetically.
+                    if (!lowerSearchPrefix.isEmpty() && !lowerTitle.isEmpty() && !lowerTitle.startsWith(lowerSearchPrefix)) {
+                        if (lowerTitle.compareTo(lowerSearchPrefix) > 0) {
+                            return new BrowseResult(collected.isEmpty() ? List.of() : List.copyOf(collected), pagesScanned);
+                        }
+                    }
+
                     collected.add(new HashMap<>(parsed));
                 }
 

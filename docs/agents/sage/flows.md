@@ -33,8 +33,9 @@
 - Moon uses that route for live setup-summary preparation, not for the initial direct install submit path.
   Direct install should save the snapshot and let Warden provision managed Kavita after `noona-kavita` starts.
 - The flow:
-  load current `noona-kavita` plus target service configs from Warden, inspect existing target env keys, try stored
-  Sage-side service-account settings, optionally provision or log into Kavita, then patch target service env and ask
+  load current `noona-kavita` plus target service configs from Warden, using Sage's trusted `includeSecrets` opt-in
+  when the summary path needs reusable managed-service env values; inspect existing target env keys; try stored
+  Sage-side service-account settings; optionally provision or log into Kavita; then patch target service env and ask
   Warden to restart those services.
 - Those Warden updates must stay narrow.
   Only send the consumer-specific Kavita env keys back to Warden, not the full service env map, or Warden will reject
@@ -43,12 +44,14 @@
   Sage can still reuse an existing managed API key, but if live provisioning still needs the admin password it now
   returns a validation error that asks the admin to re-enter it.
 - Redacted Warden config responses are not reusable key candidates either.
-  Ignore `********` placeholders from target-service env or stored settings and fall back to real stored keys or a new
-  provisioning attempt instead of treating the placeholder itself as a candidate.
+  Sage only gets raw target-service env values through Warden's Sage-only `includeSecrets` path; plain redacted
+  `********` placeholders still must not be treated as candidate keys.
 - Target services are intentionally limited to `noona-portal`, `noona-raven`, and `noona-komf`.
-- Existing or recovered API keys are no longer trusted blindly.
-  Sage validates each stored, target-service, or recovered candidate through Kavita's plugin-auth endpoint before it
-  persists the key into downstream config.
+- Existing target-service keys that Warden already injected during install are reused directly on the summary path so
+  Sage does not force a second Kavita admin login after install.
+- Stored or recovered API keys are still not trusted blindly.
+  Sage validates those fallback candidates through Kavita's plugin-auth endpoint before it persists the key into
+  downstream config.
 - If one candidate fails validation, Sage keeps trying other candidates before it attempts to create a fresh auth key.
 - Provisioned account and API-key details are mirrored into the Sage settings collection under
   `setup.managedKavitaServiceAccount`.

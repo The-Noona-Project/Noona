@@ -533,6 +533,86 @@ test('POST /api/setup/config returns 409 for apply conflicts', async (t) => {
     });
 });
 
+test('GET /api/services/:name/config keeps secrets masked by default and only exposes them to Sage when requested', async (t) => {
+    const warden = {
+        getServiceConfig() {
+            return {
+                env: {
+                    KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                    KAVITA_API_KEY: 'existing-service-key',
+                },
+                envConfig: [
+                    {key: 'KAVITA_BASE_URL', sensitive: false},
+                    {key: 'KAVITA_API_KEY', sensitive: true},
+                ],
+                runtimeConfig: {
+                    hostPort: 3003,
+                    env: {
+                        KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                        KAVITA_API_KEY: 'runtime-service-key',
+                    },
+                },
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const redactedResponse = await wardenFetch(baseUrl, '/api/services/noona-portal/config');
+    assert.equal(redactedResponse.status, 200);
+    assert.deepEqual(await redactedResponse.json(), {
+        env: {
+            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+            KAVITA_API_KEY: '********',
+        },
+        envConfig: [
+            {key: 'KAVITA_BASE_URL', sensitive: false},
+            {key: 'KAVITA_API_KEY', sensitive: true, defaultValue: '********', configured: true},
+        ],
+        runtimeConfig: {
+            hostPort: 3003,
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: '********',
+            },
+        },
+    });
+
+    const secretResponse = await wardenFetch(baseUrl, '/api/services/noona-portal/config?includeSecrets=true');
+    assert.equal(secretResponse.status, 200);
+    assert.deepEqual(await secretResponse.json(), {
+        env: {
+            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+            KAVITA_API_KEY: 'existing-service-key',
+        },
+        envConfig: [
+            {key: 'KAVITA_BASE_URL', sensitive: false},
+            {key: 'KAVITA_API_KEY', sensitive: true, defaultValue: '********', configured: true},
+        ],
+        runtimeConfig: {
+            hostPort: 3003,
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'runtime-service-key',
+            },
+        },
+    });
+
+    const forbiddenResponse = await wardenFetch(
+        baseUrl,
+        '/api/services/noona-portal/config?includeSecrets=true',
+        {},
+        PORTAL_TOKEN,
+    );
+    assert.equal(forbiddenResponse.status, 403);
+    assert.deepEqual(await forbiddenResponse.json(), {
+        error: 'Forbidden for this service identity.',
+    });
+});
+
 test('PUT /api/services/:name/config returns 400 for invalid config payloads', async (t) => {
     const warden = {
         async updateServiceConfig() {

@@ -1829,6 +1829,12 @@ test('GET /api/setup/status returns completion, config, progress, and debug stat
         serviceName: 'test-sage',
         setupClient: {
             listServices: async () => [],
+            getSetupSelection: async () => ({
+                selectionMode: 'unspecified',
+                selectedServices: [],
+                lifecycleServices: [],
+                explicit: false,
+            }),
             installServices: async () => ({status: 200, results: []}),
             getSetupConfig: async () => ({
                 exists: true,
@@ -1864,7 +1870,245 @@ test('GET /api/setup/status returns completion, config, progress, and debug stat
         configured: true,
         installing: true,
         debugEnabled: true,
+        selectionMode: 'unspecified',
+        selectedServices: [],
+        lifecycleServices: [],
+        manualBootRequired: false,
     })
+})
+
+test('GET /api/setup/status reports manual boot required when selected lifecycle services are not healthy', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: false},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth(name) {
+                return {
+                    success: name !== 'noona-portal',
+                    supported: true,
+                    status: name === 'noona-portal' ? 'stopped' : 'healthy'
+                }
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        completed: true,
+        configured: true,
+        installing: false,
+        debugEnabled: false,
+        selectionMode: 'selected',
+        selectedServices: ['noona-portal'],
+        lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+        manualBootRequired: true,
+    })
+})
+
+test('GET /api/setup/status clears manual boot required once the selected lifecycle services are healthy', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: true},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth() {
+                return {success: true, supported: true, status: 'healthy'}
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.manualBootRequired, false)
+})
+
+test('POST /api/setup/boot/start succeeds only while manual boot is required', async (t) => {
+    let startCalls = 0
+    const successApp = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: false},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth(name) {
+                return {success: name !== 'noona-portal', supported: true}
+            },
+            async startEcosystem() {
+                startCalls += 1
+                return {mode: 'full', setupCompleted: true}
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server: successServer, baseUrl: successBaseUrl} = await listen(successApp)
+    t.after(() => closeServer(successServer))
+
+    const successResponse = await fetch(`${successBaseUrl}/api/setup/boot/start`, {method: 'POST'})
+    assert.equal(successResponse.status, 200)
+    assert.deepEqual(await successResponse.json(), {mode: 'full', setupCompleted: true})
+    assert.equal(startCalls, 1)
+
+    const conflictApp = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: true},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth() {
+                return {success: true, supported: true}
+            },
+            async startEcosystem() {
+                throw new Error('startEcosystem should not be called when manual boot is not required')
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server: conflictServer, baseUrl: conflictBaseUrl} = await listen(conflictApp)
+    t.after(() => closeServer(conflictServer))
+
+    const conflictResponse = await fetch(`${conflictBaseUrl}/api/setup/boot/start`, {method: 'POST'})
+    assert.equal(conflictResponse.status, 409)
+    const conflictPayload = await conflictResponse.json()
+    assert.equal(conflictPayload.manualBootRequired, false)
 })
 
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
@@ -5137,6 +5381,7 @@ test('POST /api/setup/services/noona-kavita/service-key ignores masked Warden co
 test('POST /api/setup/services/noona-kavita/service-key reuses an existing service key when one is already configured', async (t) => {
     const managedCalls = []
     const updateCalls = []
+    const getServiceConfigCalls = []
 
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -5150,7 +5395,8 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
             async getServiceHealth() {
                 return {status: 'healthy', detail: 'ok'}
             },
-            async getServiceConfig(name) {
+            async getServiceConfig(name, options = {}) {
+                getServiceConfigCalls.push([name, options])
                 if (name === 'noona-portal') {
                     return {
                         env: {
@@ -5207,15 +5453,12 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
     const payload = await response.json()
     assert.equal(payload.apiKey, 'existing-service-key')
     assert.equal(payload.mode, 'existing')
-    assert.deepEqual(managedCalls, [{
-        account: null,
-        allowRegister: true,
-        candidateApiKeys: [{
-            key: 'existing-service-key',
-            source: 'existing',
-            pluginName: 'noona-portal',
-        }],
-    }])
+    assert.deepEqual(getServiceConfigCalls, [
+        ['noona-kavita', {includeSecrets: true}],
+        ['noona-portal', {includeSecrets: true}],
+        ['noona-komf', {includeSecrets: true}],
+    ])
+    assert.deepEqual(managedCalls, [])
     assert.deepEqual(updateCalls, [
         [
             'noona-portal',
@@ -5242,6 +5485,7 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
 
 test('POST /api/setup/services/noona-kavita/service-key falls back to managed noona-kavita env credentials', async (t) => {
     const managedCalls = []
+    const getServiceConfigCalls = []
 
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -5255,7 +5499,8 @@ test('POST /api/setup/services/noona-kavita/service-key falls back to managed no
             async getServiceHealth() {
                 return {status: 'healthy', detail: 'ok'}
             },
-            async getServiceConfig(name) {
+            async getServiceConfig(name, options = {}) {
+                getServiceConfigCalls.push([name, options])
                 if (name === 'noona-kavita') {
                     return {
                         env: {
@@ -5304,6 +5549,10 @@ test('POST /api/setup/services/noona-kavita/service-key falls back to managed no
     })
 
     assert.equal(response.status, 200)
+    assert.deepEqual(getServiceConfigCalls, [
+        ['noona-kavita', {includeSecrets: true}],
+        ['noona-portal', {includeSecrets: true}],
+    ])
     assert.equal(managedCalls.length, 1)
     assert.deepEqual(managedCalls[0], {
         account: {

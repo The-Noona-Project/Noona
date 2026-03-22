@@ -195,7 +195,7 @@ class TitleScraperTest {
         ReflectionTestUtils.setField(scraper, "logger", mock(LoggerService.class));
         ReflectionTestUtils.setField(scraper, "sourceBaseUrl", "http://127.0.0.1:" + server.getAddress().getPort());
 
-        TitleScraper.BrowseResult result = scraper.browseTitlesAlphabetically("Manga", false);
+        TitleScraper.BrowseResult result = scraper.browseTitlesAlphabetically("Manga", false, null);
 
         assertThat(result.pagesScanned()).isEqualTo(2);
         assertThat(result.titles()).hasSize(3);
