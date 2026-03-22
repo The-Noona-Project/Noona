@@ -34,6 +34,10 @@
   It validates the form, persists the final snapshot, and lets Warden handle managed Kavita provisioning during the
   install lifecycle after `noona-kavita` is running.
 - The summary page loads live services, persisted config, auth status, and setup status together.
+- Moon applies the same bounded transient-read retry policy to auth status, setup status/config, and service-catalog
+  reads.
+  Retry only `GET` paths that can safely survive a short Sage warm-up window, and preserve the final upstream failure
+  payload if the retries run out.
 - Discord OAuth on the summary page has two Moon-facing modes:
   `test` to validate the callback path and `bootstrap` to create the first admin.
 - Moon's old username/password bootstrap routes intentionally return `410`.
@@ -47,6 +51,8 @@
 - Login is Discord-first.
   `LoginPage.tsx` checks setup status, existing auth status, and Discord OAuth config before presenting the login
   button.
+  Those bootstrap reads now tolerate short transient `502`, `503`, and `504` responses from Sage before surfacing the
+  failure in the shell.
 - The Discord callback page posts `code` and `state` to Moon's auth callback route, which forwards to Sage and writes
   the `noona_session` cookie when a token comes back.
 - Logout clears the cookie even if Sage logout fails.
@@ -70,6 +76,11 @@
 - The Downloader PIA VPN card keeps its controls disabled while Raven reports `rotating` or `connecting`.
   Manual rotation now polls the live VPN settings until the runtime settles, and follow-up refreshes preserve success
   messages so save/rotate confirmations do not disappear immediately.
+  If Raven settles with `status.lastError`, Moon now promotes that final detailed failure into the card error state
+  instead of leaving the user with the generic background-start message.
+- Raven download-summary reads now include VPN runtime details.
+  Moon uses those details to explain queued downloads that are waiting for the VPN instead of only repeating the task's
+  generic waiting message.
 - VPN login tests are treated as final-result actions.
   Moon waits for the completed response, then shows the returned result rather than any intermediate start
   acknowledgement.
@@ -89,6 +100,9 @@
 - Downloads are stricter than naive HTTP success checks.
   Moon only treats a queue attempt as accepted when the response is HTTP `202` and Raven returns queue status
   `queued` or `partial`.
+- The downloads page only enables `Resume` when Raven history includes paused or interrupted tasks.
+  Queued VPN-blocked tasks stay in the live queue and surface Raven's connection state, region, and last error instead
+  of implying that a resume action will fix them.
 - Failed Raven queue attempts remain visible in the UI and failed options stay selected in `DownloadsAddPage.tsx`.
 - Recommendation, subscription, and Raven title actions all flow through Moon's server routes into Sage so the browser
   never needs a direct Sage token.

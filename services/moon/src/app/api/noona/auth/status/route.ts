@@ -1,14 +1,17 @@
 import {NextResponse} from "next/server";
 import {jsonError, sageJson} from "../../_backend";
 import {withNoonaAuthHeaders} from "../../_auth";
+import {retryBackendRead} from "../../backendReadRetry.mjs";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
     try {
-        const {status, payload} = await sageJson("/api/auth/status", {
-            headers: await withNoonaAuthHeaders(),
-        });
+        const {status, payload} = await retryBackendRead(async () =>
+            sageJson("/api/auth/status", {
+                headers: await withNoonaAuthHeaders(),
+            }),
+        );
         return NextResponse.json(payload, {status});
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

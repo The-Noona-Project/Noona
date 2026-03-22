@@ -2287,7 +2287,7 @@ export function registerRavenRoutes(context = {}) {
         }
         try {
             const result = await ravenClient.resumeDownloads()
-            res.status(200).json(result ?? {})
+            res.status(Number.isInteger(result?.status) ? result.status : 200).json(result?.payload ?? {})
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to resume Raven downloads: ${error.message}`)
             res.status(502).json({error: 'Unable to resume Raven downloads.'})

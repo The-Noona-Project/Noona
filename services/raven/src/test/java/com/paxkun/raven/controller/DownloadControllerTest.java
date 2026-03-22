@@ -5,14 +5,16 @@
  * - src/main/java/com/paxkun/raven/service/LibraryService.java
  * - src/main/java/com/paxkun/raven/service/LoggerService.java
  * - src/main/java/com/paxkun/raven/service/download/DownloadProgress.java
- * Times this file has been edited: 7
+ * Times this file has been edited: 8
  */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
+import com.paxkun.raven.service.VPNServices;
 import com.paxkun.raven.service.download.*;
+import com.paxkun.raven.service.vpn.VpnRuntimeStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,11 +47,14 @@ class DownloadControllerTest {
     @Mock
     private LibraryService libraryService;
 
+    @Mock
+    private VPNServices vpnServices;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new DownloadController(downloadService, libraryService, loggerService)).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(new DownloadController(downloadService, libraryService, loggerService, vpnServices)).build();
     }
 
     @Test
@@ -276,6 +281,20 @@ class DownloadControllerTest {
 
     @Test
     void summaryEndpointPrefersActiveDownloadState() throws Exception {
+        when(vpnServices.getStatus()).thenReturn(new VpnRuntimeStatus(
+                true,
+                false,
+                false,
+                false,
+                "pia",
+                "us_california",
+                30,
+                null,
+                null,
+                null,
+                null,
+                "connecting"
+        ));
         DownloadProgress progress = new DownloadProgress("Solo Leveling");
         progress.markStarted(22);
         progress.chapterStarted("Chapter 21");
@@ -309,6 +328,8 @@ class DownloadControllerTest {
                 .andExpect(jsonPath("$.workerCpuCoreIds[1]").value(6))
                 .andExpect(jsonPath("$.availableCpuIds[0]").value(4))
                 .andExpect(jsonPath("$.activeWorkers[0].workerPid").value(3210))
+                .andExpect(jsonPath("$.vpn.enabled").value(true))
+                .andExpect(jsonPath("$.vpn.connectionState").value("connecting"))
                 .andExpect(jsonPath("$.currentDownload.title").value("Solo Leveling"))
                 .andExpect(jsonPath("$.currentDownload.currentChapter").value("Chapter 21"))
                 .andExpect(jsonPath("$.currentDownload.workerIndex").value(1))
@@ -317,6 +338,20 @@ class DownloadControllerTest {
 
     @Test
     void summaryEndpointReportsCheckStateWhenNoDownloadsAreActive() throws Exception {
+        when(vpnServices.getStatus()).thenReturn(new VpnRuntimeStatus(
+                true,
+                true,
+                false,
+                true,
+                "pia",
+                "us_california",
+                30,
+                "198.51.100.10",
+                "2026-03-21T00:00:00Z",
+                "2026-03-21T00:30:00Z",
+                null,
+                "connected"
+        ));
         when(downloadService.getPrimaryActiveDownloadStatus()).thenReturn(null);
         when(downloadService.getActiveDownloadCount()).thenReturn(0);
         when(downloadService.getConfiguredDownloadThreads()).thenReturn(2);
@@ -332,6 +367,8 @@ class DownloadControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.state").value("checking"))
                 .andExpect(jsonPath("$.statusText").value("Checking Omniscient Reader"))
+                .andExpect(jsonPath("$.vpn.connected").value(true))
+                .andExpect(jsonPath("$.vpn.publicIp").value("198.51.100.10"))
                 .andExpect(jsonPath("$.currentCheck.mode").value("library"))
                 .andExpect(jsonPath("$.currentCheck.title").value("Omniscient Reader"))
                 .andExpect(jsonPath("$.currentCheck.checkedTitles").value(2))

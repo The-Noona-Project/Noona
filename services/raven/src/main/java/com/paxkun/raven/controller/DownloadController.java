@@ -5,13 +5,14 @@
  * - src/main/java/com/paxkun/raven/service/LibraryService.java
  * - src/main/java/com/paxkun/raven/service/LoggerService.java
  * - src/main/java/com/paxkun/raven/service/download/DownloadSearchRequest.java
- * Times this file has been edited: 16
+ * Times this file has been edited: 17
  */
 package com.paxkun.raven.controller;
 
 import com.paxkun.raven.service.DownloadService;
 import com.paxkun.raven.service.LibraryService;
 import com.paxkun.raven.service.LoggerService;
+import com.paxkun.raven.service.VPNServices;
 import com.paxkun.raven.service.download.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -34,6 +35,7 @@ public class DownloadController {
     private final DownloadService downloadService;
     private final LibraryService libraryService;
     private final LoggerService logger;
+    private final VPNServices vpnServices;
 
     /**
      * Health check endpoint for Raven's download module.
@@ -238,7 +240,7 @@ public class DownloadController {
     /**
      * Returns status summary.
      *
-     * @return The resulting Object>>.
+     * @return The current queue summary, including Raven VPN runtime details for blocked downloads.
      */
 
     @GetMapping("/status/summary")
@@ -256,6 +258,7 @@ public class DownloadController {
         payload.put("workerCpuCoreIds", downloadService.getWorkerCpuCoreIds());
         payload.put("availableCpuIds", downloadService.getAvailableCpuIds());
         payload.put("activeWorkers", downloadService.getActiveWorkers());
+        payload.put("vpn", vpnServices.getStatus());
         if (currentTask != null) {
             payload.put("currentTask", toTaskPayload(currentTask));
         }

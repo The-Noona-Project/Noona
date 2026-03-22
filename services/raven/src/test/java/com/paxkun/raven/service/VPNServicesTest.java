@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRotationResult.java
  * - src/main/java/com/paxkun/raven/service/VPNServices.java
- * Times this file has been edited: 5
+ * Times this file has been edited: 6
  */
 package com.paxkun.raven.service;
 
@@ -24,8 +24,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.io.IOException;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -172,6 +172,91 @@ class VPNServicesTest {
     }
 
     @Test
+    void scheduleTickEnsuresVpnConnectionWhenEnabledWithoutAutoRotate() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+        Process openVpnProcess = mock(Process.class);
+
+        when(openVpnProcess.isAlive()).thenReturn(true);
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california", true, false));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
+        when(downloadService.resumePausedDownloads(eq(List.of("Solo Leveling")))).thenReturn(1);
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doAnswer(invocation -> {
+            ReflectionTestUtils.setField(vpnServices, "openVpnProcess", openVpnProcess);
+            ReflectionTestUtils.setField(vpnServices, "connectionState", "connected");
+            return null;
+        }).when(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
+        doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        doReturn("198.51.100.88").when(vpnServices).resolvePublicIp();
+
+        ReflectionTestUtils.invokeMethod(vpnServices, "runScheduleTick");
+
+        assertThat(vpnServices.getStatus().isConnected()).isTrue();
+        assertThat(vpnServices.getStatus().getNextRotationAt()).isNull();
+        InOrder inOrder = inOrder(vpnServices, downloadService);
+        inOrder.verify(downloadService).beginMaintenancePause("VPN auto-connect");
+        inOrder.verify(downloadService).requestPauseActiveDownloads();
+        inOrder.verify(downloadService).waitForNoActiveDownloads(any());
+        inOrder.verify(vpnServices).captureLocalRouteSpecs();
+        inOrder.verify(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
+        inOrder.verify(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        inOrder.verify(downloadService).resumePausedDownloads(eq(List.of("Solo Leveling")));
+    }
+
+    @Test
+    void scheduleTickBacksOffAutoConnectRetriesAfterFailure() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california", true, false));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of(), List.of()));
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        doReturn("203.0.113.40").when(vpnServices).resolvePublicIp();
+        doThrow(new IOException("PIA authentication failed"))
+                .when(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
+
+        ReflectionTestUtils.invokeMethod(vpnServices, "runScheduleTick");
+
+        assertThat(vpnServices.getStatus().isConnected()).isFalse();
+        assertThat(vpnServices.getStatus().getLastError()).contains("PIA authentication failed");
+        assertThat(vpnServices.getStatus().getConnectionState()).isEqualTo("error");
+        verify(vpnServices, times(1)).connectOpenVpn("us_california", "pia-user", "pia-secret");
+
+        ReflectionTestUtils.invokeMethod(vpnServices, "runScheduleTick");
+        verify(vpnServices, times(1)).connectOpenVpn("us_california", "pia-user", "pia-secret");
+
+        ReflectionTestUtils.setField(vpnServices, "nextAutoConnectAttemptAtMs", System.currentTimeMillis() - 1);
+        ReflectionTestUtils.invokeMethod(vpnServices, "runScheduleTick");
+        verify(vpnServices, times(2)).connectOpenVpn("us_california", "pia-user", "pia-secret");
+    }
+
+    @Test
+    void rotateNowInternalReportsDrainTimeoutWithPhaseSpecificFailureMessage() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(false);
+        when(downloadService.resumePausedDownloads(eq(List.of("Solo Leveling")))).thenReturn(1);
+        doReturn("198.51.100.30").when(vpnServices).resolvePublicIp();
+
+        VpnRotationResult result = ReflectionTestUtils.invokeMethod(vpnServices, "rotateNowInternal", "manual", false);
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.message()).contains("VPN rotation failed while waiting for downloads to pause");
+        assertThat(result.message()).contains("Timed out while waiting for active downloads to pause.");
+        assertThat(vpnServices.getStatus().getLastError()).contains("waiting for downloads to pause");
+        verify(downloadService).resumePausedDownloads(eq(List.of("Solo Leveling")));
+    }
+
+    @Test
     void rotateNowInternalRestoresLocalRoutesBeforeResumingOnlyAffectedTitles() throws Exception {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
         List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
@@ -243,11 +328,38 @@ class VPNServicesTest {
         VpnRotationResult result = ReflectionTestUtils.invokeMethod(vpnServices, "rotateNowInternal", "manual", false);
 
         assertThat(result.ok()).isFalse();
+        assertThat(result.message()).contains("VPN rotation failed while restoring local routes");
         assertThat(result.message()).contains("route restore failed");
         assertThat(vpnServices.getStatus().isConnected()).isFalse();
         verify(downloadService).resumePausedDownloads(eq(List.of("Solo Leveling")));
         verify(downloadService, never()).resumePausedDownloads();
         verify(openVpnProcess, atLeastOnce()).destroy();
+    }
+
+    @Test
+    void rotateNowInternalAppendsCleanupFailureWithoutReplacingPrimaryFailure() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+
+        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
+        when(downloadService.resumePausedDownloads(eq(List.of("Solo Leveling")))).thenReturn(1);
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doThrow(new IOException("PIA authentication failed for Raven VPN."))
+                .when(vpnServices).connectOpenVpn("us_california", "pia-user", "pia-secret");
+        doThrow(new IOException("route cleanup failed"))
+                .when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        doReturn("198.51.100.30").when(vpnServices).resolvePublicIp();
+
+        VpnRotationResult result = ReflectionTestUtils.invokeMethod(vpnServices, "rotateNowInternal", "manual", false);
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.message()).contains("VPN rotation failed while connecting OpenVPN");
+        assertThat(result.message()).contains("PIA authentication failed for Raven VPN.");
+        assertThat(result.message()).contains("Failed to restore local routes after VPN rotation: route cleanup failed");
+        assertThat(vpnServices.getStatus().getLastError()).contains("Failed to restore local routes after VPN rotation: route cleanup failed");
     }
 
     @Test
@@ -485,12 +597,24 @@ class VPNServicesTest {
      * @return The enabled VPN settings snapshot.
      */
     private DownloadVpnSettings enabledVpnSettings(String region) {
+        return enabledVpnSettings(region, false, false);
+    }
+
+    /**
+     * Creates an enabled Raven VPN settings snapshot with configurable download gating and auto-rotation flags.
+     *
+     * @param region                The configured Raven VPN region.
+     * @param onlyDownloadWhenVpnOn Whether Raven should block downloads until the VPN is connected.
+     * @param autoRotate            Whether Raven should schedule periodic rotations.
+     * @return The enabled VPN settings snapshot.
+     */
+    private DownloadVpnSettings enabledVpnSettings(String region, boolean onlyDownloadWhenVpnOn, boolean autoRotate) {
         return new DownloadVpnSettings(
                 "downloads.vpn",
                 "pia",
                 true,
-                false,
-                false,
+                onlyDownloadWhenVpnOn,
+                autoRotate,
                 30,
                 region,
                 "pia-user",

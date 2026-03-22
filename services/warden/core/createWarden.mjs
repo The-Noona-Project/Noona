@@ -3472,6 +3472,15 @@ export function createWarden(options = {}) {
         return [];
     };
 
+    const selectionStateRequiresManualBoot = (selectionState = {}) =>
+        selectionState?.mode === 'selected'
+        && Array.isArray(selectionState.selected)
+        && selectionState.selected.some((name) =>
+            typeof name === 'string'
+            && name.trim()
+            && !minimalServiceNames.includes(name.trim()),
+        );
+
     const resolvePersistedSetupSelectionState = async () => {
         try {
             const {snapshot} = readSetupConfigSnapshot();
@@ -4850,6 +4859,10 @@ export function createWarden(options = {}) {
             selectedServices: Array.isArray(selectionState.selected) ? [...selectionState.selected] : [],
             lifecycleServices: resolveLifecycleServiceNamesForSelectionState(selectionState),
             explicit: selectionState.explicit === true,
+            manualBootRequired:
+                selectionStateRequiresManualBoot(selectionState)
+                && typeof api.isManualBootRequired === 'function'
+                && api.isManualBootRequired() === true,
         };
     };
 
@@ -5112,6 +5125,7 @@ export function createWarden(options = {}) {
         resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
         resolvePersistedSetupSelectionState,
+        selectionStateRequiresManualBoot,
         serviceCatalog,
         startServiceUpdateTimer,
         stopServiceUpdateTimer,

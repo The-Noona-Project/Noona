@@ -30,6 +30,8 @@ That post-setup behavior is intentional.
 After setup is complete, `init()` should only restore `noona-sage` and `noona-moon`.
 Manual full-stack startup stays on `bootFull()` / `startEcosystem()`, and Moon's `/bootScreen` uses those existing
 lifecycle helpers instead of creating a second startup path.
+Warden also owns the runtime-only `manualBootRequired` flag that tells Moon and Sage whether that post-setup minimal
+boot still needs an explicit full-stack start for the current Warden session.
 
 Containerized attach behavior is now strict:
 
@@ -105,7 +107,19 @@ The public shape is:
 `selectionMode`,
 `selectedServices`,
 `lifecycleServices`,
-and `explicit`.
+`explicit`,
+and `manualBootRequired`.
+
+`manualBootRequired` is not persisted.
+It should only be `true` when all of these are true for the current Warden session:
+
+1. setup is completed
+2. persisted selection mode is `selected`
+3. the persisted selection includes services beyond minimal Moon and Sage
+4. `init()` chose the normal minimal post-setup boot path and those selected services are not already running
+
+Successful full `startEcosystem()` clears that flag.
+Later service outages, failed probes, or manually stopped selected services must not turn it back on by themselves.
 
 ## Runtime Config Restore
 

@@ -68,17 +68,6 @@ const normalizeSelectionMode = (value) => {
     return ['minimal', 'selected', 'unspecified'].includes(normalized) ? normalized : 'unspecified'
 }
 
-const isHealthCheckUnsupportedError = (error) => {
-    if (error instanceof WardenUpstreamHttpError) {
-        return Number(error.status) === 404
-    }
-
-    const message = normalizeErrorMessage(error)
-    return /health check not supported/i.test(message)
-        || /health endpoint is not defined/i.test(message)
-        || /not supported/i.test(message)
-}
-
 const wait = (delayMs) =>
     new Promise((resolve) => {
         setTimeout(resolve, delayMs)
@@ -389,52 +378,11 @@ export function registerSetupRoutes(context = {}) {
         if (selectionMode === 'minimal' && lifecycleServices.length === 0) {
             lifecycleServices = [...MINIMAL_LIFECYCLE_SERVICES]
         }
-
-        const requiresManualBoot =
+        const manualBootRequired =
             completed === true
             && selectionMode === 'selected'
             && lifecycleServices.some((name) => !MINIMAL_LIFECYCLE_SERVICE_SET.has(name))
-
-        let manualBootRequired = false
-
-        if (requiresManualBoot) {
-            const catalog = await setupClient.listServices({includeInstalled: true}).catch(() => [])
-            const servicesByName = new Map(
-                catalog
-                    .map((entry) => [normalizeString(entry?.name), entry])
-                    .filter(([name]) => Boolean(name)),
-            )
-
-            const readiness = await Promise.all(
-                lifecycleServices.map(async (name) => {
-                    const service = servicesByName.get(name)
-                    if (!service || service.running !== true) {
-                        return false
-                    }
-
-                    if (typeof setupClient.getServiceHealth !== 'function') {
-                        return true
-                    }
-
-                    try {
-                        const health = await setupClient.getServiceHealth(name)
-                        if (health?.supported === false) {
-                            return service.running === true
-                        }
-
-                        return health?.success === true
-                    } catch (error) {
-                        if (isHealthCheckUnsupportedError(error)) {
-                            return service.running === true
-                        }
-
-                        return false
-                    }
-                }),
-            )
-
-            manualBootRequired = readiness.some((ready) => ready !== true)
-        }
+            && selection?.manualBootRequired === true
 
         return {
             completed: completed === true,

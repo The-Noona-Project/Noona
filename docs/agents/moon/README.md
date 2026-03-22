@@ -13,6 +13,9 @@ workflows, and the browser-side experience for recommendations and subscriptions
 - [setup-auth-and-ui-state.md](setup-auth-and-ui-state.md)
   The v3 setup profile, setup gates, Discord callback flow, bootstrap deprecation, AppShell mode switching, and reboot
   monitor session state.
+- [discord-onboarding-message.md](discord-onboarding-message.md)
+  The admin-facing onboarding template editor, Sage persistence path, preview placeholder sources, and the current
+  manual copy boundary.
 - [flows.md](flows.md)
   The high-value setup, settings, reboot, download, and Kavita handoff flows.
 

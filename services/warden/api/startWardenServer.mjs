@@ -847,6 +847,7 @@ export const startWardenServer = ({
                     selectedServices: [],
                     lifecycleServices: [],
                     explicit: false,
+                    manualBootRequired: false,
                 });
             } catch (error) {
                 logger.error?.(`[Warden API] Failed to load setup selection state: ${error.message}`);

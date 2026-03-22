@@ -22,6 +22,7 @@ export function registerBootApi(context = {}) {
         resolveCurrentAutoUpdatesEnabled,
         resolveManagedLifecycleServices,
         resolvePersistedSetupSelectionState,
+        selectionStateRequiresManualBoot = () => false,
         serviceCatalog,
         sleepImpl,
         startServiceUpdateTimer,
@@ -46,6 +47,16 @@ export function registerBootApi(context = {}) {
             : ['noona-sage', 'noona-moon'])
             .filter((name) => typeof name === 'string' && name.trim()),
     );
+    let manualBootRequired = false;
+
+    api.isManualBootRequired = function isManualBootRequired() {
+        return manualBootRequired === true;
+    };
+
+    const setManualBootRequired = (nextValue) => {
+        manualBootRequired = nextValue === true;
+        return manualBootRequired;
+    };
 
     const resolveInstalledLifecycleServices = async (dockerClient = null) => {
         if (typeof resolveManagedLifecycleServices !== 'function') {
@@ -66,6 +77,34 @@ export function registerBootApi(context = {}) {
     const shouldRestoreManagedLifecycle = (names = []) =>
         Array.isArray(names) &&
         names.some((name) => typeof name === 'string' && !minimalServiceSet.has(name));
+
+    const lifecycleServicesRequireManualBoot = (names = []) =>
+        Array.isArray(names)
+        && names.some((name) => typeof name === 'string' && name.trim() && !minimalServiceSet.has(name.trim()));
+
+    const hasRunningSelectedLifecycleService = async (selectionState = {}) => {
+        if (!selectionStateRequiresManualBoot(selectionState) || typeof api.listServices !== 'function') {
+            return false;
+        }
+
+        try {
+            const services = await api.listServices({includeInstalled: true});
+            const runningServices = new Set(
+                services
+                    .filter((entry) => entry?.running === true)
+                    .map((entry) => (typeof entry?.name === 'string' ? entry.name.trim() : ''))
+                    .filter(Boolean),
+            );
+
+            return selectionState.selected.some((name) =>
+                typeof name === 'string'
+                && name.trim()
+                && runningServices.has(name.trim()),
+            );
+        } catch {
+            return false;
+        }
+    };
 
     const waitForPersistedRuntimeConfigLoad = async (managedTargetNames = [], loadedConfigs = []) => {
         let currentConfigs = Array.isArray(loadedConfigs) ? loadedConfigs : [];
@@ -319,6 +358,10 @@ export function registerBootApi(context = {}) {
             : options?.setupCompleted === false
                 ? false
                 : await api.isSetupCompleted();
+        const lifecycleRequiresManualBoot =
+            Array.isArray(options?.services) && options.services.length > 0
+                ? lifecycleServicesRequireManualBoot(options.services)
+                : selectionStateRequiresManualBoot(persistedSelectionState);
         let dockerClient = null;
         let detectedServices = [];
         let shouldBootFull =
@@ -360,6 +403,22 @@ export function registerBootApi(context = {}) {
             await api.bootFull({services});
         } else {
             await api.bootMinimal();
+        }
+
+        if (setupCompleted === true) {
+            if (shouldBootFull) {
+                setManualBootRequired(false);
+            } else if (lifecycleRequiresManualBoot) {
+                const ecosystemAlreadyRunning =
+                    Array.isArray(options?.services) && options.services.length > 0
+                        ? false
+                        : await hasRunningSelectedLifecycleService(persistedSelectionState);
+                setManualBootRequired(ecosystemAlreadyRunning !== true);
+            } else {
+                setManualBootRequired(false);
+            }
+        } else {
+            setManualBootRequired(false);
         }
 
         return {
@@ -406,6 +465,14 @@ export function registerBootApi(context = {}) {
         await dockerUtils.attachSelfToNetwork(dockerClient, networkName, {env});
 
         const setupCompleted = await api.isSetupCompleted();
+        const persistedSelectionState =
+            setupCompleted === true && typeof resolvePersistedSetupSelectionState === 'function'
+                ? await resolvePersistedSetupSelectionState().catch(() => ({
+                    mode: 'unspecified',
+                    selected: [],
+                    explicit: false,
+                }))
+                : {mode: 'unspecified', selected: [], explicit: false};
         const detectedServices = setupCompleted || SUPER_MODE
             ? []
             : await resolveInstalledLifecycleServices(dockerClient);
@@ -424,6 +491,13 @@ export function registerBootApi(context = {}) {
         } else {
             logger.log('[Warden] 🧪 Minimal mode — launching sage and moon only');
             await api.bootMinimal();
+        }
+
+        if (setupCompleted === true && !shouldBootFull && selectionStateRequiresManualBoot(persistedSelectionState)) {
+            const ecosystemAlreadyRunning = await hasRunningSelectedLifecycleService(persistedSelectionState);
+            setManualBootRequired(ecosystemAlreadyRunning !== true);
+        } else {
+            setManualBootRequired(false);
         }
 
         startServiceUpdateTimer();

@@ -27,18 +27,23 @@ recommendations, and the day-to-day admin UI.
   re-enter the managed Kavita password when only the masked placeholder is available
 - saves the setup snapshot before direct install so Warden can derive the managed service plan from persisted setup
   state
-- redirects completed-but-not-started installs to the public shellless `/bootScreen` route instead of sending them
-  back into `/setupwizard`
+- redirects completed installs to the public shellless `/bootScreen` route only when Warden has restarted in minimal
+  mode and the saved ecosystem still needs a manual start for the current Warden session, instead of sending them back
+  into `/setupwizard`
 - starts the saved ecosystem from `/bootScreen` through the normal Warden lifecycle path instead of using a separate
   startup flow
 - shows the public boot screen as a short startup brief with the required recovery services, saved target services, and
   the return destination before the lifecycle request is sent
+- keeps later single-service outages, failed probes, or temporarily stopped selected services inside the normal app
+  flow instead of redirecting an already-started system back to `/bootScreen`
 - keeps the managed Kavita and Discord live preflight on the summary path, where the running services are available for
   browser-facing validation and handoff
 - opens the setup summary with one-shot warnings when those post-install live sync calls fail after the stack is already
   installed, instead of trapping admins on the install tab
 - treats Sage `HTTP 5xx` responses as real upstream failures in setup and settings flows instead of always collapsing
   them into a generic "Moon could not reach Sage" connectivity warning
+- retries transient Sage `502`, `503`, and `504` responses on auth status, setup status/config, and service-catalog
+  reads for a short bounded window so normal backend warm-up does not immediately surface as a browser-facing failure
 - keeps `storageRoot` as top-level setup metadata instead of mirroring raw `NOONA_DATA_ROOT` overrides into saved setup
   JSON
 - provides the main settings and operations UI
@@ -59,7 +64,8 @@ recommendations, and the day-to-day admin UI.
 - treats Raven download queue attempts as successful only when Raven explicitly accepts them, so expired or invalid
   search selections stay visible as real errors
 - keeps the Raven VPN panel locked while Raven reports rotating or connecting, polls manual rotations until they
-  settle, and shows the final login-test result instead of a background-start acknowledgement
+  settle, prefers Raven's final detailed rotation failure once polling finishes, and shows the final login-test result
+  instead of a background-start acknowledgement
 
 ## Who It Is For
 

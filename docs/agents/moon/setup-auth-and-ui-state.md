@@ -29,6 +29,8 @@
 - `/bootScreen` is intentionally public and shellless.
   It is the only post-setup unauthenticated path that can trigger the saved ecosystem start when manual boot is
   currently required.
+- That route is only for the post-restart minimal-mode handoff.
+  Later single-service outages or failed probes should keep users in the normal app and troubleshooting flows.
 - `AuthGate` is separate.
   It checks `/api/noona/auth/status`, redirects to `/login` on `401`, and can enforce individual Moon permissions.
 
@@ -56,6 +58,8 @@
   and `manualBootRequired`.
   Moon uses that payload, not ad hoc route guesses, to decide whether the app should show setup, login, boot-screen,
   or signed-in shell state.
+- `manualBootRequired` is Warden's runtime boot-state flag for the current Warden session, not a live readiness verdict
+  derived from selected-service health checks.
 
 ## Bootstrap And Login State
 
@@ -153,6 +157,8 @@
 - `/api/noona/boot/start` is a narrow public proxy to Sage's manual boot route.
   It must stay unauthenticated only while `manualBootRequired === true`; signed-in ecosystem start and restart still go
   through the admin-protected settings routes.
+- Do not re-derive `manualBootRequired` inside Moon from live health or service-catalog state.
+  Redirect behavior should follow Sage's mirrored Warden flag only.
 - If update or restart UX changes, keep the session format and `/rebooting` page aligned.
 
 ## Route Availability State

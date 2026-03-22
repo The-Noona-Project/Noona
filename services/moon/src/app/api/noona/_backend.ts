@@ -9,6 +9,8 @@ import {
     summarizeFailedResponseBody,
 } from "./backendDiscovery.mjs";
 
+export {backendJsonResponse} from "./backendResponses.mjs";
+
 type LogFn = (message: string) => void;
 
 const fallbackDebugMSG: LogFn = (message) => {

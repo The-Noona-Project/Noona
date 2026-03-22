@@ -58,11 +58,20 @@
 ## VPN Rotation Flow
 
 - `VPNServices` manages PIA region lists, login tests, active OpenVPN state, and scheduled rotation.
+- When VPN is enabled and Raven is disconnected, the scheduler now runs an auto-connect path even if `autoRotate` is
+  false.
+  That establishes the baseline tunnel for VPN-gated downloads without waiting for a manual rotate.
 - `POST /v1/vpn/rotate` triggers the manual path.
   Raven reserves `rotationInProgress`, validates enabled PIA settings immediately, and only then returns the async
   accepted response.
-- Rotation enables Raven maintenance pause, requests pause for active downloads, waits for in-flight work to drain,
-  reconnects OpenVPN, restores preserved local routes, then resumes only the titles paused by that rotation.
+- Auto-connect and manual rotation both use the same maintenance-pause flow:
+  pause active downloads, wait for in-flight work to drain, reconnect OpenVPN, restore preserved local routes, then
+  resume only the titles paused by that VPN transition.
+- Stage-specific failures are recorded at the point they happen.
+  `VpnRuntimeStatus.lastError` and the manual rotation result now keep the primary failure stage detail, and follow-up
+  cleanup problems are appended instead of replacing the original cause.
+- Failed auto-connect attempts record `VpnRuntimeStatus.lastError` and back off for one minute before the scheduler
+  retries again.
 - If rotation fails after OpenVPN connected, Raven disconnects the tunnel, restores preserved local routes, clears
   maintenance pause, and only then resumes the rotation-owned downloads.
 - `POST /v1/vpn/test-login` is a lighter probe path that validates credentials and region connectivity without taking
@@ -75,4 +84,6 @@
 - `GET /v1/debug` and `POST /v1/debug` toggle the `LoggerService` debug flag.
 - `GET /v1/download/status/summary` blends download progress with library-check activity so Moon can show a task-based
   current state instead of raw worker internals.
+- The summary payload now also includes `vpn` runtime details from `VPNServices` so Moon can explain queued tasks that
+  are blocked on VPN startup or failure.
 - If the summary shape changes, update controller tests and any Moon/Sage code that renders Raven state.
