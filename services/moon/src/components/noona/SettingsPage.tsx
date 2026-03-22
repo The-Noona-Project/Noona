@@ -57,8 +57,8 @@ import {
 } from "./settings";
 import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
 import {
-    formatVpnRotationOutcomeMessage,
     formatVpnLoginOutcomeMessage,
+    formatVpnRotationOutcomeMessage,
     isVpnRuntimeBusy,
     resolveVpnMessageAfterRefresh,
     shouldDisableVpnControls,
@@ -2197,9 +2197,15 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 refresh: () => refreshVpnSettings({preserveMessage: true}),
                 isBusy: (snapshot) => isVpnRuntimeBusy(snapshot?.status),
             });
-            setVpnMessage(
-                formatVpnRotationOutcomeMessage(finalVpnSettings?.status ?? null, "VPN rotation complete."),
-            );
+            const finalStatus = finalVpnSettings?.status ?? null;
+            const finalError = normalizeString(finalStatus?.lastError).trim();
+            if (finalError) {
+                setVpnError(finalError);
+                setVpnMessage(null);
+                return;
+            }
+
+            setVpnMessage(formatVpnRotationOutcomeMessage(finalStatus, "VPN rotation complete."));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -4786,7 +4792,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             </Row>
                         </Row>
                         {vpnError && <Text onBackground="danger-strong" variant="body-default-xs">{vpnError}</Text>}
-                        {vpnStatusError && (
+                        {vpnStatusError && vpnStatusError !== vpnError && (
                             <Text onBackground="danger-strong" variant="body-default-xs">{vpnStatusError}</Text>
                         )}
                         {vpnRegionsError && vpnRegionsError !== vpnStatusError && (

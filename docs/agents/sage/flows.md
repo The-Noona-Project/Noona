@@ -22,6 +22,9 @@
 - Read-only setup calls now tolerate Warden cold starts.
   `listServices`, `getSetupConfig`, `getStorageLayout`, and `getInstallProgress` retry for a bounded window when Warden
   is reachable but still reports `ready: false` or is returning transient upstream bootstrap errors.
+- `GET /api/setup/status` mirrors `manualBootRequired` from Warden's setup-selection payload.
+  Sage must not re-derive that field from live `listServices()` or `getServiceHealth()` results, because later probe
+  failures are not the same thing as "the saved ecosystem has not been manually started for this Warden session."
 - Wizard state is written through `wizardStateClient`.
   Vault Redis is preferred, but a local in-process fallback lets setup continue before Vault is installed.
 - Verification is not advisory.

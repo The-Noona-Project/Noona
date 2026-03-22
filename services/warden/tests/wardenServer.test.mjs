@@ -122,6 +122,35 @@ test('GET /health reports ready after bootstrap completes', async (t) => {
     });
 });
 
+test('GET /api/setup/selection includes manualBootRequired from warden runtime state', async (t) => {
+    const warden = {
+        async getSetupSelectionState() {
+            return {
+                selectionMode: 'selected',
+                selectedServices: ['noona-portal'],
+                lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                explicit: true,
+                manualBootRequired: true,
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/setup/selection');
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        selectionMode: 'selected',
+        selectedServices: ['noona-portal'],
+        lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+        explicit: true,
+        manualBootRequired: true,
+    });
+});
+
 test('GET /api/services returns installable services by default', async (t) => {
     const calls = [];
     const warden = {

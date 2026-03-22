@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
- * Times this file has been edited: 7
+ * Times this file has been edited: 8
  */
 package com.paxkun.raven.service;
 
@@ -65,6 +65,7 @@ public class VPNServices {
     private static final int CONNECT_LOG_PREVIEW_LIMIT = 8;
     private static final int ROUTE_COMMAND_TIMEOUT_SECONDS = 10;
     private static final String LOGIN_TEST_PUBLIC_IP_URL = "https://api64.ipify.org?format=json";
+    private static final long AUTO_CONNECT_RETRY_COOLDOWN_MS = TimeUnit.MINUTES.toMillis(1);
 
     private final SettingsService settingsService;
     private final DownloadService downloadService;
@@ -95,6 +96,7 @@ public class VPNServices {
     private volatile String lastRotationAtIso;
     private volatile String nextRotationAtIso;
     private volatile long nextRotationAtMs = 0L;
+    private volatile long nextAutoConnectAttemptAtMs = 0L;
     private volatile String connectionState = "idle";
     private volatile String lastError;
     private volatile boolean profileErrorActive;
@@ -138,7 +140,7 @@ public class VPNServices {
     public VpnRuntimeStatus getStatus() {
         DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
         String configuredRegion = resolveConfiguredRegion(settings);
-        boolean connected = "connected".equalsIgnoreCase(connectionState) && isOpenVpnRunning();
+        boolean connected = isVpnConnected();
         return new VpnRuntimeStatus(
                 Boolean.TRUE.equals(settings.getEnabled()),
                 Boolean.TRUE.equals(settings.getAutoRotate()),
@@ -424,10 +426,12 @@ public class VPNServices {
             DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
             boolean enabled = Boolean.TRUE.equals(settings.getEnabled());
             boolean autoRotate = Boolean.TRUE.equals(settings.getAutoRotate());
+            long now = System.currentTimeMillis();
 
             if (!enabled) {
                 nextRotationAtMs = 0L;
                 nextRotationAtIso = null;
+                clearAutoConnectRetrySchedule();
                 if (isOpenVpnRunning() || !"disabled".equalsIgnoreCase(connectionState)) {
                     disconnectOpenVpn();
                     connectionState = "disabled";
@@ -445,6 +449,22 @@ public class VPNServices {
                 currentPublicIp = resolvePublicIp();
             }
 
+            if (shouldEnsureConnected()) {
+                if (!isAutoConnectRetryReady(now)) {
+                    return;
+                }
+
+                VpnRotationResult result = ensureConnectedInternal("schedule-connect");
+                if (!result.ok()) {
+                    scheduleNextAutoConnectRetry(now);
+                    logger.warn(VPN_TAG, "⚠️ Raven VPN auto-connect failed: " + sanitizeForLog(result.message()));
+                    return;
+                }
+
+                clearAutoConnectRetrySchedule();
+                now = System.currentTimeMillis();
+            }
+
             if (!autoRotate) {
                 nextRotationAtMs = 0L;
                 nextRotationAtIso = null;
@@ -452,9 +472,11 @@ public class VPNServices {
             }
 
             int intervalMinutes = normalizeRotateInterval(settings.getRotateEveryMinutes());
-            long now = System.currentTimeMillis();
             if (nextRotationAtMs <= 0) {
-                nextRotationAtMs = now;
+                long nextAt = now + TimeUnit.MINUTES.toMillis(intervalMinutes);
+                nextRotationAtMs = nextAt;
+                nextRotationAtIso = Instant.ofEpochMilli(nextAt).toString();
+                return;
             }
 
             nextRotationAtIso = Instant.ofEpochMilli(nextRotationAtMs).toString();
@@ -494,6 +516,48 @@ public class VPNServices {
      * @return The resulting rotation payload.
      */
     private VpnRotationResult rotateNowInternal(String triggeredBy, boolean reservationHeld) {
+        return runVpnTransition(
+                triggeredBy,
+                reservationHeld,
+                true,
+                "VPN rotation complete.",
+                "VPN rotation"
+        );
+    }
+
+    /**
+     * Ensures Raven has an established VPN tunnel without requiring periodic rotation to be enabled.
+     *
+     * @param triggeredBy The source that requested the connection.
+     * @return The resulting VPN transition payload.
+     */
+    private VpnRotationResult ensureConnectedInternal(String triggeredBy) {
+        return runVpnTransition(
+                triggeredBy,
+                false,
+                false,
+                "VPN connection established.",
+                "VPN auto-connect"
+        );
+    }
+
+    /**
+     * Executes Raven's shared VPN transition flow for both manual rotations and background auto-connect attempts.
+     *
+     * @param triggeredBy            The source that requested the transition.
+     * @param reservationHeld        Whether the caller already reserved {@code rotationInProgress}.
+     * @param updateRotationSchedule Whether Raven should schedule the next periodic rotation on success.
+     * @param successMessage         The message returned when the transition succeeds.
+     * @param maintenanceReason      The maintenance-pause label used while downloads drain.
+     * @return The resulting VPN transition payload.
+     */
+    private VpnRotationResult runVpnTransition(
+            String triggeredBy,
+            boolean reservationHeld,
+            boolean updateRotationSchedule,
+            String successMessage,
+            String maintenanceReason
+    ) {
         if (loginTestInProgress.get()) {
             return new VpnRotationResult(
                     false,
@@ -526,6 +590,7 @@ public class VPNServices {
         int resumedTasks = 0;
         String previousIp = currentPublicIp;
         String activeRegion = currentRegion;
+        String failureStage = "validating VPN settings";
         List<String> preservedLocalRoutes = List.of();
         boolean maintenancePauseActive = false;
         boolean openVpnConnected = false;
@@ -536,41 +601,53 @@ public class VPNServices {
             String targetRegion = resolveConfiguredRegion(settings);
             activeRegion = targetRegion;
 
-            downloadService.beginMaintenancePause("VPN rotation");
+            failureStage = "starting maintenance pause";
+            downloadService.beginMaintenancePause(maintenanceReason);
             maintenancePauseActive = true;
+            failureStage = "pausing active downloads";
             pauseResult = downloadService.requestPauseActiveDownloads();
 
+            failureStage = "waiting for downloads to pause";
             boolean drained = downloadService.waitForNoActiveDownloads(Duration.ofMinutes(Math.max(1, pauseTimeoutMinutes)));
             if (!drained) {
                 throw new IllegalStateException("Timed out while waiting for active downloads to pause.");
             }
 
+            failureStage = "capturing local routes";
             disconnectOpenVpn();
             preservedLocalRoutes = captureLocalRouteSpecs();
+            failureStage = "connecting OpenVPN";
             connectOpenVpn(targetRegion, settings.getPiaUsername(), settings.getPiaPassword());
             openVpnConnected = true;
+            failureStage = "restoring local routes";
             restoreLocalRouteSpecs(preservedLocalRoutes);
 
             currentRegion = targetRegion;
+            failureStage = "resolving public IP";
             currentPublicIp = null;
             currentPublicIp = resolvePublicIp();
             connectionState = "connected";
+            clearAutoConnectRetrySchedule();
             clearRuntimeError();
             lastRotationAtIso = Instant.now().toString();
             logger.info(VPN_TAG, "Re-applied " + preservedLocalRoutes.size() + " local route(s) after VPN connect.");
 
+            failureStage = "resuming paused downloads";
             resumedTasks = downloadService.resumePausedDownloads(pauseResult.affectedTitles());
-            downloadService.endMaintenancePause("VPN rotation complete");
+            failureStage = "ending maintenance pause";
+            downloadService.endMaintenancePause(maintenanceReason + " complete");
             maintenancePauseActive = false;
 
-            int intervalMinutes = normalizeRotateInterval(settings.getRotateEveryMinutes());
-            long nextAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(intervalMinutes);
-            nextRotationAtMs = nextAt;
-            nextRotationAtIso = Instant.ofEpochMilli(nextAt).toString();
+            if (updateRotationSchedule) {
+                int intervalMinutes = normalizeRotateInterval(settings.getRotateEveryMinutes());
+                long nextAt = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(intervalMinutes);
+                nextRotationAtMs = nextAt;
+                nextRotationAtIso = Instant.ofEpochMilli(nextAt).toString();
+            }
 
             return new VpnRotationResult(
                     true,
-                    "VPN rotation complete.",
+                    successMessage,
                     previousIp,
                     currentPublicIp,
                     currentRegion,
@@ -580,26 +657,41 @@ public class VPNServices {
                     lastRotationAtIso
             );
         } catch (Exception e) {
-            String failureMessage = Optional.ofNullable(e.getMessage())
-                    .filter(message -> !message.isBlank())
-                    .map(this::sanitizeForLog)
-                    .orElse("VPN rotation failed.");
+            String failureMessage = buildVpnTransitionFailureMessage(maintenanceReason, failureStage, e);
             logger.warn(VPN_TAG, "⚠️ VPN rotation failed: " + sanitizeForLog(e.getMessage()));
             if (openVpnConnected || !preservedLocalRoutes.isEmpty()) {
-                String cleanupMessage = cleanupFailedRotation(preservedLocalRoutes);
-                if (cleanupMessage != null && !cleanupMessage.isBlank()) {
-                    failureMessage = failureMessage + " " + cleanupMessage;
-                }
+                failureMessage = appendVpnTransitionFailureDetail(
+                        failureMessage,
+                        cleanupFailedRotation(preservedLocalRoutes)
+                );
             }
             currentPublicIp = null;
             currentPublicIp = resolvePublicIp();
-            setRuntimeError(failureMessage);
             connectionState = "error";
             if (maintenancePauseActive) {
-                downloadService.endMaintenancePause("VPN rotation failed");
+                try {
+                    downloadService.endMaintenancePause(maintenanceReason + " failed");
+                } catch (Exception maintenancePauseError) {
+                    String cleanupMessage = buildVpnTransitionFollowUpFailureMessage(
+                            "ending maintenance pause",
+                            maintenancePauseError
+                    );
+                    logger.warn(VPN_TAG, sanitizeForLog(cleanupMessage));
+                    failureMessage = appendVpnTransitionFailureDetail(failureMessage, cleanupMessage);
+                }
                 maintenancePauseActive = false;
             }
-            resumedTasks = downloadService.resumePausedDownloads(pauseResult.affectedTitles());
+            try {
+                resumedTasks = downloadService.resumePausedDownloads(pauseResult.affectedTitles());
+            } catch (Exception resumeError) {
+                String cleanupMessage = buildVpnTransitionFollowUpFailureMessage(
+                        "resuming paused downloads",
+                        resumeError
+                );
+                logger.warn(VPN_TAG, sanitizeForLog(cleanupMessage));
+                failureMessage = appendVpnTransitionFailureDetail(failureMessage, cleanupMessage);
+            }
+            setRuntimeError(failureMessage);
             return new VpnRotationResult(
                     false,
                     failureMessage,
@@ -614,6 +706,104 @@ public class VPNServices {
         } finally {
             rotationInProgress.set(false);
         }
+    }
+
+    /**
+     * Builds the primary user-facing failure message for a VPN transition stage.
+     *
+     * @param operationLabel The transition label such as VPN rotation or VPN auto-connect.
+     * @param stage          The stage where the failure occurred.
+     * @param error          The original failure.
+     * @return The user-facing failure message.
+     */
+    private String buildVpnTransitionFailureMessage(String operationLabel, String stage, Exception error) {
+        String label = Optional.ofNullable(operationLabel)
+                .filter(value -> !value.isBlank())
+                .orElse("VPN transition");
+        String normalizedStage = Optional.ofNullable(stage)
+                .filter(value -> !value.isBlank())
+                .orElse("an unknown stage");
+        String detail = Optional.ofNullable(error)
+                .map(Throwable::getMessage)
+                .filter(message -> !message.isBlank())
+                .map(this::sanitizeForLog)
+                .orElse("Unexpected VPN transition error.");
+        return label + " failed while " + normalizedStage + ": " + detail;
+    }
+
+    /**
+     * Builds a follow-up cleanup failure detail for a VPN transition that already failed earlier.
+     *
+     * @param stage The cleanup stage that also failed.
+     * @param error The cleanup failure.
+     * @return The follow-up cleanup detail.
+     */
+    private String buildVpnTransitionFollowUpFailureMessage(String stage, Exception error) {
+        String normalizedStage = Optional.ofNullable(stage)
+                .filter(value -> !value.isBlank())
+                .orElse("performing cleanup");
+        String detail = Optional.ofNullable(error)
+                .map(Throwable::getMessage)
+                .filter(message -> !message.isBlank())
+                .map(this::sanitizeForLog)
+                .orElse("Unexpected VPN cleanup error.");
+        return "Cleanup also failed while " + normalizedStage + ": " + detail;
+    }
+
+    /**
+     * Appends a cleanup detail to an existing VPN transition failure message without dropping the primary cause.
+     *
+     * @param failureMessage The primary failure message.
+     * @param detail         The cleanup detail to append.
+     * @return The combined failure message.
+     */
+    private String appendVpnTransitionFailureDetail(String failureMessage, String detail) {
+        String base = Optional.ofNullable(failureMessage)
+                .filter(value -> !value.isBlank())
+                .orElse("VPN transition failed.");
+        String normalizedDetail = Optional.ofNullable(detail).filter(value -> !value.isBlank()).orElse("");
+        if (normalizedDetail.isBlank()) {
+            return base;
+        }
+        return base + " " + normalizedDetail;
+    }
+
+    /**
+     * Indicates whether Raven should start a background VPN connection attempt.
+     *
+     * @return {@code true} when the tunnel is down and no other VPN action is in flight.
+     */
+    private boolean shouldEnsureConnected() {
+        return !isVpnConnected()
+                && !isOpenVpnRunning()
+                && !rotationInProgress.get()
+                && !loginTestInProgress.get();
+    }
+
+    /**
+     * Indicates whether the scheduler may perform another VPN auto-connect attempt yet.
+     *
+     * @param now The current epoch milliseconds.
+     * @return {@code true} when the retry cooldown has elapsed.
+     */
+    private boolean isAutoConnectRetryReady(long now) {
+        return nextAutoConnectAttemptAtMs <= 0L || now >= nextAutoConnectAttemptAtMs;
+    }
+
+    /**
+     * Schedules Raven's next background auto-connect retry.
+     *
+     * @param now The current epoch milliseconds.
+     */
+    private void scheduleNextAutoConnectRetry(long now) {
+        nextAutoConnectAttemptAtMs = now + AUTO_CONNECT_RETRY_COOLDOWN_MS;
+    }
+
+    /**
+     * Clears any pending background auto-connect retry delay.
+     */
+    private void clearAutoConnectRetrySchedule() {
+        nextAutoConnectAttemptAtMs = 0L;
     }
 
     /**
@@ -1316,6 +1506,15 @@ public class VPNServices {
     private boolean isOpenVpnRunning() {
         Process process = openVpnProcess;
         return process != null && process.isAlive();
+    }
+
+    /**
+     * Indicates whether Raven currently has a live, established OpenVPN tunnel.
+     *
+     * @return {@code true} when the tunnel is connected and the process is still alive.
+     */
+    private boolean isVpnConnected() {
+        return "connected".equalsIgnoreCase(connectionState) && isOpenVpnRunning();
     }
 
     private void stopOpenVpnProcess(Process process) {

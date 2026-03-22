@@ -428,6 +428,7 @@ const createSetupClient = ({
                 selectedServices: [],
                 lifecycleServices: [],
                 explicit: false,
+                manualBootRequired: false,
             }))
         },
         async saveSetupConfig(snapshot = {}) {

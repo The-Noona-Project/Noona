@@ -102,6 +102,37 @@ const readLegacySelectedServices = (snapshot = {}) => {
     return [];
 };
 
+const hasExplicitSelectionField = (snapshot = {}) =>
+    ['selectionMode', 'selected', 'selectedServices', 'services'].some((key) => Object.prototype.hasOwnProperty.call(snapshot, key));
+
+const resolveExplicitSelectionState = (snapshot = {}) => {
+    if (!isPlainObject(snapshot) || !hasExplicitSelectionField(snapshot)) {
+        return null;
+    }
+
+    const normalizedMode = normalizeString(snapshot?.selectionMode).toLowerCase();
+    const selected = readLegacySelectedServices(snapshot).sort((left, right) => left.localeCompare(right));
+
+    if (normalizedMode === 'minimal') {
+        return {
+            selected: [],
+            selectionMode: 'minimal',
+        };
+    }
+
+    if (normalizedMode === 'selected') {
+        return {
+            selected,
+            selectionMode: selected.length > 0 ? 'selected' : 'minimal',
+        };
+    }
+
+    return {
+        selected,
+        selectionMode: selected.length > 0 ? 'selected' : 'minimal',
+    };
+};
+
 const readLegacyValues = (snapshot = {}) => {
     if (!isPlainObject(snapshot?.values)) {
         return {};
@@ -414,6 +445,7 @@ export const normalizeSetupProfileSnapshot = (snapshot = {}, options = {}) => {
 
     const profile = normalizePublicProfile(snapshot, options);
     const derived = deriveSetupProfileInternals(profile);
+    const explicitSelection = resolveExplicitSelectionState(snapshot);
 
     return {
         version: Math.max(3, Number.isFinite(Number(profile.version)) ? Math.floor(Number(profile.version)) : 3),
@@ -422,8 +454,8 @@ export const normalizeSetupProfileSnapshot = (snapshot = {}, options = {}) => {
         komf: clonePlainObject(profile.komf),
         discord: clonePlainObject(profile.discord),
         savedAt: profile.savedAt || null,
-        selected: derived.selected,
-        selectionMode: derived.selectionMode,
+        selected: explicitSelection?.selected ?? derived.selected,
+        selectionMode: explicitSelection?.selectionMode ?? derived.selectionMode,
         values: derived.values,
     };
 };

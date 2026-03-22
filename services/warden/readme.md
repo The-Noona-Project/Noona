@@ -69,8 +69,10 @@ through Vault, including Portal's short-lived onboarding and Discord DM queue st
 `GET /health` reports `ready: false` until `warden.init()` finishes. During that window Moon and Sage may already be
 reachable, but first-run setup calls should treat Warden as still warming up rather than as fully initialized.
 After setup is complete, that normal init path still only restores Sage and Moon.
+Warden keeps `manualBootRequired` as an in-memory runtime flag for the current Warden session and only sets it when the
+saved selected ecosystem is waiting behind that minimal post-setup boot path.
 Moon's `/bootScreen` uses Warden's existing lifecycle ordering to start the saved ecosystem when an admin explicitly
-requests it.
+requests it, and later service outages or failed probes do not flip the system back into manual-boot mode.
 
 For the supported install path, use [ServerAdmin.md](../../ServerAdmin.md) instead of treating Warden as a standalone
 app.

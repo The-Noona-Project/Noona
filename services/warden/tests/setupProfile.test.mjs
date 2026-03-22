@@ -77,8 +77,22 @@ test("normalizeSetupProfileSnapshot imports legacy snapshots into the v3 profile
     assert.equal(normalized.kavita.apiKey, "kavita-key");
     assert.equal(normalized.kavita.account.username, "admin");
     assert.equal(normalized.discord.clientId, "client-id");
-    assert.deepEqual(normalized.selected, ["noona-kavita", "noona-portal", "noona-raven"]);
+    assert.deepEqual(normalized.selected, ["noona-kavita", "noona-moon", "noona-portal", "noona-sage"]);
+    assert.equal(normalized.selectionMode, "selected");
     assert.equal(normalized.values["noona-vault"], undefined);
+});
+
+test("normalizeSetupProfileSnapshot preserves explicit minimal selection metadata", () => {
+    const normalized = normalizeSetupProfileSnapshot({
+        version: 3,
+        storageRoot: "/srv/noona",
+        selected: [],
+        selectionMode: "minimal",
+        values: {},
+    });
+
+    assert.deepEqual(normalized.selected, []);
+    assert.equal(normalized.selectionMode, "minimal");
 });
 
 test("toPublicSetupSnapshot masks secrets and masked imports restore from the current snapshot", () => {

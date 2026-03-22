@@ -73,6 +73,9 @@ catalog or install-preview retries are expected during first boot.
 After setup is complete, a normal Warden restart still comes back in minimal mode first.
 That means `noona-sage` and `noona-moon` are restored immediately, while the saved ecosystem waits for a manual start
 from Moon's `/bootScreen`.
+That boot screen is only for this post-restart minimal-mode handoff.
+Later single-service outages, failed probes, or temporarily stopped selected services should not send an already-started
+system back there.
 
 ## 3. Complete First-Run Setup In Moon
 
@@ -108,6 +111,8 @@ ecosystem is not already running.
 Use `Start ecosystem` there to trigger the same lifecycle order Warden uses for full startup.
 That boot screen now shows the required recovery services, the saved target services, and the page Moon will return to
 after the stack stabilizes.
+If a service fails later after the ecosystem has already been started for the current Warden session, Moon should stay
+in the normal app instead of treating that as a fresh boot-screen case.
 
 ## 4. First Admin And Discord Notes
 
@@ -197,6 +202,8 @@ Restarts:
   instead of surfacing as hard boot failures.
 - Seeing `/bootScreen` after a host or Warden reboot is expected when setup is complete but the saved ecosystem has not
   been started yet.
+- Seeing `/bootScreen` later because one selected service is unhealthy is not expected; troubleshoot the affected
+  service from Moon or Warden instead of treating it as a fresh startup requirement.
 - Restart the Warden container itself when you update Warden or need to recover the control plane.
 
 Backups:
@@ -250,6 +257,9 @@ Moon settings or service links fail with a Sage backend error:
 
 - confirm `noona-sage` is running and healthy
 - confirm `noona-moon` and `noona-sage` are both attached to `noona-network`
+- Moon now retries short transient Sage `502`, `503`, and `504` responses on auth, setup, and service-catalog reads.
+  If the browser error survives that bounded retry window, treat it as a real Sage or upstream problem rather than a
+  one-off warm-up blip.
 - if Moon shows a Sage `HTTP 5xx` summary, treat it as a reachable Sage or upstream failure rather than a network-path
   issue and inspect the Sage logs before changing Moon `SAGE_BASE_URL`
 - if Moon is running in a custom or split topology, open `Admin -> System -> Overview`, set Moon `SAGE_BASE_URL` to a
@@ -283,6 +293,8 @@ Downloads, Kavita, or metadata flows fail after a reboot:
 - confirm the storage root persisted across the reboot
 - if Moon redirects to `/bootScreen`, use `Start ecosystem` there before treating missing Portal, Raven, Kavita, or
   Komf containers as a restore failure
+- if Moon stays in the normal app and only one selected service is unhealthy, troubleshoot that service directly; an
+  unhealthy probe alone should not force `/bootScreen`
 - check service health and logs from Moon or Warden before changing settings by hand
 - if managed Kavita is enabled, expect Portal and Komf to reuse only validated Kavita plugin keys; stale recovered keys
   will now be replaced during setup or restore instead of being silently reused
@@ -295,6 +307,10 @@ PIA regions stay blank or Raven VPN shows no IP:
   Docker capabilities or tunnel device settings
 - while Raven is rotating, Moon disables the VPN controls until the runtime settles; wait for the rotation to finish
   before retrying the action
+- when `Rotate now` fails after polling settles, Moon now shows Raven's phase-specific final failure text in the card.
+  Read that message first because cleanup details may be appended after the original tunnel or route error.
+- when VPN is enabled, Raven now tries to establish the baseline tunnel automatically even if auto-rotate is off, so a
+  queued download that says it is waiting on VPN should normally start on its own once the tunnel comes up
 - VPN login tests now return their final result directly, so a success or failure message from Moon is the real probe
   outcome rather than a background-start notice
 - Raven now keeps the last known-good PIA profiles on disk after a bad upstream refresh, so an empty region list plus a
@@ -305,6 +321,8 @@ PIA regions stay blank or Raven VPN shows no IP:
   a configuration error rather than a Raven runtime problem.
 - `Rotate now` still starts the VPN change in the background, but `Test login` waits for the actual probe result before
   returning.
+- if Moon's downloads page shows a queued job waiting on VPN, read the reported connection state and last error there
+  first; use `Rotate now` from `Admin -> System -> Downloader` only if Raven is not recovering automatically
 - if the error mentions missing `.ovpn` profiles or a failed profile refresh, retry the region reload after upstream
   connectivity is healthy; a later successful refresh or rotation clears the stale profile error automatically
 

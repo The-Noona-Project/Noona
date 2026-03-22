@@ -3920,8 +3920,10 @@ test('init ensures network, attaches, and runs minimal boot sequence by default'
     };
 
     const result = await warden.init();
+    const selection = await warden.getSetupSelectionState();
 
     assert.equal(result.mode, 'minimal');
+    assert.equal(selection.manualBootRequired, false);
     assert.ok(events.includes('ensure'));
     assert.ok(events.includes('attach'));
     assert.ok(events.some(event => event.includes('Minimal mode')));
@@ -3975,9 +3977,11 @@ test('init restores the installed managed stack when setup state is unavailable'
     };
 
     const result = await warden.init();
+    const selection = await warden.getSetupSelectionState();
 
     assert.equal(result.mode, 'full');
     assert.equal(result.setupCompleted, false);
+    assert.equal(selection.manualBootRequired, false);
     assert.deepEqual(started, [
         'noona-mongo',
         'noona-redis',
@@ -5913,12 +5917,213 @@ test('init stays in minimal mode after setup completes', async () => {
     };
 
     const result = await warden.init();
-
     assert.equal(result.mode, 'minimal');
     assert.equal(result.setupCompleted, true);
     assert.deepEqual(started, [
         'noona-sage',
         'noona-moon',
+    ]);
+});
+
+test('init marks manualBootRequired for completed selected setup restored in minimal mode', async () => {
+    const dataRoot = path.resolve('/srv/noona-manual-boot-selected');
+    const snapshotPath = path.join(dataRoot, 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            storageRoot: dataRoot,
+            selected: ['noona-portal'],
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                },
+            },
+        }),
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: dataRoot},
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-vault': {name: 'noona-vault'},
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        wizardState: {
+            client: {
+                async loadState() {
+                    return {completed: true};
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async () => {
+    };
+
+    const result = await warden.init();
+
+    assert.equal(result.mode, 'minimal');
+    assert.equal(result.setupCompleted, true);
+    assert.equal((await warden.getSetupSelectionState()).manualBootRequired, true);
+});
+
+test('init keeps manualBootRequired false for completed minimal selection', async () => {
+    const dataRoot = path.resolve('/srv/noona-manual-boot-minimal');
+    const snapshotPath = path.join(dataRoot, 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            storageRoot: dataRoot,
+            selected: [],
+            selectionMode: 'minimal',
+            values: {},
+        }),
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: dataRoot},
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-vault': {name: 'noona-vault'},
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        wizardState: {
+            client: {
+                async loadState() {
+                    return {completed: true};
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    warden.startService = async () => {
+    };
+
+    const result = await warden.init();
+
+    assert.equal(result.mode, 'minimal');
+    assert.equal(result.setupCompleted, true);
+    assert.equal((await warden.getSetupSelectionState()).manualBootRequired, false);
+});
+
+test('startEcosystem clears manualBootRequired after successful full start for completed selected setup', async () => {
+    const dataRoot = path.resolve('/srv/noona-manual-boot-clear');
+    const snapshotPath = path.join(dataRoot, 'wardenm', 'noona-settings.json');
+    const memoryFs = createMemoryFs({
+        [snapshotPath]: JSON.stringify({
+            version: 2,
+            storageRoot: dataRoot,
+            selected: ['noona-portal'],
+            values: {
+                'noona-portal': {
+                    DISCORD_BOT_TOKEN: 'portal-token',
+                },
+            },
+        }),
+    });
+    const dockerUtils = {
+        ensureNetwork: async () => {
+        },
+        attachSelfToNetwork: async () => {
+        },
+        containerExists: async () => false,
+        pullImageIfNeeded: async () => {
+        },
+        runContainerWithLogs: async () => {
+        },
+        waitForHealthyStatus: async () => {
+        },
+    };
+    const warden = buildWarden({
+        fs: memoryFs,
+        env: {NOONA_DATA_ROOT: dataRoot},
+        dockerUtils,
+        services: {
+            addon: {
+                'noona-mongo': {name: 'noona-mongo'},
+                'noona-redis': {name: 'noona-redis'},
+            },
+            core: {
+                'noona-sage': {name: 'noona-sage'},
+                'noona-moon': {name: 'noona-moon', port: 3000, internalPort: 3000},
+                'noona-vault': {name: 'noona-vault'},
+                'noona-portal': {name: 'noona-portal'},
+            },
+        },
+        wizardState: {
+            client: {
+                async loadState() {
+                    return {completed: true};
+                },
+            },
+        },
+        hostDockerSockets: [],
+    });
+
+    const started = [];
+    warden.startService = async (service) => {
+        started.push(service.name);
+    };
+
+    await warden.init();
+    assert.equal((await warden.getSetupSelectionState()).manualBootRequired, true);
+
+    const result = await warden.startEcosystem({setupCompleted: true});
+
+    assert.equal(result.mode, 'full');
+    assert.equal(result.setupCompleted, true);
+    assert.equal((await warden.getSetupSelectionState()).manualBootRequired, false);
+    assert.deepEqual(started.slice(-6), [
+        'noona-mongo',
+        'noona-redis',
+        'noona-vault',
+        'noona-sage',
+        'noona-moon',
+        'noona-portal',
     ]);
 });
 

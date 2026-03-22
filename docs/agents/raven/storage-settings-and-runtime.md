@@ -66,6 +66,8 @@
 - Raven currently only supports the `pia` provider.
 - The VPN root lives under `downloads/vpn/pia`.
 - Raven downloads and refreshes PIA OpenVPN profiles automatically, then uses the `openvpn` binary at runtime.
+- `enabled=true` now means Raven will try to establish a baseline VPN tunnel whenever it is disconnected.
+  `autoRotate` only controls later periodic re-rotation, not the initial connect.
 - Profile discovery is recursive under `downloads/vpn/pia/profiles` so nested upstream zip layouts still resolve region
   ids by profile basename.
 - Profile refresh is atomic: Raven downloads and extracts into temp paths, validates that the refreshed archive
@@ -73,6 +75,8 @@
 - Failed refreshes keep the last known-good extracted profiles instead of wiping `downloads/vpn/pia/profiles`.
 - Profile refresh and discovery failures are recorded in `VpnRuntimeStatus.lastError` and stay there until a later
   successful profile refresh or VPN rotation clears them.
+- Failed auto-connect attempts also populate `VpnRuntimeStatus.lastError`, and Raven waits one minute before trying the
+  scheduler-driven connect path again.
 - Manual rotate remains an async-accepted action, but Raven validates the enabled PIA settings before returning `ok`.
 - Login-test is synchronous and returns the completed probe payload.
 - `VpnRuntimeStatus.connected` is only true once Raven reached a completed VPN connection state.

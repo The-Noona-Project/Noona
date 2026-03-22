@@ -94,6 +94,18 @@ const createRavenStub = (overrides = {}) => ({
     async pauseDownloads() {
         throw new Error('pauseDownloads should not be called')
     },
+    async clearAllDownloads() {
+        throw new Error('clearAllDownloads should not be called')
+    },
+    async clearDownloadStatus() {
+        throw new Error('clearDownloadStatus should not be called')
+    },
+    async clearDownloadHistory() {
+        throw new Error('clearDownloadHistory should not be called')
+    },
+    async resumeDownloads() {
+        throw new Error('resumeDownloads should not be called')
+    },
     async getVpnStatus() {
         throw new Error('getVpnStatus should not be called')
     },
@@ -1887,22 +1899,13 @@ test('GET /api/setup/status reports manual boot required when selected lifecycle
     const app = createSageApp({
         serviceName: 'test-sage',
         setupClient: {
-            async listServices() {
-                return [
-                    {name: 'noona-mongo', running: true},
-                    {name: 'noona-redis', running: true},
-                    {name: 'noona-vault', running: true},
-                    {name: 'noona-sage', running: true},
-                    {name: 'noona-moon', running: true},
-                    {name: 'noona-portal', running: false},
-                ]
-            },
             async getSetupSelection() {
                 return {
                     selectionMode: 'selected',
                     selectedServices: ['noona-portal'],
                     lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
                     explicit: true,
+                    manualBootRequired: true,
                 }
             },
             async installServices() {
@@ -1918,13 +1921,6 @@ test('GET /api/setup/status reports manual boot required when selected lifecycle
             },
             async getInstallProgress() {
                 return {items: [], status: 'idle', percent: null}
-            },
-            async getServiceHealth(name) {
-                return {
-                    success: name !== 'noona-portal',
-                    supported: true,
-                    status: name === 'noona-portal' ? 'stopped' : 'healthy'
-                }
             },
         },
         wizardStateClient: {
@@ -1949,19 +1945,54 @@ test('GET /api/setup/status reports manual boot required when selected lifecycle
     })
 })
 
-test('GET /api/setup/status clears manual boot required once the selected lifecycle services are healthy', async (t) => {
+test('GET /api/setup/status mirrors manual boot required from Warden selection state', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                    manualBootRequired: false,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.manualBootRequired, false)
+})
+
+test('GET /api/setup/status ignores transient lifecycle health issues once Warden clears manual boot required', async (t) => {
     const app = createSageApp({
         serviceName: 'test-sage',
         setupClient: {
             async listServices() {
-                return [
-                    {name: 'noona-mongo', running: true},
-                    {name: 'noona-redis', running: true},
-                    {name: 'noona-vault', running: true},
-                    {name: 'noona-sage', running: true},
-                    {name: 'noona-moon', running: true},
-                    {name: 'noona-portal', running: true},
-                ]
+                throw new Error('listServices should not be used for manual boot status')
             },
             async getSetupSelection() {
                 return {
@@ -1969,6 +2000,7 @@ test('GET /api/setup/status clears manual boot required once the selected lifecy
                     selectedServices: ['noona-portal'],
                     lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
                     explicit: true,
+                    manualBootRequired: false,
                 }
             },
             async installServices() {
@@ -1986,7 +2018,7 @@ test('GET /api/setup/status clears manual boot required once the selected lifecy
                 return {items: [], status: 'idle', percent: null}
             },
             async getServiceHealth() {
-                return {success: true, supported: true, status: 'healthy'}
+                throw new Error('getServiceHealth should not be used for manual boot status')
             },
         },
         wizardStateClient: {
@@ -2008,22 +2040,13 @@ test('POST /api/setup/boot/start succeeds only while manual boot is required', a
     const successApp = createSageApp({
         serviceName: 'test-sage',
         setupClient: {
-            async listServices() {
-                return [
-                    {name: 'noona-mongo', running: true},
-                    {name: 'noona-redis', running: true},
-                    {name: 'noona-vault', running: true},
-                    {name: 'noona-sage', running: true},
-                    {name: 'noona-moon', running: true},
-                    {name: 'noona-portal', running: false},
-                ]
-            },
             async getSetupSelection() {
                 return {
                     selectionMode: 'selected',
                     selectedServices: ['noona-portal'],
                     lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
                     explicit: true,
+                    manualBootRequired: true,
                 }
             },
             async installServices() {
@@ -2039,9 +2062,6 @@ test('POST /api/setup/boot/start succeeds only while manual boot is required', a
             },
             async getInstallProgress() {
                 return {items: [], status: 'idle', percent: null}
-            },
-            async getServiceHealth(name) {
-                return {success: name !== 'noona-portal', supported: true}
             },
             async startEcosystem() {
                 startCalls += 1
@@ -2064,22 +2084,13 @@ test('POST /api/setup/boot/start succeeds only while manual boot is required', a
     const conflictApp = createSageApp({
         serviceName: 'test-sage',
         setupClient: {
-            async listServices() {
-                return [
-                    {name: 'noona-mongo', running: true},
-                    {name: 'noona-redis', running: true},
-                    {name: 'noona-vault', running: true},
-                    {name: 'noona-sage', running: true},
-                    {name: 'noona-moon', running: true},
-                    {name: 'noona-portal', running: true},
-                ]
-            },
             async getSetupSelection() {
                 return {
                     selectionMode: 'selected',
                     selectedServices: ['noona-portal'],
                     lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
                     explicit: true,
+                    manualBootRequired: false,
                 }
             },
             async installServices() {
@@ -2095,9 +2106,6 @@ test('POST /api/setup/boot/start succeeds only while manual boot is required', a
             },
             async getInstallProgress() {
                 return {items: [], status: 'idle', percent: null}
-            },
-            async getServiceHealth() {
-                return {success: true, supported: true}
             },
             async startEcosystem() {
                 throw new Error('startEcosystem should not be called when manual boot is not required')
@@ -4750,6 +4758,196 @@ test('POST /api/raven/downloads/pause surfaces Raven failures', async (t) => {
     assert.equal(response.status, 502)
     const payload = await response.json()
     assert.ok(payload.error.includes('Unable to pause Raven downloads'))
+})
+
+test('DELETE /api/raven/downloads/status clears Raven download queue', async (t) => {
+    let calls = 0
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async clearAllDownloads() {
+                calls += 1
+                return {status: 204, payload: null}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/status`, {
+        method: 'DELETE',
+    })
+
+    assert.equal(response.status, 204)
+    assert.equal(await response.text(), '')
+    assert.equal(calls, 1)
+})
+
+test('DELETE /api/raven/downloads/status surfaces clear-all failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async clearAllDownloads() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/status`, {
+        method: 'DELETE',
+    })
+
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unable to clear Raven download status.')
+})
+
+test('DELETE /api/raven/downloads/status/:titleName clears one Raven download task', async (t) => {
+    const clearedTitles = []
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async clearDownloadStatus(titleName) {
+                clearedTitles.push(titleName)
+                return {status: 204, payload: null}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/status/${encodeURIComponent('Solo Leveling')}`, {
+        method: 'DELETE',
+    })
+
+    assert.equal(response.status, 204)
+    assert.equal(await response.text(), '')
+    assert.deepEqual(clearedTitles, ['Solo Leveling'])
+})
+
+test('DELETE /api/raven/downloads/status/:titleName surfaces single-task clear failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async clearDownloadStatus() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/status/${encodeURIComponent('Solo Leveling')}`, {
+        method: 'DELETE',
+    })
+
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unable to clear Raven download status.')
+})
+
+test('DELETE /api/raven/downloads/history clears Raven download history', async (t) => {
+    let calls = 0
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async clearDownloadHistory() {
+                calls += 1
+                return {status: 204, payload: null}
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/history`, {
+        method: 'DELETE',
+    })
+
+    assert.equal(response.status, 204)
+    assert.equal(await response.text(), '')
+    assert.equal(calls, 1)
+})
+
+test('DELETE /api/raven/downloads/history surfaces clear-history failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async clearDownloadHistory() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/history`, {
+        method: 'DELETE',
+    })
+
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unable to clear Raven download history.')
+})
+
+test('POST /api/raven/downloads/resume proxies Raven resume requests', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async resumeDownloads() {
+                return {
+                    status: 200,
+                    payload: {
+                        resumedTasks: 2,
+                        message: 'Resumed 2 task(s).',
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/resume`, {
+        method: 'POST',
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        resumedTasks: 2,
+        message: 'Resumed 2 task(s).',
+    })
+})
+
+test('POST /api/raven/downloads/resume surfaces Raven failures', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        ravenClient: createRavenStub({
+            async resumeDownloads() {
+                throw new Error('boom')
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/raven/downloads/resume`, {
+        method: 'POST',
+    })
+
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.equal(payload.error, 'Unable to resume Raven downloads.')
 })
 
 test('GET /api/raven/downloads/status proxies Raven status feed', async (t) => {

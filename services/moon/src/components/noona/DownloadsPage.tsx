@@ -49,6 +49,21 @@ type RavenActiveWorker = {
     pauseRequested?: boolean | null;
 };
 
+type RavenVpnRuntimeStatus = {
+    enabled?: boolean;
+    autoRotate?: boolean;
+    rotating?: boolean;
+    connected?: boolean;
+    provider?: string | null;
+    region?: string | null;
+    rotateEveryMinutes?: number | null;
+    publicIp?: string | null;
+    lastRotationAt?: string | null;
+    nextRotationAt?: string | null;
+    lastError?: string | null;
+    connectionState?: string | null;
+};
+
 type RavenDownloadSummary = {
     activeDownloads?: number;
     maxThreads?: number;
@@ -60,6 +75,7 @@ type RavenDownloadSummary = {
     state?: string | null;
     statusText?: string | null;
     currentTask?: RavenDownloadProgress | null;
+    vpn?: RavenVpnRuntimeStatus | null;
     error?: string;
 };
 
@@ -108,6 +124,10 @@ type ResolvedTaskView = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const VPN_WAIT_MESSAGE = "Waiting for Raven VPN connection before download starts.";
+const DOWNLOADS_POLL_MS = 1500;
+const SUMMARY_POLL_MS = 3000;
+const HISTORY_POLL_MS = 6000;
 const formatEpochMs = (value: unknown): string => {
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
     return new Date(value).toLocaleString();
@@ -127,6 +147,8 @@ const normalizeNumberList = (value: unknown): string[] => {
         .map((entry) => normalizeString(entry).trim())
         .filter(Boolean);
 };
+const isVpnWaitingMessage = (value: unknown): boolean =>
+    normalizeString(value).trim().toLowerCase() === VPN_WAIT_MESSAGE.toLowerCase();
 const statusBadgeBackground = (statusRaw: string) => {
     const status = statusRaw.trim().toLowerCase();
     if (status === "completed") return "success-alpha-weak";
@@ -337,9 +359,11 @@ export function DownloadsPage() {
         }
     };
 
-    const loadSummary = async () => {
-        setSummaryLoading(true);
-        setSummaryError(null);
+    const loadSummary = async ({quiet = false}: { quiet?: boolean } = {}) => {
+        if (!quiet) {
+            setSummaryLoading(true);
+            setSummaryError(null);
+        }
         try {
             const res = await fetch("/api/noona/raven/downloads/summary", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as RavenDownloadSummary | null;
@@ -348,17 +372,22 @@ export function DownloadsPage() {
                 return;
             }
             setSummary(json ?? {});
+            setSummaryError(null);
         } catch (error_) {
             const message = error_ instanceof Error ? error_.message : String(error_);
             setSummaryError(message);
         } finally {
-            setSummaryLoading(false);
+            if (!quiet) {
+                setSummaryLoading(false);
+            }
         }
     };
 
-    const loadHistory = async () => {
-        setHistoryLoading(true);
-        setHistoryError(null);
+    const loadHistory = async ({quiet = false}: { quiet?: boolean } = {}) => {
+        if (!quiet) {
+            setHistoryLoading(true);
+            setHistoryError(null);
+        }
         try {
             const res = await fetch("/api/noona/raven/downloads/history", {cache: "no-store"});
             const json = await res.json().catch(() => null);
@@ -367,11 +396,14 @@ export function DownloadsPage() {
                 return;
             }
             setHistory(Array.isArray(json) ? json as RavenDownloadProgress[] : []);
+            setHistoryError(null);
         } catch (error_) {
             const message = error_ instanceof Error ? error_.message : String(error_);
             setHistoryError(message);
         } finally {
-            setHistoryLoading(false);
+            if (!quiet) {
+                setHistoryLoading(false);
+            }
         }
     };
 
@@ -382,16 +414,30 @@ export function DownloadsPage() {
     const refreshAllOnMount = useEffectEvent(() => {
         void refreshAll();
     });
+    const pollSummaryInBackground = useEffectEvent(() => {
+        void loadSummary({quiet: true});
+    });
+    const pollHistoryInBackground = useEffectEvent(() => {
+        void loadHistory({quiet: true});
+    });
 
     useEffect(() => {
-        const interval = window.setInterval(() => {
+        const downloadsInterval = window.setInterval(() => {
             void pollDownloads();
-        }, 1500);
+        }, DOWNLOADS_POLL_MS);
+        const summaryInterval = window.setInterval(() => {
+            pollSummaryInBackground();
+        }, SUMMARY_POLL_MS);
+        const historyInterval = window.setInterval(() => {
+            pollHistoryInBackground();
+        }, HISTORY_POLL_MS);
 
         refreshAllOnMount();
 
         return () => {
-            window.clearInterval(interval);
+            window.clearInterval(downloadsInterval);
+            window.clearInterval(summaryInterval);
+            window.clearInterval(historyInterval);
         };
     }, []);
 
@@ -556,6 +602,10 @@ export function DownloadsPage() {
         const task = summary?.currentTask;
         return task && typeof task === "object" ? task : null;
     }, [summary]);
+    const vpnStatus = useMemo(() => {
+        const vpn = summary?.vpn;
+        return vpn && typeof vpn === "object" ? vpn : null;
+    }, [summary]);
     const activeTaskViews = useMemo(
         () => [...activeDownloads].sort(compareTaskEntries).map((entry, index) => resolveTaskView(entry, index)),
         [activeDownloads],
@@ -610,10 +660,63 @@ export function DownloadsPage() {
                 .map((entry, index) => resolveTaskView(entry, index)),
         [history],
     );
+    const resumableTaskCount = useMemo(
+        () => historyViews.filter((task) => task.status === "paused" || task.status === "interrupted").length,
+        [historyViews],
+    );
+    const canResumeDownloads = resumableTaskCount > 0;
     const focusTask = currentTaskDeckViews[0] ?? null;
     const remainingChapterCount = activeTaskViews.reduce((total, task) => total + task.remaining.length, 0);
     const completedHistoryCount = historyViews.filter((task) => task.status === "completed").length;
     const interruptedHistoryCount = historyViews.length - completedHistoryCount;
+    const waitingForVpnTask = useMemo(
+        () => currentTaskDeckViews.find((task) => isVpnWaitingMessage(task.message)) ?? null,
+        [currentTaskDeckViews],
+    );
+    const vpnBlockerDetails = useMemo(() => {
+        if (!waitingForVpnTask || !vpnStatus || vpnStatus.enabled !== true) {
+            return null;
+        }
+
+        const connectionState = normalizeString(vpnStatus.connectionState).trim().toLowerCase();
+        const blocked =
+            vpnStatus.connected !== true
+            || connectionState === "connecting"
+            || connectionState === "error"
+            || connectionState === "idle"
+            || connectionState === "disabled";
+        if (!blocked) {
+            return null;
+        }
+
+        const pieces = [
+            `Raven is waiting for the VPN before ${waitingForVpnTask.titleName} can start.`,
+            `State: ${normalizeString(vpnStatus.connectionState).trim() || (vpnStatus.connected ? "connected" : "disconnected")}.`,
+        ];
+        const region = normalizeString(vpnStatus.region).trim();
+        if (region) {
+            pieces.push(`Region: ${region}.`);
+        }
+        const lastError = normalizeString(vpnStatus.lastError).trim();
+        if (lastError) {
+            pieces.push(`Last error: ${lastError}.`);
+        }
+        pieces.push("Open Admin -> System -> Downloader and check the VPN card; use Rotate now there if Raven does not recover automatically.");
+
+        return {
+            message: pieces.join(" "),
+            hasError: Boolean(lastError),
+        };
+    }, [waitingForVpnTask, vpnStatus]);
+    const focusTaskWaitingForVpn = focusTask != null && isVpnWaitingMessage(focusTask.message);
+    const focusTaskStatusMessage = focusTaskWaitingForVpn && vpnBlockerDetails
+        ? vpnBlockerDetails.message
+        : focusTask?.current
+            ? `Current chapter: ${focusTask.current}`
+            : focusTask?.message || "";
+    const focusTaskStatusTone = focusTaskWaitingForVpn && vpnBlockerDetails?.hasError
+        ? "danger-strong"
+        : "neutral-weak";
     const showcaseStatus = currentTaskDeckViews[0]?.statusRaw || normalizeString(summary?.state).trim() || "idle";
     const taskShowcaseCard = (
         <Card
@@ -703,8 +806,9 @@ export function DownloadsPage() {
                             {focusTask ? (
                                 <>
                                     {(focusTask.message || focusTask.current) && (
-                                        <Text onBackground="neutral-weak" variant="body-default-s" wrap="balance">
-                                            {focusTask.current ? `Current chapter: ${focusTask.current}` : focusTask.message}
+                                        <Text onBackground={focusTaskStatusTone} variant="body-default-s"
+                                              wrap="balance">
+                                            {focusTaskStatusMessage}
                                         </Text>
                                     )}
                                     {focusTask.errorMessage && (
@@ -794,7 +898,7 @@ export function DownloadsPage() {
                                     </Button>
                                     <Button
                                         variant="secondary"
-                                        disabled={resumingDownloads || (activeTaskViews.length === 0 && interruptedHistoryCount === 0)}
+                                        disabled={resumingDownloads || !canResumeDownloads}
                                         onClick={() => void requestResumeDownloads()}
                                     >
                                         {resumingDownloads ? "Resuming..." : "Resume downloads"}
@@ -843,6 +947,18 @@ export function DownloadsPage() {
                                 <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
                                     Interrupted jobs: {interruptedHistoryCount}
                                 </Text>
+                                <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
+                                    Ready to resume: {resumableTaskCount}
+                                </Text>
+                                {vpnBlockerDetails && (
+                                    <Text
+                                        onBackground={vpnBlockerDetails.hasError ? "danger-strong" : "neutral-weak"}
+                                        variant="body-default-xs"
+                                        wrap="balance"
+                                    >
+                                        {vpnBlockerDetails.message}
+                                    </Text>
+                                )}
                                 {pauseDownloadsMessage && !pauseDownloadsError && (
                                     <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
                                         {pauseDownloadsMessage}
@@ -895,7 +1011,7 @@ export function DownloadsPage() {
                         </Badge>
                         <Button
                             variant="secondary"
-                            disabled={resumingDownloads || (activeTaskViews.length === 0 && interruptedHistoryCount === 0)}
+                            disabled={resumingDownloads || !canResumeDownloads}
                             onClick={() => void requestResumeDownloads()}
                         >
                             {resumingDownloads ? "Resuming..." : "Resume"}
@@ -928,6 +1044,12 @@ export function DownloadsPage() {
                 {pauseDownloadsMessage && !pauseDownloadsError && (
                     <Text onBackground="neutral-weak" variant="body-default-xs">
                         {pauseDownloadsMessage}
+                    </Text>
+                )}
+                {vpnBlockerDetails && (
+                    <Text onBackground={vpnBlockerDetails.hasError ? "danger-strong" : "neutral-weak"}
+                          variant="body-default-xs" wrap="balance">
+                        {vpnBlockerDetails.message}
                     </Text>
                 )}
 
@@ -1000,7 +1122,11 @@ export function DownloadsPage() {
 
                                     {(task.current || task.message) && (
                                         <Text onBackground="neutral-weak" variant="body-default-xs" wrap="balance">
-                                            {task.current ? `Current: ${task.current}` : task.message}
+                                            {isVpnWaitingMessage(task.message) && vpnBlockerDetails
+                                                ? vpnBlockerDetails.message
+                                                : task.current
+                                                    ? `Current: ${task.current}`
+                                                    : task.message}
                                         </Text>
                                     )}
 

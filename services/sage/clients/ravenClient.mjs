@@ -488,6 +488,35 @@ export const createRavenClient = ({
             })
             return await parseResponsePayload(response)
         },
+        async clearAllDownloads() {
+            return await fetchRavenAction('/v1/download/status', {
+                method: 'DELETE',
+                headers: {Accept: 'application/json'},
+            })
+        },
+        async clearDownloadStatus(titleName) {
+            const normalized = typeof titleName === 'string' ? titleName.trim() : ''
+            if (!normalized) {
+                throw new Error('titleName is required.')
+            }
+
+            return await fetchRavenAction(`/v1/download/status/${encodeURIComponent(normalized)}`, {
+                method: 'DELETE',
+                headers: {Accept: 'application/json'},
+            })
+        },
+        async clearDownloadHistory() {
+            return await fetchRavenAction('/v1/download/status/history', {
+                method: 'DELETE',
+                headers: {Accept: 'application/json'},
+            })
+        },
+        async resumeDownloads() {
+            return await fetchRavenAction('/v1/download/status/resume', {
+                method: 'POST',
+                headers: {Accept: 'application/json'},
+            })
+        },
         async getVpnStatus() {
             const response = await fetchFromRaven('/v1/vpn/status')
             return await parseResponsePayload(response)
