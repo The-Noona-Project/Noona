@@ -74,8 +74,13 @@
   `serverManaged !== true`), while preserving masked secret placeholders and intentional blank clears.
   Do not round-trip the full redacted `env` snapshot back into Sage or Warden.
 - The Downloader PIA VPN card keeps its controls disabled while Raven reports `rotating` or `connecting`.
-  Manual rotation now polls the live VPN settings until the runtime settles, and follow-up refreshes preserve success
-  messages so save/rotate confirmations do not disappear immediately.
+  Moon now tracks the current VPN draft against the last loaded snapshot so it can tell whether `Save VPN` or
+  `Rotate now` is acting on unsaved edits.
+  `Save VPN` sends the current draft with `applyNow: true`, then polls the live VPN settings until Raven settles when
+  Sage reports that an apply-triggered reconnect actually started.
+  `Rotate now` sends the full current draft too, so unsaved region or credential edits are persisted before Raven
+  reconnects.
+  Follow-up refreshes preserve success messages so save/rotate confirmations do not disappear immediately.
   If Raven settles with `status.lastError`, Moon now promotes that final detailed failure into the card error state
   instead of leaving the user with the generic background-start message.
 - Raven download-summary reads now include VPN runtime details.

@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/download/QueueDownloadResult.java
  * - src/main/java/com/paxkun/raven/service/download/SearchTitle.java
  * - src/main/java/com/paxkun/raven/service/download/SourceFinder.java
- * Times this file has been edited: 16
+ * Times this file has been edited: 17
  */
 package com.paxkun.raven.service;
 
@@ -104,6 +104,7 @@ class DownloadServiceTest {
         );
         lenient().when(settingsService.getDownloadNamingSettings()).thenReturn(naming);
         lenient().when(settingsService.getDownloadVpnSettings()).thenReturn(vpnSettings);
+        lenient().when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(vpnSettings);
         lenient().when(runtimeProperties.isWorkerMode()).thenReturn(false);
         lenient().when(runtimeProperties.useProcessWorkers()).thenReturn(false);
         lenient().when(vpnServices.getStatus()).thenReturn(new VpnRuntimeStatus(
@@ -683,7 +684,7 @@ class DownloadServiceTest {
     @Test
     void queuedDownloadsWaitForVpnConnectionWhenRequired() throws Exception {
         AtomicBoolean vpnConnected = new AtomicBoolean(false);
-        when(settingsService.getDownloadVpnSettings()).thenReturn(new DownloadVpnSettings(
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(new DownloadVpnSettings(
                 "downloads.vpn",
                 "pia",
                 true,
@@ -743,9 +744,77 @@ class DownloadServiceTest {
     }
 
     @Test
+    void queuedDownloadsStopWaitingWhenFreshVpnSettingsDisableTheGate() throws Exception {
+        AtomicBoolean onlyDownloadWhenVpnOn = new AtomicBoolean(true);
+        when(settingsService.getDownloadVpnSettings()).thenReturn(new DownloadVpnSettings(
+                "downloads.vpn",
+                "pia",
+                true,
+                true,
+                true,
+                30,
+                "us_california",
+                "pia-user",
+                "pia-secret"
+        ));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenAnswer(invocation -> new DownloadVpnSettings(
+                "downloads.vpn",
+                "pia",
+                true,
+                onlyDownloadWhenVpnOn.get(),
+                true,
+                30,
+                "us_california",
+                "pia-user",
+                "pia-secret"
+        ));
+        when(vpnServices.getStatus()).thenReturn(new VpnRuntimeStatus(
+                true,
+                true,
+                false,
+                false,
+                "pia",
+                "us_california",
+                30,
+                null,
+                null,
+                null,
+                null,
+                "idle"
+        ));
+
+        Map<String, String> title = new HashMap<>();
+        title.put("title", "Solo Leveling");
+        title.put("href", "http://example.com/solo");
+
+        when(titleScraper.searchManga("solo"))
+                .thenReturn(new ArrayList<>(List.of(title)));
+        when(loggerService.getDownloadsRoot()).thenReturn(downloadsRoot);
+        when(titleScraper.getChapters("http://example.com/solo"))
+                .thenReturn(List.of(Map.of("chapter_title", "Chapter 1", "href", "http://example.com/solo/1")));
+        when(sourceFinder.findSource(anyString())).thenReturn(List.of("http://example.com/solo/page1.jpg"));
+        NewTitle resolvedTitle = new NewTitle();
+        resolvedTitle.setTitleName("Solo Leveling");
+        resolvedTitle.setUuid("uuid");
+        resolvedTitle.setSourceUrl("http://example.com/solo");
+        resolvedTitle.setLastDownloaded("0");
+        when(libraryService.resolveOrCreateTitle("Solo Leveling", "http://example.com/solo"))
+                .thenReturn(resolvedTitle);
+
+        SearchTitle searchTitle = downloadService.searchTitle("solo");
+        downloadService.queueDownloadAllChapters(searchTitle.getSearchId(), 1);
+
+        waitForMessage("Solo Leveling", "Waiting for Raven VPN connection before download starts.");
+
+        onlyDownloadWhenVpnOn.set(false);
+
+        waitForStatus("Solo Leveling", "completed");
+    }
+
+    @Test
     void pauseRequestCanStopQueuedDownloadWhileWaitingForVpn() throws Exception {
         AtomicBoolean vpnConnected = new AtomicBoolean(false);
-        when(settingsService.getDownloadVpnSettings()).thenReturn(new DownloadVpnSettings(
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(new DownloadVpnSettings(
                 "downloads.vpn",
                 "pia",
                 true,

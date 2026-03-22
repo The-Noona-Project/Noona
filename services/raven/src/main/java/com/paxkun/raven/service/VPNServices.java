@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
- * Times this file has been edited: 8
+ * Times this file has been edited: 9
  */
 package com.paxkun.raven.service;
 
@@ -138,7 +138,7 @@ public class VPNServices {
      */
 
     public VpnRuntimeStatus getStatus() {
-        DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+        DownloadVpnSettings settings = getLiveVpnSettings();
         String configuredRegion = resolveConfiguredRegion(settings);
         boolean connected = isVpnConnected();
         return new VpnRuntimeStatus(
@@ -211,7 +211,7 @@ public class VPNServices {
                 );
             }
 
-            DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+            DownloadVpnSettings settings = getLiveVpnSettings();
             configuredRegion = resolveConfiguredRegion(settings);
             validateEnabledVpnSettings(settings);
         } catch (Exception e) {
@@ -287,7 +287,7 @@ public class VPNServices {
             String requestedPassword
     ) {
         String sanitizedTrigger = Optional.ofNullable(triggeredBy).filter(value -> !value.isBlank()).orElse("manual");
-        String region = resolveRequestedRegion(requestedRegion, settingsService.getDownloadVpnSettings());
+        String region = resolveRequestedRegion(requestedRegion, getLiveVpnSettings());
 
         if (!loginTestInProgress.compareAndSet(false, true)) {
             return new VpnLoginTestResult(
@@ -348,7 +348,7 @@ public class VPNServices {
         List<String> preservedLocalRoutes = List.of();
         boolean shouldRestoreRoutes = false;
         try {
-            DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+            DownloadVpnSettings settings = getLiveVpnSettings();
             String provider = Optional.ofNullable(settings.getProvider()).orElse(DEFAULT_PROVIDER);
             if (!DEFAULT_PROVIDER.equalsIgnoreCase(provider)) {
                 throw new IllegalStateException("Only PIA VPN provider is currently supported.");
@@ -423,7 +423,7 @@ public class VPNServices {
 
     private void runScheduleTick() {
         try {
-            DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+            DownloadVpnSettings settings = getLiveVpnSettings();
             boolean enabled = Boolean.TRUE.equals(settings.getEnabled());
             boolean autoRotate = Boolean.TRUE.equals(settings.getAutoRotate());
             long now = System.currentTimeMillis();
@@ -595,7 +595,7 @@ public class VPNServices {
         boolean maintenancePauseActive = false;
         boolean openVpnConnected = false;
         try {
-            DownloadVpnSettings settings = settingsService.getDownloadVpnSettings();
+            DownloadVpnSettings settings = getLiveVpnSettings();
             validateEnabledVpnSettings(settings);
 
             String targetRegion = resolveConfiguredRegion(settings);
@@ -804,6 +804,15 @@ public class VPNServices {
      */
     private void clearAutoConnectRetrySchedule() {
         nextAutoConnectAttemptAtMs = 0L;
+    }
+
+    /**
+     * Returns a fresh Vault-backed Raven VPN settings snapshot for VPN-critical decisions.
+     *
+     * @return The latest DownloadVpnSettings.
+     */
+    private DownloadVpnSettings getLiveVpnSettings() {
+        return settingsService.getDownloadVpnSettingsFresh();
     }
 
     /**

@@ -7999,8 +7999,252 @@ test('settings VPN routes reject unsupported providers', async (t) => {
     assert.equal(vault.settingDocs.length, 0)
 })
 
-test('settings VPN routes proxy region list and preserve Raven action status', async (t) => {
-    const vault = createVaultAuthStub()
+test('settings VPN save route applies connection changes immediately after persisting settings', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.vpn',
+            provider: 'pia',
+            enabled: true,
+            onlyDownloadWhenVpnOn: true,
+            autoRotate: true,
+            rotateEveryMinutes: 30,
+            region: 'us_california',
+            piaUsername: 'saved-user',
+            piaPassword: 'saved-secret',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+    const rotateCalls = []
+    let statusCalls = 0
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async getVpnStatus() {
+                statusCalls += 1
+                return {connected: true}
+            },
+            async rotateVpnNowDetailed(triggeredBy) {
+                rotateCalls.push(triggeredBy)
+                return {
+                    status: 202,
+                    payload: {
+                        ok: true,
+                        message: 'VPN rotation started in background.',
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putRes = await fetch(`${baseUrl}/api/settings/downloads/vpn`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            enabled: true,
+            onlyDownloadWhenVpnOn: true,
+            autoRotate: true,
+            rotateEveryMinutes: 30,
+            region: 'us_texas',
+            piaUsername: 'updated-user',
+            piaPassword: 'updated-secret',
+            applyNow: true,
+            triggeredBy: 'moon-settings',
+        }),
+    })
+
+    assert.equal(putRes.status, 200)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.applyTriggered, true)
+    assert.equal(putPayload.region, 'us_texas')
+    assert.equal(putPayload.piaUsername, 'updated-user')
+    assert.equal(putPayload.piaPassword, '********')
+    assert.deepEqual(rotateCalls, ['moon-settings'])
+    assert.equal(statusCalls, 0)
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.vpn')
+    assert.ok(stored)
+    assert.equal(stored.region, 'us_texas')
+    assert.equal(stored.piaUsername, 'updated-user')
+    assert.equal(stored.piaPassword, 'updated-secret')
+})
+
+test('settings VPN save route skips reconnect for non-connection changes while Raven is already connected', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.vpn',
+            provider: 'pia',
+            enabled: true,
+            onlyDownloadWhenVpnOn: true,
+            autoRotate: true,
+            rotateEveryMinutes: 30,
+            region: 'us_california',
+            piaUsername: 'saved-user',
+            piaPassword: 'saved-secret',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+    const rotateCalls = []
+    let statusCalls = 0
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async getVpnStatus() {
+                statusCalls += 1
+                return {connected: true}
+            },
+            async rotateVpnNowDetailed(triggeredBy) {
+                rotateCalls.push(triggeredBy)
+                return {
+                    status: 202,
+                    payload: {
+                        ok: true,
+                        message: 'VPN rotation started in background.',
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putRes = await fetch(`${baseUrl}/api/settings/downloads/vpn`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            enabled: true,
+            onlyDownloadWhenVpnOn: false,
+            autoRotate: false,
+            rotateEveryMinutes: 45,
+            region: 'us_california',
+            piaUsername: 'saved-user',
+            piaPassword: '********',
+            applyNow: true,
+            triggeredBy: 'moon-settings',
+        }),
+    })
+
+    assert.equal(putRes.status, 200)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.applyTriggered, false)
+    assert.equal(putPayload.onlyDownloadWhenVpnOn, false)
+    assert.equal(putPayload.autoRotate, false)
+    assert.equal(putPayload.rotateEveryMinutes, 45)
+    assert.equal(putPayload.piaPassword, '********')
+    assert.equal(statusCalls, 1)
+    assert.deepEqual(rotateCalls, [])
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.vpn')
+    assert.ok(stored)
+    assert.equal(stored.onlyDownloadWhenVpnOn, false)
+    assert.equal(stored.autoRotate, false)
+    assert.equal(stored.rotateEveryMinutes, 45)
+    assert.equal(stored.piaPassword, 'saved-secret')
+})
+
+test('settings VPN save route preserves Raven failure status after settings persist', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.vpn',
+            provider: 'pia',
+            enabled: true,
+            onlyDownloadWhenVpnOn: true,
+            autoRotate: true,
+            rotateEveryMinutes: 30,
+            region: 'us_california',
+            piaUsername: 'saved-user',
+            piaPassword: 'saved-secret',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async rotateVpnNowDetailed() {
+                return {
+                    status: 409,
+                    payload: {
+                        ok: false,
+                        error: 'Cannot rotate while a VPN login test is in progress.',
+                        message: 'Cannot rotate while a VPN login test is in progress.',
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putRes = await fetch(`${baseUrl}/api/settings/downloads/vpn`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            enabled: true,
+            onlyDownloadWhenVpnOn: true,
+            autoRotate: true,
+            rotateEveryMinutes: 30,
+            region: 'us_texas',
+            piaUsername: 'updated-user',
+            piaPassword: 'updated-secret',
+            applyNow: true,
+            triggeredBy: 'moon-settings',
+        }),
+    })
+
+    assert.equal(putRes.status, 409)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.applyTriggered, true)
+    assert.equal(putPayload.error, 'Cannot rotate while a VPN login test is in progress.')
+    assert.equal(putPayload.region, 'us_texas')
+    assert.equal(putPayload.piaPassword, '********')
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.vpn')
+    assert.ok(stored)
+    assert.equal(stored.region, 'us_texas')
+    assert.equal(stored.piaUsername, 'updated-user')
+    assert.equal(stored.piaPassword, 'updated-secret')
+})
+
+test('settings VPN routes proxy region list and persist rotate drafts before Raven actions', async (t) => {
+    const vault = createVaultAuthStub({
+        settings: [{
+            key: 'downloads.vpn',
+            provider: 'pia',
+            enabled: true,
+            onlyDownloadWhenVpnOn: true,
+            autoRotate: true,
+            rotateEveryMinutes: 30,
+            region: 'us_california',
+            piaUsername: 'saved-user',
+            piaPassword: 'saved-secret',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+    })
     const rotateCalls = []
     const loginTestCalls = []
 
@@ -8061,13 +8305,30 @@ test('settings VPN routes proxy region list and preserve Raven action status', a
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({triggeredBy: 'moon-settings'}),
+        body: JSON.stringify({
+            triggeredBy: 'moon-settings',
+            enabled: true,
+            onlyDownloadWhenVpnOn: false,
+            autoRotate: true,
+            rotateEveryMinutes: 45,
+            region: 'us_texas',
+            piaUsername: 'updated-user',
+            piaPassword: '********',
+        }),
     })
     assert.equal(rotateRes.status, 202)
     const rotatePayload = await rotateRes.json()
     assert.equal(rotatePayload.ok, true)
     assert.equal(rotateCalls.length, 1)
     assert.equal(rotateCalls[0], 'moon-settings')
+
+    const stored = vault.settingDocs.find((entry) => entry.key === 'downloads.vpn')
+    assert.ok(stored)
+    assert.equal(stored.onlyDownloadWhenVpnOn, false)
+    assert.equal(stored.rotateEveryMinutes, 45)
+    assert.equal(stored.region, 'us_texas')
+    assert.equal(stored.piaUsername, 'updated-user')
+    assert.equal(stored.piaPassword, 'saved-secret')
 
     const testLoginRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/test-login`, {
         method: 'POST',

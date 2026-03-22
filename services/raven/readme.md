@@ -33,6 +33,9 @@ state, and keeps the managed library in sync.
 - establishes a baseline PIA tunnel automatically whenever VPN is enabled, even if auto-rotate is off
 - accepts manual `Rotate now` requests only after Raven has reserved the rotation and validated the active PIA
   settings, then completes the tunnel change in the background
+- fresh-reads VPN settings for manual rotate validation, scheduler auto-connect, and VPN-gated download waits so a
+  newly saved region, credential, or download gate change takes effect immediately instead of waiting for the normal
+  settings cache window
 - keeps phase-specific VPN transition failures in the returned/runtime error text and appends cleanup failures instead
   of overwriting the primary cause with a generic rotation error
 - treats auto-rotate as periodic re-rotation only; queued downloads waiting on VPN should start once Raven finishes the
@@ -52,7 +55,8 @@ state, and keeps the managed library in sync.
   entries
 - when tuning worker, naming, or VPN-related settings
 - when Moon shows a Raven VPN profile refresh or discovery error under the PIA settings card
-- when Moon reports that a VPN rotation is still settling or a login test failed with a final probe result
+- when Moon reports that a VPN save/apply or rotation is still settling or a login test failed with a final probe
+  result
 - when Moon shows a queued download waiting on VPN together with a Raven connection state or last-error hint
 - when checking that downloaded content actually landed on disk
 

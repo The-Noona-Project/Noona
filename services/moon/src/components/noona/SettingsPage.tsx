@@ -57,8 +57,13 @@ import {
 } from "./settings";
 import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
 import {
+    areVpnDraftsEqual,
+    buildVpnRotateRequestBody,
+    buildVpnSaveRequestBody,
+    createVpnDraftSnapshot,
     formatVpnLoginOutcomeMessage,
     formatVpnRotationOutcomeMessage,
+    hasVpnSettingsSnapshot,
     isVpnRuntimeBusy,
     resolveVpnMessageAfterRefresh,
     shouldDisableVpnControls,
@@ -244,7 +249,20 @@ type DownloadVpnSettings = {
     updatedAt?: string | null;
     status?: VpnRuntimeStatus | null;
     regions?: VpnRegionOption[] | null;
+    applyTriggered?: boolean;
+    message?: string | null;
     error?: string;
+};
+
+type VpnDraftSnapshot = {
+    enabled: boolean;
+    onlyDownloadWhenVpnOn: boolean;
+    autoRotate: boolean;
+    rotateEveryMinutes: number | null;
+    region: string;
+    piaUsername: string;
+    piaPassword: string;
+    passwordConfigured: boolean;
 };
 
 type VpnLoginTestResult = {
@@ -1038,6 +1056,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [vpnUpdatedAt, setVpnUpdatedAt] = useState<string | null>(null);
     const [vpnRegions, setVpnRegions] = useState<VpnRegionOption[]>([]);
     const [vpnStatus, setVpnStatus] = useState<VpnRuntimeStatus | null>(null);
+    const [vpnPersistedDraft, setVpnPersistedDraft] = useState<VpnDraftSnapshot | null>(null);
 
     const [collectionsLoading, setCollectionsLoading] = useState(false);
     const [collectionsError, setCollectionsError] = useState<string | null>(null);
@@ -2054,27 +2073,49 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
+    const buildCurrentVpnDraftSnapshot = (): VpnDraftSnapshot => createVpnDraftSnapshot({
+        enabled: vpnEnabled,
+        onlyDownloadWhenVpnOn: vpnOnlyDownloadWhenOn,
+        autoRotate: vpnAutoRotate,
+        rotateEveryMinutes: vpnRotateEveryMinutes,
+        region: vpnRegion,
+        piaUsername: vpnUsername,
+        piaPassword: vpnPassword,
+        passwordConfigured: vpnPasswordConfigured,
+    });
+
     const applyVpnSettingsSnapshot = (
         json: DownloadVpnSettings | null,
         {preserveMessage = false}: { preserveMessage?: boolean } = {},
     ) => {
+        const normalizedSnapshot = createVpnDraftSnapshot({
+            enabled: json?.enabled === true,
+            onlyDownloadWhenVpnOn: json?.onlyDownloadWhenVpnOn === true,
+            autoRotate: json?.autoRotate !== false,
+            rotateEveryMinutes: json?.rotateEveryMinutes,
+            region: normalizeString(json?.region).trim() || DEFAULT_VPN_REGION,
+            piaUsername: normalizeString(json?.piaUsername).trim(),
+            piaPassword: "",
+            passwordConfigured: json?.passwordConfigured === true,
+        });
         setVpnMessage((current) => resolveVpnMessageAfterRefresh(current, preserveMessage));
-        setVpnEnabled(json?.enabled === true);
-        setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
-        setVpnAutoRotate(json?.autoRotate !== false);
+        setVpnEnabled(normalizedSnapshot.enabled);
+        setVpnOnlyDownloadWhenOn(normalizedSnapshot.onlyDownloadWhenVpnOn);
+        setVpnAutoRotate(normalizedSnapshot.autoRotate);
         setVpnRotateEveryMinutes(
             String(
-                Number.isFinite(Number(json?.rotateEveryMinutes)) && Number(json?.rotateEveryMinutes) > 0
-                    ? Math.floor(Number(json?.rotateEveryMinutes))
+                normalizedSnapshot.rotateEveryMinutes != null
+                    ? normalizedSnapshot.rotateEveryMinutes
                     : Number(DEFAULT_VPN_ROTATE_MINUTES),
             ),
         );
-        setVpnRegion(normalizeString(json?.region).trim() || DEFAULT_VPN_REGION);
-        setVpnUsername(normalizeString(json?.piaUsername).trim());
-        setVpnPassword("");
-        setVpnPasswordConfigured(json?.passwordConfigured === true);
+        setVpnRegion(normalizedSnapshot.region);
+        setVpnUsername(normalizedSnapshot.piaUsername);
+        setVpnPassword(normalizedSnapshot.piaPassword);
+        setVpnPasswordConfigured(normalizedSnapshot.passwordConfigured);
         setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
         setVpnStatus(json?.status ?? null);
+        setVpnPersistedDraft(normalizedSnapshot);
         if (Array.isArray(json?.regions)) {
             setVpnRegions(json?.regions ?? []);
         }
@@ -2119,8 +2160,9 @@ export function SettingsPage({selection}: SettingsPageProps) {
         setVpnError(null);
         setVpnMessage(null);
         try {
-            const rotateEveryMinutes = Number(vpnRotateEveryMinutes);
-            if (!Number.isFinite(rotateEveryMinutes) || rotateEveryMinutes < 1) {
+            const currentDraft = buildCurrentVpnDraftSnapshot();
+            const hadUnsavedChanges = !areVpnDraftsEqual(currentDraft, vpnPersistedDraft);
+            if (currentDraft.rotateEveryMinutes == null || currentDraft.rotateEveryMinutes < 1) {
                 setVpnError("Rotation interval must be a positive number of minutes.");
                 return;
             }
@@ -2128,39 +2170,47 @@ export function SettingsPage({selection}: SettingsPageProps) {
             const res = await fetch("/api/noona/settings/downloads/vpn", {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({
-                    enabled: vpnEnabled,
-                    onlyDownloadWhenVpnOn: vpnOnlyDownloadWhenOn,
-                    autoRotate: vpnAutoRotate,
-                    rotateEveryMinutes,
-                    region: vpnRegion,
-                    piaUsername: vpnUsername,
-                    piaPassword: vpnPassword,
-                }),
+                body: JSON.stringify(buildVpnSaveRequestBody({
+                    draft: currentDraft,
+                    applyNow: true,
+                    triggeredBy: "moon-settings",
+                })),
             });
             const json = (await res.json().catch(() => null)) as DownloadVpnSettings | null;
+            if (hasVpnSettingsSnapshot(json)) {
+                applyVpnSettingsSnapshot(json, {preserveMessage: true});
+            }
             if (!res.ok) {
+                if (hasVpnSettingsSnapshot(json)) {
+                    await Promise.all([loadVpnRegions(), refreshVpnSettings({preserveMessage: true})]);
+                }
                 setVpnError(parseError(json, `Failed to save VPN settings (HTTP ${res.status}).`));
                 return;
             }
 
-            setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || new Date().toISOString());
-            setVpnEnabled(json?.enabled === true);
-            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
-            setVpnAutoRotate(json?.autoRotate !== false);
-            setVpnRotateEveryMinutes(
-                String(
-                    Number.isFinite(Number(json?.rotateEveryMinutes)) && Number(json?.rotateEveryMinutes) > 0
-                        ? Math.floor(Number(json?.rotateEveryMinutes))
-                        : rotateEveryMinutes,
-                ),
-            );
-            setVpnRegion(normalizeString(json?.region).trim() || vpnRegion);
-            setVpnUsername(normalizeString(json?.piaUsername).trim() || vpnUsername);
-            setVpnPassword("");
-            setVpnPasswordConfigured(json?.passwordConfigured === true || vpnPasswordConfigured);
-            setVpnMessage("VPN settings saved.");
-            await Promise.all([loadVpnRegions(), loadVpnSettings({preserveMessage: true})]);
+            if (json?.applyTriggered === true) {
+                const finalVpnSettings = await waitForVpnRuntimeToSettle({
+                    refresh: () => refreshVpnSettings({preserveMessage: true}),
+                    isBusy: (snapshot) => isVpnRuntimeBusy(snapshot?.status),
+                });
+                await loadVpnRegions();
+                const finalStatus = finalVpnSettings?.status ?? null;
+                const finalError = normalizeString(finalStatus?.lastError).trim();
+                if (finalError) {
+                    setVpnError(finalError);
+                    setVpnMessage(null);
+                    return;
+                }
+
+                setVpnMessage(formatVpnRotationOutcomeMessage(
+                    finalStatus,
+                    hadUnsavedChanges ? "VPN settings saved and applied." : "VPN settings applied.",
+                ));
+                return;
+            }
+
+            setVpnMessage(hadUnsavedChanges ? "VPN settings saved." : "VPN settings are already up to date.");
+            await Promise.all([loadVpnRegions(), refreshVpnSettings({preserveMessage: true})]);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -2174,10 +2224,15 @@ export function SettingsPage({selection}: SettingsPageProps) {
         setVpnError(null);
         setVpnMessage(null);
         try {
+            const currentDraft = buildCurrentVpnDraftSnapshot();
+            const hadUnsavedChanges = !areVpnDraftsEqual(currentDraft, vpnPersistedDraft);
             const res = await fetch("/api/noona/settings/downloads/vpn/rotate", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({triggeredBy: "moon-settings"}),
+                body: JSON.stringify(buildVpnRotateRequestBody({
+                    draft: currentDraft,
+                    triggeredBy: "moon-settings",
+                })),
             });
             const json = (await res.json().catch(() => null)) as {
                 ok?: boolean;
@@ -2186,6 +2241,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
             } | null;
 
             if (!res.ok || json?.ok === false) {
+                await Promise.all([loadVpnRegions(), refreshVpnSettings({preserveMessage: true})]);
                 const message = normalizeString(json?.error).trim()
                     || normalizeString(json?.message).trim()
                     || `Failed to rotate VPN endpoint (HTTP ${res.status}).`;
@@ -2205,7 +2261,10 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 return;
             }
 
-            setVpnMessage(formatVpnRotationOutcomeMessage(finalStatus, "VPN rotation complete."));
+            setVpnMessage(formatVpnRotationOutcomeMessage(
+                finalStatus,
+                hadUnsavedChanges ? "VPN settings saved and rotation complete." : "VPN rotation complete.",
+            ));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
