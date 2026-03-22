@@ -49,6 +49,9 @@
 - Naming settings live under key `downloads.naming`.
 - Worker settings live under key `downloads.workers`.
 - VPN settings live under key `downloads.vpn`.
+- Raven also exposes a fresh VPN-settings read plus cache invalidation path for VPN-critical flows.
+  Manual rotate validation, scheduler auto-connect, status reads, and VPN-gated download waits should use that
+  fresh path instead of waiting for the normal 5-second cache to expire.
 - Missing or unreadable settings fall back to defaults and log warnings with cooldowns instead of failing startup.
 
 ## Worker Settings
@@ -78,6 +81,8 @@
 - Failed auto-connect attempts also populate `VpnRuntimeStatus.lastError`, and Raven waits one minute before trying the
   scheduler-driven connect path again.
 - Manual rotate remains an async-accepted action, but Raven validates the enabled PIA settings before returning `ok`.
+- That validation now uses the freshly saved `downloads.vpn` document, so save-then-rotate and save-then-apply flows
+  do not depend on the old cache TTL.
 - Login-test is synchronous and returns the completed probe payload.
 - `VpnRuntimeStatus.connected` is only true once Raven reached a completed VPN connection state.
   While OpenVPN is still `connecting`, Raven reports the configured region instead of treating the tunnel as connected.

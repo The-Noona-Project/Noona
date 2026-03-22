@@ -63,9 +63,12 @@ recommendations, and the day-to-day admin UI.
 - surfaces downloads, libraries, subscriptions, and recommendation flows
 - treats Raven download queue attempts as successful only when Raven explicitly accepts them, so expired or invalid
   search selections stay visible as real errors
-- keeps the Raven VPN panel locked while Raven reports rotating or connecting, polls manual rotations until they
-  settle, prefers Raven's final detailed rotation failure once polling finishes, and shows the final login-test result
-  instead of a background-start acknowledgement
+- keeps the Raven VPN panel locked while Raven reports rotating or connecting, tracks unsaved VPN draft changes against
+  the last loaded snapshot, sends `Save VPN` with an immediate-apply request for connection-affecting edits, and polls
+  until Raven settles whenever that apply path actually reconnects
+- sends `Rotate now` with the current on-screen VPN draft first so unsaved region or credential edits are saved before
+  Raven reconnects, prefers Raven's final detailed rotation failure once polling finishes, and shows the final
+  login-test result instead of a background-start acknowledgement
 
 ## Who It Is For
 
@@ -81,8 +84,8 @@ recommendations, and the day-to-day admin UI.
 - when checking live in-app toasts that catch users up on music playback, followed-title updates, or recommendation
   decisions after they return to Moon
 - when troubleshooting setup, login, or UI-driven service actions
-- when the Downloader VPN card is waiting on a rotation or login test to finish and the controls stay disabled until
-  Raven reports a settled connection state
+- when the Downloader VPN card is waiting on a save-triggered apply, manual rotation, or login test to finish and the
+  controls stay disabled until Raven reports a settled connection state
 
 ## How It Fits Into Noona
 

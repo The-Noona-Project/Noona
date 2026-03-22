@@ -92,8 +92,15 @@
 - Download naming, worker settings, VPN config, and Discord onboarding message all persist into the settings
   collection, not into Warden snapshots.
 - VPN settings writes reject any provider other than `pia`.
+- `PUT /api/settings/downloads/vpn` now persists the draft first, then only asks Raven to reconnect when
+  `applyNow=true` and either the connection-affecting fields changed (`enabled`, `region`, `piaUsername`,
+  `piaPassword`) or Raven is still disconnected.
+- Non-connection VPN fields such as `onlyDownloadWhenVpnOn`, `autoRotate`, and `rotateEveryMinutes` do not force a
+  reconnect when Raven is already connected.
 - VPN test-login preserves the stored password when the caller sends the masked placeholder `********`, then returns
   Raven's final probe result instead of a queued-job acknowledgement.
+- `POST /api/settings/downloads/vpn/rotate` now writes the current VPN draft first, with the same masked-password
+  reuse behavior as normal saves, and only then asks Raven to rotate.
 - VPN rotate still behaves as an async-accepted action, but Sage now preserves Raven's returned success or failure
   status instead of always flattening it into `202`.
 - Service config, restart, image update, and ecosystem lifecycle endpoints proxy back into Warden through

@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/settings/SettingsService.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRotationResult.java
  * - src/main/java/com/paxkun/raven/service/VPNServices.java
- * Times this file has been edited: 6
+ * Times this file has been edited: 7
  */
 package com.paxkun.raven.service;
 
@@ -74,6 +74,7 @@ class VPNServicesTest {
     @BeforeEach
     void setUp() {
         lenient().when(settingsService.getDownloadVpnSettings()).thenReturn(defaultVpnSettings());
+        lenient().when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(defaultVpnSettings());
     }
 
     @Test
@@ -128,11 +129,35 @@ class VPNServicesTest {
     }
 
     @Test
+    void rotateNowUsesFreshVpnSettingsSnapshotForValidation() throws Exception {
+        VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
+        List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
+
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_texas"));
+        doNothing().when(downloadService).beginMaintenancePause(anyString());
+        when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of(), List.of()));
+        when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
+        doReturn(preservedRoutes).when(vpnServices).captureLocalRouteSpecs();
+        doNothing().when(vpnServices).connectOpenVpn("us_texas", "pia-user", "pia-secret");
+        doNothing().when(vpnServices).restoreLocalRouteSpecs(preservedRoutes);
+        doReturn("198.51.100.12").when(vpnServices).resolvePublicIp();
+
+        VpnRotationResult result = vpnServices.rotateNow("manual");
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.region()).isEqualTo("us_texas");
+
+        waitForCondition("Timed out waiting for background rotation to finish.", () -> !vpnServices.getStatus().isRotating());
+        verify(vpnServices).connectOpenVpn("us_texas", "pia-user", "pia-secret");
+        vpnServices.stop();
+    }
+
+    @Test
     void rotateNowRejectsDuplicateManualRequestsBeforeSecondQueue() throws Exception {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
         List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california"));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
         when(downloadService.waitForNoActiveDownloads(any())).thenAnswer(invocation -> {
@@ -161,7 +186,7 @@ class VPNServicesTest {
     @Test
     void rotateNowFailsValidationBeforeQueueingBackgroundWork() {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
-        when(settingsService.getDownloadVpnSettings()).thenReturn(defaultVpnSettings());
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(defaultVpnSettings());
 
         VpnRotationResult result = vpnServices.rotateNow("manual");
 
@@ -178,7 +203,7 @@ class VPNServicesTest {
         Process openVpnProcess = mock(Process.class);
 
         when(openVpnProcess.isAlive()).thenReturn(true);
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california", true, false));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california", true, false));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
         when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
@@ -211,7 +236,7 @@ class VPNServicesTest {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
         List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california", true, false));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california", true, false));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of(), List.of()));
         when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
@@ -240,7 +265,7 @@ class VPNServicesTest {
     void rotateNowInternalReportsDrainTimeoutWithPhaseSpecificFailureMessage() throws Exception {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california"));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
         when(downloadService.waitForNoActiveDownloads(any())).thenReturn(false);
@@ -265,7 +290,7 @@ class VPNServicesTest {
                 List.of("Trigun")
         );
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california"));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(pauseResult);
         when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
@@ -309,7 +334,7 @@ class VPNServicesTest {
             return true;
         });
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california"));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
         when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
@@ -341,7 +366,7 @@ class VPNServicesTest {
         VPNServices vpnServices = spy(new VPNServices(settingsService, downloadService, loggerService));
         List<String> preservedRoutes = List.of("172.18.0.0/16 dev eth0 proto kernel scope link src 172.18.0.2");
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_california"));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_california"));
         doNothing().when(downloadService).beginMaintenancePause(anyString());
         when(downloadService.requestPauseActiveDownloads()).thenReturn(new DownloadService.PauseRequestResult(List.of("Solo Leveling"), List.of()));
         when(downloadService.waitForNoActiveDownloads(any())).thenReturn(true);
@@ -432,7 +457,7 @@ class VPNServicesTest {
         VPNServices vpnServices = new VPNServices(settingsService, downloadService, loggerService);
         Process openVpnProcess = mock(Process.class);
 
-        when(settingsService.getDownloadVpnSettings()).thenReturn(enabledVpnSettings("us_texas"));
+        when(settingsService.getDownloadVpnSettingsFresh()).thenReturn(enabledVpnSettings("us_texas"));
         ReflectionTestUtils.setField(vpnServices, "openVpnProcess", openVpnProcess);
         ReflectionTestUtils.setField(vpnServices, "connectionState", "connecting");
         ReflectionTestUtils.setField(vpnServices, "currentRegion", "us_california");

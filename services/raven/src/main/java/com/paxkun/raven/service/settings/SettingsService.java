@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/VaultService.java
  * - src/main/java/com/paxkun/raven/service/DownloadService.java
  * - src/main/java/com/paxkun/raven/service/VPNServices.java
- * Times this file has been edited: 7
+ * Times this file has been edited: 8
  */
 package com.paxkun.raven.service.settings;
 
@@ -98,6 +98,27 @@ public class SettingsService {
         cachedVpnSettings = loaded;
         cachedVpnSettingsAtMs = now;
         return loaded;
+    }
+
+    /**
+     * Returns a fresh Raven download VPN settings snapshot and refreshes the cache immediately.
+     *
+     * @return The resulting DownloadVpnSettings.
+     */
+    public synchronized DownloadVpnSettings getDownloadVpnSettingsFresh() {
+        long now = System.currentTimeMillis();
+        DownloadVpnSettings loaded = loadVpnSettings();
+        cachedVpnSettings = loaded;
+        cachedVpnSettingsAtMs = now;
+        return loaded;
+    }
+
+    /**
+     * Clears the cached Raven download VPN settings snapshot so the next read reloads Vault state.
+     */
+    public synchronized void invalidateDownloadVpnSettingsCache() {
+        cachedVpnSettings = null;
+        cachedVpnSettingsAtMs = 0L;
     }
 
     private DownloadNamingSettings loadNamingSettings() {

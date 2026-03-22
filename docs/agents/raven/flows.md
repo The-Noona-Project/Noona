@@ -64,6 +64,8 @@
 - `POST /v1/vpn/rotate` triggers the manual path.
   Raven reserves `rotationInProgress`, validates enabled PIA settings immediately, and only then returns the async
   accepted response.
+- Raven uses a fresh VPN settings read for manual-rotate validation and for the scheduler's auto-connect path, so a
+  save in Moon or Sage is visible to Raven right away instead of after the normal settings cache TTL.
 - Auto-connect and manual rotation both use the same maintenance-pause flow:
   pause active downloads, wait for in-flight work to drain, reconnect OpenVPN, restore preserved local routes, then
   resume only the titles paused by that VPN transition.
@@ -86,4 +88,6 @@
   current state instead of raw worker internals.
 - The summary payload now also includes `vpn` runtime details from `VPNServices` so Moon can explain queued tasks that
   are blocked on VPN startup or failure.
+- `DownloadService` also fresh-reads VPN settings for queue gating checks, so disabling `onlyDownloadWhenVpnOn` or
+  otherwise removing the wait condition releases queued work without waiting for the old 5-second VPN settings cache.
 - If the summary shape changes, update controller tests and any Moon/Sage code that renders Raven state.

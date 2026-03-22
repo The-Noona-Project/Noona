@@ -28,6 +28,32 @@ const resolveActionResult = async (action, fallbackStatus, payloadFactory) => {
     return {status, payload}
 }
 
+const trimString = (value) => (typeof value === 'string' ? value.trim() : '')
+
+const didVpnConnectionSettingsChange = (current = {}, next = {}) =>
+    Boolean(current?.enabled) !== Boolean(next?.enabled)
+    || trimString(current?.region).toLowerCase() !== trimString(next?.region).toLowerCase()
+    || trimString(current?.piaUsername) !== trimString(next?.piaUsername)
+    || trimString(current?.piaPassword) !== trimString(next?.piaPassword)
+
+const buildSavedVpnSettingsResponse = (sanitizeDownloadVpnSettingsForResponse, settings, extras = {}) => ({
+    ...sanitizeDownloadVpnSettingsForResponse(settings),
+    ...extras,
+})
+
+const resolveVpnActionErrorPayload = (result, fallbackError) => {
+    const payload = result?.payload
+    return {
+        error:
+            trimString(payload?.error)
+            || trimString(payload?.message)
+            || trimString(fallbackError)
+            || 'Unable to apply Raven VPN settings.',
+        message: trimString(payload?.message) || null,
+        status: Number.isInteger(result?.status) ? result.status : 502,
+    }
+}
+
 export function registerSettingsRoutes(context = {}) {
     const {
         app,
@@ -363,8 +389,79 @@ export function registerSettingsRoutes(context = {}) {
         }
 
         try {
+            const currentSettings = await readDownloadVpnSettings()
             const settings = await writeDownloadVpnSettings(req.body ?? {})
-            res.json(sanitizeDownloadVpnSettingsForResponse(settings))
+            const applyNow = parseBooleanInput(req.body?.applyNow) === true
+            const triggeredBy =
+                typeof req.body?.triggeredBy === 'string' && req.body.triggeredBy.trim()
+                    ? req.body.triggeredBy.trim()
+                    : 'manual'
+            const connectionSettingsChanged = didVpnConnectionSettingsChange(currentSettings, settings)
+
+            let vpnStatus = null
+            if (applyNow && settings.enabled === true && !connectionSettingsChanged && typeof ravenClient?.getVpnStatus === 'function') {
+                try {
+                    vpnStatus = await ravenClient.getVpnStatus()
+                } catch (error) {
+                    logger.warn(`[${serviceName}] Failed to fetch Raven VPN status before applying saved settings: ${error.message}`)
+                }
+            }
+
+            const applyTriggered =
+                applyNow
+                && settings.enabled === true
+                && (connectionSettingsChanged || (vpnStatus && vpnStatus.connected !== true))
+
+            if (!applyTriggered) {
+                res.json(buildSavedVpnSettingsResponse(
+                    sanitizeDownloadVpnSettingsForResponse,
+                    settings,
+                    {applyTriggered: false},
+                ))
+                return
+            }
+
+            if (!ravenClient?.rotateVpnNow && !ravenClient?.rotateVpnNowDetailed) {
+                res.status(503).json(buildSavedVpnSettingsResponse(
+                    sanitizeDownloadVpnSettingsForResponse,
+                    settings,
+                    {
+                        applyTriggered: true,
+                        error: 'Raven VPN API is unavailable.',
+                    },
+                ))
+                return
+            }
+
+            const result = typeof ravenClient?.rotateVpnNowDetailed === 'function'
+                ? await ravenClient.rotateVpnNowDetailed(triggeredBy)
+                : await resolveActionResult(
+                    () => ravenClient.rotateVpnNow(triggeredBy),
+                    202,
+                    () => ({ok: false, error: 'Raven VPN rotation did not return a payload.'}),
+                )
+            const resultStatus = Number.isInteger(result?.status) ? result.status : 502
+            const payload = result?.payload ?? null
+            const applyFailed = resultStatus >= 400 || (payload && typeof payload === 'object' && payload.ok === false)
+            if (applyFailed) {
+                const failure = resolveVpnActionErrorPayload(result, 'Unable to apply Raven VPN settings.')
+                res.status(failure.status).json(buildSavedVpnSettingsResponse(
+                    sanitizeDownloadVpnSettingsForResponse,
+                    settings,
+                    {
+                        applyTriggered: true,
+                        error: failure.error,
+                        message: failure.message,
+                    },
+                ))
+                return
+            }
+
+            res.json(buildSavedVpnSettingsResponse(
+                sanitizeDownloadVpnSettingsForResponse,
+                settings,
+                {applyTriggered: true},
+            ))
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Unable to update VPN settings.'
             const status = error instanceof SetupValidationError || message.includes('required') ? 400 : 502
@@ -418,8 +515,14 @@ export function registerSettingsRoutes(context = {}) {
     })
 
     app.post('/api/settings/downloads/vpn/rotate', async (req, res) => {
+        if (!vaultClient) {
+            res.status(503).json({error: 'Vault storage is not configured.'})
+            return
+        }
+
         try {
-            if (!ravenClient?.rotateVpnNow) {
+            await writeDownloadVpnSettings(req.body ?? {})
+            if (!ravenClient?.rotateVpnNow && !ravenClient?.rotateVpnNowDetailed) {
                 res.status(503).json({error: 'Raven VPN API is unavailable.'})
                 return
             }
@@ -440,8 +543,10 @@ export function registerSettingsRoutes(context = {}) {
                 : (payload && typeof payload === 'object' && payload.ok === false ? 200 : 202)
             res.status(status).json(payload ?? {ok: false, error: 'Raven VPN rotation did not return a payload.'})
         } catch (error) {
-            logger.error(`[${serviceName}] Failed to trigger VPN rotation: ${error.message}`)
-            res.status(502).json({error: 'Unable to trigger VPN rotation.'})
+            const message = error instanceof Error ? error.message : 'Unable to trigger VPN rotation.'
+            const status = error instanceof SetupValidationError || message.includes('required') ? 400 : 502
+            logger.error(`[${serviceName}] Failed to trigger VPN rotation: ${message}`)
+            res.status(status).json({error: message})
         }
     })
 

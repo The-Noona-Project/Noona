@@ -307,10 +307,19 @@ PIA regions stay blank or Raven VPN shows no IP:
   Docker capabilities or tunnel device settings
 - while Raven is rotating, Moon disables the VPN controls until the runtime settles; wait for the rotation to finish
   before retrying the action
+- `Save VPN` now persists the current card values first and immediately applies connection-affecting changes such as
+  enablement, region, or PIA credential updates.
+  If Raven rejects that apply, Moon keeps the saved values in place and shows the final Raven error instead of rolling
+  the card back silently.
+- `Rotate now` now saves the current on-screen VPN draft before Raven reconnects.
+  Unsaved region, username, or password edits on the card are part of the rotation request.
 - when `Rotate now` fails after polling settles, Moon now shows Raven's phase-specific final failure text in the card.
   Read that message first because cleanup details may be appended after the original tunnel or route error.
 - when VPN is enabled, Raven now tries to establish the baseline tunnel automatically even if auto-rotate is off, so a
   queued download that says it is waiting on VPN should normally start on its own once the tunnel comes up
+- queued downloads waiting on VPN now react to fresh settings reads immediately.
+  If you disable the VPN gate or change VPN settings to remove the wait condition, Raven should stop waiting without
+  needing an extra cache-delay retry window.
 - VPN login tests now return their final result directly, so a success or failure message from Moon is the real probe
   outcome rather than a background-start notice
 - Raven now keeps the last known-good PIA profiles on disk after a bad upstream refresh, so an empty region list plus a

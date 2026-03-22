@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/library/NewTitle.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadNamingSettings.java
  * - src/main/java/com/paxkun/raven/service/settings/DownloadVpnSettings.java
- * Times this file has been edited: 36
+ * Times this file has been edited: 37
  */
 package com.paxkun.raven.service;
 
@@ -1284,7 +1284,7 @@ public class DownloadService {
     }
 
     private boolean shouldWaitForVpnConnection() {
-        DownloadVpnSettings vpnSettings = settingsService.getDownloadVpnSettings();
+        DownloadVpnSettings vpnSettings = settingsService.getDownloadVpnSettingsFresh();
         if (vpnSettings == null || !Boolean.TRUE.equals(vpnSettings.getOnlyDownloadWhenVpnOn())) {
             return false;
         }

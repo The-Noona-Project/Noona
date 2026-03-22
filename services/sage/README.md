@@ -30,7 +30,8 @@ Raven-facing browser actions.
   mirroring the stored service-account snapshot into Vault-backed settings
 - reuses the managed Kavita API key that Warden already injected into Portal or Komf when the setup summary only needs
   to sync dependent services after install, instead of forcing a second Kavita admin login
-- handles VPN settings writes, including PIA credential checks and region rotation or login-test actions for Raven
+- handles VPN settings writes, including PIA credential checks, save-first rotate requests, and immediate-apply
+  decisions for Raven when connection-affecting VPN settings changed
 - preserves Raven's real queue status and message for Moon instead of flattening every queue response into a generic
   success
 - normalizes backend failures into UI-friendly responses
@@ -45,7 +46,8 @@ Raven-facing browser actions.
 - when Moon setup or Discord login fails
 - when user management or default permissions behave unexpectedly
 - when Moon's signed-in background track fails to load or respond to range requests
-- when VPN settings reject a provider other than PIA or a VPN login test returns an error
+- when VPN settings reject a provider other than PIA, a save-triggered VPN apply returns a Raven error, or a VPN login
+  test returns an error
 - when browser-facing Raven actions fail even though Raven is online
 
 ## How It Fits Into Noona

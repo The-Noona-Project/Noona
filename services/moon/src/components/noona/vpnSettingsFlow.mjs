@@ -5,6 +5,32 @@ const VPN_BUSY_CONNECTION_STATES = new Set(["connecting", "rotating"])
 export const DEFAULT_VPN_ROTATION_TIMEOUT_MS = 120_000
 export const DEFAULT_VPN_ROTATION_POLL_MS = 1_500
 
+/**
+ * @typedef {{
+ *   enabled?: boolean | null,
+ *   onlyDownloadWhenVpnOn?: boolean | null,
+ *   autoRotate?: boolean | null,
+ *   rotateEveryMinutes?: number | string | null,
+ *   region?: string | null,
+ *   piaUsername?: string | null,
+ *   piaPassword?: string | null,
+ *   passwordConfigured?: boolean | null,
+ * }} VpnDraftInput
+ */
+
+/**
+ * @typedef {{
+ *   enabled: boolean,
+ *   onlyDownloadWhenVpnOn: boolean,
+ *   autoRotate: boolean,
+ *   rotateEveryMinutes: number | null,
+ *   region: string,
+ *   piaUsername: string,
+ *   piaPassword: string,
+ *   passwordConfigured: boolean,
+ * }} VpnDraftSnapshot
+ */
+
 export const isVpnRuntimeBusy = (status = null) => {
     const connectionState = normalizeString(status?.connectionState).toLowerCase()
     return status?.rotating === true || VPN_BUSY_CONNECTION_STATES.has(connectionState)
@@ -29,6 +55,121 @@ export const shouldDisableVpnControls = ({
 
 export const resolveVpnMessageAfterRefresh = (currentMessage, preserveMessage = false) =>
     preserveMessage ? (currentMessage ?? null) : null
+
+/**
+ * @param {VpnDraftInput} [draft]
+ * @returns {VpnDraftSnapshot}
+ */
+export const createVpnDraftSnapshot = ({
+                                           enabled = false,
+                                           onlyDownloadWhenVpnOn = false,
+                                           autoRotate = true,
+                                           rotateEveryMinutes = null,
+                                           region = "",
+                                           piaUsername = "",
+                                           piaPassword = "",
+                                           passwordConfigured = false,
+                                       } = {}) => {
+    const normalizedRotateEveryMinutes = Number(rotateEveryMinutes)
+    return {
+        enabled: enabled === true,
+        onlyDownloadWhenVpnOn: onlyDownloadWhenVpnOn === true,
+        autoRotate: autoRotate !== false,
+        rotateEveryMinutes:
+            Number.isFinite(normalizedRotateEveryMinutes) && normalizedRotateEveryMinutes > 0
+                ? Math.floor(normalizedRotateEveryMinutes)
+                : null,
+        region: normalizeString(region),
+        piaUsername: normalizeString(piaUsername),
+        piaPassword: typeof piaPassword === "string" ? piaPassword : "",
+        passwordConfigured: passwordConfigured === true,
+    }
+}
+
+/**
+ * @param {VpnDraftInput | null} [left]
+ * @param {VpnDraftInput | null} [right]
+ */
+export const areVpnDraftsEqual = (left = null, right = null) => {
+    const normalizedLeft = createVpnDraftSnapshot(left ?? {})
+    const normalizedRight = createVpnDraftSnapshot(right ?? {})
+    return normalizedLeft.enabled === normalizedRight.enabled
+        && normalizedLeft.onlyDownloadWhenVpnOn === normalizedRight.onlyDownloadWhenVpnOn
+        && normalizedLeft.autoRotate === normalizedRight.autoRotate
+        && normalizedLeft.rotateEveryMinutes === normalizedRight.rotateEveryMinutes
+        && normalizedLeft.region === normalizedRight.region
+        && normalizedLeft.piaUsername === normalizedRight.piaUsername
+        && normalizedLeft.piaPassword === normalizedRight.piaPassword
+        && normalizedLeft.passwordConfigured === normalizedRight.passwordConfigured
+}
+
+/**
+ * @param {{
+ *   draft?: VpnDraftInput,
+ *   applyNow?: boolean,
+ *   triggeredBy?: string | null,
+ * }} [options]
+ */
+export const buildVpnSaveRequestBody = ({
+                                            draft = {},
+                                            applyNow = false,
+                                            triggeredBy = "",
+                                        } = {}) => {
+    const normalizedDraft = createVpnDraftSnapshot(draft)
+    return {
+        enabled: normalizedDraft.enabled,
+        onlyDownloadWhenVpnOn: normalizedDraft.onlyDownloadWhenVpnOn,
+        autoRotate: normalizedDraft.autoRotate,
+        rotateEveryMinutes: normalizedDraft.rotateEveryMinutes,
+        region: normalizedDraft.region,
+        piaUsername: normalizedDraft.piaUsername,
+        piaPassword: normalizedDraft.piaPassword,
+        applyNow: applyNow === true,
+        triggeredBy: normalizeString(triggeredBy) || "manual",
+    }
+}
+
+/**
+ * @param {{
+ *   draft?: VpnDraftInput,
+ *   triggeredBy?: string | null,
+ * }} [options]
+ */
+export const buildVpnRotateRequestBody = ({
+                                              draft = {},
+                                              triggeredBy = "",
+                                          } = {}) => {
+    const normalizedDraft = createVpnDraftSnapshot(draft)
+    return {
+        enabled: normalizedDraft.enabled,
+        onlyDownloadWhenVpnOn: normalizedDraft.onlyDownloadWhenVpnOn,
+        autoRotate: normalizedDraft.autoRotate,
+        rotateEveryMinutes: normalizedDraft.rotateEveryMinutes,
+        region: normalizedDraft.region,
+        piaUsername: normalizedDraft.piaUsername,
+        piaPassword: normalizedDraft.piaPassword,
+        triggeredBy: normalizeString(triggeredBy) || "manual",
+    }
+}
+
+/**
+ * @param {unknown} [value]
+ * @returns {boolean}
+ */
+export const hasVpnSettingsSnapshot = (value = null) =>
+    value != null
+    && typeof value === "object"
+    && (
+        value.key === "downloads.vpn"
+        || typeof value.enabled === "boolean"
+        || typeof value.onlyDownloadWhenVpnOn === "boolean"
+        || typeof value.autoRotate === "boolean"
+        || value.rotateEveryMinutes != null
+        || typeof value.region === "string"
+        || typeof value.piaUsername === "string"
+        || typeof value.updatedAt === "string"
+        || value.passwordConfigured === true
+    )
 
 export const formatVpnRotationOutcomeMessage = (status = null, fallback = "VPN rotation complete.") => {
     const safeFallback = normalizeString(fallback) || "VPN rotation complete."
