@@ -10,6 +10,8 @@ import {
     hydrateSetupProfileState,
     shouldShowSetupDebugDetails,
 } from "./setupProfile.mjs";
+import {executeSetupActionPreparation, SETUP_ACTION_INSTALL, SETUP_ACTION_SUMMARY,} from "./setupActionPreparation.mjs";
+import {clearSetupSummarySession, writeSetupSummarySession,} from "./setupSummarySession.mjs";
 import styles from "./SetupWizard.module.scss";
 import editorStyles from "./ConfigEditor.module.scss";
 
@@ -216,6 +218,9 @@ const KOMF_APPLICATION_YML_KEY = "KOMF_APPLICATION_YML";
 
 const LOG_POLL_INTERVAL_MS = 1200;
 const LOG_LIMIT = 140;
+const SETUP_BOOTSTRAP_RETRY_ATTEMPTS = 8;
+const SETUP_BOOTSTRAP_RETRY_DELAY_MS = 1000;
+const SETUP_BOOTSTRAP_RETRYABLE_STATUS = new Set([502, 503, 504]);
 const PORTAL_REQUIRED_KEYS = Object.freeze([
     "DISCORD_BOT_TOKEN",
     "DISCORD_CLIENT_ID",
@@ -266,6 +271,7 @@ const SERVICE_LABELS: Record<string, string> = {
 };
 
 const normalizeString = (value: unknown): string => (typeof value === "string" ? value : "");
+const waitFor = (delayMs: number) => new Promise((resolve) => window.setTimeout(resolve, delayMs));
 
 const isManagedKavitaApiKeyField = (
     serviceName: string,
@@ -813,6 +819,7 @@ export function SetupWizard() {
 
     const [configMessage, setConfigMessage] = useState<string | null>(null);
     const [configError, setConfigError] = useState<string | null>(null);
+    const [installSavingSnapshot, setInstallSavingSnapshot] = useState(false);
     const [installing, setInstalling] = useState(false);
     const [openingSummary, setOpeningSummary] = useState(false);
     const [installError, setInstallError] = useState<string | null>(null);
@@ -1128,7 +1135,7 @@ export function SetupWizard() {
                 if (normalizedStatus === "complete") {
                     setInstallError(null);
                     setInstallResult((prev) => prev ?? {results: []});
-                    void openSetupSummary();
+                    void openSetupSummary({allowPreparationWarnings: true});
                 } else {
                     setInstallError((prev) => prev ?? "Installation finished with errors. Check service statuses below.");
                 }
@@ -1160,19 +1167,56 @@ export function SetupWizard() {
     useEffect(() => {
         let cancelled = false;
 
+        const fetchSetupServices = async () => {
+            let lastPayload: CatalogResponse | null = null;
+            let lastStatus = 502;
+
+            for (let attempt = 1; attempt <= SETUP_BOOTSTRAP_RETRY_ATTEMPTS; attempt += 1) {
+                try {
+                    const response = await fetch("/api/noona/services", {cache: "no-store"});
+                    const payload = (await response.json().catch(() => null)) as CatalogResponse | null;
+                    if (response.ok) {
+                        return {response, payload};
+                    }
+
+                    lastPayload = payload;
+                    lastStatus = response.status;
+                    if (!SETUP_BOOTSTRAP_RETRYABLE_STATUS.has(response.status) || attempt >= SETUP_BOOTSTRAP_RETRY_ATTEMPTS) {
+                        return {response, payload};
+                    }
+                } catch (error) {
+                    if (attempt >= SETUP_BOOTSTRAP_RETRY_ATTEMPTS) {
+                        throw error;
+                    }
+                }
+
+                await waitFor(SETUP_BOOTSTRAP_RETRY_DELAY_MS);
+            }
+
+            return {
+                response: new Response(
+                    JSON.stringify(lastPayload ?? {error: `Failed to load services (HTTP ${lastStatus}).`}),
+                    {status: lastStatus},
+                ),
+                payload: lastPayload,
+            };
+        };
+
         const load = async () => {
             setCatalogError(null);
             setCatalog(null);
 
             try {
-                const [servicesRes, layoutRes, configRes, statusRes] = await Promise.all([
-                    fetch("/api/noona/services", {cache: "no-store"}),
+                const [{
+                    response: servicesRes,
+                    payload: servicesJson
+                }, layoutRes, configRes, statusRes] = await Promise.all([
+                    fetchSetupServices(),
                     fetch("/api/noona/setup/layout", {cache: "no-store"}),
                     fetch("/api/noona/setup/config", {cache: "no-store"}),
                     fetch("/api/noona/setup/status", {cache: "no-store"}),
                 ]);
 
-                const servicesJson = (await servicesRes.json().catch(() => null)) as CatalogResponse | null;
                 const layoutJson = (await layoutRes.json().catch(() => null)) as StorageLayoutResponse | null;
                 const configJson = (await configRes.json().catch(() => null)) as {
                     snapshot?: Record<string, unknown> | null
@@ -1540,7 +1584,7 @@ export function SetupWizard() {
         const clientId = normalizeString(portalValues.DISCORD_CLIENT_ID).trim();
         const clientSecret = normalizeString(portalValues.DISCORD_CLIENT_SECRET).trim();
         if (!clientId || !clientSecret) {
-            throw new Error("Discord client ID and client secret are required before continuing to the setup summary.");
+            throw new Error("Discord client ID and client secret are required before continuing with setup.");
         }
 
         let lastError: string | null = null;
@@ -1628,22 +1672,35 @@ export function SetupWizard() {
         };
     };
 
-    const openSetupSummary = async () => {
+    const openSetupSummary = async ({allowPreparationWarnings = false}: {
+        allowPreparationWarnings?: boolean
+    } = {}) => {
         if (summaryNavigationRef.current) return;
 
         summaryNavigationRef.current = true;
         setOpeningSummary(true);
         try {
-            const managedKavita = await provisionManagedKavitaServiceKey();
-            await persistDiscordAuthConfig();
-            await persistSetupConfigSnapshot({
-                kavitaApiKey: managedKavita?.apiKey ?? normalizeString(kavitaApiKey).trim(),
-                kavitaBaseUrl: managedKavita?.baseUrl ?? normalizeString(kavitaBaseUrl).trim(),
+            const result = await executeSetupActionPreparation({
+                action: SETUP_ACTION_SUMMARY,
+                currentKavita: {
+                    apiKey: normalizeString(kavitaApiKey).trim(),
+                    baseUrl: normalizeString(kavitaBaseUrl).trim(),
+                },
+                provisionManagedKavitaServiceKey,
+                persistDiscordAuthConfig,
+                persistSetupConfigSnapshot,
+                allowNonFatalWarnings: allowPreparationWarnings,
             });
+            if (result.warnings.length > 0) {
+                writeSetupSummarySession({warnings: result.warnings});
+            } else {
+                clearSetupSummarySession();
+            }
             router.push("/setupwizard/summary");
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             setInstallError(detail);
+            clearSetupSummarySession();
             summaryNavigationRef.current = false;
             setOpeningSummary(false);
         }
@@ -1674,12 +1731,27 @@ export function SetupWizard() {
             return;
         }
 
+        setInstallError(null);
+        setInstallSavingSnapshot(true);
+        clearSetupSummarySession();
+
         try {
-            await persistSetupConfigSnapshot();
+            await executeSetupActionPreparation({
+                action: SETUP_ACTION_INSTALL,
+                currentKavita: {
+                    apiKey: normalizeString(kavitaApiKey).trim(),
+                    baseUrl: normalizeString(kavitaBaseUrl).trim(),
+                },
+                provisionManagedKavitaServiceKey,
+                persistDiscordAuthConfig,
+                persistSetupConfigSnapshot,
+            });
         } catch (error) {
             setInstallError(error instanceof Error ? error.message : String(error));
             setActiveTab("install");
             return;
+        } finally {
+            setInstallSavingSnapshot(false);
         }
 
         const targetNames = new Set(
@@ -1689,7 +1761,6 @@ export function SetupWizard() {
             }),
         );
 
-        setInstallError(null);
         setInstallResult(null);
         setInstallProgress(null);
         setInstalling(true);
@@ -2026,6 +2097,7 @@ export function SetupWizard() {
             gap="24"
             paddingY="12"
             horizontal="center"
+            className={styles.pageRoot}
             style={{maxWidth: "var(--moon-page-max-width-wide, 124rem)"}}
         >
             <Column gap="8" horizontal="center" align="center">
@@ -2538,16 +2610,20 @@ export function SetupWizard() {
                                         </Column>
                                     )}
                                     <Row gap="8" style={{flexWrap: "wrap"}}>
-                                        <Button size="m" variant="primary" disabled={installing || openingSummary}
-                                                onClick={() => void install()}>
-                                            {installing ? "Installing..." : "Save and install"}
+                                        <Button
+                                            size="m"
+                                            variant="primary"
+                                            disabled={installSavingSnapshot || installing || openingSummary}
+                                            onClick={() => void install()}
+                                        >
+                                            {installSavingSnapshot ? "Saving setup..." : installing ? "Installing..." : "Save and install"}
                                         </Button>
                                         {installReadyForSummary && (
                                             <Button
                                                 size="m"
                                                 variant="secondary"
-                                                disabled={openingSummary}
-                                                onClick={() => void openSetupSummary()}
+                                                disabled={installSavingSnapshot || installing || openingSummary}
+                                                onClick={() => void openSetupSummary({allowPreparationWarnings: true})}
                                             >
                                                 {openingSummary ? "Opening summary..." : "Continue to summary"}
                                             </Button>

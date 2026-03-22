@@ -32,6 +32,7 @@ export default async function Rebooting({searchParams}: RebootingPageRouteProps)
 
     return (
         <RebootingPage
+            operationParam={readSearchParam(resolvedSearchParams.operation)}
             servicesParam={readSearchParam(resolvedSearchParams.services)}
             returnToParam={readSearchParam(resolvedSearchParams.returnTo)}
         />

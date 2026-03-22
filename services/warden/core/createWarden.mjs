@@ -529,6 +529,8 @@ const timestamp = () => new Date().toISOString();
 const TRUTHY_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const FALSY_BOOLEAN_VALUES = new Set(['0', 'false', 'no', 'off']);
 const TRUTHY_DEBUG_VALUES = new Set(['1', 'true', 'yes', 'on', 'super']);
+const SETTINGS_STORE_WARMUP_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM']);
+const SETTINGS_STORE_BOOTSTRAP_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
 const NOONA_CONTAINER_NAME_PATTERN = /(^|[._-])noona-[a-z0-9-]+([._-]\d+)?$/i;
 const NOONA_WARDEN_CONTAINER_PATTERN = /(^|[._-])noona-warden([._-]\d+)?$/i;
 const NOONA_IMAGE_PATTERN = /(^|\/)noona-[a-z0-9-]+(?=[:@]|$)/i;
@@ -582,6 +584,46 @@ const isBooleanFlagEnabled = (value) => {
     }
 
     return false;
+};
+
+const normalizeErrorMessage = (error) =>
+    error instanceof Error ? error.message : String(error);
+
+const readErrorCode = (error) =>
+    error && typeof error === 'object' && typeof error.code === 'string'
+        ? error.code
+        : '';
+
+const isSettingsStoreWarmupError = (error) => {
+    const code = readErrorCode(error);
+    const message = normalizeErrorMessage(error);
+
+    if (/settings store is warming up/i.test(message)) {
+        return true;
+    }
+
+    if (/VAULT_CA_CERT_PATH is required/i.test(message)) {
+        return true;
+    }
+
+    if (/The configured Vault CA file could not be read/i.test(message)) {
+        return true;
+    }
+
+    if (/Unable to read Vault CA certificate .*?(ENOENT|EACCES|EPERM|no such file or directory|permission denied)/i.test(message)) {
+        return true;
+    }
+
+    if (SETTINGS_STORE_WARMUP_ERROR_CODES.has(code)) {
+        return true;
+    }
+
+    return /All Vault endpoints failed:/i.test(message)
+        && (
+            /VAULT_CA_CERT_PATH|Vault CA certificate|ca-cert\.pem|settings store is warming up|warming up|bootstrap/i.test(message)
+            || SETTINGS_STORE_BOOTSTRAP_ERROR_CODES.has(code)
+            || /ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|fetch failed|connect/i.test(message)
+        );
 };
 
 export function createWarden(options = {}) {
@@ -1269,7 +1311,7 @@ export function createWarden(options = {}) {
             return [networkName];
         }
 
-        if (service.name === 'noona-vault' || service.name === 'noona-portal') {
+        if (service.name === 'noona-vault') {
             return [networkName, dataNetworkName];
         }
 
@@ -2937,17 +2979,156 @@ export function createWarden(options = {}) {
     const resolveSetupConfigSnapshotPath = () =>
         path.join(resolveSetupConfigRoot(), SETUP_CONFIG_DIRECTORY_NAME, SETUP_CONFIG_FILE_NAME);
 
-    const resolveLegacyRootSetupConfigSnapshotPath = () =>
-        path.join(resolveSetupConfigRoot(), SETUP_CONFIG_FILE_NAME);
-
-    const resolveLegacySetupConfigSnapshotPath = () =>
-        path.join(resolveSetupConfigRoot(), LEGACY_SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME);
+    const resolveLegacySetupConfigSnapshotPaths = () =>
+        Array.from(new Set([
+            path.join(resolveSetupConfigRoot(), SETUP_CONFIG_FILE_NAME),
+            path.join(resolveSetupConfigRoot(), LEGACY_SETUP_CONFIG_DIRECTORY_NAME, LEGACY_SETUP_CONFIG_FILE_NAME),
+        ].filter(Boolean)));
 
     const resolveSetupConfigSnapshotPaths = () => {
         const primaryPath = resolveSetupConfigSnapshotPath();
-        const legacyRootPath = resolveLegacyRootSetupConfigSnapshotPath();
-        const legacyPath = resolveLegacySetupConfigSnapshotPath();
-        return Array.from(new Set([primaryPath, legacyRootPath, legacyPath].filter(Boolean)));
+        return Array.from(new Set([primaryPath, ...resolveLegacySetupConfigSnapshotPaths()].filter(Boolean)));
+    };
+
+    const readSetupConfigSnapshotFromPath = (filePath) => {
+        if (!filePath || typeof fsModule?.readFileSync !== 'function') {
+            return {snapshot: null, path: filePath ?? null, exists: false};
+        }
+
+        try {
+            const raw = fsModule.readFileSync(filePath, 'utf8');
+            const parsed = JSON.parse(raw);
+            const normalized = normalizeSetupConfigSnapshot(parsed);
+            if (!normalized) {
+                return {
+                    snapshot: null,
+                    path: filePath,
+                    exists: false,
+                    error: 'Setup config snapshot must be a JSON object.',
+                };
+            }
+
+            return {snapshot: normalized, path: filePath, exists: true};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return {snapshot: null, path: filePath, exists: false, missing: true};
+            }
+
+            return {
+                snapshot: null,
+                path: filePath,
+                exists: false,
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const writePreparedSetupConfigSnapshot = (prepared, filePath) => {
+        if (!prepared) {
+            throw new Error('Setup config snapshot must be a JSON object.');
+        }
+
+        if (typeof fsModule?.writeFileSync !== 'function') {
+            throw new Error('Filesystem write support is not available for setup config snapshots.');
+        }
+
+        if (typeof fsModule?.mkdirSync === 'function') {
+            fsModule.mkdirSync(path.dirname(filePath), {recursive: true});
+        }
+
+        fsModule.writeFileSync(filePath, JSON.stringify(prepared, null, 2), 'utf8');
+        return {snapshot: prepared, path: filePath};
+    };
+
+    const deleteSnapshotPathSync = (targetPath) => {
+        if (!targetPath) {
+            return {path: null, deleted: false, reason: 'missing-path'};
+        }
+
+        const rmSync = fsModule?.rmSync;
+        if (typeof rmSync !== 'function') {
+            return {path: targetPath, deleted: false, reason: 'fs-rm-unavailable'};
+        }
+
+        try {
+            rmSync(targetPath, {recursive: true, force: true});
+            return {path: targetPath, deleted: true};
+        } catch (error) {
+            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+                return {path: targetPath, deleted: true, missing: true};
+            }
+
+            return {
+                path: targetPath,
+                deleted: false,
+                reason: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const cleanupLegacySetupConfigSnapshots = () => {
+        const entries = [];
+        for (const legacyPath of resolveLegacySetupConfigSnapshotPaths()) {
+            const result = deleteSnapshotPathSync(legacyPath);
+            entries.push(result);
+            if (result.deleted !== true) {
+                logger.warn?.(
+                    `[${serviceName}] Failed to delete legacy setup config snapshot at ${legacyPath}: ${result.reason}`,
+                );
+            }
+        }
+
+        return entries;
+    };
+
+    const migrateSetupConfigSnapshotIfNeeded = () => {
+        const primaryPath = resolveSetupConfigSnapshotPath();
+        const canonicalState = readSetupConfigSnapshotFromPath(primaryPath);
+        if (canonicalState.exists === true) {
+            cleanupLegacySetupConfigSnapshots();
+            return canonicalState;
+        }
+
+        let lastError = canonicalState.error ?? null;
+        if (canonicalState.error) {
+            logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${primaryPath}: ${canonicalState.error}`);
+        }
+
+        const canonicalMissing = canonicalState.missing === true;
+        for (const legacyPath of resolveLegacySetupConfigSnapshotPaths()) {
+            const legacyState = readSetupConfigSnapshotFromPath(legacyPath);
+            if (legacyState.exists !== true) {
+                if (legacyState.error) {
+                    lastError = legacyState.error;
+                    logger.warn?.(
+                        `[${serviceName}] Failed to read setup config snapshot from ${legacyPath}: ${legacyState.error}`,
+                    );
+                }
+                continue;
+            }
+
+            if (canonicalMissing !== true) {
+                return legacyState;
+            }
+
+            try {
+                const prepared = buildSetupConfigSnapshotForDisk(legacyState.snapshot);
+                const migratedState = writePreparedSetupConfigSnapshot(prepared, primaryPath);
+                cleanupLegacySetupConfigSnapshots();
+                return {
+                    ...migratedState,
+                    exists: true,
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn?.(
+                    `[${serviceName}] Failed to migrate setup config snapshot from ${legacyPath} to ${primaryPath}: ${message}`,
+                );
+                return legacyState;
+            }
+        }
+
+        return {snapshot: null, path: primaryPath, exists: false, error: lastError ?? null};
     };
 
     const readSetupConfigSnapshot = ({refresh = false} = {}) => {
@@ -2959,8 +3140,7 @@ export function createWarden(options = {}) {
             };
         }
 
-        const filePaths = resolveSetupConfigSnapshotPaths(setupConfigSnapshotCache);
-        const primaryPath = filePaths[0] ?? resolveSetupConfigSnapshotPath(setupConfigSnapshotCache);
+        const primaryPath = resolveSetupConfigSnapshotPath();
         setupConfigSnapshotPathCache = primaryPath;
 
         if (typeof fsModule?.readFileSync !== 'function') {
@@ -2969,66 +3149,29 @@ export function createWarden(options = {}) {
             return {snapshot: null, path: primaryPath, exists: false};
         }
 
-        let lastError = null;
-        for (const filePath of filePaths) {
-            try {
-                const raw = fsModule.readFileSync(filePath, 'utf8');
-                const parsed = JSON.parse(raw);
-                const normalized = normalizeSetupConfigSnapshot(parsed);
-                if (!normalized) {
-                    lastError = 'Setup config snapshot must be a JSON object.';
-                    logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${lastError}`);
-                    continue;
-                }
-
-                setupConfigSnapshotCache = normalized;
-                setupConfigSnapshotCacheLoaded = true;
-                setupConfigSnapshotPathCache = filePath;
-                return {snapshot: normalized, path: filePath, exists: true};
-            } catch (error) {
-                if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-                    continue;
-                }
-
-                lastError = error instanceof Error ? error.message : String(error);
-                logger.warn?.(`[${serviceName}] Failed to read setup config snapshot from ${filePath}: ${lastError}`);
-            }
-        }
-
-        setupConfigSnapshotCache = null;
+        const state = migrateSetupConfigSnapshotIfNeeded();
+        setupConfigSnapshotCache = state.snapshot ?? null;
         setupConfigSnapshotCacheLoaded = true;
-        return {snapshot: null, path: primaryPath, exists: false, error: lastError ?? null};
+        setupConfigSnapshotPathCache = state.path ?? primaryPath;
+        return {
+            snapshot: state.snapshot ?? null,
+            path: state.path ?? primaryPath,
+            exists: state.exists === true,
+            ...(state.error ? {error: state.error} : {}),
+        };
     };
 
     const writeSetupConfigSnapshot = (snapshot = {}) => {
         const prepared = buildSetupConfigSnapshotForDisk(snapshot);
-        if (!prepared) {
-            throw new Error('Setup config snapshot must be a JSON object.');
-        }
-
-        if (typeof fsModule?.writeFileSync !== 'function') {
-            throw new Error('Filesystem write support is not available for setup config snapshots.');
-        }
-
-        const filePaths = resolveSetupConfigSnapshotPaths(prepared);
-        const fileContents = JSON.stringify(prepared, null, 2);
-        const filePath = filePaths[0] ?? resolveSetupConfigSnapshotPath(prepared);
-        const mirroredPaths = [];
-
-        for (const candidatePath of filePaths) {
-            if (typeof fsModule?.mkdirSync === 'function') {
-                fsModule.mkdirSync(path.dirname(candidatePath), {recursive: true});
-            }
-
-            fsModule.writeFileSync(candidatePath, fileContents, 'utf8');
-            mirroredPaths.push(candidatePath);
-        }
+        const filePath = resolveSetupConfigSnapshotPath();
+        writePreparedSetupConfigSnapshot(prepared, filePath);
+        cleanupLegacySetupConfigSnapshots();
 
         setupConfigSnapshotCache = prepared;
         setupConfigSnapshotCacheLoaded = true;
         setupConfigSnapshotPathCache = filePath;
 
-        return {snapshot: prepared, path: filePath, mirroredPaths};
+        return {snapshot: prepared, path: filePath, mirroredPaths: []};
     };
 
     const deleteSnapshotPath = async (targetPath) => {
@@ -3043,7 +3186,10 @@ export function createWarden(options = {}) {
             if (typeof rmAsync === 'function') {
                 await rmAsync(targetPath, {recursive: true, force: true});
             } else if (typeof rmSync === 'function') {
-                rmSync(targetPath, {recursive: true, force: true});
+                const syncResult = deleteSnapshotPathSync(targetPath);
+                if (syncResult.deleted !== true) {
+                    return syncResult;
+                }
             } else {
                 return {path: targetPath, deleted: false, reason: 'fs-rm-unavailable'};
             }
@@ -3432,46 +3578,81 @@ export function createWarden(options = {}) {
     };
 
     const persistServiceRuntimeConfig = async (name, runtime = {}) => {
+        const snapshotResult = writeRuntimeConfigSnapshot();
+
         if (!settingsClient?.mongo?.update) {
-            writeRuntimeConfigSnapshot();
-            return {available: false, persisted: false};
+            return {
+                available: false,
+                persisted: false,
+                deleted: hasPersistedRuntimeConfig(runtime) !== true,
+                snapshot: snapshotResult,
+            };
         }
 
         const key = buildServiceConfigSettingsKey(name);
-        if (!hasPersistedRuntimeConfig(runtime)) {
-            if (typeof settingsClient?.mongo?.delete === 'function') {
-                await settingsClient.mongo.delete(settingsCollection, {key});
-            } else {
-                await settingsClient.mongo.update(
-                    settingsCollection,
-                    {key},
-                    {
-                        $set: {
-                            key,
-                            type: SERVICE_CONFIG_SETTINGS_TYPE,
-                            service: name,
-                            env: {},
-                            hostPort: null,
-                            updatedAt: timestamp(),
+        const deleteRequested = hasPersistedRuntimeConfig(runtime) !== true;
+
+        try {
+            if (deleteRequested) {
+                if (typeof settingsClient?.mongo?.delete === 'function') {
+                    await settingsClient.mongo.delete(settingsCollection, {key});
+                } else {
+                    await settingsClient.mongo.update(
+                        settingsCollection,
+                        {key},
+                        {
+                            $set: {
+                                key,
+                                type: SERVICE_CONFIG_SETTINGS_TYPE,
+                                service: name,
+                                env: {},
+                                hostPort: null,
+                                updatedAt: timestamp(),
+                            },
                         },
-                    },
-                    {upsert: true},
-                );
+                        {upsert: true},
+                    );
+                }
+
+                return {
+                    available: true,
+                    persisted: true,
+                    deleted: true,
+                    snapshot: snapshotResult,
+                };
             }
 
-            writeRuntimeConfigSnapshot();
-            return {available: true, persisted: true, deleted: true};
+            await settingsClient.mongo.update(
+                settingsCollection,
+                {key},
+                {$set: buildPersistedServiceConfigDocument(name, runtime)},
+                {upsert: true},
+            );
+
+            return {
+                available: true,
+                persisted: true,
+                deleted: false,
+                snapshot: snapshotResult,
+            };
+        } catch (error) {
+            if (!isSettingsStoreWarmupError(error)) {
+                throw error;
+            }
+
+            const message = normalizeErrorMessage(error);
+            logger.warn?.(
+                `[${serviceName}] Runtime service config for ${name} is using the local snapshot fallback while Vault settings warm up: ${message}`,
+            );
+
+            return {
+                available: true,
+                persisted: false,
+                deleted: deleteRequested,
+                warmupFallback: true,
+                snapshot: snapshotResult,
+            };
         }
-
-        await settingsClient.mongo.update(
-            settingsCollection,
-            {key},
-            {$set: buildPersistedServiceConfigDocument(name, runtime)},
-            {upsert: true},
-        );
-
-        writeRuntimeConfigSnapshot();
-        return {available: true, persisted: true, deleted: false};
     };
 
     const persistServiceRuntimeConfigs = async (names = []) => {
@@ -3558,9 +3739,11 @@ export function createWarden(options = {}) {
                 }
             } catch (error) {
                 settingsLoadFailed = true;
-                const message = error instanceof Error ? error.message : String(error);
+                const message = normalizeErrorMessage(error);
                 logger.warn?.(
-                    `[${serviceName}] Failed to load runtime service config from ${settingsCollection}: ${message}`,
+                    isSettingsStoreWarmupError(error)
+                        ? `[${serviceName}] Runtime service config settings are still warming up in ${settingsCollection}; using the local snapshot fallback for now: ${message}`
+                        : `[${serviceName}] Failed to load runtime service config from ${settingsCollection}: ${message}`,
                 );
             }
         }
@@ -4660,6 +4843,16 @@ export function createWarden(options = {}) {
         };
     };
 
+    api.getSetupSelectionState = async function getSetupSelectionState() {
+        const selectionState = await resolvePersistedSetupSelectionState();
+        return {
+            selectionMode: selectionState.mode,
+            selectedServices: Array.isArray(selectionState.selected) ? [...selectionState.selected] : [],
+            lifecycleServices: resolveLifecycleServiceNamesForSelectionState(selectionState),
+            explicit: selectionState.explicit === true,
+        };
+    };
+
     api.clearPersistedBootState = async function clearPersistedBootStateApi() {
         return clearPersistedBootState();
     };
@@ -4904,6 +5097,7 @@ export function createWarden(options = {}) {
         buildEffectiveServiceDescriptor,
         dataNetworkName,
         dockerUtils,
+        env,
         ensureDockerConnection,
         isPersistedServiceRuntimeConfigLoaded: () => persistedServiceRuntimeConfigLoadedState.value,
         loadPersistedServiceRuntimeConfig,

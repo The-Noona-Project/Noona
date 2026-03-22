@@ -2281,6 +2281,19 @@ export function registerRavenRoutes(context = {}) {
         }
     })
 
+    app.post('/api/raven/downloads/resume', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
+            return
+        }
+        try {
+            const result = await ravenClient.resumeDownloads()
+            res.status(200).json(result ?? {})
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to resume Raven downloads: ${error.message}`)
+            res.status(502).json({error: 'Unable to resume Raven downloads.'})
+        }
+    })
+
     app.get('/api/raven/downloads/status', async (req, res) => {
         if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
@@ -2294,6 +2307,33 @@ export function registerRavenRoutes(context = {}) {
         }
     })
 
+    app.delete('/api/raven/downloads/status', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
+            return
+        }
+        try {
+            await ravenClient.clearAllDownloads()
+            res.status(204).end()
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to clear Raven download status: ${error.message}`)
+            res.status(502).json({error: 'Unable to clear Raven download status.'})
+        }
+    })
+
+    app.delete('/api/raven/downloads/status/:titleName', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
+            return
+        }
+        const titleName = req.params.titleName
+        try {
+            await ravenClient.clearDownloadStatus(titleName)
+            res.status(204).end()
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to clear Raven download status for ${titleName}: ${error.message}`)
+            res.status(502).json({error: 'Unable to clear Raven download status.'})
+        }
+    })
+
     app.get('/api/raven/downloads/history', async (req, res) => {
         if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
             return
@@ -2304,6 +2344,19 @@ export function registerRavenRoutes(context = {}) {
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to load Raven download history: ${error.message}`)
             res.status(502).json({error: 'Unable to retrieve Raven download history.'})
+        }
+    })
+
+    app.delete('/api/raven/downloads/history', async (req, res) => {
+        if (!ensureMoonPermission(req, res, 'download_management', 'Download management permission is required.')) {
+            return
+        }
+        try {
+            await ravenClient.clearDownloadHistory()
+            res.status(204).end()
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to clear Raven download history: ${error.message}`)
+            res.status(502).json({error: 'Unable to clear Raven download history.'})
         }
     })
 

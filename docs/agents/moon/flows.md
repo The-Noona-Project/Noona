@@ -4,6 +4,9 @@
 
 - The setup wizard loads four things in parallel:
   the installable service catalog, storage layout, persisted setup snapshot, and setup status.
+- The catalog fetch is cold-start tolerant.
+  Moon retries transient `502`, `503`, and `504` responses from `/api/noona/services` for a short bounded window so
+  Warden warm-up does not strand the wizard on the first load.
 - Moon hydrates its local wizard state from the persisted v3 snapshot through
   [../../../services/moon/src/components/noona/setupProfile.mjs](../../../services/moon/src/components/noona/setupProfile.mjs).
 - The flow stays task-based:
@@ -25,6 +28,11 @@
 - `openSetupSummary()` in the wizard does three critical things before navigation:
   provision the managed Kavita service key when needed, save Discord OAuth config with retries, and persist the latest
   setup snapshot.
+- Once install is already complete, those live Kavita or Discord sync calls downgrade to one-shot summary warnings.
+  Snapshot persistence still blocks, but post-install sync failures no longer strand the user on the install tab.
+- `install()` does not run the live Kavita or Discord preflight.
+  It validates the form, persists the final snapshot, and lets Warden handle managed Kavita provisioning during the
+  install lifecycle after `noona-kavita` is running.
 - The summary page loads live services, persisted config, auth status, and setup status together.
 - Discord OAuth on the summary page has two Moon-facing modes:
   `test` to validate the callback path and `bootstrap` to create the first admin.
@@ -55,9 +63,22 @@
   `kavita`, `komf`, and `users`.
 - The settings page handles ecosystem actions, service updates, service config edits, user management, Vault views,
   and download tuning through Moon API routes that forward into Sage.
+- Admin service-config saves must stay narrow.
+  Moon should only send editable keys that are explicitly modeled in Warden's `envConfig` (`readOnly !== true` and
+  `serverManaged !== true`), while preserving masked secret placeholders and intentional blank clears.
+  Do not round-trip the full redacted `env` snapshot back into Sage or Warden.
+- The Downloader PIA VPN card keeps its controls disabled while Raven reports `rotating` or `connecting`.
+  Manual rotation now polls the live VPN settings until the runtime settles, and follow-up refreshes preserve success
+  messages so save/rotate confirmations do not disappear immediately.
+- VPN login tests are treated as final-result actions.
+  Moon waits for the completed response, then shows the returned result rather than any intermediate start
+  acknowledgement.
 - `updateAllImages()` writes reboot-monitor session state into `sessionStorage` and redirects to `/rebooting`.
 - The reboot monitor page watches both target services and core recovery services such as Warden, Redis, Vault, Moon,
   and Sage until the stack is stable enough to return to settings.
+- Reboot-monitor health cards are intentionally summarized.
+  Do not surface raw HTML success pages or treat `supported: false` services as hard failures when the service catalog
+  already says the container is running.
 - Admin docs matter here.
   If task labels, route names, or the update-monitor flow change, update the public Moon README and
   [../../../ServerAdmin.md](../../../ServerAdmin.md).

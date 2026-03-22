@@ -10,7 +10,7 @@ import {
     resolveWizardStateOperation,
     WIZARD_STEP_KEYS,
 } from './wizardStateSchema.mjs'
-import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs'
+import {buildTrustedFetchOptionsForUrl} from '../../../utilities/etc/tlsTrust.mjs'
 
 const normalizeUrl = (candidate) => {
     if (!candidate || typeof candidate !== 'string') {
@@ -139,7 +139,7 @@ export const createWizardStateClient = ({
     logger = {},
     serviceName = env?.SERVICE_NAME || 'noona-sage',
     timeoutMs = 10000,
-                                            trustVaultUrl = ensureTrustedCaForUrl,
+                                            trustVaultUrl = buildTrustedFetchOptionsForUrl,
 } = {}) => {
     if (!token || typeof token !== 'string' || !token.trim()) {
         throw new Error('Vault API token is required to manage wizard state.')
@@ -168,7 +168,7 @@ export const createWizardStateClient = ({
 
     const logTrustFallbackOnce = (action, error) => {
         const message = normalizeErrorMessage(error)
-        const key = `${action}:${message}`
+        const key = action
         if (loggedTrustFallbacks.has(key)) {
             return
         }
@@ -176,7 +176,7 @@ export const createWizardStateClient = ({
         loggedTrustFallbacks.add(key)
         if (error?.expectedLocalFallback === true) {
             logger.debug?.(
-                `[${serviceName}] Wizard state ${action} is using local fallback until Vault TLS trust material is ready (key=${redisKey}): ${message}`,
+                `[${serviceName}] Vault TLS not ready yet; wizard state ${action} is using local fallback (key=${redisKey}): ${message}`,
             )
             return
         }
@@ -199,8 +199,13 @@ export const createWizardStateClient = ({
             const timer = setTimeout(() => controller.abort(), timeoutMs)
             try {
                 const requestUrl = new URL('/v1/vault/handle', candidate).toString()
+                let trustedFetchOptions = {}
                 try {
-                    trustVaultUrl(requestUrl, {env})
+                    const trustResult = trustVaultUrl(requestUrl, {env}) ?? null
+                    trustedFetchOptions =
+                        trustResult?.fetchOptions && typeof trustResult.fetchOptions === 'object'
+                            ? trustResult.fetchOptions
+                            : {}
                 } catch (error) {
                     throw wrapWizardTrustFailure(error)
                 }
@@ -213,6 +218,7 @@ export const createWizardStateClient = ({
                     },
                     body: JSON.stringify(packet),
                     signal: controller.signal,
+                    ...trustedFetchOptions,
                 })
 
                 const payload = await parseJson(response)

@@ -1,5 +1,82 @@
 // services/warden/core/registerDiagnosticsApi.mjs
 
+const HEALTH_DETAIL_MAX_LENGTH = 240;
+
+const normalizeString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const normalizeHealthDetail = (value) => {
+    const compact = normalizeString(value).replace(/\s+/g, ' ');
+    if (!compact) {
+        return '';
+    }
+
+    return compact.length > HEALTH_DETAIL_MAX_LENGTH
+        ? `${compact.slice(0, HEALTH_DETAIL_MAX_LENGTH - 3).trimEnd()}...`
+        : compact;
+};
+
+const looksLikeHtml = (value) =>
+    /<(?:!doctype|html|head|body|style|script)\b/i.test(value)
+    || (/<[a-z][\s\S]*>/i.test(value) && /<\/[a-z]/i.test(value));
+
+const formatServiceLabel = (service) =>
+    normalizeString(service)
+        .replace(/^noona-/, '')
+        .split('-')
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join(' ');
+
+const buildUnsupportedHealthResult = (serviceName, detail) => ({
+    service: serviceName,
+    success: false,
+    supported: false,
+    status: 'unsupported',
+    detail,
+});
+
+const summarizeHttpHealthResponse = (response, rawBody) => {
+    const normalizedRawBody = normalizeString(rawBody);
+    let normalizedStatus = response.ok ? 'healthy' : 'error';
+    let detailMessage = '';
+    let parsedBody = null;
+
+    if (normalizedRawBody) {
+        try {
+            parsedBody = JSON.parse(normalizedRawBody);
+            if (parsedBody && typeof parsedBody === 'object') {
+                const record = parsedBody;
+                if (typeof record.status === 'string' && record.status.trim()) {
+                    normalizedStatus = record.status.trim().toLowerCase();
+                }
+                if (typeof record.message === 'string' && record.message.trim()) {
+                    detailMessage = record.message.trim();
+                } else if (typeof record.detail === 'string' && record.detail.trim()) {
+                    detailMessage = record.detail.trim();
+                }
+            }
+        } catch {
+            parsedBody = null;
+        }
+    }
+
+    if (!detailMessage) {
+        const bodyLooksUseful = normalizedRawBody && !looksLikeHtml(normalizedRawBody);
+        if (bodyLooksUseful) {
+            detailMessage = normalizedRawBody;
+        } else if (response.ok) {
+            detailMessage = 'Health check succeeded.';
+        } else {
+            detailMessage = `Health check failed with status ${response.status}.`;
+        }
+    }
+
+    return {
+        normalizedStatus,
+        detailMessage: normalizeHealthDetail(detailMessage),
+        body: parsedBody,
+    };
+};
+
 export function registerDiagnosticsApi(context = {}) {
     const {
         api,
@@ -347,7 +424,7 @@ export function registerDiagnosticsApi(context = {}) {
         const lastLog = Array.isArray(state?.Health?.Log) && state.Health.Log.length > 0
             ? state.Health.Log[state.Health.Log.length - 1]
             : null;
-        const detail = normalizeString(lastLog?.Output)
+        const detail = normalizeHealthDetail(lastLog?.Output)
             || (running
                 ? `Container is ${containerStatus}${healthStatus ? ` (health: ${healthStatus})` : ''}.`
                 : `Container is not running (status: ${containerStatus}).`);
@@ -383,6 +460,9 @@ export function registerDiagnosticsApi(context = {}) {
             try {
                 const result = await inspectDockerHealthStatus(trimmedName);
                 return {
+                    service: trimmedName,
+                    success: result.success,
+                    supported: true,
                     status: result.status,
                     detail: result.detail,
                     body: result.body,
@@ -393,97 +473,21 @@ export function registerDiagnosticsApi(context = {}) {
             }
         }
 
-        const candidateUrls = [];
-        const seen = new Set();
-        const addCandidate = (candidate) => {
-            if (typeof candidate !== 'string') {
-                return;
-            }
-
-            const trimmed = candidate.trim();
-            if (!trimmed || seen.has(trimmed)) {
-                return;
-            }
-
-            seen.add(trimmed);
-            candidateUrls.push(trimmed);
-        };
-
-        const resolveHealthFromHostBase = (baseUrl) => {
-            if (typeof baseUrl !== 'string') {
-                return null;
-            }
-
-            const trimmed = baseUrl.trim();
-            if (!trimmed) {
-                return null;
-            }
-
-            if (/\/health\/?$/i.test(trimmed)) {
-                return trimmed;
-            }
-
-            try {
-                const parsed = new URL(trimmed);
-                const pathName = parsed.pathname ?? '';
-                if (!pathName || pathName === '/' || pathName === '//') {
-                    parsed.pathname = '/health';
-                } else {
-                    parsed.pathname = `${pathName.replace(/\/$/, '')}/health`;
-                }
-                return parsed.toString();
-            } catch {
-                return `${trimmed.replace(/\/$/, '')}/health`;
-            }
-        };
-
-        const hostBase = api.resolveHostServiceUrl(descriptor);
-        const hostHealth = resolveHealthFromHostBase(hostBase);
-        if (hostHealth) {
-            addCandidate(hostHealth);
-        }
-
-        if (typeof descriptor.health === 'string' && descriptor.health.trim()) {
-            addCandidate(descriptor.health.trim());
-        }
-
-        if (candidateUrls.length === 0) {
-            throw new Error(`Health endpoint is not defined for ${trimmedName}.`);
+        const candidateUrl = normalizeString(descriptor?.health);
+        if (!candidateUrl) {
+            return buildUnsupportedHealthResult(
+                trimmedName,
+                `${formatServiceLabel(trimmedName)} does not expose a dedicated health endpoint.`,
+            );
         }
 
         const attemptErrors = [];
 
-        for (const url of candidateUrls) {
+        for (const url of [candidateUrl]) {
             try {
                 const response = await fetchImpl(url, {method: 'GET'});
                 const rawBody = await response.text();
-                let detailMessage = rawBody ? rawBody.trim() : '';
-                let normalizedStatus = response.ok ? 'healthy' : 'error';
-
-                if (detailMessage) {
-                    try {
-                        const parsed = JSON.parse(detailMessage);
-                        if (parsed && typeof parsed === 'object') {
-                            const record = parsed;
-                            if (typeof record.status === 'string' && record.status.trim()) {
-                                normalizedStatus = record.status.trim().toLowerCase();
-                            }
-                            if (typeof record.message === 'string' && record.message.trim()) {
-                                detailMessage = record.message.trim();
-                            } else if (typeof record.detail === 'string' && record.detail.trim()) {
-                                detailMessage = record.detail.trim();
-                            }
-                        }
-                    } catch {
-                        // keep raw body as detail
-                    }
-                }
-
-                if (!detailMessage) {
-                    detailMessage = response.ok
-                        ? 'Health check succeeded.'
-                        : `Health check failed with status ${response.status}`;
-                }
+                const {normalizedStatus, detailMessage, body} = summarizeHttpHealthResponse(response, rawBody);
 
                 if (!response.ok) {
                     throw new Error(detailMessage);
@@ -504,7 +508,15 @@ export function registerDiagnosticsApi(context = {}) {
                     );
                 }
 
-                return {status: normalizedStatus, detail: detailMessage, url};
+                return {
+                    service: trimmedName,
+                    success: true,
+                    supported: true,
+                    status: normalizedStatus,
+                    detail: detailMessage,
+                    body,
+                    url,
+                };
             } catch (error) {
                 attemptErrors.push({url, error});
             }
@@ -551,13 +563,6 @@ export function registerDiagnosticsApi(context = {}) {
         }
 
         const descriptor = entry.descriptor;
-        const formatServiceLabel = (service) =>
-            service
-                .replace(/^noona-/, '')
-                .split('-')
-                .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-                .join(' ');
-
         const httpTestConfig = {
             'noona-portal': {
                 displayName: formatServiceLabel('noona-portal'),

@@ -15,6 +15,7 @@ import {Footer} from "./Footer";
 import {MoonMusicCard} from "./MoonMusicCard";
 import {isMoonShellSuppressedPath} from "./noona/moonShellRoutes.mjs";
 import {NOONA_OPEN_MUSIC_CONTROLS_EVENT} from "./noona/siteNotificationLive.mjs";
+import {normalizeSetupStatus} from "./noona/setupStatus.mjs";
 import {type MoonViewMode, MoonViewModeToggle} from "./MoonViewModeToggle";
 import {ThemeToggle} from "./ThemeToggle";
 import styles from "./AppShell.module.scss";
@@ -228,7 +229,7 @@ const TimeDisplay = () => {
 export function AppShell({children}: { children: React.ReactNode }) {
     const pathname = usePathname() ?? "";
     const router = useRouter();
-    const [setupCompleted, setSetupCompleted] = useState<boolean | null>(null);
+    const [setupState, setSetupState] = useState<{ completed: boolean; manualBootRequired: boolean } | null>(null);
     const [accountUser, setAccountUser] = useState<ShellAuthUser | null>(null);
     const [viewMode, setViewMode] = useState<MoonViewMode>(DEFAULT_MOON_VIEW_MODE);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -237,7 +238,9 @@ export function AppShell({children}: { children: React.ReactNode }) {
     const pendingMusicFocusRef = useRef(false);
 
     const shellSuppressed = isMoonShellSuppressedPath(pathname);
-    const setupLoading = setupCompleted == null;
+    const setupCompleted = setupState?.completed === true;
+    const manualBootRequired = setupState?.manualBootRequired === true;
+    const setupLoading = setupState == null;
     const permissions = accountUser?.permissions ?? null;
     const canAccessLibrary = hasMoonPermission(permissions, "library_management");
     const canAccessDownloads = hasMoonPermission(permissions, "download_management");
@@ -255,9 +258,9 @@ export function AppShell({children}: { children: React.ReactNode }) {
                 ? "/mysubscriptions"
                 : "/";
     const canAccessSettings = canAccessEcosystemSettings || canManageUsers;
-    const showSetupNav = !shellSuppressed && setupCompleted === false;
-    const showMainNav = !shellSuppressed && setupCompleted === true;
-    const showShellChrome = !shellSuppressed;
+    const showSetupNav = !shellSuppressed && !manualBootRequired && setupCompleted === false;
+    const showMainNav = !shellSuppressed && !manualBootRequired && setupCompleted === true;
+    const showShellChrome = !shellSuppressed && !manualBootRequired;
     const setupNavHref = pathname.startsWith("/setupwizard/summary") ? "/setupwizard/summary" : "/setupwizard";
     const showSetupSummaryLink = pathname.startsWith("/setupwizard");
 
@@ -278,18 +281,16 @@ export function AppShell({children}: { children: React.ReactNode }) {
         const loadSetup = async () => {
             try {
                 const response = await fetch("/api/noona/setup/status", {cache: "no-store"});
-                const payload = (await response.json().catch(() => null)) as { completed?: unknown } | null;
+                const payload = normalizeSetupStatus(await response.json().catch(() => null));
                 if (cancelled) return;
 
-                if (payload && typeof payload.completed === "boolean") {
-                    setSetupCompleted(payload.completed);
-                    return;
-                }
-
-                setSetupCompleted(false);
+                setSetupState({
+                    completed: payload.completed === true,
+                    manualBootRequired: payload.manualBootRequired === true,
+                });
             } catch {
                 if (!cancelled) {
-                    setSetupCompleted(false);
+                    setSetupState({completed: false, manualBootRequired: false});
                 }
             }
         };
@@ -304,7 +305,7 @@ export function AppShell({children}: { children: React.ReactNode }) {
         let cancelled = false;
 
         const loadAuth = async () => {
-            if (setupCompleted !== true || shellSuppressed) {
+            if (setupCompleted !== true || shellSuppressed || manualBootRequired) {
                 setAccountUser(null);
                 return;
             }
@@ -331,7 +332,7 @@ export function AppShell({children}: { children: React.ReactNode }) {
         return () => {
             cancelled = true;
         };
-    }, [pathname, setupCompleted, shellSuppressed]);
+    }, [manualBootRequired, pathname, setupCompleted, shellSuppressed]);
 
     useEffect(() => {
         menuOpenRef.current = menuOpen;

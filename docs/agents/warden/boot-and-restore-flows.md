@@ -9,7 +9,8 @@
   `noona-mongo`, `noona-redis`, `noona-vault`
 - Managed network placement is fixed to:
   `noona-mongo` and `noona-redis` on `noona-data-network` only,
-  `noona-vault` and `noona-portal` on both `noona-network` and `noona-data-network`
+  `noona-vault` on both `noona-network` and `noona-data-network`,
+  `noona-portal` on `noona-network` only and reaching shared data through Vault
 - Default full boot order is:
   `noona-mongo -> noona-redis -> noona-vault -> noona-sage -> noona-moon -> noona-kavita -> noona-raven -> noona-komf -> noona-portal -> noona-oracle`
 
@@ -22,8 +23,19 @@
 3. attach the Warden container to the control network
 4. ask whether setup is completed
 5. if not completed, check whether installed managed services imply a restore path
-6. boot full when setup is complete, `DEBUG=super`, or installed managed services exist
-7. otherwise boot minimal
+6. boot full only when `DEBUG=super` or an incomplete setup needs restore
+7. otherwise boot minimal, including the normal post-setup path
+
+That post-setup behavior is intentional.
+After setup is complete, `init()` should only restore `noona-sage` and `noona-moon`.
+Manual full-stack startup stays on `bootFull()` / `startEcosystem()`, and Moon's `/bootScreen` uses those existing
+lifecycle helpers instead of creating a second startup path.
+
+Containerized attach behavior is now strict:
+
+- if Warden is expected to be running as `noona-warden` inside Docker and that container cannot be found, bootstrap
+  fails with a self-attach error instead of silently skipping network attachment
+- host-process behavior only applies when `WARDEN_RUN_OUTSIDE_DOCKER=true`
 
 ## Full Boot Staging
 
@@ -40,6 +52,10 @@ When persisted runtime config has not finished loading yet:
 
 This staging exists so Vault-backed config and managed Kavita access are available before Portal and Komf are recreated.
 
+`startWardenServer.mjs` exposes `/health` before `warden.init()` completes, but the payload now carries `ready`,
+`startedAt`, optional `initializedAt`, and any fatal init error. Sage and Moon use that distinction to tolerate normal
+cold-start races without treating the process as fully ready too early.
+
 ## Vault TLS During Boot
 
 - When Warden is itself running inside a Linux container, it verifies that `NOONA_DATA_ROOT` is bind-mounted into the
@@ -55,8 +71,11 @@ This staging exists so Vault-backed config and managed Kavita access are availab
 - Boot and install flows treat `noona-kavita` specially.
 - After managed Kavita starts, Warden can provision or recover its API key and inject that into dependent services such
   as Portal and Komf.
-- During restore boot, Warden prefers login-only recovery and existing container env values before attempting more
-  invasive provisioning.
+- During restore boot, Warden prefers validated existing keys first:
+  recovered Portal or Komf container keys become provisioning candidates, but Warden does not write them back into
+  runtime env until Kavita accepts them through `api/plugin/authenticate`.
+- `noona-komf` explicitly depends on `noona-kavita` when managed Kavita is selected so Komf does not start before its
+  validated managed key exists.
 
 ## Managed Log Folders During Boot
 
@@ -81,6 +100,13 @@ Selection states:
 - `selected`: boot required core services + minimal services + the selected managed services
 - `unspecified`: fall back to installed-container detection or the broad lifecycle fallback
 
+`createWarden.mjs` exposes that persisted decision through `getSetupSelectionState()`.
+The public shape is:
+`selectionMode`,
+`selectedServices`,
+`lifecycleServices`,
+and `explicit`.
+
 ## Runtime Config Restore
 
 Runtime override loading happens before or during boot and has a specific precedence:
@@ -104,8 +130,20 @@ Minimal boot starts Sage and Moon only.
 
 If `AUTO_UPDATES` is enabled, Warden checks Sage and Moon images before minimal startup.
 
+## Service Catalog State
+
+- `listServices()` now exposes both `installed` and `running`.
+- `installed` means a matching managed container exists.
+- `running` means that container is currently up.
+- Boot, reboot, and manual-start readiness must not rely on `installed` alone because stopped containers still count as
+  installed.
+- `getServiceHealth()` now returns a structured payload with `success`, `supported`, `status`, and `detail`.
+  Services without a dedicated health endpoint should return `supported: false` instead of being treated as failed
+  probes, while root-page HTML responses should collapse to a generic success detail rather than surfacing raw markup.
+
 ## Start / Stop / Restart
 
+- `bootFull()` and `startEcosystem()` are the only supported full-stack/manual-start entry points.
 - `startEcosystem()` chooses minimal vs full unless the caller forces one.
 - `stopEcosystem()` stops the resolved managed lifecycle in reverse order unless it is restricted to tracked containers
   only.

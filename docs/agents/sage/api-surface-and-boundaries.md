@@ -102,6 +102,9 @@
   `WARDEN_HOST` or `WARDEN_SERVICE_HOST` plus `WARDEN_PORT`, then Docker or localhost fallbacks.
 - Auth:
   `Authorization: Bearer <token>` from the explicit client token or `WARDEN_API_TOKEN` or `WARDEN_ACCESS_TOKEN`.
+- Public health now distinguishes transport readiness from bootstrap readiness.
+  Sage should treat Warden `ready: false` as "process is alive but startup is still in progress", not as a completed
+  control-plane boot.
 
 ## Vault
 
@@ -111,6 +114,9 @@
 - Both clients require a Vault API token and retry across explicit plus environment-derived endpoints.
 - Managed defaults expect `https://noona-vault:3005` plus `VAULT_CA_CERT_PATH`.
   Packet/settings traffic should fail closed if the CA material is missing or invalid.
+- Trust handling now has two layers:
+  mutate runtime default CAs when the Node version supports it, otherwise attach the CA per request through fetch
+  options.
 - Packet operations split between:
   `/v1/vault/handle` for Mongo and Redis packets,
   `/api/users*` for user CRUD and authentication.
@@ -140,5 +146,11 @@
 
 - Caller mistakes should throw or return `SetupValidationError` and surface as `400`.
 - Upstream outages, unexpected responses, or persistence failures generally surface as `502`.
+- Warden-backed setup-config and settings routes are narrower:
+  if Warden returned an HTTP status and JSON body, Sage should preserve that status and payload instead of collapsing
+  it into a generic `502`.
+- VPN settings writes should reject unsupported providers with `400`.
+- VPN rotate and VPN login-test should preserve Raven's returned status and payload rather than flattening every
+  response into a generic success.
 - Keep browser-facing errors concise and token-safe.
   Route handlers should not leak raw upstream headers, stack traces, or auth material.

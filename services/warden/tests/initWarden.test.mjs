@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import {test} from 'node:test';
 
-import { bootstrapWarden } from '../initWarden.mjs';
+import {bootstrapWarden} from '../initWarden.mjs';
 
 test('bootstrapWarden shuts down API server and exits when init fails', async () => {
     const shutdownCalls = [];
+    let capturedReadinessState = null;
     const fakeWarden = {
         init: () => Promise.reject(new Error('boom')),
         shutdownAll: () => {
@@ -31,7 +32,10 @@ test('bootstrapWarden shuts down API server and exits when init fails', async ()
 
     const { initPromise } = bootstrapWarden({
         createWardenImpl: () => fakeWarden,
-        startWardenServerImpl: () => ({ server }),
+        startWardenServerImpl: ({readinessState}) => {
+            capturedReadinessState = readinessState;
+            return {server};
+        },
         errWriter: (message) => logMessages.push(message),
         processImpl: processStub,
         setIntervalImpl: () => {},
@@ -43,6 +47,9 @@ test('bootstrapWarden shuts down API server and exits when init fails', async ()
     assert.equal(server.closed, true);
     assert.deepEqual(shutdownCalls, ['shutdown']);
     assert.ok(logMessages.some((message) => message.includes('Fatal: boom')));
+    assert.equal(capturedReadinessState.ready, false);
+    assert.equal(capturedReadinessState.initializedAt, null);
+    assert.equal(capturedReadinessState.error, 'boom');
 });
 
 test('bootstrapWarden keeps server alive when init succeeds', async () => {
@@ -50,6 +57,7 @@ test('bootstrapWarden keeps server alive when init succeeds', async () => {
         init: () => Promise.resolve(),
         shutdownAll: () => {},
     };
+    let capturedReadinessState = null;
 
     const server = {
         listening: true,
@@ -69,7 +77,10 @@ test('bootstrapWarden keeps server alive when init succeeds', async () => {
 
     const { initPromise, closeApiServer } = bootstrapWarden({
         createWardenImpl: () => fakeWarden,
-        startWardenServerImpl: () => ({ server }),
+        startWardenServerImpl: ({readinessState}) => {
+            capturedReadinessState = readinessState;
+            return {server};
+        },
         processImpl: processStub,
         setIntervalImpl: (...args) => intervals.push(args),
     });
@@ -79,6 +90,10 @@ test('bootstrapWarden keeps server alive when init succeeds', async () => {
     assert.deepEqual(exitCalls, []);
     assert.equal(server.closed, false);
     assert.equal(intervals.length, 1);
+    assert.equal(capturedReadinessState.ready, true);
+    assert.equal(typeof capturedReadinessState.startedAt, 'string');
+    assert.equal(typeof capturedReadinessState.initializedAt, 'string');
+    assert.equal(capturedReadinessState.error, null);
 
     closeApiServer();
     assert.equal(server.closed, true);

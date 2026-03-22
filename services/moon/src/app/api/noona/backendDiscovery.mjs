@@ -88,6 +88,10 @@ export const summarizeFailedResponseBody = (body) => {
 export const SAGE_BACKEND_FAILURE_GUIDANCE =
     "Moon could not reach Sage. For Warden-managed installs, check noona-sage health and confirm noona-moon and noona-sage share noona-network. For custom deployments, set noona-moon SAGE_BASE_URL to a reachable Sage URL.";
 
+const containsHttpBackendResponse = (errors = []) =>
+    Array.isArray(errors)
+    && errors.some((entry) => typeof entry === "string" && /\(HTTP\s+\d{3}\b/i.test(entry));
+
 export const buildBackendFailureMessage = (path, errors = [], options = {}) => {
     const normalizedPath = typeof path === "string" && path.trim() ? path.trim() : "unknown path";
     const details = Array.isArray(errors)
@@ -95,7 +99,12 @@ export const buildBackendFailureMessage = (path, errors = [], options = {}) => {
             .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
             .filter(Boolean)
         : [];
-    const guidance = typeof options.guidance === "string" ? options.guidance.trim() : "";
+    const guidance = (() => {
+        const normalizedGuidance = typeof options.guidance === "string" ? options.guidance.trim() : "";
+        if (!normalizedGuidance) return "";
+        if (options.guidanceMode !== "transport-only") return normalizedGuidance;
+        return containsHttpBackendResponse(details) ? "" : normalizedGuidance;
+    })();
     const prefix = details.length > 0
         ? `All backends failed for ${normalizedPath}: ${details.join(" | ")}`
         : `All backends failed for ${normalizedPath}`;

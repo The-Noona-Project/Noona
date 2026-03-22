@@ -19,6 +19,9 @@
   helpers, managed Kavita service-key provisioning, and Raven mount detection.
 - Setup-config routes preserve Warden's original HTTP status and JSON error payload when Warden responded.
   Moon should only see Sage `502` errors when the Sage-to-Warden proxy itself failed.
+- Read-only setup calls now tolerate Warden cold starts.
+  `listServices`, `getSetupConfig`, `getStorageLayout`, and `getInstallProgress` retry for a bounded window when Warden
+  is reachable but still reports `ready: false` or is returning transient upstream bootstrap errors.
 - Wizard state is written through `wizardStateClient`.
   Vault Redis is preferred, but a local in-process fallback lets setup continue before Vault is installed.
 - Verification is not advisory.
@@ -27,9 +30,12 @@
 ## Managed Kavita Provisioning Flow
 
 - `POST /api/setup/services/noona-kavita/service-key` is Sage's bridge between Moon, Warden, and Kavita.
+- Moon uses that route for live setup-summary preparation, not for the initial direct install submit path.
+  Direct install should save the snapshot and let Warden provision managed Kavita after `noona-kavita` starts.
 - The flow:
-  load current `noona-kavita` plus target service configs from Warden, inspect existing target env keys, try stored
-  Sage-side service-account settings, optionally provision or log into Kavita, then patch target service env and ask
+  load current `noona-kavita` plus target service configs from Warden, using Sage's trusted `includeSecrets` opt-in
+  when the summary path needs reusable managed-service env values; inspect existing target env keys; try stored
+  Sage-side service-account settings; optionally provision or log into Kavita; then patch target service env and ask
   Warden to restart those services.
 - Those Warden updates must stay narrow.
   Only send the consumer-specific Kavita env keys back to Warden, not the full service env map, or Warden will reject
@@ -37,10 +43,21 @@
 - Masked setup placeholders are not usable Kavita credentials.
   Sage can still reuse an existing managed API key, but if live provisioning still needs the admin password it now
   returns a validation error that asks the admin to re-enter it.
+- Redacted Warden config responses are not reusable key candidates either.
+  Sage only gets raw target-service env values through Warden's Sage-only `includeSecrets` path; plain redacted
+  `********` placeholders still must not be treated as candidate keys.
 - Target services are intentionally limited to `noona-portal`, `noona-raven`, and `noona-komf`.
-- If multiple target services already contain different Kavita API keys, Sage returns `409` instead of picking one.
+- Existing target-service keys that Warden already injected during install are reused directly on the summary path so
+  Sage does not force a second Kavita admin login after install.
+- Stored or recovered API keys are still not trusted blindly.
+  Sage validates those fallback candidates through Kavita's plugin-auth endpoint before it persists the key into
+  downstream config.
+- If one candidate fails validation, Sage keeps trying other candidates before it attempts to create a fresh auth key.
 - Provisioned account and API-key details are mirrored into the Sage settings collection under
   `setup.managedKavitaServiceAccount`.
+- That settings mirror is now best-effort during first boot.
+  If Vault trust is still warming up and `vault/tls/ca-cert.pem` is not mounted yet, Sage skips the optional read or
+  mirror and still completes service-key provisioning for the selected managed services.
 
 ## Auth, Bootstrap, And User Flow
 
@@ -71,9 +88,16 @@
   Raven, and Vault.
 - Download naming, worker settings, VPN config, and Discord onboarding message all persist into the settings
   collection, not into Warden snapshots.
-- VPN test-login preserves the stored password when the caller sends the masked placeholder `********`.
+- VPN settings writes reject any provider other than `pia`.
+- VPN test-login preserves the stored password when the caller sends the masked placeholder `********`, then returns
+  Raven's final probe result instead of a queued-job acknowledgement.
+- VPN rotate still behaves as an async-accepted action, but Sage now preserves Raven's returned success or failure
+  status instead of always flattening it into `202`.
 - Service config, restart, image update, and ecosystem lifecycle endpoints proxy back into Warden through
   `setupClient`.
+- Warden-backed settings routes preserve upstream HTTP status and JSON payloads when Warden replied.
+  Moon should only see a Sage-generated `502` here when the Sage-to-Warden hop itself failed, not when Warden already
+  returned a concrete validation, conflict, or not-found response.
 - Vault wipes and factory reset are intentionally two-phase:
   confirm identity or password, wipe or ask Warden to wipe, then queue or request an ecosystem restart rather than
   trying to rebuild state inline inside Sage.

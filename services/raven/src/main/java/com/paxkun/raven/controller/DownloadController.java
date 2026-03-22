@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/LibraryService.java
  * - src/main/java/com/paxkun/raven/service/LoggerService.java
  * - src/main/java/com/paxkun/raven/service/download/DownloadSearchRequest.java
- * Times this file has been edited: 15
+ * Times this file has been edited: 16
  */
 package com.paxkun.raven.controller;
 
@@ -311,6 +311,40 @@ public class DownloadController {
                     + " task(s) after the current chapter completes.");
         }
         return ResponseEntity.accepted().body(payload);
+    }
+
+    @PostMapping("/status/resume")
+    public ResponseEntity<Map<String, Object>> resumeDownloads() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Resuming paused and interrupted downloads");
+        int resumed = downloadService.resumePausedDownloads();
+        Map<String, Object> response = new java.util.HashMap<>();
+        response.put("resumedTasks", resumed);
+        response.put("message", "Resumed " + resumed + " task(s).");
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Clears all active and queued download statuses.
+     *
+     * @return Empty response with 204 status.
+     */
+    @DeleteMapping("/status")
+    public ResponseEntity<Void> clearAllStatuses() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Clearing all active download statuses");
+        downloadService.clearAllDownloads();
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Clears all finished and interrupted download statuses from history.
+     *
+     * @return Empty response with 204 status.
+     */
+    @DeleteMapping("/status/history")
+    public ResponseEntity<Void> clearHistory() {
+        logger.debug("DOWNLOAD_CONTROLLER", "Clearing download history");
+        downloadService.clearDownloadHistory();
+        return ResponseEntity.noContent().build();
     }
 
     /**

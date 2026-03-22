@@ -314,7 +314,10 @@ export function DownloadsPage() {
     const [syncingLibrary, setSyncingLibrary] = useState(false);
     const [syncLibraryMessage, setSyncLibraryMessage] = useState<string | null>(null);
     const [syncLibraryError, setSyncLibraryError] = useState<string | null>(null);
+    const [resumingDownloads, setResumingDownloads] = useState(false);
     const [pausingDownloads, setPausingDownloads] = useState(false);
+    const [clearingQueue, setClearingQueue] = useState(false);
+    const [clearingHistory, setClearingHistory] = useState(false);
     const [pauseDownloadsMessage, setPauseDownloadsMessage] = useState<string | null>(null);
     const [pauseDownloadsError, setPauseDownloadsError] = useState<string | null>(null);
     const pollDownloads = async () => {
@@ -431,6 +434,36 @@ export function DownloadsPage() {
         }
     };
 
+    const requestResumeDownloads = async () => {
+        setResumingDownloads(true);
+        setPauseDownloadsMessage(null);
+        setPauseDownloadsError(null);
+
+        try {
+            const res = await fetch("/api/noona/raven/downloads/resume", {
+                method: "POST",
+            });
+            const json = (await res.json().catch(() => null)) as any;
+            if (!res.ok) {
+                throw new Error(parseErrorMessage(json, `Resume failed (HTTP ${res.status}).`));
+            }
+
+            const resumedTasks = typeof json?.resumedTasks === "number" && Number.isFinite(json.resumedTasks)
+                ? json.resumedTasks
+                : null;
+            const fallbackMessage = resumedTasks != null && resumedTasks > 0
+                ? `Successfully resumed ${resumedTasks} task(s).`
+                : "No paused or interrupted Raven downloads were available to resume.";
+            setPauseDownloadsMessage(normalizeString(json?.message).trim() || fallbackMessage);
+            await refreshAll();
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setPauseDownloadsError(message);
+        } finally {
+            setResumingDownloads(false);
+        }
+    };
+
     const requestPauseDownloads = async () => {
         setPausingDownloads(true);
         setPauseDownloadsMessage(null);
@@ -458,6 +491,60 @@ export function DownloadsPage() {
             setPauseDownloadsError(message);
         } finally {
             setPausingDownloads(false);
+        }
+    };
+
+    const requestClearQueue = async () => {
+        if (!window.confirm("Are you sure you want to clear all downloads? This will stop active tasks and remove them from the queue.")) {
+            return;
+        }
+
+        setClearingQueue(true);
+        setPauseDownloadsMessage(null);
+        setPauseDownloadsError(null);
+
+        try {
+            const res = await fetch("/api/noona/raven/downloads/status", {
+                method: "DELETE",
+            });
+            if (!res.ok) {
+                const json = await res.json().catch(() => null);
+                throw new Error(parseErrorMessage(json, `Clear failed (HTTP ${res.status}).`));
+            }
+
+            setPauseDownloadsMessage("Download queue cleared successfully.");
+            await refreshAll();
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setPauseDownloadsError(message);
+        } finally {
+            setClearingQueue(false);
+        }
+    };
+
+    const requestClearHistory = async () => {
+        if (!window.confirm("Are you sure you want to clear all finished and interrupted runs from history?")) {
+            return;
+        }
+
+        setClearingHistory(true);
+        setHistoryError(null);
+
+        try {
+            const res = await fetch("/api/noona/raven/downloads/history", {
+                method: "DELETE",
+            });
+            if (!res.ok) {
+                const json = await res.json().catch(() => null);
+                throw new Error(parseErrorMessage(json, `History clear failed (HTTP ${res.status}).`));
+            }
+
+            await loadHistory();
+        } catch (error_) {
+            const message = error_ instanceof Error ? error_.message : String(error_);
+            setHistoryError(message);
+        } finally {
+            setClearingHistory(false);
         }
     };
 
@@ -707,16 +794,37 @@ export function DownloadsPage() {
                                     </Button>
                                     <Button
                                         variant="secondary"
+                                        disabled={resumingDownloads || (activeTaskViews.length === 0 && interruptedHistoryCount === 0)}
+                                        onClick={() => void requestResumeDownloads()}
+                                    >
+                                        {resumingDownloads ? "Resuming..." : "Resume downloads"}
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
                                         disabled={pausingDownloads || activeTaskViews.length === 0}
                                         onClick={() => void requestPauseDownloads()}
                                     >
                                         {pausingDownloads ? "Pausing..." : "Pause downloads"}
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        disabled={clearingQueue || activeTaskViews.length === 0}
+                                        onClick={() => void requestClearQueue()}
+                                    >
+                                        {clearingQueue ? "Clearing..." : "Clear downloads"}
                                     </Button>
                                 </Row>
                                 <Row gap="8" style={{flexWrap: "wrap"}}>
                                     <Button variant="secondary" onClick={() => void checkLibraryForNewChapters()}
                                             disabled={syncingLibrary}>
                                         {syncingLibrary ? "Checking..." : "Check new/missing"}
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        disabled={clearingHistory || historyViews.length === 0}
+                                        onClick={() => void requestClearHistory()}
+                                    >
+                                        {clearingHistory ? "Clearing..." : "Clear history"}
                                     </Button>
                                     <Button variant="secondary" onClick={() => void refreshAll()}>
                                         Refresh all
@@ -787,13 +895,27 @@ export function DownloadsPage() {
                         </Badge>
                         <Button
                             variant="secondary"
+                            disabled={resumingDownloads || (activeTaskViews.length === 0 && interruptedHistoryCount === 0)}
+                            onClick={() => void requestResumeDownloads()}
+                        >
+                            {resumingDownloads ? "Resuming..." : "Resume"}
+                        </Button>
+                        <Button
+                            variant="secondary"
                             disabled={pausingDownloads || activeTaskViews.length === 0}
                             onClick={() => void requestPauseDownloads()}
                         >
-                            {pausingDownloads ? "Pausing..." : "Pause downloads"}
+                            {pausingDownloads ? "Pausing..." : "Pause"}
+                        </Button>
+                        <Button
+                            variant="secondary"
+                            disabled={clearingQueue || activeTaskViews.length === 0}
+                            onClick={() => void requestClearQueue()}
+                        >
+                            {clearingQueue ? "Clearing..." : "Clear"}
                         </Button>
                         <Button variant="secondary" onClick={() => void pollDownloads()}>
-                            Refresh status
+                            Refresh
                         </Button>
                     </Row>
                 </Row>
@@ -1079,9 +1201,18 @@ export function DownloadsPage() {
                             Finished and interrupted runs
                         </Heading>
                     </Column>
-                    <Button variant="secondary" disabled={historyLoading} onClick={() => void loadHistory()}>
-                        Refresh
-                    </Button>
+                    <Row gap="8" style={{flexWrap: "wrap"}}>
+                        <Button
+                            variant="secondary"
+                            disabled={clearingHistory || historyViews.length === 0}
+                            onClick={() => void requestClearHistory()}
+                        >
+                            {clearingHistory ? "Clearing..." : "Clear history"}
+                        </Button>
+                        <Button variant="secondary" disabled={historyLoading} onClick={() => void loadHistory()}>
+                            Refresh
+                        </Button>
+                    </Row>
                 </Row>
                 {historyError && (
                     <Text onBackground="danger-strong" variant="body-default-xs">

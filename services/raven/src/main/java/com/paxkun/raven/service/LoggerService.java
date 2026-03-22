@@ -278,6 +278,10 @@ public class LoggerService implements InitializingBean {
         write("WARN", tag, message);
     }
 
+    public void error(String tag, String message) {
+        write("ERROR", tag, message);
+    }
+
     /**
      * Handles error.
      *

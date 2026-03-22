@@ -1,3 +1,7 @@
+.pageRoot {
+  width: 100%;
+}
+
 .progressTrack {
   position: relative;
 }
@@ -110,5 +114,11 @@
   }
   100% {
     transform: translateX(250%);
+  }
+}
+
+@media (max-width: 640px) {
+  .pageRoot {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 7rem);
   }
 }

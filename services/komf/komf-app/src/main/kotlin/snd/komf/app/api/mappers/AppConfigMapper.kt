@@ -58,17 +58,27 @@ class AppConfigMapper {
     }
 
     private fun toDto(config: KomgaConfig): KomgaConfigDto {
+        val maskedPassword = config.komgaPassword.let { password ->
+            if (password.length < 8) maskedPlaceholder
+            else password.replace("(?<=.{2}).(?=.{2})".toRegex(), "*")
+        }
         return KomgaConfigDto(
             baseUri = config.baseUri,
             komgaUser = config.komgaUser,
+            komgaPassword = maskedPassword,
             eventListener = toDto(config.eventListener),
             metadataUpdate = toDto(config.metadataUpdate),
         )
     }
 
     private fun toDto(config: KavitaConfig): KavitaConfigDto {
+        val apiKey = config.apiKey.let { key ->
+            if (key.length < 8) maskedPlaceholder
+            else key.replace("(?<=.{2}).(?=.{2})".toRegex(), "*")
+        }
         return KavitaConfigDto(
             baseUri = config.baseUri,
+            apiKey = apiKey,
             eventListener = toDto(config.eventListener),
             metadataUpdate = toDto(config.metadataUpdate),
         )

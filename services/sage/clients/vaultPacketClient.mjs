@@ -1,7 +1,7 @@
 // services/sage/clients/vaultPacketClient.mjs
 
 import {resolveDefaultVaultUrls} from '../wizard/wizardStateClient.mjs'
-import {ensureTrustedCaForUrl} from '../../../utilities/etc/tlsTrust.mjs'
+import {buildTrustedFetchOptionsForUrl} from '../../../utilities/etc/tlsTrust.mjs'
 
 const normalizeUrl = (candidate) => {
     if (!candidate || typeof candidate !== 'string') {
@@ -66,7 +66,7 @@ export const createVaultPacketClient = ({
                                             logger = {},
                                             serviceName = env?.SERVICE_NAME || 'noona-sage',
                                             timeoutMs = 10000,
-                                            trustVaultUrl = ensureTrustedCaForUrl,
+                                            trustVaultUrl = buildTrustedFetchOptionsForUrl,
                                         } = {}) => {
     if (!token || typeof token !== 'string' || !token.trim()) {
         throw new Error('Vault API token is required to use the packet client.')
@@ -104,7 +104,11 @@ export const createVaultPacketClient = ({
             for (const candidate of candidates) {
                 try {
                     const requestUrl = new URL(endpointPath, candidate).toString()
-                    trustVaultUrl(requestUrl, {env})
+                    const trustResult = trustVaultUrl(requestUrl, {env}) ?? null
+                    const trustedFetchOptions =
+                        trustResult?.fetchOptions && typeof trustResult.fetchOptions === 'object'
+                            ? trustResult.fetchOptions
+                            : {}
                     const response = await fetchImpl(requestUrl, {
                         method,
                         headers: {
@@ -115,6 +119,7 @@ export const createVaultPacketClient = ({
                         },
                         ...(body !== undefined ? {body: JSON.stringify(body)} : {}),
                         signal: controller.signal,
+                        ...trustedFetchOptions,
                     })
 
                     const payload = await parseJson(response)

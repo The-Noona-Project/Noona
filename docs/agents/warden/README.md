@@ -35,8 +35,14 @@ control-plane HTTP API for the stack.
 - Boot selection is persistence-first, Docker-second.
   Warden prefers the saved setup snapshot when deciding what the managed lifecycle should be, then falls back to
   installed-container detection.
+- Completed setup does not imply a full automatic boot.
+  Normal `init()` stays in minimal mode after setup and only restores the full lifecycle when setup is still incomplete
+  or `DEBUG=super` is active.
 - Critical control-plane state is mirrored locally on disk.
   Even when Vault-backed settings are available, Warden still writes local snapshot files under `NOONA_DATA_ROOT`.
+- Service catalog state has two meanings now.
+  `installed` is container presence, while `running` is live container state; lifecycle readiness logic should use the
+  right one for the question being answered.
 - Warden owns managed Vault TLS material.
   The internal CA and Vault leaf cert live under the shared Vault storage folder and are mounted into Vault clients
   through explicit `VAULT_CA_CERT_PATH` wiring. Missing or invalid TLS material is a boot-time failure, not an HTTP

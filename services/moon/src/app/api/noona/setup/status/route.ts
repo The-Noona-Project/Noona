@@ -14,6 +14,10 @@ export async function GET() {
             configured: false,
             installing: false,
             debugEnabled: false,
+            selectionMode: "unspecified",
+            selectedServices: [],
+            lifecycleServices: [],
+            manualBootRequired: false,
             error: message
         });
     }

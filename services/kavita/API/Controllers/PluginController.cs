@@ -50,7 +50,12 @@ public class PluginController(IUnitOfWork unitOfWork, ITokenService tokenService
                 UserAgent = userAgent,
                 ApiKey = apiKey
             });
-            throw new KavitaUnauthenticatedUserException();
+            return Unauthorized(new
+            {
+                Status = 401,
+                Message = "Unauthorized",
+                Details = string.Empty
+            });
         }
         var user = await unitOfWork.UserRepository.GetUserByIdAsync(userId);
         logger.LogInformation("Plugin {PluginName} has authenticated with {UserName} ({AppUserId})'s API Key", pluginName.Replace(Environment.NewLine, string.Empty), user!.UserName, userId);

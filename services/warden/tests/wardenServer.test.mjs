@@ -52,6 +52,76 @@ const wardenFetch = (baseUrl, path, options = {}, token = SAGE_TOKEN) => fetch(`
     },
 });
 
+test('GET /health reports readiness metadata before init completes', async (t) => {
+    const readinessState = {
+        ready: false,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: null,
+        error: null,
+    };
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server} = startWardenServer({
+        warden,
+        env: TEST_ENV,
+        port: 0,
+        readinessState,
+    });
+
+    await once(server, 'listening');
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        status: 'starting',
+        ready: false,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: null,
+        error: null,
+    });
+});
+
+test('GET /health reports ready after bootstrap completes', async (t) => {
+    const readinessState = {
+        ready: true,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: '2026-03-14T00:00:05.000Z',
+        error: null,
+    };
+    const warden = {
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server} = startWardenServer({
+        warden,
+        env: TEST_ENV,
+        port: 0,
+        readinessState,
+    });
+
+    await once(server, 'listening');
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    t.after(() => closeServer(server));
+
+    const response = await fetch(`${baseUrl}/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        status: 'ok',
+        ready: true,
+        startedAt: '2026-03-14T00:00:00.000Z',
+        initializedAt: '2026-03-14T00:00:05.000Z',
+        error: null,
+    });
+});
+
 test('GET /api/services returns installable services by default', async (t) => {
     const calls = [];
     const warden = {
@@ -463,6 +533,86 @@ test('POST /api/setup/config returns 409 for apply conflicts', async (t) => {
     });
 });
 
+test('GET /api/services/:name/config keeps secrets masked by default and only exposes them to Sage when requested', async (t) => {
+    const warden = {
+        getServiceConfig() {
+            return {
+                env: {
+                    KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                    KAVITA_API_KEY: 'existing-service-key',
+                },
+                envConfig: [
+                    {key: 'KAVITA_BASE_URL', sensitive: false},
+                    {key: 'KAVITA_API_KEY', sensitive: true},
+                ],
+                runtimeConfig: {
+                    hostPort: 3003,
+                    env: {
+                        KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                        KAVITA_API_KEY: 'runtime-service-key',
+                    },
+                },
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const redactedResponse = await wardenFetch(baseUrl, '/api/services/noona-portal/config');
+    assert.equal(redactedResponse.status, 200);
+    assert.deepEqual(await redactedResponse.json(), {
+        env: {
+            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+            KAVITA_API_KEY: '********',
+        },
+        envConfig: [
+            {key: 'KAVITA_BASE_URL', sensitive: false},
+            {key: 'KAVITA_API_KEY', sensitive: true, defaultValue: '********', configured: true},
+        ],
+        runtimeConfig: {
+            hostPort: 3003,
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: '********',
+            },
+        },
+    });
+
+    const secretResponse = await wardenFetch(baseUrl, '/api/services/noona-portal/config?includeSecrets=true');
+    assert.equal(secretResponse.status, 200);
+    assert.deepEqual(await secretResponse.json(), {
+        env: {
+            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+            KAVITA_API_KEY: 'existing-service-key',
+        },
+        envConfig: [
+            {key: 'KAVITA_BASE_URL', sensitive: false},
+            {key: 'KAVITA_API_KEY', sensitive: true, defaultValue: '********', configured: true},
+        ],
+        runtimeConfig: {
+            hostPort: 3003,
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'runtime-service-key',
+            },
+        },
+    });
+
+    const forbiddenResponse = await wardenFetch(
+        baseUrl,
+        '/api/services/noona-portal/config?includeSecrets=true',
+        {},
+        PORTAL_TOKEN,
+    );
+    assert.equal(forbiddenResponse.status, 403);
+    assert.deepEqual(await forbiddenResponse.json(), {
+        error: 'Forbidden for this service identity.',
+    });
+});
+
 test('PUT /api/services/:name/config returns 400 for invalid config payloads', async (t) => {
     const warden = {
         async updateServiceConfig() {
@@ -768,6 +918,63 @@ test('POST /api/services/:name/test delegates to warden testService', async (t) 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { service: 'noona-portal', success: true, supported: true });
     assert.deepEqual(calls, [['noona-portal', { method: 'GET' }]]);
+});
+
+test('GET /api/services/:name/health delegates to warden getServiceHealth', async (t) => {
+    const calls = [];
+    const warden = {
+        async getServiceHealth(name) {
+            calls.push(name);
+            return {service: name, success: true, supported: true, status: 'healthy', detail: 'ok'};
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services/noona-portal/health');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'noona-portal',
+        success: true,
+        supported: true,
+        status: 'healthy',
+        detail: 'ok',
+    });
+    assert.deepEqual(calls, ['noona-portal']);
+});
+
+test('GET /api/services/:name/health returns unsupported payloads without coercing them into errors', async (t) => {
+    const warden = {
+        async getServiceHealth(name) {
+            return {
+                service: name,
+                success: false,
+                supported: false,
+                status: 'unsupported',
+                detail: 'Komf does not expose a dedicated health endpoint.',
+            };
+        },
+        listServices: async () => [],
+        installServices: async () => [],
+    };
+
+    const {server, baseUrl} = await listen({warden});
+    t.after(() => closeServer(server));
+
+    const response = await wardenFetch(baseUrl, '/api/services/noona-komf/health');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+        service: 'noona-komf',
+        success: false,
+        supported: false,
+        status: 'unsupported',
+        detail: 'Komf does not expose a dedicated health endpoint.',
+    });
 });
 
 test('POST /api/services/:name/test returns error when unsupported', async (t) => {

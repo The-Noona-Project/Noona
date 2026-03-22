@@ -66,6 +66,14 @@ test('ensureServiceApiKey registers the first admin and reuses the seeded OPDS a
                 }
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'noona-system', token: 'plugin-token'}),
+                }
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`)
         },
         randomBytes: () => Buffer.from('0123456789abcdef0123456789abcdef', 'hex'),
@@ -80,6 +88,7 @@ test('ensureServiceApiKey registers the first admin and reuses the seeded OPDS a
         '/api/Account/register',
         '/api/Account/login',
         '/api/Account/auth-keys',
+        '/api/plugin/authenticate',
     ])
     assert.equal(calls[3].authorization, 'Bearer jwt-token')
     assert.equal(calls[3].body, null)
@@ -109,6 +118,14 @@ test('ensureServiceApiKey reuses a stored account and returned apiKey without ro
                 }
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'noona-system', token: 'plugin-token'}),
+                }
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`)
         },
     })
@@ -122,7 +139,7 @@ test('ensureServiceApiKey reuses a stored account and returned apiKey without ro
     })
 
     assert.equal(result.apiKey, 'existing-api-key')
-    assert.deepEqual(calls.map((entry) => entry.pathname), ['/api/Account/login'])
+    assert.deepEqual(calls.map((entry) => entry.pathname), ['/api/Account/login', '/api/plugin/authenticate'])
 })
 
 test('ensureServiceApiKey creates a named auth key when no reusable key exists after login', async () => {
@@ -162,6 +179,14 @@ test('ensureServiceApiKey creates a named auth key when no reusable key exists a
                 }
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                }
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`)
         },
     })
@@ -181,6 +206,7 @@ test('ensureServiceApiKey creates a named auth key when no reusable key exists a
         '/api/Account/login',
         '/api/Account/auth-keys',
         '/api/Account/create-auth-key',
+        '/api/plugin/authenticate',
     ])
     assert.equal(calls[2].authorization, 'Bearer jwt-token')
 })
@@ -232,6 +258,14 @@ test('ensureServiceApiKey retries login when container bootstrap wins the regist
                 }
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                }
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`)
         },
     })
@@ -252,6 +286,7 @@ test('ensureServiceApiKey retries login when container bootstrap wins the regist
         '/api/Account/register',
         '/api/Account/login',
         '/api/Account/auth-keys',
+        '/api/plugin/authenticate',
     ])
     assert.equal(calls[3].authorization, 'Bearer jwt-token')
 })
@@ -315,6 +350,14 @@ test('ensureServiceApiKey retries the full first-user flow when registration fai
                 }
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                }
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`)
         },
     })
@@ -336,8 +379,9 @@ test('ensureServiceApiKey retries the full first-user flow when registration fai
         '/api/Account/register',
         '/api/Account/login',
         '/api/Account/auth-keys',
+        '/api/plugin/authenticate',
     ])
-    assert.equal(calls.at(-1).authorization, 'Bearer jwt-token')
+    assert.equal(calls.at(-2).authorization, 'Bearer jwt-token')
 })
 
 test('ensureServiceApiKey retries transient 5xx registration failures before the first account exists', async () => {
@@ -399,6 +443,14 @@ test('ensureServiceApiKey retries transient 5xx registration failures before the
                 }
             }
 
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                }
+            }
+
             throw new Error(`Unexpected request: ${requestUrl.pathname}`)
         },
     })
@@ -420,6 +472,83 @@ test('ensureServiceApiKey retries transient 5xx registration failures before the
         '/api/Account/register',
         '/api/Account/login',
         '/api/Account/auth-keys',
+        '/api/plugin/authenticate',
     ])
-    assert.equal(calls.at(-1).authorization, 'Bearer jwt-token')
+    assert.equal(calls.at(-2).authorization, 'Bearer jwt-token')
+})
+
+test('ensureServiceApiKey validates reused candidates before accepting them', async () => {
+    const calls = []
+    const client = createManagedKavitaSetupClient({
+        baseUrl: 'https://kavita.example',
+        fetchImpl: async (url, options) => {
+            const requestUrl = new URL(url)
+            calls.push({
+                pathname: requestUrl.pathname,
+                method: options.method,
+                apiKey: requestUrl.searchParams.get('apiKey'),
+                pluginName: requestUrl.searchParams.get('pluginName'),
+                authorization: options.headers?.Authorization ?? null,
+            })
+
+            if (requestUrl.pathname === '/api/plugin/authenticate') {
+                if (requestUrl.searchParams.get('apiKey') === 'stale-key') {
+                    return {
+                        ok: false,
+                        status: 401,
+                        text: async () => JSON.stringify({message: 'Unauthorized'}),
+                    }
+                }
+
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({username: 'reader-admin', token: 'plugin-token'}),
+                }
+            }
+
+            if (requestUrl.pathname === '/api/Account/login') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify({id: 15, username: 'reader-admin', token: 'jwt-token'}),
+                }
+            }
+
+            if (requestUrl.pathname === '/api/Account/auth-keys') {
+                return {
+                    ok: true,
+                    status: 200,
+                    text: async () => JSON.stringify([
+                        {id: 7, key: 'fresh-existing-key', name: 'Noona Managed Services'},
+                    ]),
+                }
+            }
+
+            throw new Error(`Unexpected request: ${requestUrl.pathname}`)
+        },
+    })
+
+    const result = await client.ensureServiceApiKey({
+        account: {
+            username: 'reader-admin',
+            email: 'reader-admin@example.com',
+            password: 'Password123!',
+        },
+        allowRegister: true,
+        candidateApiKeys: [
+            {key: 'stale-key', source: 'stored', pluginName: 'Komf'},
+        ],
+    })
+
+    assert.equal(result.apiKey, 'fresh-existing-key')
+    assert.deepEqual(
+        calls
+            .filter((entry) => entry.pathname === '/api/plugin/authenticate')
+            .map((entry) => [entry.apiKey, entry.pluginName]),
+        [
+            ['stale-key', 'Komf'],
+            ['fresh-existing-key', 'Noona Managed Services'],
+        ],
+    )
 })

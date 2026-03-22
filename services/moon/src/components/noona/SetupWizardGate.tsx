@@ -3,9 +3,11 @@
 import {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
 import {Row, Spinner, Text} from "@once-ui-system/core";
+import {buildBootScreenHref, normalizeSetupStatus} from "./setupStatus.mjs";
 
 type SetupStatus = {
     completed: boolean;
+    manualBootRequired?: boolean;
 };
 
 type SetupWizardGateProps = {
@@ -26,12 +28,17 @@ export function SetupWizardGate({children}: SetupWizardGateProps) {
 
             try {
                 const setupRes = await fetch("/api/noona/setup/status", {cache: "no-store"});
-                const setupJson = (await setupRes.json().catch(() => null)) as SetupStatus | null;
+                const setupJson = normalizeSetupStatus(await setupRes.json().catch(() => null)) as SetupStatus;
                 if (cancelled) return;
 
                 const completed = setupJson?.completed === true;
                 if (completed) {
-                    router.replace("/");
+                    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}` || "/";
+                    router.replace(
+                        setupJson?.manualBootRequired === true
+                            ? buildBootScreenHref(returnTo)
+                            : "/",
+                    );
                     return;
                 }
                 setReady(true);

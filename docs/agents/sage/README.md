@@ -32,9 +32,13 @@ Portal actions.
 - Managed Sage-to-Vault traffic is expected to use internal HTTPS plus explicit CA trust material.
   Packet/settings calls should fail closed on trust errors, while wizard-state storage may still keep its local
   fallback for first-run continuity.
+  Managed Kavita setup is the exception on the setup surface: the optional stored-settings read or mirror may defer
+  during Vault CA warm-up so provisioning can still complete.
 - Sage seeds several admin settings in Vault on first successful admin persistence.
   Naming templates, onboarding message, default permissions, debug, worker settings, and VPN settings all originate in
   [../../../services/sage/app/createSageApp.mjs](../../../services/sage/app/createSageApp.mjs).
+- VPN settings writes are validated in Sage before they reach Vault.
+  Only the PIA provider is accepted, because Raven only supports PIA OpenVPN profiles.
 
 ## Most Common Edit Targets
 
@@ -67,6 +71,7 @@ Portal actions.
   metadata matching and Raven title volume mapping stay in Portal, with Sage calling it on behalf of Moon.
 - Raven:
   download, library, VPN, and recommendation approval side effects depend on Sage's Raven client.
+  VPN rotate stays async-accepted, while VPN login-test returns Raven's final probe result directly to Moon.
 
 ## Update Checklist
 

@@ -18,6 +18,7 @@ import {registerMediaRoutes} from '../routes/registerMediaRoutes.mjs'
 import {registerRavenRoutes} from '../routes/registerRavenRoutes.mjs'
 import {registerSettingsRoutes} from '../routes/registerSettingsRoutes.mjs'
 import {registerSetupRoutes} from '../routes/registerSetupRoutes.mjs'
+import {SetupValidationError} from '../lib/errors.mjs'
 
 const defaultServiceName = () => process.env.SERVICE_NAME || 'noona-sage'
 const defaultPort = () => process.env.API_PORT || 3004
@@ -955,6 +956,13 @@ export const createSageApp = ({
     const normalizeVpnProvider = (value) => {
         const normalized = normalizeString(value).toLowerCase()
         return normalized || DEFAULT_DOWNLOAD_VPN_SETTINGS.provider
+    }
+    const validateVpnProvider = (value) => {
+        const normalized = normalizeVpnProvider(value)
+        if (normalized !== DEFAULT_DOWNLOAD_VPN_SETTINGS.provider) {
+            throw new SetupValidationError('Only the pia VPN provider is supported.')
+        }
+        return normalized
     }
     const normalizeVpnRegion = (value) => {
         const normalized = normalizeString(value).toLowerCase()
@@ -2392,7 +2400,7 @@ export const createSageApp = ({
             const parsed = parseBooleanInput(payload?.autoRotate)
             return parsed == null ? current.autoRotate : parsed
         })()
-        const nextProvider = normalizeVpnProvider(payload?.provider ?? current.provider)
+        const nextProvider = validateVpnProvider(payload?.provider ?? current.provider)
         const nextRegion = normalizeVpnRegion(payload?.region ?? current.region)
         const nextRotateEveryMinutes = normalizeVpnRotateEveryMinutes(
             payload?.rotateEveryMinutes,

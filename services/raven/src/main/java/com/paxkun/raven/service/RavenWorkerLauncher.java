@@ -11,7 +11,6 @@ import com.paxkun.raven.RavenApplication;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
-import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -64,21 +63,45 @@ public class RavenWorkerLauncher {
     }
 
     JavaLaunchEnvironment resolveEnvironment() {
-        String javaHome = System.getProperty("java.home", "");
+        var domain = RavenApplication.class.getProtectionDomain();
+        var source = domain != null ? domain.getCodeSource() : null;
+        var location = source != null ? source.getLocation() : null;
+
+        return resolveEnvironmentFromProperties(
+                System.getProperty("java.home", ""),
+                System.getProperty("java.class.path", ""),
+                location
+        );
+    }
+
+    JavaLaunchEnvironment resolveEnvironmentFromProperties(String javaHome, String classPath, java.net.URL location) {
         String javaExecutable = javaHome == null || javaHome.isBlank()
                 ? "java"
                 : Path.of(javaHome, "bin", "java").toString();
-        String classPath = System.getProperty("java.class.path", "");
         String mainClassName = RavenApplication.class.getName();
         String codeSourcePath = null;
         try {
-            if (RavenApplication.class.getProtectionDomain() != null
-                    && RavenApplication.class.getProtectionDomain().getCodeSource() != null
-                    && RavenApplication.class.getProtectionDomain().getCodeSource().getLocation() != null) {
-                codeSourcePath = Path.of(RavenApplication.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
+            if (location != null) {
+                String uriString = location.toURI().toString();
+                if (uriString.startsWith("jar:file:")) {
+                    // Example: jar:file:/app/app.jar!/BOOT-INF/classes!/
+                    int bangIndex = uriString.indexOf("!");
+                    if (bangIndex > 0) {
+                        String jarUri = uriString.substring(4, bangIndex); // "file:/app/app.jar"
+                        codeSourcePath = Path.of(new java.net.URI(jarUri)).toString();
+                    }
+                } else if (uriString.startsWith("file:")) {
+                    codeSourcePath = Path.of(location.toURI()).toString();
+                }
             }
-        } catch (URISyntaxException ignored) {
-            codeSourcePath = null;
+        } catch (Exception ignored) {
+            // Fallback will be handled below
+        }
+
+        // Final fallback: if classPath is exactly one jar and codeSourcePath is null or doesn't end in .jar
+        if ((codeSourcePath == null || !codeSourcePath.toLowerCase(java.util.Locale.ROOT).endsWith(".jar"))
+                && classPath != null && !classPath.contains(File.pathSeparator) && classPath.toLowerCase(java.util.Locale.ROOT).endsWith(".jar")) {
+            codeSourcePath = classPath;
         }
 
         return new JavaLaunchEnvironment(javaExecutable, classPath, codeSourcePath, mainClassName);

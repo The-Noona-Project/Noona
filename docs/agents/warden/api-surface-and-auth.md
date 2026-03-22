@@ -91,6 +91,9 @@ Important details:
   and `MONGO_URI`
 - the public placeholder is `********`
 - the same placeholder is accepted on writes to mean "keep the current secret"
+- `GET /api/services/:name/config` stays redacted by default, but the authenticated `noona-sage` token may opt into the
+  raw `env` and `runtimeConfig.env` maps with `?includeSecrets=true` for trusted setup-summary reuse flows
+- keep that opt-in narrow; it is meant for Sage's managed Kavita summary sync, not for general secret browsing
 
 If you add new sensitive settings, make sure the redaction and placeholder-preserve paths still cover them.
 

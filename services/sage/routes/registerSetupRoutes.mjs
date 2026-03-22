@@ -10,6 +10,11 @@ const MANAGED_KAVITA_TARGET_SERVICES = Object.freeze(['noona-portal', 'noona-rav
 const MANAGED_KAVITA_READY_RETRIES = 20
 const MANAGED_KAVITA_READY_DELAY_MS = 1500
 const SETUP_SECRET_PLACEHOLDER = '********'
+const MASKED_MANAGED_KAVITA_PASSWORD_ERROR =
+    'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.'
+const MANAGED_KAVITA_VAULT_WARMUP_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM'])
+const MINIMAL_LIFECYCLE_SERVICES = Object.freeze(['noona-sage', 'noona-moon'])
+const MINIMAL_LIFECYCLE_SERVICE_SET = new Set(MINIMAL_LIFECYCLE_SERVICES)
 
 const normalizeString = (value) => {
     if (typeof value !== 'string') {
@@ -17,6 +22,11 @@ const normalizeString = (value) => {
     }
 
     return value.trim()
+}
+
+const normalizeUnmaskedSecret = (value) => {
+    const normalized = normalizeString(value)
+    return normalized && normalized !== SETUP_SECRET_PLACEHOLDER ? normalized : ''
 }
 
 const normalizeManagedServiceList = (values) => {
@@ -36,10 +46,156 @@ const normalizeManagedServiceList = (values) => {
     return out
 }
 
+const normalizeServiceNameList = (values) => {
+    const out = []
+    const seen = new Set()
+
+    for (const value of Array.isArray(values) ? values : []) {
+        const normalized = normalizeString(value)
+        if (!normalized || seen.has(normalized)) {
+            continue
+        }
+
+        seen.add(normalized)
+        out.push(normalized)
+    }
+
+    return out
+}
+
+const normalizeSelectionMode = (value) => {
+    const normalized = normalizeString(value).toLowerCase()
+    return ['minimal', 'selected', 'unspecified'].includes(normalized) ? normalized : 'unspecified'
+}
+
+const isHealthCheckUnsupportedError = (error) => {
+    if (error instanceof WardenUpstreamHttpError) {
+        return Number(error.status) === 404
+    }
+
+    const message = normalizeErrorMessage(error)
+    return /health check not supported/i.test(message)
+        || /health endpoint is not defined/i.test(message)
+        || /not supported/i.test(message)
+}
+
 const wait = (delayMs) =>
     new Promise((resolve) => {
         setTimeout(resolve, delayMs)
     })
+
+const normalizeErrorMessage = (error) =>
+    error instanceof Error ? error.message : String(error)
+
+const readErrorCode = (error) =>
+    error && typeof error === 'object' && typeof error.code === 'string'
+        ? error.code
+        : ''
+
+const isManagedKavitaVaultWarmupError = (error) => {
+    const code = readErrorCode(error)
+    if (MANAGED_KAVITA_VAULT_WARMUP_ERROR_CODES.has(code)) {
+        return true
+    }
+
+    const message = normalizeErrorMessage(error)
+    if (/VAULT_CA_CERT_PATH is required/i.test(message)) {
+        return true
+    }
+
+    if (/The configured Vault CA file could not be read/i.test(message)) {
+        return true
+    }
+
+    if (/Unable to read Vault CA certificate .*?(ENOENT|EACCES|EPERM|no such file or directory|permission denied)/i.test(message)) {
+        return true
+    }
+
+    return /All Vault endpoints failed:/i.test(message)
+        && /VAULT_CA_CERT_PATH|Vault CA certificate|ca-cert\.pem|ENOENT|EACCES|EPERM|no such file or directory|permission denied/i.test(message)
+}
+
+const loadManagedKavitaStoredSettings = async ({
+                                                   logger = {},
+                                                   serviceName = 'noona-sage',
+                                                   settingsCollection,
+                                                   vaultClient,
+                                               } = {}) => {
+    if (!vaultClient?.mongo?.findOne || !settingsCollection) {
+        return null
+    }
+
+    try {
+        return await vaultClient.mongo.findOne(settingsCollection, {
+            key: MANAGED_KAVITA_SERVICE_ACCOUNT_KEY,
+        })
+    } catch (error) {
+        const message = normalizeErrorMessage(error)
+        if (isManagedKavitaVaultWarmupError(error)) {
+            logger.debug?.(
+                `[${serviceName}] Vault TLS not ready yet; managed Kavita setup settings are using the warm-up fallback: ${message}`,
+            )
+            return null
+        }
+
+        throw error
+    }
+}
+
+const persistManagedKavitaStoredSettings = async ({
+                                                      account,
+                                                      apiKey,
+                                                      logger = {},
+                                                      serviceName = 'noona-sage',
+                                                      settingsCollection,
+                                                      vaultClient,
+                                                  } = {}) => {
+    if (!vaultClient?.mongo?.update || !settingsCollection) {
+        return false
+    }
+
+    const now = new Date().toISOString()
+    try {
+        await vaultClient.mongo.update(
+            settingsCollection,
+            {key: MANAGED_KAVITA_SERVICE_ACCOUNT_KEY},
+            {
+                $set: {
+                    key: MANAGED_KAVITA_SERVICE_ACCOUNT_KEY,
+                    value: {
+                        account: account
+                            ? {
+                                username: normalizeString(account.username),
+                                email: normalizeString(account.email),
+                            }
+                            : null,
+                        apiKey,
+                        updatedAt: now,
+                    },
+                    updatedAt: now,
+                },
+                $setOnInsert: {
+                    createdAt: now,
+                },
+            },
+            {upsert: true},
+        )
+        return true
+    } catch (error) {
+        const message = normalizeErrorMessage(error)
+        if (isManagedKavitaVaultWarmupError(error)) {
+            logger.debug?.(
+                `[${serviceName}] Vault TLS not ready yet; managed Kavita setup settings will be mirrored after warm-up: ${message}`,
+            )
+            return false
+        }
+
+        logger.warn?.(
+            `[${serviceName}] Unable to persist managed Kavita setup settings: ${message}`,
+        )
+        return false
+    }
+}
 
 const sendSetupClientUpstreamError = (res, error) => {
     if (!(error instanceof WardenUpstreamHttpError)) {
@@ -131,7 +287,7 @@ const readManagedKavitaSettings = (doc) => {
         : null
 
     return {
-        apiKey: normalizeString(value?.apiKey),
+        apiKey: normalizeUnmaskedSecret(value?.apiKey),
         account,
     }
 }
@@ -164,9 +320,7 @@ const parseManagedKavitaAccount = (value, {allowMaskedPassword = false} = {}) =>
             }
         }
 
-        throw new SetupValidationError(
-            'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
-        )
+        throw new SetupValidationError(MASKED_MANAGED_KAVITA_PASSWORD_ERROR)
     }
 
     if (!username || !email || !password) {
@@ -212,6 +366,87 @@ export function registerSetupRoutes(context = {}) {
         wizardMetadata,
         wizardStateClient,
     } = context
+
+    const resolveSetupStatusPayload = async () => {
+        const progressFallback = {items: [], status: 'idle', percent: null}
+        const [completed, config, progress, debugSetting, selection] = await Promise.all([
+            resolveSetupCompleted ? resolveSetupCompleted() : Promise.resolve(false),
+            setupClient.getSetupConfig().catch(() => null),
+            setupClient.getInstallProgress().catch(() => progressFallback),
+            readDebugSetting ? readDebugSetting().catch(() => null) : Promise.resolve(null),
+            typeof setupClient.getSetupSelection === 'function'
+                ? setupClient.getSetupSelection().catch(() => null)
+                : Promise.resolve(null),
+        ])
+
+        const progressStatus = normalizeString(progress?.status).toLowerCase()
+        const installing = ['pending', 'downloading', 'installing'].includes(progressStatus)
+        const configured = Boolean(config?.exists === true && config?.snapshot)
+        const selectionMode = normalizeSelectionMode(selection?.selectionMode)
+        const selectedServices = normalizeServiceNameList(selection?.selectedServices)
+        let lifecycleServices = normalizeServiceNameList(selection?.lifecycleServices)
+
+        if (selectionMode === 'minimal' && lifecycleServices.length === 0) {
+            lifecycleServices = [...MINIMAL_LIFECYCLE_SERVICES]
+        }
+
+        const requiresManualBoot =
+            completed === true
+            && selectionMode === 'selected'
+            && lifecycleServices.some((name) => !MINIMAL_LIFECYCLE_SERVICE_SET.has(name))
+
+        let manualBootRequired = false
+
+        if (requiresManualBoot) {
+            const catalog = await setupClient.listServices({includeInstalled: true}).catch(() => [])
+            const servicesByName = new Map(
+                catalog
+                    .map((entry) => [normalizeString(entry?.name), entry])
+                    .filter(([name]) => Boolean(name)),
+            )
+
+            const readiness = await Promise.all(
+                lifecycleServices.map(async (name) => {
+                    const service = servicesByName.get(name)
+                    if (!service || service.running !== true) {
+                        return false
+                    }
+
+                    if (typeof setupClient.getServiceHealth !== 'function') {
+                        return true
+                    }
+
+                    try {
+                        const health = await setupClient.getServiceHealth(name)
+                        if (health?.supported === false) {
+                            return service.running === true
+                        }
+
+                        return health?.success === true
+                    } catch (error) {
+                        if (isHealthCheckUnsupportedError(error)) {
+                            return service.running === true
+                        }
+
+                        return false
+                    }
+                }),
+            )
+
+            manualBootRequired = readiness.some((ready) => ready !== true)
+        }
+
+        return {
+            completed: completed === true,
+            configured,
+            installing,
+            debugEnabled: debugSetting?.enabled === true,
+            selectionMode,
+            selectedServices,
+            lifecycleServices,
+            manualBootRequired,
+        }
+    }
 
     app.get('/api/pages', (req, res) => {
         const pages = [
@@ -312,33 +547,71 @@ export function registerSetupRoutes(context = {}) {
         }
     })
 
-    app.get('/api/setup/status', async (_req, res) => {
-        const progressFallback = {items: [], status: 'idle', percent: null}
+    app.get('/api/setup/status', async (_req, res, next) => {
+        if (res.headersSent) {
+            next()
+            return
+        }
 
         try {
-            const [completed, config, progress, debugSetting] = await Promise.all([
-                resolveSetupCompleted ? resolveSetupCompleted() : Promise.resolve(false),
-                setupClient.getSetupConfig().catch(() => null),
-                setupClient.getInstallProgress().catch(() => progressFallback),
-                readDebugSetting ? readDebugSetting().catch(() => null) : Promise.resolve(null),
-            ])
-
-            const progressStatus = normalizeString(progress?.status).toLowerCase()
-            const installing = ['pending', 'downloading', 'installing'].includes(progressStatus)
-            const configured = Boolean(config?.exists === true && config?.snapshot)
-
-            res.json({
-                completed: completed === true,
-                configured,
-                installing,
-                debugEnabled: debugSetting?.enabled === true,
-            })
+            res.json(await resolveSetupStatusPayload())
         } catch (error) {
             logger.error(`[${serviceName}] ⚠️ Failed to resolve setup status: ${error.message}`)
             res.status(502).json({error: 'Unable to resolve setup status.'})
         }
     })
 
+    app.post('/api/setup/boot/start', async (req, res) => {
+        try {
+            const statusPayload = await resolveSetupStatusPayload()
+            const hasSelectedLifecycle =
+                statusPayload.selectionMode === 'selected'
+                && statusPayload.lifecycleServices.some((name) => !MINIMAL_LIFECYCLE_SERVICE_SET.has(name))
+
+            if (!statusPayload.completed) {
+                res.status(409).json({
+                    ...statusPayload,
+                    error: 'Setup must be completed before the ecosystem can be started.',
+                })
+                return
+            }
+
+            if (!hasSelectedLifecycle) {
+                res.status(409).json({
+                    ...statusPayload,
+                    error: 'Manual boot is only available for a saved ecosystem selection beyond minimal mode.',
+                })
+                return
+            }
+
+            if (statusPayload.manualBootRequired !== true) {
+                res.status(409).json({
+                    ...statusPayload,
+                    error: 'The selected ecosystem is already running or manual boot is not currently allowed.',
+                })
+                return
+            }
+
+            const result = await setupClient.startEcosystem(req.body ?? {})
+            res.json(result ?? {})
+        } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
+            logger.error(`[${serviceName}] Failed to start the saved ecosystem from boot mode: ${error.message}`)
+            res.status(502).json({error: 'Unable to start the saved ecosystem.'})
+        }
+    })
+
+    /*
+        } catch (error) {
+            logger.error(`[${serviceName}] ⚠️ Failed to resolve setup status: ${error.message}`)
+            res.status(502).json({error: 'Unable to resolve setup status.'})
+        }
+    })
+
+    */
     app.post('/api/setup/install', async (req, res) => {
         try {
             const asyncRequested = ['1', 'true', 'yes', 'on'].includes(String(req.query?.async ?? '').trim().toLowerCase())
@@ -452,6 +725,10 @@ export function registerSetupRoutes(context = {}) {
             const payload = await setupClient.getServiceHealth(name)
             res.json(payload)
         } catch (error) {
+            if (sendSetupClientUpstreamError(res, error)) {
+                return
+            }
+
             const message = error instanceof SetupValidationError ? error.message : 'Unable to retrieve service health.'
             const status = error instanceof SetupValidationError ? 400 : 502
             logger.error(`[${serviceName}] ⚠️ Failed to load health for ${name}: ${error.message}`)
@@ -965,73 +1242,82 @@ export function registerSetupRoutes(context = {}) {
         try {
             const requestedAccountState = parseManagedKavitaAccount(req.body?.account)
             const [managedKavitaConfig, targetConfigs] = await Promise.all([
-                setupClient.getServiceConfig('noona-kavita'),
+                setupClient.getServiceConfig('noona-kavita', {includeSecrets: true}),
                 Promise.all(
-                    targetServices.map(async (name) => [name, await setupClient.getServiceConfig(name)]),
+                    targetServices.map(async (name) => [name, await setupClient.getServiceConfig(name, {includeSecrets: true})]),
                 ),
             ])
             const configuredAccountState = readManagedKavitaConfiguredAccount(managedKavitaConfig)
             const configs = new Map(targetConfigs)
 
-            const existingKeys = new Set()
+            const candidateApiKeys = []
+            let reusableServiceCandidate = null
             for (const targetServiceName of targetServices) {
                 const env = normalizeEnvMap(configs.get(targetServiceName)?.env)
                 const keyName = resolveManagedKavitaEnvKey(targetServiceName)
-                const existingKey = keyName ? normalizeString(env[keyName]) : ''
+                const existingKey = keyName ? normalizeUnmaskedSecret(env[keyName]) : ''
                 if (existingKey) {
-                    existingKeys.add(existingKey)
+                    const candidate = {
+                        key: existingKey,
+                        source: 'existing',
+                        pluginName: targetServiceName,
+                    }
+                    candidateApiKeys.push(candidate)
+                    reusableServiceCandidate ||= candidate
                 }
             }
 
-            let storedSettings = null
-            if (vaultClient?.mongo && settingsCollection) {
-                storedSettings = await vaultClient.mongo.findOne(settingsCollection, {
-                    key: MANAGED_KAVITA_SERVICE_ACCOUNT_KEY,
+            const storedSettings = await loadManagedKavitaStoredSettings({
+                vaultClient,
+                settingsCollection,
+                logger,
+                serviceName,
+            })
+            const {apiKey: storedApiKey, account: storedAccount} = readManagedKavitaSettings(storedSettings)
+
+            if (storedApiKey) {
+                candidateApiKeys.unshift({
+                    key: storedApiKey,
+                    source: 'stored',
+                    pluginName: 'noona-sage',
                 })
             }
 
-            const {apiKey: storedApiKey, account: storedAccount} = readManagedKavitaSettings(storedSettings)
-
             const effectiveAccount = requestedAccountState.account || configuredAccountState.account || null
+            const maskedPasswordPending =
+                requestedAccountState.hasMaskedPassword || configuredAccountState.hasMaskedPassword
 
-            let apiKey = ''
-            let account =
-                storedAccount ||
-                (effectiveAccount
-                    ? {
-                        username: normalizeString(effectiveAccount.username),
-                        email: normalizeString(effectiveAccount.email),
-                    }
-                    : null)
-            let mode = 'reused'
+            if (!effectiveAccount && maskedPasswordPending && candidateApiKeys.length === 0) {
+                throw new SetupValidationError(MASKED_MANAGED_KAVITA_PASSWORD_ERROR)
+            }
 
-            if (storedApiKey) {
-                apiKey = storedApiKey
-                mode = 'stored'
-            } else if (existingKeys.size === 1) {
-                apiKey = Array.from(existingKeys)[0]
-                mode = 'existing'
-            } else if (existingKeys.size > 1) {
-                res.status(409).json({error: 'Managed Kavita setup found conflicting API keys across selected services.'})
-                return
-            } else {
-                if (!effectiveAccount && (requestedAccountState.hasMaskedPassword || configuredAccountState.hasMaskedPassword)) {
-                    throw new SetupValidationError(
-                        'Re-enter the managed Kavita admin password before continuing. Saved setup profiles keep it masked.',
-                    )
+            let provisioning = reusableServiceCandidate
+                ? {
+                    apiKey: reusableServiceCandidate.key,
+                    account: null,
+                    mode: reusableServiceCandidate.source,
                 }
+                : null
+            let lastError = null
 
-                let provisioning = null
-                let lastError = null
-
+            if (!provisioning) {
                 for (let attempt = 1; attempt <= MANAGED_KAVITA_READY_RETRIES; attempt += 1) {
                     try {
                         provisioning = await managedKavitaSetupClient.ensureServiceApiKey({
                             account: effectiveAccount,
-                            allowRegister: true,
+                            allowRegister: maskedPasswordPending ? false : true,
+                            candidateApiKeys,
                         })
                         break
                     } catch (error) {
+                        if (
+                            maskedPasswordPending &&
+                            error instanceof SetupValidationError &&
+                            /account credentials or registration enabled/i.test(error.message)
+                        ) {
+                            throw new SetupValidationError(MASKED_MANAGED_KAVITA_PASSWORD_ERROR)
+                        }
+
                         if (error instanceof SetupValidationError) {
                             throw error
                         }
@@ -1046,20 +1332,27 @@ export function registerSetupRoutes(context = {}) {
                         }
                     }
                 }
+            }
 
-                if (!provisioning) {
-                    throw lastError || new Error('Unable to provision a managed Kavita API key.')
-                }
+            if (!provisioning) {
+                throw lastError || new Error('Unable to provision a managed Kavita API key.')
+            }
 
-                apiKey = normalizeString(provisioning.apiKey)
-                account = provisioning.account
+            const apiKey = normalizeString(provisioning.apiKey)
+            let account =
+                provisioning.account
                     ? {
                         username: normalizeString(provisioning.account.username),
                         email: normalizeString(provisioning.account.email),
                     }
-                    : null
-                mode = provisioning.mode
-            }
+                    : storedAccount ||
+                    (effectiveAccount
+                        ? {
+                            username: normalizeString(effectiveAccount.username),
+                            email: normalizeString(effectiveAccount.email),
+                        }
+                        : null)
+            const mode = provisioning.mode
 
             if (!apiKey) {
                 throw new Error('Managed Kavita setup did not produce an API key.')
@@ -1085,39 +1378,14 @@ export function registerSetupRoutes(context = {}) {
                 })
             }
 
-            if (vaultClient?.mongo && settingsCollection) {
-                const now = new Date().toISOString()
-                await vaultClient.mongo
-                    .update(
-                        settingsCollection,
-                        {key: MANAGED_KAVITA_SERVICE_ACCOUNT_KEY},
-                        {
-                            $set: {
-                                key: MANAGED_KAVITA_SERVICE_ACCOUNT_KEY,
-                                value: {
-                                    account: account
-                                        ? {
-                                            username: normalizeString(account.username),
-                                            email: normalizeString(account.email),
-                                        }
-                                        : null,
-                                    apiKey,
-                                    updatedAt: now,
-                                },
-                                updatedAt: now,
-                            },
-                            $setOnInsert: {
-                                createdAt: now,
-                            },
-                        },
-                        {upsert: true},
-                    )
-                    .catch((error) => {
-                        logger.warn?.(
-                            `[${serviceName}] Unable to persist managed Kavita setup settings: ${error instanceof Error ? error.message : error}`,
-                        )
-                    })
-            }
+            await persistManagedKavitaStoredSettings({
+                account,
+                apiKey,
+                vaultClient,
+                settingsCollection,
+                logger,
+                serviceName,
+            })
 
             res.json({
                 apiKey,

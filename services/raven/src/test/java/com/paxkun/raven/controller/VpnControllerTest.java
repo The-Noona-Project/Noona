@@ -5,7 +5,7 @@
  * - src/main/java/com/paxkun/raven/service/VPNServices.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnLoginTestResult.java
  * - src/main/java/com/paxkun/raven/service/vpn/VpnRegionOption.java
- * Times this file has been edited: 2
+ * Times this file has been edited: 3
  */
 package com.paxkun.raven.controller;
 
@@ -118,6 +118,28 @@ class VpnControllerTest {
     }
 
     @Test
+    void rotateEndpointPreservesConflictStatusForRejectedRotation() throws Exception {
+        when(vpnServices.rotateNow(eq("manual"))).thenReturn(new VpnRotationResult(
+                false,
+                "A VPN rotation is already in progress.",
+                "198.51.100.10",
+                "198.51.100.10",
+                "us_california",
+                0,
+                0,
+                "manual",
+                "2026-03-08T20:30:00Z"
+        ));
+
+        mockMvc.perform(post("/v1/vpn/rotate")
+                        .contentType("application/json")
+                        .content("{}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.ok").value(false))
+                .andExpect(jsonPath("$.message").value("A VPN rotation is already in progress."));
+    }
+
+    @Test
     void testLoginEndpointProxiesRequestToVpnService() throws Exception {
         when(vpnServices.testLogin(eq("moon-settings"), eq("us_california"), eq("pia-user"), eq("pia-secret")))
                 .thenReturn(new VpnLoginTestResult(
@@ -146,5 +168,32 @@ class VpnControllerTest {
                 .andExpect(jsonPath("$.reportedIp").value("198.51.100.42"));
 
         verify(vpnServices).testLogin(eq("moon-settings"), eq("us_california"), eq("pia-user"), eq("pia-secret"));
+    }
+
+    @Test
+    void testLoginEndpointReturnsBadRequestForValidationFailure() throws Exception {
+        when(vpnServices.testLogin(eq("moon-settings"), eq("us_california"), eq(""), eq("")))
+                .thenReturn(new VpnLoginTestResult(
+                        false,
+                        "PIA username and password are required for login test.",
+                        "us_california",
+                        "",
+                        "",
+                        "2026-03-08T21:00:00Z"
+                ));
+
+        mockMvc.perform(post("/v1/vpn/test-login")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "triggeredBy": "moon-settings",
+                                  "region": "us_california",
+                                  "piaUsername": "",
+                                  "piaPassword": ""
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.ok").value(false))
+                .andExpect(jsonPath("$.message").value("PIA username and password are required for login test."));
     }
 }

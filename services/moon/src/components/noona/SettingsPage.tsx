@@ -31,9 +31,15 @@ import {
     prioritizeRebootMonitorServices,
     writeRebootMonitorSession,
 } from "./rebootMonitorSession";
+import {
+    REBOOT_MONITOR_OPERATION_ECOSYSTEM_RESTART,
+    REBOOT_MONITOR_OPERATION_ECOSYSTEM_START,
+    REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
+} from "./rebootMonitorOperations.mjs";
 import editorStyles from "./ConfigEditor.module.scss";
 import settingsStyles from "./SettingsPage.module.scss";
 import {
+    buildServiceConfigUpdatePayload,
     getSettingsHrefForPortalSubtab,
     getSettingsHrefForView,
     KomfApplicationEditor,
@@ -50,6 +56,15 @@ import {
     TAB_LABELS,
 } from "./settings";
 import {CPU_CORE_UNPINNED, normalizeCpuCoreIdDrafts} from "./downloadWorkerSettings.mjs";
+import {
+    formatVpnRotationOutcomeMessage,
+    formatVpnLoginOutcomeMessage,
+    isVpnRuntimeBusy,
+    resolveVpnMessageAfterRefresh,
+    shouldDisableVpnControls,
+    waitForVpnRuntimeToSettle,
+} from "./vpnSettingsFlow.mjs";
+import {normalizeSetupStatus} from "./setupStatus.mjs";
 
 type ServiceCatalogEntry = {
     name?: string | null;
@@ -73,6 +88,7 @@ type EnvConfigField = {
     warning?: string | null;
     required?: boolean;
     readOnly?: boolean;
+    serverManaged?: boolean;
 };
 
 type ServiceConfig = {
@@ -1009,6 +1025,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     const [vpnRotating, setVpnRotating] = useState(false);
     const [vpnTesting, setVpnTesting] = useState(false);
     const [vpnError, setVpnError] = useState<string | null>(null);
+    const [vpnRegionsDiagnostic, setVpnRegionsDiagnostic] = useState<string | null>(null);
     const [vpnMessage, setVpnMessage] = useState<string | null>(null);
     const [vpnEnabled, setVpnEnabled] = useState(false);
     const [vpnOnlyDownloadWhenOn, setVpnOnlyDownloadWhenOn] = useState(false);
@@ -1602,6 +1619,62 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setEcosystemBusy(false);
         }
     };
+    const buildLifecycleMonitorReturnTo = () => {
+        const returnToCandidate = normalizeString(selection.href).trim();
+        return returnToCandidate.startsWith("/") ? returnToCandidate : getSettingsHrefForView("overview");
+    };
+    const openLifecycleMonitor = async (
+        operation: typeof REBOOT_MONITOR_OPERATION_ECOSYSTEM_START | typeof REBOOT_MONITOR_OPERATION_ECOSYSTEM_RESTART,
+        body: Record<string, unknown> = {},
+    ) => {
+        setEcosystemBusy(true);
+        setGlobalError(null);
+        setGlobalMessage(null);
+
+        try {
+            const response = await fetch("/api/noona/setup/status", {cache: "no-store"});
+            const payload = normalizeSetupStatus(await response.json().catch(() => null));
+            if (!response.ok) {
+                throw new Error(parseError(payload, `Failed to load lifecycle target state (HTTP ${response.status}).`));
+            }
+
+            const targetServices = payload.lifecycleServices;
+            if (targetServices.length === 0) {
+                throw new Error("No saved lifecycle target is available for ecosystem monitoring.");
+            }
+
+            const returnTo = buildLifecycleMonitorReturnTo();
+            const requestMetadata = {body};
+            const targetKey = buildRebootMonitorTargetKey(operation, targetServices, returnTo, requestMetadata);
+
+            writeRebootMonitorSession({
+                operation,
+                targetServices,
+                returnTo,
+                requestMetadata,
+                targetKey,
+                phase: "preparing",
+                phaseDetail: "Preparing lifecycle monitor...",
+                currentIndex: 0,
+                stableSuccessCount: 0,
+                serviceStates: {},
+                monitorStartedAt: Date.now(),
+                updatedAt: Date.now(),
+            });
+
+            const params = new URLSearchParams({
+                operation,
+                services: targetServices.join(","),
+                returnTo,
+            });
+            window.location.assign(`/rebooting?${params.toString()}`);
+        } catch (error_) {
+            const msg = error_ instanceof Error ? error_.message : String(error_);
+            setGlobalError(msg);
+        } finally {
+            setEcosystemBusy(false);
+        }
+    };
     const downloadSetupConfigSnapshot = async () => {
         setSetupConfigBusy(true);
         setSetupConfigMessage(null);
@@ -1707,10 +1780,16 @@ export function SettingsPage({selection}: SettingsPageProps) {
 
         patchEditor(serviceName, {saving: true, error: null, message: null});
         try {
+            const payload = buildServiceConfigUpdatePayload({
+                envConfig: Array.isArray(editor.config?.envConfig) ? editor.config.envConfig : [],
+                envDraft: editor.envDraft,
+                hostPort: parsedPort,
+                restart: shouldRestart,
+            });
             const res = await fetch(`/api/noona/settings/services/${encodeURIComponent(serviceName)}/config`, {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({env: editor.envDraft, hostPort: parsedPort, restart: shouldRestart}),
+                body: JSON.stringify(payload),
             });
             const json = await res.json().catch(() => null);
             if (!res.ok) {
@@ -1951,6 +2030,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
     };
 
     const loadVpnRegions = async () => {
+        setVpnRegionsDiagnostic(null);
         try {
             const res = await fetch("/api/noona/settings/downloads/vpn/regions", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as {
@@ -1958,52 +2038,77 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 error?: string
             } | null;
             if (!res.ok) {
-                setVpnError(parseError(json, `Failed to load VPN regions (HTTP ${res.status}).`));
+                setVpnRegions([]);
+                setVpnRegionsDiagnostic(parseError(json, `Failed to load VPN regions (HTTP ${res.status}).`));
                 return;
             }
 
             const parsed = Array.isArray(json?.regions) ? json.regions : [];
+            const diagnostic = normalizeString(json?.error).trim();
             setVpnRegions(parsed);
+            setVpnRegionsDiagnostic(diagnostic || null);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
-            setVpnError(msg);
+            setVpnRegions([]);
+            setVpnRegionsDiagnostic(msg);
         }
     };
 
-    const loadVpnSettings = async () => {
-        setVpnLoading(true);
+    const applyVpnSettingsSnapshot = (
+        json: DownloadVpnSettings | null,
+        {preserveMessage = false}: { preserveMessage?: boolean } = {},
+    ) => {
+        setVpnMessage((current) => resolveVpnMessageAfterRefresh(current, preserveMessage));
+        setVpnEnabled(json?.enabled === true);
+        setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
+        setVpnAutoRotate(json?.autoRotate !== false);
+        setVpnRotateEveryMinutes(
+            String(
+                Number.isFinite(Number(json?.rotateEveryMinutes)) && Number(json?.rotateEveryMinutes) > 0
+                    ? Math.floor(Number(json?.rotateEveryMinutes))
+                    : Number(DEFAULT_VPN_ROTATE_MINUTES),
+            ),
+        );
+        setVpnRegion(normalizeString(json?.region).trim() || DEFAULT_VPN_REGION);
+        setVpnUsername(normalizeString(json?.piaUsername).trim());
+        setVpnPassword("");
+        setVpnPasswordConfigured(json?.passwordConfigured === true);
+        setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
+        setVpnStatus(json?.status ?? null);
+        if (Array.isArray(json?.regions)) {
+            setVpnRegions(json?.regions ?? []);
+        }
+
+        return json;
+    };
+
+    const refreshVpnSettings = async ({preserveMessage = false}: { preserveMessage?: boolean } = {}) => {
         setVpnError(null);
-        setVpnMessage(null);
         try {
             const res = await fetch("/api/noona/settings/downloads/vpn", {cache: "no-store"});
             const json = (await res.json().catch(() => null)) as DownloadVpnSettings | null;
             if (!res.ok) {
                 setVpnError(parseError(json, `Failed to load VPN settings (HTTP ${res.status}).`));
-                return;
+                return null;
             }
 
-            setVpnEnabled(json?.enabled === true);
-            setVpnOnlyDownloadWhenOn(json?.onlyDownloadWhenVpnOn === true);
-            setVpnAutoRotate(json?.autoRotate !== false);
-            setVpnRotateEveryMinutes(
-                String(
-                    Number.isFinite(Number(json?.rotateEveryMinutes)) && Number(json?.rotateEveryMinutes) > 0
-                        ? Math.floor(Number(json?.rotateEveryMinutes))
-                        : Number(DEFAULT_VPN_ROTATE_MINUTES),
-                ),
-            );
-            setVpnRegion(normalizeString(json?.region).trim() || DEFAULT_VPN_REGION);
-            setVpnUsername(normalizeString(json?.piaUsername).trim());
-            setVpnPassword("");
-            setVpnPasswordConfigured(json?.passwordConfigured === true);
-            setVpnUpdatedAt(normalizeString(json?.updatedAt).trim() || null);
-            setVpnStatus(json?.status ?? null);
-            if (Array.isArray(json?.regions)) {
-                setVpnRegions(json?.regions ?? []);
-            }
+            return applyVpnSettingsSnapshot(json, {preserveMessage});
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
+            return null;
+        }
+    };
+
+    const loadVpnSettings = async ({preserveMessage = false}: { preserveMessage?: boolean } = {}) => {
+        setVpnLoading(true);
+        setVpnError(null);
+        if (!preserveMessage) {
+            setVpnMessage(null);
+        }
+
+        try {
+            return await refreshVpnSettings({preserveMessage});
         } finally {
             setVpnLoading(false);
         }
@@ -2055,7 +2160,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
             setVpnPassword("");
             setVpnPasswordConfigured(json?.passwordConfigured === true || vpnPasswordConfigured);
             setVpnMessage("VPN settings saved.");
-            await Promise.all([loadVpnRegions(), loadVpnSettings()]);
+            await Promise.all([loadVpnRegions(), loadVpnSettings({preserveMessage: true})]);
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -2088,8 +2193,13 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 return;
             }
 
-            setVpnMessage(normalizeString(json?.message).trim() || "VPN endpoint rotated.");
-            await loadVpnSettings();
+            const finalVpnSettings = await waitForVpnRuntimeToSettle({
+                refresh: () => refreshVpnSettings({preserveMessage: true}),
+                isBusy: (snapshot) => isVpnRuntimeBusy(snapshot?.status),
+            });
+            setVpnMessage(
+                formatVpnRotationOutcomeMessage(finalVpnSettings?.status ?? null, "VPN rotation complete."),
+            );
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -2124,14 +2234,12 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 return;
             }
 
-            const message = normalizeString(json?.message).trim() || "PIA login test succeeded.";
-            const region = normalizeString(json?.region).trim();
-            const endpoint = normalizeString(json?.endpoint).trim();
-            const reportedIp = normalizeString(json?.reportedIp).trim();
-            const locationDetail = endpoint ? `${region || vpnRegion} (${endpoint})` : (region || "");
-            const ipDetail = reportedIp ? `IP ${reportedIp}` : "";
-            const detail = [locationDetail, ipDetail].filter(Boolean).join(" | ");
-            setVpnMessage(detail ? `${message} ${detail}` : message);
+            setVpnMessage(formatVpnLoginOutcomeMessage({
+                message: normalizeString(json?.message).trim(),
+                region: json?.region,
+                endpoint: json?.endpoint,
+                reportedIp: json?.reportedIp,
+            }, vpnRegion));
         } catch (error_) {
             const msg = error_ instanceof Error ? error_.message : String(error_);
             setVpnError(msg);
@@ -3027,9 +3135,14 @@ export function SettingsPage({selection}: SettingsPageProps) {
                 const returnToCandidate = normalizeString(selection.href).trim();
                 const returnTo = returnToCandidate.startsWith("/") ? returnToCandidate : getSettingsHrefForView("updater");
                 writeRebootMonitorSession({
+                    operation: REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
                     targetServices: services,
                     returnTo,
-                    targetKey: buildRebootMonitorTargetKey(services, returnTo),
+                    targetKey: buildRebootMonitorTargetKey(
+                        REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
+                        services,
+                        returnTo,
+                    ),
                     phase: "preparing",
                     phaseDetail: "Preparing reboot monitor...",
                     currentIndex: 0,
@@ -3039,6 +3152,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     updatedAt: Date.now(),
                 });
                 const params = new URLSearchParams({
+                    operation: REBOOT_MONITOR_OPERATION_UPDATE_SERVICES,
                     services: services.join(","),
                     returnTo,
                 });
@@ -3053,7 +3167,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
         }
     };
 
-    const restartEcosystem = async () => await updateEcosystemState("restart");
+    const restartEcosystem = async () => await openLifecycleMonitor(REBOOT_MONITOR_OPERATION_ECOSYSTEM_RESTART);
 
     useEffect(() => {
         void loadAuthStatus();
@@ -3884,7 +3998,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                     </Text>
                     <Row gap="12" style={{flexWrap: "wrap"}}>
                         <Button variant="secondary" disabled={ecosystemBusy}
-                                onClick={() => void updateEcosystemState("start")}>
+                                onClick={() => void openLifecycleMonitor(REBOOT_MONITOR_OPERATION_ECOSYSTEM_START)}>
                             {ecosystemBusy ? "Working..." : "Start ecosystem"}
                         </Button>
                         <Button variant="primary" disabled={ecosystemBusy} onClick={() => void restartEcosystem()}>
@@ -4413,6 +4527,16 @@ export function SettingsPage({selection}: SettingsPageProps) {
             if (!key || key === KOMF_APPLICATION_YML_KEY || field.readOnly === true) return false;
             return !isUrlLikeField(key) && !isPathLikeField(key) && !/KAVITA_API_KEY/i.test(key);
         });
+        const vpnStatusError = normalizeString(vpnStatus?.lastError).trim();
+        const vpnRegionsError = normalizeString(vpnRegionsDiagnostic).trim();
+        const vpnControlsLocked = shouldDisableVpnControls({
+            status: vpnStatus,
+            loading: vpnLoading,
+            saving: vpnSaving,
+            rotating: vpnRotating,
+            testing: vpnTesting,
+        });
+        const vpnRotateDisabled = vpnControlsLocked || !vpnEnabled;
 
         return (
             <Column fillWidth gap="16">
@@ -4633,28 +4757,28 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             <Row gap="8" style={{flexWrap: "wrap"}}>
                                 <Button
                                     variant="secondary"
-                                    disabled={vpnLoading || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     onClick={() => void Promise.all([loadVpnRegions(), loadVpnSettings()])}
                                 >
                                     {vpnLoading ? "Reloading..." : "Reload"}
                                 </Button>
                                 <Button
                                     variant="secondary"
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     onClick={() => void testVpnLogin()}
                                 >
                                     {vpnTesting ? "Testing..." : "Test login"}
                                 </Button>
                                 <Button
                                     variant="secondary"
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting || !vpnEnabled}
+                                    disabled={vpnRotateDisabled}
                                     onClick={() => void rotateVpnNow()}
                                 >
                                     {vpnRotating ? "Rotating..." : "Rotate now"}
                                 </Button>
                                 <Button
                                     variant="primary"
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     onClick={() => void saveVpnSettings()}
                                 >
                                     {vpnSaving ? "Saving..." : "Save VPN"}
@@ -4662,11 +4786,17 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             </Row>
                         </Row>
                         {vpnError && <Text onBackground="danger-strong" variant="body-default-xs">{vpnError}</Text>}
+                        {vpnStatusError && (
+                            <Text onBackground="danger-strong" variant="body-default-xs">{vpnStatusError}</Text>
+                        )}
+                        {vpnRegionsError && vpnRegionsError !== vpnStatusError && (
+                            <Text onBackground="danger-strong" variant="body-default-xs">{vpnRegionsError}</Text>
+                        )}
                         {vpnMessage && <Text onBackground="neutral-weak" variant="body-default-xs">{vpnMessage}</Text>}
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
                                 isChecked={vpnEnabled}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                disabled={vpnControlsLocked}
                                 ariaLabel="Toggle Raven VPN"
                                 onToggle={() => setVpnEnabled((prev) => !prev)}
                             />
@@ -4675,7 +4805,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
                                 isChecked={vpnOnlyDownloadWhenOn}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                disabled={vpnControlsLocked}
                                 ariaLabel="Only download when Raven VPN is connected"
                                 onToggle={() => setVpnOnlyDownloadWhenOn((prev) => !prev)}
                             />
@@ -4684,7 +4814,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                         <Row gap="12" style={{flexWrap: "wrap"}}>
                             <Switch
                                 isChecked={vpnAutoRotate}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting || !vpnEnabled}
+                                disabled={vpnControlsLocked || !vpnEnabled}
                                 ariaLabel="Toggle Raven VPN auto-rotation"
                                 onToggle={() => setVpnAutoRotate((prev) => !prev)}
                             />
@@ -4697,7 +4827,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 label="Rotate every (minutes)"
                                 type="number"
                                 value={vpnRotateEveryMinutes}
-                                disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                disabled={vpnControlsLocked}
                                 onChange={(event) => setVpnRotateEveryMinutes(event.target.value)}
                             />
                             <Column fillWidth gap="8" style={{minWidth: "18rem"}}>
@@ -4705,7 +4835,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                                 <select
                                     value={vpnRegion}
                                     onChange={(event) => setVpnRegion(event.target.value)}
-                                    disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                                    disabled={vpnControlsLocked}
                                     aria-label="Select PIA region"
                                     style={{
                                         width: "100%",
@@ -4749,7 +4879,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             label="PIA Username"
                             type="text"
                             value={vpnUsername}
-                            disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                            disabled={vpnControlsLocked}
                             onChange={(event) => setVpnUsername(event.target.value)}
                         />
                         <Input
@@ -4758,7 +4888,7 @@ export function SettingsPage({selection}: SettingsPageProps) {
                             label={vpnPasswordConfigured ? "PIA Password (leave blank to keep stored value)" : "PIA Password"}
                             type="password"
                             value={vpnPassword}
-                            disabled={vpnLoading || vpnSaving || vpnRotating || vpnTesting}
+                            disabled={vpnControlsLocked}
                             onChange={(event) => setVpnPassword(event.target.value)}
                         />
                     </Column>

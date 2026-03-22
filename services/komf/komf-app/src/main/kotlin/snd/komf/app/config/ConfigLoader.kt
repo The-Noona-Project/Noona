@@ -61,8 +61,12 @@ class ConfigLoader(private val yaml: Yaml) {
         val komgaPassword = System.getenv("KOMF_KOMGA_PASSWORD")?.ifBlank { null } ?: komgaConfig.komgaPassword
 
         val kavitaConfig = config.kavita
-        val kavitaBaseUri = System.getenv("KOMF_KAVITA_BASE_URI")?.ifBlank { null } ?: kavitaConfig.baseUri
-        val kavitaApiKey = System.getenv("KOMF_KAVITA_API_KEY")?.ifBlank { null } ?: kavitaConfig.apiKey
+        val kavitaBaseUri = System.getenv("KOMF_KAVITA_BASE_URI")?.ifBlank { null }
+            ?: System.getenv("KAVITA_BASE_URL")?.ifBlank { null }
+            ?: kavitaConfig.baseUri
+        val kavitaApiKey = System.getenv("KOMF_KAVITA_API_KEY")?.ifBlank { null }
+            ?: System.getenv("KAVITA_API_KEY")?.ifBlank { null }
+            ?: kavitaConfig.apiKey
 
         val serverConfig = config.server
         val serverPort = System.getenv("KOMF_SERVER_PORT")?.toIntOrNull() ?: serverConfig.port
@@ -73,8 +77,12 @@ class ConfigLoader(private val yaml: Yaml) {
             ?: metadataProvidersConfig.malClientId
         val comicVineApiKey = System.getenv("KOMF_METADATA_PROVIDERS_COMIC_VINE_API_KEY")?.ifBlank { null }
             ?: metadataProvidersConfig.comicVineApiKey
-        val comicVineSearchLimit = System.getenv("KOMF_METADATA_PROVIDERS_COMIC_VINE_SEARCH_LIMIT")?.ifBlank { null }
+        val comicVineSearchLimit = System.getenv("KOMF_METADATA_PROVIDERS_COMIC_VINE_SEARCH_LIMIT")?.toIntOrNull()
             ?: metadataProvidersConfig.comicVineSearchLimit
+        val comicVineIssueName = System.getenv("KOMF_METADATA_PROVIDERS_COMIC_VINE_ISSUE_NAME")?.ifBlank { null }
+            ?: metadataProvidersConfig.comicVineIssueName
+        val comicVineIdFormat = System.getenv("KOMF_METADATA_PROVIDERS_COMIC_VINE_ID_FORMAT")?.ifBlank { null }
+            ?: metadataProvidersConfig.comicVineIdFormat
         val bangumiToken = System.getenv("KOMF_METADATA_PROVIDERS_BANGUMI_TOKEN")?.ifBlank { null }
             ?: metadataProvidersConfig.bangumiToken
 
@@ -95,6 +103,9 @@ class ConfigLoader(private val yaml: Yaml) {
             metadataProviders = metadataProvidersConfig.copy(
                 malClientId = malClientId,
                 comicVineApiKey = comicVineApiKey,
+                comicVineSearchLimit = comicVineSearchLimit,
+                comicVineIssueName = comicVineIssueName,
+                comicVineIdFormat = comicVineIdFormat,
                 bangumiToken = bangumiToken,
                 mangabakaDatabaseDir = mangaBakaDirectory
             ),

@@ -1,4 +1,4 @@
-const SHELLLESS_ROUTES = new Set(["/login", "/signup", "/discord/callback", "/rebooting"]);
+const SHELLLESS_ROUTES = new Set(["/login", "/signup", "/discord/callback", "/bootScreen", "/rebooting"]);
 
 const normalizePathname = (value) => (typeof value === "string" ? value.trim() : "");
 

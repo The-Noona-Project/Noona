@@ -2,7 +2,7 @@
  * @fileoverview Covers Raven client request construction and payload handling.
  * Related files:
  * - clients/ravenClient.mjs
- * Times this file has been edited: 9
+ * Times this file has been edited: 10
  */
 
 import assert from 'node:assert/strict';
@@ -351,6 +351,61 @@ test('bulkQueueDownload posts Raven bulk queue filters and accepts maintenance r
     assert.equal(calls[0].options.method, 'POST');
     assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
     assert.equal(new URL(calls[0].url).pathname, '/v1/download/bulk-queue');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        type: 'Manga',
+        nsfw: false,
+        titlePrefix: 'a',
+    });
+});
+
+
+test('bulkQueueDownload requests the Raven bulk-queue endpoint and normalizes results for partial success (207)', async () => {
+    const calls = [];
+    const raven = createPortalRavenClient({
+        baseUrl: 'http://noona-raven:8080',
+        fetchImpl: async (url, options) => {
+            calls.push({url, options});
+            return new Response(JSON.stringify({
+                status: 'partial',
+                message: 'Queued some titles.',
+                filters: {
+                    type: 'Manga',
+                    nsfw: false,
+                    titlePrefix: 'a',
+                },
+                pagesScanned: 2,
+                matchedCount: 2,
+                queuedCount: 1,
+                skippedCount: 2,
+                failedCount: 1,
+                queuedTitles: ['Alpha Start'],
+                skippedTitles: ['Another Dawn', 'Azure Echo'],
+                failedTitles: ['Beta End'],
+            }), {
+                status: 207,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+        },
+    });
+
+    const result = await raven.bulkQueueDownload({
+        type: 'Manga',
+        nsfw: false,
+        titlePrefix: 'a',
+    });
+
+    assert.equal(result.status, 'partial');
+    assert.equal(result.message, 'Queued some titles.');
+    assert.equal(result.queuedCount, 1);
+    assert.equal(result.skippedActiveCount, 2);
+    assert.equal(result.failedCount, 1);
+    assert.deepEqual(result.queuedTitles, ['Alpha Start']);
+    assert.deepEqual(result.skippedActiveTitles, ['Another Dawn', 'Azure Echo']);
+    assert.deepEqual(result.failedTitles, ['Beta End']);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, 'POST');
     assert.deepEqual(JSON.parse(calls[0].options.body), {
         type: 'Manga',
         nsfw: false,

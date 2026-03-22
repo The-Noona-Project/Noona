@@ -26,6 +26,11 @@ Raven-facing browser actions.
 - talks to Vault through the stack's trusted internal HTTPS path in managed installs
 - keeps wizard-state on a local fallback until Warden has created the managed Vault CA bundle, then resumes Vault-backed
   persistence
+- keeps managed Kavita API-key provisioning running during that same Vault TLS warm-up window, even if Sage must defer
+  mirroring the stored service-account snapshot into Vault-backed settings
+- reuses the managed Kavita API key that Warden already injected into Portal or Komf when the setup summary only needs
+  to sync dependent services after install, instead of forcing a second Kavita admin login
+- handles VPN settings writes, including PIA credential checks and region rotation or login-test actions for Raven
 - preserves Raven's real queue status and message for Moon instead of flattening every queue response into a generic
   success
 - normalizes backend failures into UI-friendly responses
@@ -40,6 +45,7 @@ Raven-facing browser actions.
 - when Moon setup or Discord login fails
 - when user management or default permissions behave unexpectedly
 - when Moon's signed-in background track fails to load or respond to range requests
+- when VPN settings reject a provider other than PIA or a VPN login test returns an error
 - when browser-facing Raven actions fail even though Raven is online
 
 ## How It Fits Into Noona

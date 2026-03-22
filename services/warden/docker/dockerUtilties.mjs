@@ -8,6 +8,7 @@ import {debugMSG, log, warn} from '../../../utilities/etc/logger.mjs';
 import {isLikelyNamedDockerVolume} from './storageLayout.mjs';
 
 const docker = new Docker();
+const TRUTHY_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
 const escapeRegExp = (value) => String(value ?? '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
@@ -168,9 +169,22 @@ export async function ensureNetwork(dockerInstance, networkName) {
 /**
  * Attaches the Warden container to the Docker network if not already connected
  */
-export async function attachSelfToNetwork(dockerInstance, networkName) {
-    const hostId = process.env.HOSTNAME;
-    const fallbackId = process.env.SERVICE_NAME || 'noona-warden';
+export const isWardenHostProcessMode = (env = process.env) =>
+    TRUTHY_BOOLEAN_VALUES.has(String(env?.WARDEN_RUN_OUTSIDE_DOCKER ?? '').trim().toLowerCase());
+
+/**
+ * Attaches the running Warden container to the requested Docker network.
+ *
+ * When Warden is intentionally running outside Docker, callers must explicitly
+ * opt into host-process mode via WARDEN_RUN_OUTSIDE_DOCKER=true (or
+ * allowHostProcess) so missing container lookup is treated as an expected skip
+ * rather than a silent bootstrap success.
+ */
+export async function attachSelfToNetwork(dockerInstance, networkName, options = {}) {
+    const env = options?.env ?? process.env;
+    const allowHostProcess = options?.allowHostProcess ?? isWardenHostProcessMode(env);
+    const hostId = env?.HOSTNAME ?? process.env.HOSTNAME;
+    const fallbackId = env?.SERVICE_NAME ?? process.env.SERVICE_NAME ?? 'noona-warden';
     let containerId = hostId;
     let info;
 
@@ -195,8 +209,18 @@ export async function attachSelfToNetwork(dockerInstance, networkName) {
             info = await dockerInstance.getContainer(containerId).inspect();
         } catch (error) {
             if (error?.statusCode === 404) {
-                warn(`[dockerUtil] Unable to locate container '${containerId}' while attaching to network '${networkName}'. Skipping attach.`);
-                return;
+                if (allowHostProcess) {
+                    warn(
+                        `[dockerUtil] Unable to locate container '${containerId}' while attaching to network '${networkName}', but Warden is configured to run outside Docker. Skipping self-attach.`,
+                    );
+                    return;
+                }
+
+                const attachError = new Error(
+                    `[dockerUtil] Unable to locate Warden container '${containerId}' while attaching to network '${networkName}'. Containerized Warden must run as '${fallbackId}' (or set WARDEN_RUN_OUTSIDE_DOCKER=true when running directly on the host).`,
+                );
+                attachError.code = 'WARDEN_SELF_ATTACH_CONTAINER_NOT_FOUND';
+                throw attachError;
             }
             throw error;
         }

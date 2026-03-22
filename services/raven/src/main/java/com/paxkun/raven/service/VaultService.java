@@ -8,12 +8,12 @@
 package com.paxkun.raven.service;
 
 import com.google.gson.Gson;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
-import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
@@ -51,6 +51,9 @@ public class VaultService {
 
     @Value("${vault.caCertPath:${VAULT_CA_CERT_PATH:}}")
     private String vaultCaCertPath;
+
+    @Value("${vault.requestTimeoutMs:15000}")
+    private long vaultRequestTimeoutMs;
 
     // ─────────────────────────────────────────────────────────────
     // AUTH
@@ -118,7 +121,7 @@ public class VaultService {
                             }
                             return Mono.just(body);
                         }))
-                .block();
+                .block(java.time.Duration.ofMillis(vaultRequestTimeoutMs));
     }
 
     private WebClient getWebClient() {

@@ -7,6 +7,7 @@ export function registerBootApi(context = {}) {
         buildEffectiveServiceDescriptor,
         dataNetworkName,
         dockerUtils,
+        env = process.env,
         ensureDockerConnection,
         isPersistedServiceRuntimeConfigLoaded,
         loadPersistedServiceRuntimeConfig,
@@ -402,19 +403,17 @@ export function registerBootApi(context = {}) {
         const dockerClient = await ensureDockerConnection();
         await dockerUtils.ensureNetwork(dockerClient, networkName);
         await dockerUtils.ensureNetwork(dockerClient, dataNetworkName);
-        await dockerUtils.attachSelfToNetwork(dockerClient, networkName);
+        await dockerUtils.attachSelfToNetwork(dockerClient, networkName, {env});
 
         const setupCompleted = await api.isSetupCompleted();
         const detectedServices = setupCompleted || SUPER_MODE
             ? []
             : await resolveInstalledLifecycleServices(dockerClient);
-        const shouldBootFull = SUPER_MODE || setupCompleted || shouldRestoreManagedLifecycle(detectedServices);
+        const shouldBootFull = SUPER_MODE || (!setupCompleted && shouldRestoreManagedLifecycle(detectedServices));
 
         if (shouldBootFull) {
             if (SUPER_MODE) {
                 logger.log('[Warden] 💥 DEBUG=super — launching full stack in superBootOrder...');
-            } else if (setupCompleted) {
-                logger.log('[Warden] Setup marked complete — launching configured services.');
             } else {
                 logger.log('[Warden] Detected installed managed services — restoring configured stack.');
             }

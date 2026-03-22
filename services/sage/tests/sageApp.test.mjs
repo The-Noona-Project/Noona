@@ -103,8 +103,14 @@ const createRavenStub = (overrides = {}) => ({
     async rotateVpnNow() {
         throw new Error('rotateVpnNow should not be called')
     },
+    async rotateVpnNowDetailed() {
+        throw new Error('rotateVpnNowDetailed should not be called')
+    },
     async testVpnLogin() {
         throw new Error('testVpnLogin should not be called')
+    },
+    async testVpnLoginDetailed() {
+        throw new Error('testVpnLoginDetailed should not be called')
     },
     ...overrides,
 })
@@ -1829,6 +1835,12 @@ test('GET /api/setup/status returns completion, config, progress, and debug stat
         serviceName: 'test-sage',
         setupClient: {
             listServices: async () => [],
+            getSetupSelection: async () => ({
+                selectionMode: 'unspecified',
+                selectedServices: [],
+                lifecycleServices: [],
+                explicit: false,
+            }),
             installServices: async () => ({status: 200, results: []}),
             getSetupConfig: async () => ({
                 exists: true,
@@ -1864,7 +1876,245 @@ test('GET /api/setup/status returns completion, config, progress, and debug stat
         configured: true,
         installing: true,
         debugEnabled: true,
+        selectionMode: 'unspecified',
+        selectedServices: [],
+        lifecycleServices: [],
+        manualBootRequired: false,
     })
+})
+
+test('GET /api/setup/status reports manual boot required when selected lifecycle services are not healthy', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: false},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth(name) {
+                return {
+                    success: name !== 'noona-portal',
+                    supported: true,
+                    status: name === 'noona-portal' ? 'stopped' : 'healthy'
+                }
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+        completed: true,
+        configured: true,
+        installing: false,
+        debugEnabled: false,
+        selectionMode: 'selected',
+        selectedServices: ['noona-portal'],
+        lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+        manualBootRequired: true,
+    })
+})
+
+test('GET /api/setup/status clears manual boot required once the selected lifecycle services are healthy', async (t) => {
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: true},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth() {
+                return {success: true, supported: true, status: 'healthy'}
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/status`)
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.manualBootRequired, false)
+})
+
+test('POST /api/setup/boot/start succeeds only while manual boot is required', async (t) => {
+    let startCalls = 0
+    const successApp = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: false},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth(name) {
+                return {success: name !== 'noona-portal', supported: true}
+            },
+            async startEcosystem() {
+                startCalls += 1
+                return {mode: 'full', setupCompleted: true}
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server: successServer, baseUrl: successBaseUrl} = await listen(successApp)
+    t.after(() => closeServer(successServer))
+
+    const successResponse = await fetch(`${successBaseUrl}/api/setup/boot/start`, {method: 'POST'})
+    assert.equal(successResponse.status, 200)
+    assert.deepEqual(await successResponse.json(), {mode: 'full', setupCompleted: true})
+    assert.equal(startCalls, 1)
+
+    const conflictApp = createSageApp({
+        serviceName: 'test-sage',
+        setupClient: {
+            async listServices() {
+                return [
+                    {name: 'noona-mongo', running: true},
+                    {name: 'noona-redis', running: true},
+                    {name: 'noona-vault', running: true},
+                    {name: 'noona-sage', running: true},
+                    {name: 'noona-moon', running: true},
+                    {name: 'noona-portal', running: true},
+                ]
+            },
+            async getSetupSelection() {
+                return {
+                    selectionMode: 'selected',
+                    selectedServices: ['noona-portal'],
+                    lifecycleServices: ['noona-mongo', 'noona-redis', 'noona-vault', 'noona-sage', 'noona-moon', 'noona-portal'],
+                    explicit: true,
+                }
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getSetupConfig() {
+                return {
+                    exists: true,
+                    path: '/srv/noona/wardenm/noona-settings.json',
+                    snapshot: {version: 3},
+                    error: null
+                }
+            },
+            async getInstallProgress() {
+                return {items: [], status: 'idle', percent: null}
+            },
+            async getServiceHealth() {
+                return {success: true, supported: true}
+            },
+            async startEcosystem() {
+                throw new Error('startEcosystem should not be called when manual boot is not required')
+            },
+        },
+        wizardStateClient: {
+            loadState: async () => ({completed: true}),
+        },
+    })
+
+    const {server: conflictServer, baseUrl: conflictBaseUrl} = await listen(conflictApp)
+    t.after(() => closeServer(conflictServer))
+
+    const conflictResponse = await fetch(`${conflictBaseUrl}/api/setup/boot/start`, {method: 'POST'})
+    assert.equal(conflictResponse.status, 409)
+    const conflictPayload = await conflictResponse.json()
+    assert.equal(conflictPayload.manualBootRequired, false)
 })
 
 test('GET /api/setup/services/install/progress proxies progress summary', async (t) => {
@@ -4869,6 +5119,7 @@ test('POST /api/setup/services/noona-kavita/service-key provisions a managed key
             password: 'Password123!',
         },
         allowRegister: true,
+        candidateApiKeys: [],
     })
 
     assert.equal(updateCalls.length, 3)
@@ -5019,9 +5270,124 @@ test('POST /api/setup/services/noona-kavita/service-key asks for the real passwo
     })
 })
 
+test('POST /api/setup/services/noona-kavita/service-key ignores masked Warden config keys and reuses the stored managed key', async (t) => {
+    const managedCalls = []
+    const updateCalls = []
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: {
+            mongo: {
+                async findOne() {
+                    return {
+                        key: 'setup.managedKavitaServiceAccount',
+                        value: {
+                            apiKey: 'stored-service-key',
+                            account: {
+                                username: 'reader-admin',
+                                email: 'reader-admin@example.com',
+                            },
+                        },
+                    }
+                },
+                async update() {
+                    return {status: 'ok', matched: 1, modified: 1}
+                },
+            },
+        },
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {
+                        env: {
+                            KAVITA_ADMIN_USERNAME: 'reader-admin',
+                            KAVITA_ADMIN_EMAIL: 'reader-admin@example.com',
+                            KAVITA_ADMIN_PASSWORD: '********',
+                        },
+                    }
+                }
+
+                if (name === 'noona-portal') {
+                    return {
+                        env: {
+                            KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                            KAVITA_API_KEY: '********',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'stored-service-key',
+                    account: null,
+                    mode: 'stored',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'stored-service-key')
+    assert.equal(payload.mode, 'stored')
+    assert.deepEqual(managedCalls, [{
+        account: null,
+        allowRegister: false,
+        candidateApiKeys: [{
+            key: 'stored-service-key',
+            source: 'stored',
+            pluginName: 'noona-sage',
+        }],
+    }])
+    assert.deepEqual(updateCalls, [[
+        'noona-portal',
+        {
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'stored-service-key',
+            },
+            restart: true,
+        },
+    ]])
+})
+
 test('POST /api/setup/services/noona-kavita/service-key reuses an existing service key when one is already configured', async (t) => {
     const managedCalls = []
     const updateCalls = []
+    const getServiceConfigCalls = []
 
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -5035,7 +5401,8 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
             async getServiceHealth() {
                 return {status: 'healthy', detail: 'ok'}
             },
-            async getServiceConfig(name) {
+            async getServiceConfig(name, options = {}) {
+                getServiceConfigCalls.push([name, options])
                 if (name === 'noona-portal') {
                     return {
                         env: {
@@ -5068,12 +5435,12 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
             },
         },
         managedKavitaSetupClient: {
-            async ensureServiceApiKey() {
-                managedCalls.push('called')
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
                 return {
-                    apiKey: 'should-not-run',
+                    apiKey: 'existing-service-key',
                     account: null,
-                    mode: 'register',
+                    mode: 'existing',
                 }
             },
         },
@@ -5092,6 +5459,11 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
     const payload = await response.json()
     assert.equal(payload.apiKey, 'existing-service-key')
     assert.equal(payload.mode, 'existing')
+    assert.deepEqual(getServiceConfigCalls, [
+        ['noona-kavita', {includeSecrets: true}],
+        ['noona-portal', {includeSecrets: true}],
+        ['noona-komf', {includeSecrets: true}],
+    ])
     assert.deepEqual(managedCalls, [])
     assert.deepEqual(updateCalls, [
         [
@@ -5119,6 +5491,7 @@ test('POST /api/setup/services/noona-kavita/service-key reuses an existing servi
 
 test('POST /api/setup/services/noona-kavita/service-key falls back to managed noona-kavita env credentials', async (t) => {
     const managedCalls = []
+    const getServiceConfigCalls = []
 
     const app = createSageApp({
         serviceName: 'test-sage',
@@ -5132,7 +5505,8 @@ test('POST /api/setup/services/noona-kavita/service-key falls back to managed no
             async getServiceHealth() {
                 return {status: 'healthy', detail: 'ok'}
             },
-            async getServiceConfig(name) {
+            async getServiceConfig(name, options = {}) {
+                getServiceConfigCalls.push([name, options])
                 if (name === 'noona-kavita') {
                     return {
                         env: {
@@ -5181,6 +5555,10 @@ test('POST /api/setup/services/noona-kavita/service-key falls back to managed no
     })
 
     assert.equal(response.status, 200)
+    assert.deepEqual(getServiceConfigCalls, [
+        ['noona-kavita', {includeSecrets: true}],
+        ['noona-portal', {includeSecrets: true}],
+    ])
     assert.equal(managedCalls.length, 1)
     assert.deepEqual(managedCalls[0], {
         account: {
@@ -5189,7 +5567,211 @@ test('POST /api/setup/services/noona-kavita/service-key falls back to managed no
             password: 'Password123!',
         },
         allowRegister: true,
+        candidateApiKeys: [],
     })
+})
+
+test('POST /api/setup/services/noona-kavita/service-key keeps going when Vault warm-up blocks the stored-settings lookup', async (t) => {
+    const updateCalls = []
+    const managedCalls = []
+    const storedSettingsLookups = []
+    const warmupError = new Error(
+        "All Vault endpoints failed: https://noona-vault:3005 (Unable to read Vault CA certificate at /var/lib/noona/vault-tls/ca-cert.pem: ENOENT: no such file or directory, open '/var/lib/noona/vault-tls/ca-cert.pem')",
+    )
+    warmupError.code = 'ENOENT'
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: {
+            mongo: {
+                async findOne(collectionName, query = {}) {
+                    storedSettingsLookups.push([collectionName, query])
+                    throw warmupError
+                },
+                async update() {
+                    return {status: 'ok', matched: 0, modified: 0}
+                },
+            },
+        },
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {env: {}}
+                }
+
+                if (name === 'noona-portal') {
+                    return {
+                        env: {
+                            KAVITA_BASE_URL: '',
+                            KAVITA_API_KEY: '',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey(options) {
+                managedCalls.push(options)
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: null,
+                    mode: 'login',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-portal']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'managed-kavita-key')
+    assert.equal(payload.mode, 'login')
+    assert.deepEqual(storedSettingsLookups, [[
+        'noona_settings',
+        {key: 'setup.managedKavitaServiceAccount'},
+    ]])
+    assert.deepEqual(managedCalls, [{
+        account: null,
+        allowRegister: true,
+        candidateApiKeys: [],
+    }])
+    assert.deepEqual(updateCalls, [[
+        'noona-portal',
+        {
+            env: {
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ]])
+})
+
+test('POST /api/setup/services/noona-kavita/service-key treats Vault settings persistence as best effort after provisioning succeeds', async (t) => {
+    const updateCalls = []
+    let writeAttempts = 0
+    const warmupError = new Error(
+        "Unable to read Vault CA certificate at /var/lib/noona/vault-tls/ca-cert.pem: ENOENT: no such file or directory, open '/var/lib/noona/vault-tls/ca-cert.pem'",
+    )
+    warmupError.code = 'ENOENT'
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: {
+            mongo: {
+                async findOne() {
+                    return null
+                },
+                async update() {
+                    writeAttempts += 1
+                    throw warmupError
+                },
+            },
+        },
+        setupClient: {
+            async listServices() {
+                return []
+            },
+            async installServices() {
+                return {status: 200, results: []}
+            },
+            async getServiceHealth() {
+                return {status: 'healthy', detail: 'ok'}
+            },
+            async getServiceConfig(name) {
+                if (name === 'noona-kavita') {
+                    return {env: {}}
+                }
+
+                if (name === 'noona-raven') {
+                    return {
+                        env: {
+                            KAVITA_LIBRARY_ROOT: '',
+                        },
+                    }
+                }
+
+                return {env: {}}
+            },
+            async updateServiceConfig(name, updates = {}) {
+                updateCalls.push([name, updates])
+                return {
+                    restarted: true,
+                    service: {
+                        name,
+                        env: updates?.env ?? {},
+                    },
+                }
+            },
+        },
+        managedKavitaSetupClient: {
+            async ensureServiceApiKey() {
+                return {
+                    apiKey: 'managed-kavita-key',
+                    account: {
+                        username: 'reader-admin',
+                        email: 'reader-admin@example.com',
+                        password: 'Password123!',
+                    },
+                    mode: 'register',
+                }
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const response = await fetch(`${baseUrl}/api/setup/services/noona-kavita/service-key`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({services: ['noona-raven']}),
+    })
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.apiKey, 'managed-kavita-key')
+    assert.equal(writeAttempts, 1)
+    assert.deepEqual(updateCalls, [[
+        'noona-raven',
+        {
+            env: {
+                KAVITA_LIBRARY_ROOT: '/manga',
+                KAVITA_BASE_URL: 'http://noona-kavita:5000',
+                KAVITA_API_KEY: 'managed-kavita-key',
+            },
+            restart: true,
+        },
+    ]])
 })
 
 test('GET /api/setup/services/:name/health proxies health payloads', async (t) => {
@@ -6795,6 +7377,195 @@ test('settings Discord onboarding message route stays admin-gated after setup co
     })
 })
 
+test('settings service catalog and update routes preserve Warden upstream errors', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async listServices() {
+                throw new WardenUpstreamHttpError({
+                    status: 500,
+                    payload: {
+                        error: 'Warden catalog unavailable.',
+                        source: 'warden',
+                    },
+                })
+            },
+            async listServiceUpdates() {
+                throw new WardenUpstreamHttpError({
+                    status: 404,
+                    payload: {
+                        error: 'No managed update catalog is available.',
+                    },
+                })
+            },
+            async checkServiceUpdates() {
+                throw new WardenUpstreamHttpError({
+                    status: 503,
+                    payload: {
+                        error: 'Update check is warming up.',
+                        retryable: true,
+                    },
+                })
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const headers = {Authorization: `Bearer ${token}`}
+
+    const catalogResponse = await fetch(`${baseUrl}/api/settings/services`, {headers})
+    assert.equal(catalogResponse.status, 500)
+    assert.deepEqual(await catalogResponse.json(), {
+        error: 'Warden catalog unavailable.',
+        source: 'warden',
+    })
+
+    const listUpdatesResponse = await fetch(`${baseUrl}/api/settings/services/updates`, {headers})
+    assert.equal(listUpdatesResponse.status, 404)
+    assert.deepEqual(await listUpdatesResponse.json(), {
+        error: 'No managed update catalog is available.',
+    })
+
+    const checkUpdatesResponse = await fetch(`${baseUrl}/api/settings/services/updates/check`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({services: ['noona-moon']}),
+    })
+    assert.equal(checkUpdatesResponse.status, 503)
+    assert.deepEqual(await checkUpdatesResponse.json(), {
+        error: 'Update check is warming up.',
+        retryable: true,
+    })
+})
+
+test('settings Warden-backed config, restart, and ecosystem routes preserve upstream errors', async (t) => {
+    const vault = createVaultAuthStub()
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        setupClient: {
+            async getServiceConfig() {
+                throw new WardenUpstreamHttpError({
+                    status: 404,
+                    payload: {
+                        error: 'Service missing-service is not installed.',
+                    },
+                })
+            },
+            async updateServiceConfig() {
+                throw new WardenUpstreamHttpError({
+                    status: 400,
+                    payload: {
+                        error: 'SERVICE_NAME is managed by Warden and cannot be changed.',
+                        key: 'SERVICE_NAME',
+                    },
+                })
+            },
+            async restartService() {
+                throw new WardenUpstreamHttpError({
+                    status: 409,
+                    payload: {
+                        error: 'Restart already queued for noona-moon.',
+                        service: 'noona-moon',
+                    },
+                })
+            },
+            async updateServiceImage() {
+                throw new WardenUpstreamHttpError({
+                    status: 500,
+                    payload: {
+                        error: 'Image update failed to start.',
+                    },
+                })
+            },
+            async restartEcosystem() {
+                throw new WardenUpstreamHttpError({
+                    status: 503,
+                    payload: {
+                        error: 'Ecosystem restart is unavailable while Warden is booting.',
+                        retryable: true,
+                    },
+                })
+            },
+        },
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+    const headers = {Authorization: `Bearer ${token}`}
+
+    const getConfigResponse = await fetch(`${baseUrl}/api/settings/services/missing-service/config`, {headers})
+    assert.equal(getConfigResponse.status, 404)
+    assert.deepEqual(await getConfigResponse.json(), {
+        error: 'Service missing-service is not installed.',
+    })
+
+    const updateConfigResponse = await fetch(`${baseUrl}/api/settings/services/noona-moon/config`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({
+            env: {
+                SERVICE_NAME: 'noona-moon',
+            },
+        }),
+    })
+    assert.equal(updateConfigResponse.status, 400)
+    assert.deepEqual(await updateConfigResponse.json(), {
+        error: 'SERVICE_NAME is managed by Warden and cannot be changed.',
+        key: 'SERVICE_NAME',
+    })
+
+    const restartServiceResponse = await fetch(`${baseUrl}/api/settings/services/noona-moon/restart`, {
+        method: 'POST',
+        headers,
+    })
+    assert.equal(restartServiceResponse.status, 409)
+    assert.deepEqual(await restartServiceResponse.json(), {
+        error: 'Restart already queued for noona-moon.',
+        service: 'noona-moon',
+    })
+
+    const updateImageResponse = await fetch(`${baseUrl}/api/settings/services/noona-moon/update-image`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({}),
+    })
+    assert.equal(updateImageResponse.status, 500)
+    assert.deepEqual(await updateImageResponse.json(), {
+        error: 'Image update failed to start.',
+    })
+
+    const restartEcosystemResponse = await fetch(`${baseUrl}/api/settings/ecosystem/restart`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+        },
+        body: JSON.stringify({}),
+    })
+    assert.equal(restartEcosystemResponse.status, 503)
+    assert.deepEqual(await restartEcosystemResponse.json(), {
+        error: 'Ecosystem restart is unavailable while Warden is booting.',
+        retryable: true,
+    })
+})
+
 test('settings download worker routes read and update per-thread rate limits', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
@@ -6996,7 +7767,41 @@ test('settings VPN routes read and update masked PIA credentials', async (t) => 
     assert.equal(stored.rotateEveryMinutes, 45)
 })
 
-test('settings VPN routes proxy region list and rotate action to Raven', async (t) => {
+test('settings VPN routes reject unsupported providers', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub(),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const putRes = await fetch(`${baseUrl}/api/settings/downloads/vpn`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            provider: 'wireguard',
+            enabled: true,
+            piaUsername: 'new-user',
+            piaPassword: 'new-secret',
+        }),
+    })
+
+    assert.equal(putRes.status, 400)
+    const putPayload = await putRes.json()
+    assert.equal(putPayload.error, 'Only the pia VPN provider is supported.')
+    assert.equal(vault.settingDocs.length, 0)
+})
+
+test('settings VPN routes proxy region list and preserve Raven action status', async (t) => {
     const vault = createVaultAuthStub()
     const rotateCalls = []
     const loginTestCalls = []
@@ -7011,22 +7816,28 @@ test('settings VPN routes proxy region list and rotate action to Raven', async (
                     {id: 'us_texas', label: 'Us Texas', endpoint: '203.0.113.22'},
                 ]
             },
-            async rotateVpnNow(triggeredBy) {
+            async rotateVpnNowDetailed(triggeredBy) {
                 rotateCalls.push(triggeredBy)
                 return {
-                    ok: true,
-                    message: 'VPN rotation complete.',
-                    region: 'us_california',
+                    status: 202,
+                    payload: {
+                        ok: true,
+                        message: 'VPN rotation complete.',
+                        region: 'us_california',
+                    },
                 }
             },
-            async testVpnLogin(payload) {
+            async testVpnLoginDetailed(payload) {
                 loginTestCalls.push(payload)
                 return {
-                    ok: true,
-                    message: 'PIA login succeeded for region us_california.',
-                    region: 'us_california',
-                    endpoint: '212.56.53.84',
-                    reportedIp: '198.51.100.42',
+                    status: 200,
+                    payload: {
+                        ok: true,
+                        message: 'PIA login succeeded for region us_california.',
+                        region: 'us_california',
+                        endpoint: '212.56.53.84',
+                        reportedIp: '198.51.100.42',
+                    },
                 }
             },
         }),
@@ -7085,6 +7896,46 @@ test('settings VPN routes proxy region list and rotate action to Raven', async (
     assert.equal(loginTestCalls[0].piaPassword, 'pia-secret')
 })
 
+test('settings VPN rotate route preserves Raven failure status', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async rotateVpnNowDetailed(triggeredBy) {
+                return {
+                    status: 409,
+                    payload: {
+                        ok: false,
+                        message: `Cannot rotate while a VPN login test is in progress. (${triggeredBy})`,
+                        error: 'Cannot rotate while a VPN login test is in progress.',
+                    },
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const rotateRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/rotate`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({triggeredBy: 'moon-settings'}),
+    })
+
+    assert.equal(rotateRes.status, 409)
+    const rotatePayload = await rotateRes.json()
+    assert.equal(rotatePayload.ok, false)
+    assert.match(rotatePayload.message, /Cannot rotate while a VPN login test is in progress/)
+})
+
 test('settings VPN test-login falls back to persisted credentials when form values are blank', async (t) => {
     const vault = createVaultAuthStub({
         settings: [{
@@ -7105,14 +7956,17 @@ test('settings VPN test-login falls back to persisted credentials when form valu
         serviceName: 'test-sage',
         vaultClient: vault.client,
         ravenClient: createRavenStub({
-            async testVpnLogin(payload) {
+            async testVpnLoginDetailed(payload) {
                 loginTestCalls.push(payload)
                 return {
-                    ok: true,
-                    message: 'PIA login succeeded for region us_texas.',
-                    region: payload.region,
-                    endpoint: '203.0.113.22',
-                    reportedIp: '198.51.100.42',
+                    status: 200,
+                    payload: {
+                        ok: true,
+                        message: 'PIA login succeeded for region us_texas.',
+                        region: payload.region,
+                        endpoint: '203.0.113.22',
+                        reportedIp: '198.51.100.42',
+                    },
                 }
             },
         }),
@@ -7145,6 +7999,39 @@ test('settings VPN test-login falls back to persisted credentials when form valu
     assert.equal(loginTestCalls[0].region, 'us_texas')
     assert.equal(loginTestCalls[0].piaUsername, 'saved-user')
     assert.equal(loginTestCalls[0].piaPassword, 'saved-secret')
+})
+
+test('settings VPN regions route surfaces Raven runtime diagnostics when profiles are unavailable', async (t) => {
+    const vault = createVaultAuthStub()
+
+    const app = createSageApp({
+        serviceName: 'test-sage',
+        vaultClient: vault.client,
+        ravenClient: createRavenStub({
+            async getVpnRegions() {
+                return []
+            },
+            async getVpnStatus() {
+                return {
+                    lastError: 'PIA OpenVPN profile archive did not contain any .ovpn files.',
+                }
+            },
+        }),
+    })
+
+    const {server, baseUrl} = await listen(app)
+    t.after(() => closeServer(server))
+
+    const {token} = await bootstrapAdminAndLogin({baseUrl})
+
+    const regionsRes = await fetch(`${baseUrl}/api/settings/downloads/vpn/regions`, {
+        headers: {Authorization: `Bearer ${token}`},
+    })
+    assert.equal(regionsRes.status, 200)
+    const regionsPayload = await regionsRes.json()
+    assert.equal(regionsPayload.provider, 'pia')
+    assert.deepEqual(regionsPayload.regions, [])
+    assert.equal(regionsPayload.error, 'PIA OpenVPN profile archive did not contain any .ovpn files.')
 })
 
 test('settings debug routes read and update live debug mode', async (t) => {

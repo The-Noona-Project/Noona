@@ -3,7 +3,7 @@ import {resolveMoonBaseUrl} from "@/utils/webGui";
 
 export default async function sitemap() {
     const baseUrl = resolveMoonBaseUrl();
-    const hiddenRoutes = new Set(["/rebooting"]);
+    const hiddenRoutes = new Set(["/bootScreen", "/rebooting"]);
     const activeRoutes = Object.keys(moonRoutes).filter(
         (route) => moonRoutes[route as keyof typeof moonRoutes] && !hiddenRoutes.has(route),
     );
