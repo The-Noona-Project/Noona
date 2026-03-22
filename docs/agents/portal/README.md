@@ -10,6 +10,8 @@ contracts.
 - [flows.md](flows.md)
 - [runtime-and-integrations.md](runtime-and-integrations.md)
 - [discord-commands-and-stores.md](discord-commands-and-stores.md)
+- [discord-runtime-and-routing.md](discord-runtime-and-routing.md)
+- [discord-dm-queue-and-workers.md](discord-dm-queue-and-workers.md)
 
 ## Service Shape
 
